@@ -112,6 +112,16 @@ describe('api client', () => {
     );
   });
 
+  it('sends credentials on every request so the Cloudflare Access cookie crosses hostnames', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    await client.listUsers();
+
+    const [, calledInit] = fetchMock.mock.calls[0];
+    expect(calledInit).toMatchObject({ credentials: 'include' });
+  });
+
   it('defaults the base URL to same-origin root', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
     const client = createApiClient({ fetchImpl: fetchMock });

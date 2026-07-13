@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## Claude Config
 
-<!-- Consumed by the stronghold's central generic skills (see /Users/ggpropersi/code/CLAUDE.md).
+<!-- Consumed by the stronghold's central generic skills (see ~/code/CLAUDE.md).
      Stable keys — do not rename. Account-specific GraphQL IDs are intentionally NOT inlined here
      (secrets policy); the genericized workflow resolves them at runtime by name. -->
 

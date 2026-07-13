@@ -87,6 +87,11 @@ export function createApiClient({
       method,
       headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
+      // In production the admin UI (Cloudflare Pages) and the API live on
+      // different hostnames, both behind Cloudflare Access; the Access session
+      // cookie must accompany cross-origin requests or every call is redirected
+      // to the Access login. Same-origin (local) behavior is unaffected.
+      credentials: 'include',
     });
 
     const payload = (await response.json().catch(() => null)) as { error?: string } | null;
