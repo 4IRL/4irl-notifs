@@ -1,0 +1,66 @@
+name: Build production docker image
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  workflow_call:
+
+env:
+  # Name of docker image
+  IMAGE_NAME: 4irl-notifs-provisioning-api
+
+jobs:
+  ProdBuild:
+    name: Build multi-platform provisioning-api image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set lowercase image owner
+        run: echo "OWNER_LC=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=ref,event=branch
+            type=sha,format=short,prefix={{date 'YYYYMMDD'}}-
+          labels: |
+            runnumber=${{ github.run_id }}
+          # tags note: `latest` is unconditional here (no is_default_branch guard) — this
+          # workflow only runs behind the caller's merged-to-main guard
+          # (prod-build-and-deploy.yml's `if: github.event.pull_request.merged == true`),
+          # so every build IS the new main. u4i's `enable={{is_default_branch}}` would
+          # evaluate false on a pull_request event and is not applicable here.
+
+      - name: Build and Push
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}:buildcache,mode=max

@@ -1,0 +1,85 @@
+# Production counterpart of docker-compose.yml, deployed by
+# .github/workflows/prod-deploy.yml to ~/4irl-notifs/ on the shared VPS. This is an
+# independent docker-compose stack — it is NOT merged into urls4irl's compose file; the
+# two apps run as separate projects on the same host.
+#
+# Ports are bound to 127.0.0.1 only: a persistent Cloudflare Tunnel already running on the
+# VPS provides public ingress (human-provisioned; see the Phase 8 runbook). Never bind
+# 0.0.0.0 here — the tunnel is the only intended public entry point.
+name: 4irl-notifs
+
+services:
+  # One-shot init: the ntfy server and the provisioning-api both run as the
+  # non-root uid 1000 and share ntfy's auth database over the ntfy-auth volume,
+  # so the volumes must be owned by 1000 before either starts. This runs once
+  # and exits; the other services wait for it to complete.
+  volume-init:
+    image: busybox:1.37.0
+    container_name: 4irl-notifs-volume-init
+    command: chown -R 1000:1000 /var/lib/ntfy /var/cache/ntfy
+    user: "0:0"
+    volumes:
+      - ntfy-auth:/var/lib/ntfy
+      - ntfy-cache:/var/cache/ntfy
+    restart: "no"
+
+  ntfy:
+    restart: unless-stopped
+    image: binwiederhier/ntfy:v2.26.0
+    container_name: 4irl-notifs-ntfy
+    command: serve
+    user: "1000:1000"
+    ports:
+      - "127.0.0.1:8090:80"
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
+      - ntfy-auth:/var/lib/ntfy
+      - ntfy-cache:/var/cache/ntfy
+    environment:
+      # server.yml's base-url/behind-proxy defaults are for the local stack; env vars
+      # override the file in prod. The real public hostname is undecided and is provided
+      # at deploy time via the .env file the deploy workflow writes next to this compose
+      # file in ~/4irl-notifs/ on the VPS.
+      - NTFY_BASE_URL=${NTFY_BASE_URL:-http://localhost:8090}
+      - NTFY_BEHIND_PROXY=true
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -Eo '\"healthy\"\\s*:\\s*true' || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  provisioning-api:
+    restart: unless-stopped
+    image: ghcr.io/4irl/4irl-notifs-provisioning-api:latest
+    container_name: 4irl-notifs-provisioning-api
+    ports:
+      - "127.0.0.1:8091:8080"
+    depends_on:
+      ntfy:
+        condition: service_healthy
+    environment:
+      # The bundled ntfy CLI edits the same auth.db the ntfy server uses; these
+      # point it at that database without needing the server process.
+      - NTFY_BIN=/usr/bin/ntfy
+      - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db
+      - NTFY_AUTH_DEFAULT_ACCESS=deny-all
+    volumes:
+      - ntfy-auth:/var/lib/ntfy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  ntfy-auth:
+  ntfy-cache:
