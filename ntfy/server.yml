@@ -1,0 +1,28 @@
+# ntfy server configuration — 4irl-notifs notification hub.
+#
+# Auth model (see plans/notification-service/notification-service-design.md):
+#   - auth-default-access is deny-all: every topic grant is explicit. Topics need no
+#     pre-creation — they materialize on first publish/subscribe.
+#   - One GLOBAL ntfy user per person (not per app). The provisioning-api grants each
+#     user a wildcard ACL per app they are provisioned into.
+#   - Topic namespace convention: "{app_id}-{channel}" (e.g. "urls4irl-alerts"), so a
+#     per-app grant is the native wildcard ACL "{app_id}-*".
+#
+# The auth database lives on a named volume shared with the provisioning-api container,
+# which edits it via the bundled ntfy CLI (`ntfy user` / `ntfy access` / `ntfy token`).
+#
+# In production the base-url is overridden via the NTFY_BASE_URL environment variable
+# (env vars take precedence over this file); the local default below matches the
+# docker-compose port mapping.
+
+base-url: http://localhost:8090
+listen-http: ":80"
+
+auth-file: /var/lib/ntfy/auth.db
+auth-default-access: deny-all
+
+cache-file: /var/cache/ntfy/cache.db
+
+# Local stack runs without a reverse proxy; the production deployment sits behind a
+# Cloudflare Tunnel and overrides this with NTFY_BEHIND_PROXY=true.
+behind-proxy: false

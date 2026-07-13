@@ -1,0 +1,28 @@
+name: 4irl-notifs
+
+services:
+  ntfy:
+    restart: unless-stopped
+    image: binwiederhier/ntfy:v2.26.0
+    container_name: 4irl-notifs-ntfy
+    command: serve
+    ports:
+      - "127.0.0.1:8090:80"
+    volumes:
+      - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
+      - ntfy-auth:/var/lib/ntfy
+      - ntfy-cache:/var/cache/ntfy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -Eo '\"healthy\"\\s*:\\s*true' || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  ntfy-auth:
+  ntfy-cache:
