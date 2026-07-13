@@ -1,13 +1,31 @@
 name: 4irl-notifs
 
 services:
+  # One-shot init: the ntfy server and the provisioning-api both run as the
+  # non-root uid 1000 and share ntfy's auth database over the ntfy-auth volume,
+  # so the volumes must be owned by 1000 before either starts. This runs once
+  # and exits; the other services wait for it to complete.
+  volume-init:
+    image: busybox:1.37.0
+    container_name: 4irl-notifs-volume-init
+    command: chown -R 1000:1000 /var/lib/ntfy /var/cache/ntfy
+    user: "0:0"
+    volumes:
+      - ntfy-auth:/var/lib/ntfy
+      - ntfy-cache:/var/cache/ntfy
+    restart: "no"
+
   ntfy:
     restart: unless-stopped
     image: binwiederhier/ntfy:v2.26.0
     container_name: 4irl-notifs-ntfy
     command: serve
+    user: "1000:1000"
     ports:
       - "127.0.0.1:8090:80"
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
     volumes:
       - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
       - ntfy-auth:/var/lib/ntfy
@@ -22,6 +40,33 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  provisioning-api:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: 4irl-notifs-provisioning-api:local
+    container_name: 4irl-notifs-provisioning-api
+    ports:
+      - "127.0.0.1:8091:8080"
+    depends_on:
+      ntfy:
+        condition: service_healthy
+    environment:
+      # The bundled ntfy CLI edits the same auth.db the ntfy server uses; these
+      # point it at that database without needing the server process.
+      - NTFY_BIN=/usr/bin/ntfy
+      - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db
+      - NTFY_AUTH_DEFAULT_ACCESS=deny-all
+    volumes:
+      - ntfy-auth:/var/lib/ntfy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
 volumes:
   ntfy-auth:

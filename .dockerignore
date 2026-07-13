@@ -1,0 +1,10 @@
+.git
+web/
+plans/
+changelog/
+**/node_modules
+**/dist
+provisioning-api/provisioning-api
+provisioning-api/bin/
+*.md
+.github/
