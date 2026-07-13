@@ -5,6 +5,7 @@ changelog/
 
 # Go
 /provisioning-api/bin/
+/provisioning-api/provisioning-api
 *.test
 *.out
 

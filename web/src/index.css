@@ -1,0 +1,30 @@
+:root {
+  --text: #6b6375;
+  --text-h: #08060d;
+  --bg: #fff;
+  --border: #e5e4e7;
+  --accent: #aa3bff;
+  --accent-bg: rgba(170, 59, 255, 0.1);
+
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+
+  font: 16px/145% var(--sans);
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--text-h);
+}

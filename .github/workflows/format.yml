@@ -1,0 +1,45 @@
+name: Check Formatting
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+
+jobs:
+  Format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: provisioning-api/go.mod
+          cache-dependency-path: provisioning-api/go.sum
+
+      - name: Verify Go formatting with gofmt
+        run: |
+          UNFORMATTED="$(gofmt -l provisioning-api)"
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Files need gofmt:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: Setup node
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Verify web formatting with Prettier
+        working-directory: web
+        run: npx prettier --check .

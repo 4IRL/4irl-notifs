@@ -6,8 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 <!-- Consumed by the stronghold's central generic skills (see /Users/ggpropersi/code/CLAUDE.md).
      Stable keys — do not rename. Account-specific GraphQL IDs are intentionally NOT inlined here
-     (secrets policy); the genericized workflow resolves them at runtime by name. This project is
-     early-stage: the Go module and Vite project are not yet scaffolded, so several keys are TODO. -->
+     (secrets policy); the genericized workflow resolves them at runtime by name. -->
 
 - **Repo slug:** `TODO (no git remote configured yet — no origin in .git/config; likely 4IRL/4irl-notifs, confirm before pushing)`
 - **Default branch:** `main` (only local branch; no remote yet)
@@ -15,18 +14,18 @@ Guidance for Claude Code when working in this repository.
 - **Bot identity:** n/a (no GitHub-App bot set up yet)
 - **Bot push script:** n/a
 - **Token generator:** n/a
-- **Container runtime:** `docker compose` — local stack is ntfy + provisioning-api; TODO (compose file not yet scaffolded)
-- **App URL (Playwright MCP):** TODO (React/Vite admin UI in `web/` not yet scaffolded; prod is Cloudflare Pages behind Cloudflare Access)
+- **Container runtime:** `docker compose --project-directory . -f docker-compose.yml` (local stack: ntfy + provisioning-api)
+- **App URL (Playwright MCP):** `http://127.0.0.1:5173/` (Vite dev server; prod is Cloudflare Pages behind Cloudflare Access)
 - **Test login:** n/a (admin UI is behind Cloudflare Access Google/GitHub OAuth; per-app callers use Cloudflare Access Service Tokens)
-- **Commands:** TODO — fill in once the Go module (`provisioning-api/`) and Vite project (`web/`) are scaffolded. Expected shape:
+- **Commands:**
   | Purpose | Command |
   |---|---|
-  | Integration tests | TODO |
   | Go tests | `go test ./...` (in `provisioning-api/`) |
-  | UI/e2e tests | `npx playwright test` (in `web/`) — TODO |
-  | JS/unit tests | `npm test` (in `web/`, Vitest) — TODO |
-  | Build | `npm run build` (in `web/`, Vite → `dist/`) — TODO |
-  | Lint / format | `golangci-lint run` (Go); `npx eslint .` / `npx prettier --write .` (in `web/`) — TODO |
+  | Go integration tests | `go test -tags integration ./...` (in `provisioning-api/`, needs local stack up) |
+  | UI/e2e tests | `npx playwright test` (in `web/`) |
+  | JS/unit tests | `npm test` (in `web/`, Vitest) |
+  | Build | `npm run build` (in `web/`, `tsc -b` + Vite → `dist/`) |
+  | Lint / format | `gofmt -l .` + `golangci-lint run` (in `provisioning-api/`); `npx eslint .` / `npx prettier --check .` (in `web/`) |
 - **GitHub project board:** n/a
 - **Issue labels:** resolve at runtime via `gh label list` (do not invent labels)
 - **PR reviewer:** n/a
@@ -54,25 +53,29 @@ Components:
 
 ## Development Commands
 
-TODO: fill in once the Go module and Vite project are scaffolded. Expected shape:
-
 | Command | Description |
 |---|---|
-| `docker compose up -d` | Start the local stack (ntfy + provisioning-api) |
-| `docker compose down` | Stop the local stack |
-| `go test ./...` (in `provisioning-api/`) | Run Go tests |
+| `docker compose --project-directory . -f docker-compose.yml up -d` | Start the local stack (ntfy + provisioning-api) |
+| `docker compose --project-directory . -f docker-compose.yml down` | Stop the local stack |
+| `go test ./...` (in `provisioning-api/`) | Run Go unit tests |
+| `go test -tags integration ./...` (in `provisioning-api/`) | Run Go integration tests (local stack must be up) |
+| `gofmt -l .` (in `provisioning-api/`) | Check Go formatting (no output = clean) |
 | `golangci-lint run` (in `provisioning-api/`) | Lint the Go service |
 | `npm test` (in `web/`) | Run frontend unit tests (Vitest) |
-| `npm run build` (in `web/`) | Production build (Vite → `dist/`) |
+| `npx playwright test` (in `web/`) | Run frontend e2e tests (Playwright) |
+| `npm run build` (in `web/`) | Production build (`tsc -b` + Vite → `dist/`) |
 | `npx eslint .` / `npx prettier --write .` (in `web/`) | Lint / format the frontend |
 
 ## Testing
 
-- **TDD is required** for the Go provisioning API: Red (failing test for one requirement) →
-  Green (minimum code to pass) → Refactor. Do not bulk-code then bulk-test.
+- **TDD is required on BOTH sides** — the Go provisioning API AND the React/Vite admin UI:
+  Red (failing test for one requirement) → Green (minimum code to pass) → Refactor. Do not
+  bulk-code then bulk-test on either side.
 - **Go**: table-driven tests via the standard `testing` package.
-- **Frontend — logic/state**: Vitest with JSDOM.
-- **Frontend — critical flows**: Playwright.
+- **Frontend — logic/state/components**: Vitest with JSDOM + React Testing Library, written
+  test-first (a failing component/hook/state test before the implementation).
+- **Frontend — critical flows**: Playwright, written test-first for each critical user flow
+  before wiring it up.
 - Every plan's final phase must run the full test suite (Go + frontend) before being marked done.
 
 ## Dependency Pinning
