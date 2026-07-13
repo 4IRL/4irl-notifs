@@ -1,0 +1,54 @@
+name: Build Image Test
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+
+jobs:
+  BuildImage:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build provisioning-api image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: 4irl-notifs-provisioning-api:ci-test
+          cache-from: type=gha,scope=provisioning-api
+          cache-to: type=gha,scope=provisioning-api,mode=max
+
+      - name: Smoke test image
+        run: |
+          docker run -d --name provisioning-api-smoke -p 127.0.0.1:8080:8080 \
+            -e NTFY_AUTH_FILE=/var/lib/ntfy/auth.db \
+            -e NTFY_AUTH_DEFAULT_ACCESS=deny-all \
+            4irl-notifs-provisioning-api:ci-test
+
+          for i in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:8080/healthz | grep -q ok; then
+              echo "provisioning-api-smoke is up"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "provisioning-api-smoke did not become healthy in time"
+              docker logs provisioning-api-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+
+          docker exec provisioning-api-smoke /usr/bin/ntfy --help > /dev/null
+
+      - name: Clean up smoke test container
+        if: always()
+        run: docker rm -f provisioning-api-smoke

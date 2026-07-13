@@ -21,3 +21,13 @@ jobs:
     name: Test
     needs: lint
     uses: ./.github/workflows/test.yml
+
+  integration-test:
+    name: Integration Test
+    needs: lint
+    uses: ./.github/workflows/test-integration.yml
+
+  build-image-test:
+    name: Test Build Docker Container
+    needs: lint
+    uses: ./.github/workflows/test-build-image.yml

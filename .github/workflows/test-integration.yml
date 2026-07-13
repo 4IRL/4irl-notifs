@@ -1,0 +1,51 @@
+name: Integration Tests
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+
+jobs:
+  Integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: provisioning-api/go.mod
+          cache-dependency-path: provisioning-api/go.sum
+
+      - name: Start local stack
+        run: docker compose --project-directory . -f docker-compose.yml up -d --build
+
+      - name: Wait for provisioning-api to be healthy
+        run: |
+          for i in $(seq 1 60); do
+            STATUS="$(docker inspect -f '{{.State.Health.Status}}' 4irl-notifs-provisioning-api || echo "unknown")"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "provisioning-api is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "provisioning-api did not become healthy in time"
+          exit 1
+
+      - name: Run Go integration tests
+        working-directory: provisioning-api
+        run: go test -tags integration ./...
+
+      - name: Dump container state on failure
+        if: failure()
+        run: |
+          docker compose --project-directory . -f docker-compose.yml ps
+          docker compose --project-directory . -f docker-compose.yml logs
+
+      - name: Tear down local stack
+        if: always()
+        run: docker compose --project-directory . -f docker-compose.yml down -v
