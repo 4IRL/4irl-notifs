@@ -6,11 +6,11 @@ Cloudflare Access in production.
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `npm run dev` | Vite dev server |
-| `npm test` | Unit/component tests (Vitest + React Testing Library) |
-| `npx playwright test` | E2E tests (Playwright) |
-| `npm run build` | Type-check (`tsc -b`) + production build |
-| `npx eslint .` | Lint |
-| `npx prettier --check .` | Formatting check |
+| Command                  | Description                                           |
+| ------------------------ | ----------------------------------------------------- |
+| `npm run dev`            | Vite dev server                                       |
+| `npm test`               | Unit/component tests (Vitest + React Testing Library) |
+| `npx playwright test`    | E2E tests (Playwright)                                |
+| `npm run build`          | Type-check (`tsc -b`) + production build              |
+| `npx eslint .`           | Lint                                                  |
+| `npx prettier --check .` | Formatting check                                      |

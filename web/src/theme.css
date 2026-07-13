@@ -1,0 +1,28 @@
+/* Theme tokens for the 4IRL Notifications admin UI. Every view reuses these —
+   no per-screen one-off colors, spacing, or radii. Values are pinned by the
+   screenshotted design mock (see plans/notification-service/tmp). */
+:root {
+  --text: #6b6375;
+  --text-h: #08060d;
+  --bg: #fff;
+  --surface: #faf9fb;
+  --border: #e5e4e7;
+  --accent: #aa3bff;
+  --accent-bg: rgba(170, 59, 255, 0.1);
+  --accent-border: rgba(170, 59, 255, 0.5);
+  --danger: #c62828;
+  --danger-bg: rgba(198, 40, 40, 0.08);
+  --danger-border: rgba(198, 40, 40, 0.4);
+  --ok: #1b7f4d;
+  --ok-bg: rgba(27, 127, 77, 0.1);
+
+  --radius: 8px;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --space-5: 2rem;
+
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+}

@@ -1,0 +1,62 @@
+.users-table {
+  margin-top: var(--space-5);
+}
+
+.users-table__status {
+  color: var(--text);
+}
+
+.users-table__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.users-table__table th,
+.users-table__table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.users-table__table th {
+  color: var(--text);
+  font-size: 0.75rem;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.users-table__chip {
+  display: inline-block;
+  margin: 0 var(--space-1) var(--space-1) 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 0.8125rem;
+}
+
+.users-table__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.users-table__button {
+  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.users-table__button--secondary {
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.users-table__button--danger {
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
