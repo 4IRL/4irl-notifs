@@ -17,5 +17,8 @@ dist/
 .env.*
 !.env.example
 
+# Bot config — account-specific GitHub App IDs (the .example template is tracked)
+.claude/bot/bot.env
+
 # OS
 .DS_Store

@@ -8,12 +8,13 @@ Guidance for Claude Code when working in this repository.
      Stable keys — do not rename. Account-specific GraphQL IDs are intentionally NOT inlined here
      (secrets policy); the genericized workflow resolves them at runtime by name. -->
 
-- **Repo slug:** `TODO (no git remote configured yet — no origin in .git/config; likely 4IRL/4irl-notifs, confirm before pushing)`
-- **Default branch:** `main` (only local branch; no remote yet)
+- **Repo slug:** `4IRL/4irl-notifs`
+- **Default branch:** `main` (synced with `origin/main`)
 - **Plans/reviews layout:** `plans/<topic>/` (design docs, plans, and reviews all live under `plans/`, gitignored — not tracked in git)
-- **Bot identity:** n/a (no GitHub-App bot set up yet)
-- **Bot push script:** n/a
-- **Token generator:** n/a
+- **Bot identity:** `4irl-notifs-claude[bot]` `304521357+4irl-notifs-claude[bot]@users.noreply.github.com`
+- **Bot push script:** `.claude/bot/gh-app-push.sh` (GitHub App `4irl-notifs-claude`, 4IRL org; uses GIT_ASKPASS so the token never lands in argv/URL — App & Installation IDs live in gitignored `.claude/bot/bot.env`)
+- **Bot gh wrapper:** `/Users/ggpropersi/code/.claude/scripts/gh-bot.sh <args>` — the **central, repo-agnostic** wrapper (shared by every sub-repo). Runs any `gh` subcommand as this repo's bot (e.g. `gh-bot.sh pr create ...`, `gh-bot.sh api repos/4IRL/4irl-notifs ...`) with NO `$(...)` on the command line; it auto-resolves this repo's token generator (`git root → .claude/bot/generate-gh-token.sh`), generates + injects the token internally, never printed. Invoke by **absolute path** from inside the repo (a relative `.claude/scripts/...` resolves to the sub-repo, not the central copy). Prefer this over inline `GH_TOKEN=$(...) gh ...`. Allowlisted (scoped) for `pr *`, `issue *`, `api graphql`, `api repos/*`, `label list`; `pr merge` is denied (the bot must not auto-merge to `main` — that triggers the deploy pipeline).
+- **Token generator:** `.claude/bot/generate-gh-token.sh` — logic only (committed, no IDs); reads App ID / Installation ID / key path from gitignored `.claude/bot/bot.env` (copy `bot.env.example` and fill in). Private key at `~/.claude/4irl-notifs-claude-app.pem`, outside the repo.
 - **Container runtime:** `docker compose --project-directory . -f docker-compose.yml` (local stack: ntfy + provisioning-api)
 - **App URL (Playwright MCP):** `http://127.0.0.1:5173/` (Vite dev server; prod is Cloudflare Pages behind Cloudflare Access)
 - **Test login:** n/a (admin UI is behind Cloudflare Access Google/GitHub OAuth; per-app callers use Cloudflare Access Service Tokens)
