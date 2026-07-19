@@ -1,0 +1,25 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "excludedCommands": [
+      "make local-up",
+      "make local-down",
+      "make local-logs",
+      "make dev-web",
+      "make dev-web-bg",
+      "make dev-web-stop",
+      "make notif-smoke-test",
+      "make go-test",
+      "make go-integration-test",
+      "make go-lint",
+      "make go-fmt",
+      "make web-test",
+      "make web-e2e",
+      "make web-build",
+      "make web-lint",
+      "make web-format",
+      "docker",
+      "docker compose"
+    ]
+  }
+}

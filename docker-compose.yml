@@ -17,6 +17,7 @@ services:
 
   ntfy:
     restart: unless-stopped
+    # LOCKSTEP: keep equal to Dockerfile's ntfy stage (bundled CLI) and docker-compose.prod.yml.
     image: binwiederhier/ntfy:v2.26.0
     container_name: 4irl-notifs-ntfy
     command: serve

@@ -20,6 +20,9 @@ RUN go mod download
 COPY provisioning-api/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/provisioning-api .
 
+# LOCKSTEP: this ntfy version (the bundled CLI) must match the ntfy SERVER image tag in
+# docker-compose.prod.yml and docker-compose.yml. Bump all of them together — a CLI/server
+# skew risks auth.db format mismatch. See "ntfy version bump" in the deploy runbook.
 FROM binwiederhier/ntfy:v2.26.0 AS ntfy
 
 FROM alpine:3.23.0
