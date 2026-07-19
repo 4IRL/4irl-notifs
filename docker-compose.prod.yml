@@ -1,5 +1,5 @@
 # Production counterpart of docker-compose.yml, deployed by
-# .github/workflows/prod-deploy.yml to ~/4irl-notifs/ on the shared VPS. This is an
+# .github/workflows/prod-deploy.yml to /home/4irl-notifs/ on the shared VPS. This is an
 # independent docker-compose stack — it is NOT merged into urls4irl's compose file; the
 # two apps run as separate projects on the same host.
 #
