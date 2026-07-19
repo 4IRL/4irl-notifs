@@ -43,18 +43,18 @@ func (client *fakeNtfyClient) DeleteUser(_ context.Context, userID string) error
 	return client.deleteUserErr
 }
 
-func (client *fakeNtfyClient) GrantAccess(_ context.Context, userID string, appID string) error {
-	client.record("GrantAccess(%s,%s)", userID, appID)
+func (client *fakeNtfyClient) GrantAccess(_ context.Context, userID string, topicPattern string, permission ntfycli.Permission) error {
+	client.record("GrantAccess(%s,%s,%s)", userID, topicPattern, permission)
 	return client.grantAccessErr
 }
 
-func (client *fakeNtfyClient) ResetAccess(_ context.Context, userID string, appID string) error {
-	client.record("ResetAccess(%s,%s)", userID, appID)
+func (client *fakeNtfyClient) ResetAccess(_ context.Context, userID string, topicPattern string) error {
+	client.record("ResetAccess(%s,%s)", userID, topicPattern)
 	return client.resetAccessErr
 }
 
-func (client *fakeNtfyClient) AddToken(_ context.Context, userID string, appID string) (string, error) {
-	client.record("AddToken(%s,%s)", userID, appID)
+func (client *fakeNtfyClient) AddToken(_ context.Context, userID string, label string) (string, error) {
+	client.record("AddToken(%s,%s)", userID, label)
 	return client.addTokenValue, client.addTokenErr
 }
 
@@ -80,19 +80,28 @@ func newTestService(client *fakeNtfyClient) *Service {
 	})
 }
 
+// aliceEmail/aliceNtfyUser/aliceHash are the golden-vector-derived identity
+// used across these tests (see personhash.Hash("alice@example.com")).
+const (
+	aliceEmail    = "alice@example.com"
+	aliceHash     = "76gzqgp4byjl6dje"
+	aliceNtfyUser = "u_76gzqgp4byjl6dje"
+)
+
 func TestProvisionHappyPathCreatesUserGrantsAccessAndIssuesToken(t *testing.T) {
 	client := &fakeNtfyClient{addTokenValue: "tk_new_token"}
 	service := newTestService(client)
 
-	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", UserID: "alice"})
+	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail})
 	if err != nil {
 		t.Fatalf("Provision returned unexpected error: %v", err)
 	}
 
 	expectedResult := ProvisionResult{
-		UserID:       "alice",
+		UserID:       aliceNtfyUser,
 		AppID:        "urls4irl",
-		TopicPattern: "urls4irl-*",
+		PersonHash:   aliceHash,
+		TopicPattern: "urls4irl-" + aliceHash + "-*",
 		Token:        "tk_new_token",
 	}
 	if result != expectedResult {
@@ -100,10 +109,10 @@ func TestProvisionHappyPathCreatesUserGrantsAccessAndIssuesToken(t *testing.T) {
 	}
 
 	expectedInvocations := strings.Join([]string{
-		"AddUser(alice,pw=generated-pw)",
-		"GrantAccess(alice,urls4irl)",
-		"ListTokens(alice)",
-		"AddToken(alice,urls4irl)",
+		fmt.Sprintf("AddUser(%s,pw=generated-pw)", aliceNtfyUser),
+		fmt.Sprintf("GrantAccess(%s,urls4irl-%s-*,ro)", aliceNtfyUser, aliceHash),
+		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
+		fmt.Sprintf("AddToken(%s,urls4irl)", aliceNtfyUser),
 	}, " | ")
 	if got := strings.Join(client.invocations, " | "); got != expectedInvocations {
 		t.Fatalf("invocations = %s, expected %s", got, expectedInvocations)
@@ -121,24 +130,46 @@ func TestProvisionRemovesOnlyStaleTokensForSameApp(t *testing.T) {
 	}
 	service := newTestService(client)
 
-	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", UserID: "alice"}); err != nil {
+	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail}); err != nil {
 		t.Fatalf("Provision returned unexpected error: %v", err)
 	}
 
 	joinedInvocations := strings.Join(client.invocations, " | ")
-	if !strings.Contains(joinedInvocations, "RemoveToken(alice,tk_stale_urls4irl)") {
+	if !strings.Contains(joinedInvocations, fmt.Sprintf("RemoveToken(%s,tk_stale_urls4irl)", aliceNtfyUser)) {
 		t.Fatalf("stale same-app token not removed: %s", joinedInvocations)
 	}
-	if strings.Contains(joinedInvocations, "RemoveToken(alice,tk_other_app)") {
+	if strings.Contains(joinedInvocations, "RemoveToken("+aliceNtfyUser+",tk_other_app)") {
 		t.Fatalf("other app's token must not be removed: %s", joinedInvocations)
 	}
-	if strings.Contains(joinedInvocations, "RemoveToken(alice,tk_unlabeled)") {
+	if strings.Contains(joinedInvocations, "RemoveToken("+aliceNtfyUser+",tk_unlabeled)") {
 		t.Fatalf("unlabeled token must not be removed: %s", joinedInvocations)
+	}
+}
+
+func TestProvisionToleratesExistingUser(t *testing.T) {
+	client := &fakeNtfyClient{
+		addUserErr:    fmt.Errorf("ntfy user: %w: user %s already exists", ntfycli.ErrAlreadyExists, aliceNtfyUser),
+		addTokenValue: "tk_second_app",
+	}
+	service := newTestService(client)
+
+	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "chores4irl", AppUserID: "app-side-id", Email: aliceEmail})
+	if err != nil {
+		t.Fatalf("Provision must tolerate an existing user, got: %v", err)
+	}
+	if result.Token != "tk_second_app" {
+		t.Fatalf("token = %q, expected tk_second_app", result.Token)
+	}
+	if got := strings.Join(client.invocations, " | "); !strings.Contains(got, fmt.Sprintf("GrantAccess(%s,chores4irl-%s-*,ro)", aliceNtfyUser, aliceHash)) {
+		t.Fatalf("provisioning did not continue past existing user: %s", got)
 	}
 }
 
 func TestDeprovisionResetsAccessAndRemovesAppTokens(t *testing.T) {
 	client := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: []string{"chores4irl-" + aliceHash + "-*"}},
+		},
 		listTokens: []ntfycli.Token{
 			{Value: "tk_urls4irl_token", Label: "urls4irl"},
 			{Value: "tk_other_app", Label: "chores4irl"},
@@ -146,17 +177,68 @@ func TestDeprovisionResetsAccessAndRemovesAppTokens(t *testing.T) {
 	}
 	service := newTestService(client)
 
-	if err := service.Deprovision(context.Background(), ProvisionRequest{AppID: "urls4irl", UserID: "alice"}); err != nil {
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); err != nil {
 		t.Fatalf("Deprovision returned unexpected error: %v", err)
 	}
 
 	expectedInvocations := strings.Join([]string{
-		"ResetAccess(alice,urls4irl)",
-		"ListTokens(alice)",
-		"RemoveToken(alice,tk_urls4irl_token)",
+		fmt.Sprintf("ResetAccess(%s,urls4irl-%s-*)", aliceNtfyUser, aliceHash),
+		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
+		fmt.Sprintf("RemoveToken(%s,tk_urls4irl_token)", aliceNtfyUser),
+		"ListUsers()",
 	}, " | ")
 	if got := strings.Join(client.invocations, " | "); got != expectedInvocations {
 		t.Fatalf("invocations = %s, expected %s", got, expectedInvocations)
+	}
+}
+
+func TestDeprovisionDeletesUserWhenNoTopicPatternsRemain(t *testing.T) {
+	client := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: nil},
+		},
+	}
+	service := newTestService(client)
+
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); err != nil {
+		t.Fatalf("Deprovision returned unexpected error: %v", err)
+	}
+
+	joinedInvocations := strings.Join(client.invocations, " | ")
+	if !strings.Contains(joinedInvocations, fmt.Sprintf("DeleteUser(%s)", aliceNtfyUser)) {
+		t.Fatalf("expected DeleteUser to be called when no topic patterns remain: %s", joinedInvocations)
+	}
+}
+
+func TestDeprovisionKeepsUserWhenTopicPatternsRemain(t *testing.T) {
+	client := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: []string{"chores4irl-" + aliceHash + "-*"}},
+		},
+	}
+	service := newTestService(client)
+
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); err != nil {
+		t.Fatalf("Deprovision returned unexpected error: %v", err)
+	}
+
+	joinedInvocations := strings.Join(client.invocations, " | ")
+	if strings.Contains(joinedInvocations, "DeleteUser(") {
+		t.Fatalf("must not delete user while topic patterns remain: %s", joinedInvocations)
+	}
+}
+
+func TestDeprovisionDoesNothingWhenUserAbsentFromList(t *testing.T) {
+	client := &fakeNtfyClient{listUsers: []ntfycli.User{}}
+	service := newTestService(client)
+
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); err != nil {
+		t.Fatalf("Deprovision returned unexpected error: %v", err)
+	}
+
+	joinedInvocations := strings.Join(client.invocations, " | ")
+	if strings.Contains(joinedInvocations, "DeleteUser(") {
+		t.Fatalf("must treat an already-absent user as already gone, not call DeleteUser: %s", joinedInvocations)
 	}
 }
 
@@ -166,16 +248,17 @@ func TestDeprovisionPropagatesUnknownUser(t *testing.T) {
 	}
 	service := newTestService(client)
 
-	err := service.Deprovision(context.Background(), ProvisionRequest{AppID: "urls4irl", UserID: "ghost"})
+	err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: "u_ghost0000000000"})
 	if !errors.Is(err, ntfycli.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound to propagate, got: %v", err)
 	}
 }
 
-func TestListUsersDerivesAppsFromWildcardPatterns(t *testing.T) {
+func TestListUsersDerivesAppsFromScopedAndWildcardPatterns(t *testing.T) {
 	client := &fakeNtfyClient{
 		listUsers: []ntfycli.User{
-			{Name: "alice", TopicPatterns: []string{"urls4irl-*", "chores4irl-*", "custom-topic"}},
+			{Name: aliceNtfyUser, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "chores4irl-" + aliceHash + "-*", "custom-topic"}},
+			{Name: "legacy-app-wide-user", TopicPatterns: []string{"urls4irl-*"}},
 			{Name: "bob", TopicPatterns: nil},
 		},
 	}
@@ -187,7 +270,8 @@ func TestListUsersDerivesAppsFromWildcardPatterns(t *testing.T) {
 	}
 
 	expected := []UserSummary{
-		{UserID: "alice", Apps: []string{"urls4irl", "chores4irl"}, TopicPatterns: []string{"urls4irl-*", "chores4irl-*", "custom-topic"}},
+		{UserID: aliceNtfyUser, Apps: []string{"urls4irl", "chores4irl"}, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "chores4irl-" + aliceHash + "-*", "custom-topic"}},
+		{UserID: "legacy-app-wide-user", Apps: []string{"urls4irl"}, TopicPatterns: []string{"urls4irl-*"}},
 		{UserID: "bob", Apps: []string{}, TopicPatterns: nil},
 	}
 	if !reflect.DeepEqual(users, expected) {
@@ -204,24 +288,5 @@ func TestDeleteUserDelegatesToClient(t *testing.T) {
 	}
 	if got := strings.Join(client.invocations, " | "); got != "DeleteUser(alice)" {
 		t.Fatalf("invocations = %s, expected DeleteUser(alice)", got)
-	}
-}
-
-func TestProvisionToleratesExistingUser(t *testing.T) {
-	client := &fakeNtfyClient{
-		addUserErr:    fmt.Errorf("ntfy user: %w: user alice already exists", ntfycli.ErrAlreadyExists),
-		addTokenValue: "tk_second_app",
-	}
-	service := newTestService(client)
-
-	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "chores4irl", UserID: "alice"})
-	if err != nil {
-		t.Fatalf("Provision must tolerate an existing user, got: %v", err)
-	}
-	if result.Token != "tk_second_app" {
-		t.Fatalf("token = %q, expected tk_second_app", result.Token)
-	}
-	if got := strings.Join(client.invocations, " | "); !strings.Contains(got, "GrantAccess(alice,chores4irl)") {
-		t.Fatalf("provisioning did not continue past existing user: %s", got)
 	}
 }

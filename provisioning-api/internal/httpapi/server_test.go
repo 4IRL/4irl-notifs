@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/provisioning"
 )
 
@@ -25,7 +26,7 @@ type fakeProvisioningService struct {
 	provisionCalls  []provisioning.ProvisionRequest
 
 	deprovisionErr   error
-	deprovisionCalls []provisioning.ProvisionRequest
+	deprovisionCalls []provisioning.DeprovisionRequest
 
 	listUsersResult []provisioning.UserSummary
 	listUsersErr    error
@@ -42,7 +43,7 @@ func (fake *fakeProvisioningService) Provision(_ context.Context, request provis
 }
 
 // Deprovision records the request and returns the preconfigured error.
-func (fake *fakeProvisioningService) Deprovision(_ context.Context, request provisioning.ProvisionRequest) error {
+func (fake *fakeProvisioningService) Deprovision(_ context.Context, request provisioning.DeprovisionRequest) error {
 	fake.deprovisionCalls = append(fake.deprovisionCalls, request)
 	return fake.deprovisionErr
 }
@@ -58,6 +59,14 @@ func (fake *fakeProvisioningService) DeleteUser(_ context.Context, userID string
 	fake.deleteUserCalls = append(fake.deleteUserCalls, userID)
 	return fake.deleteUserErr
 }
+
+// aliceEmail/aliceHash/aliceNtfyUser are the golden-vector-derived identity
+// used across these tests (see personhash.Hash("alice@example.com")).
+const (
+	aliceEmail    = "alice@example.com"
+	aliceHash     = "76gzqgp4byjl6dje"
+	aliceNtfyUser = "u_76gzqgp4byjl6dje"
+)
 
 // TestHealthzReturnsOK verifies GET /healthz responds 200 with body "ok" and
 // Content-Type text/plain.
@@ -81,19 +90,21 @@ func TestHealthzReturnsOK(testInstance *testing.T) {
 }
 
 // TestProvisionHappyPath verifies POST /v1/provision calls Service.Provision
-// with the decoded request and returns the result as JSON.
+// with the decoded request (including email) and returns the result as
+// JSON, including person_hash.
 func TestProvisionHappyPath(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{
 		provisionResult: provisioning.ProvisionResult{
-			UserID:       "alice",
+			UserID:       aliceNtfyUser,
 			AppID:        "myapp",
-			TopicPattern: "myapp-*",
+			PersonHash:   aliceHash,
+			TopicPattern: "myapp-" + aliceHash + "-*",
 			Token:        "tk_abc123",
 		},
 	}
 	server := NewServer(ServerConfig{Service: fakeService})
 
-	requestBody := strings.NewReader(`{"app_id":"myapp","user_id":"alice"}`)
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","user_id":"alice","email":%q}`, aliceEmail))
 	request := httptest.NewRequest(http.MethodPost, "/v1/provision", requestBody)
 	recorder := httptest.NewRecorder()
 
@@ -106,7 +117,7 @@ func TestProvisionHappyPath(testInstance *testing.T) {
 		testInstance.Fatalf("Content-Type = %q, want %q", contentType, "application/json")
 	}
 
-	wantCalls := []provisioning.ProvisionRequest{{AppID: "myapp", UserID: "alice"}}
+	wantCalls := []provisioning.ProvisionRequest{{AppID: "myapp", AppUserID: "alice", Email: aliceEmail}}
 	if len(fakeService.provisionCalls) != 1 || fakeService.provisionCalls[0] != wantCalls[0] {
 		testInstance.Fatalf("provisionCalls = %+v, want %+v", fakeService.provisionCalls, wantCalls)
 	}
@@ -116,9 +127,10 @@ func TestProvisionHappyPath(testInstance *testing.T) {
 		testInstance.Fatalf("failed to decode response body: %v", decodeErr)
 	}
 	wantBody := map[string]string{
-		"user_id":       "alice",
+		"user_id":       aliceNtfyUser,
 		"app_id":        "myapp",
-		"topic_pattern": "myapp-*",
+		"person_hash":   aliceHash,
+		"topic_pattern": "myapp-" + aliceHash + "-*",
 		"token":         "tk_abc123",
 	}
 	for key, wantValue := range wantBody {
@@ -128,13 +140,51 @@ func TestProvisionHappyPath(testInstance *testing.T) {
 	}
 }
 
-// TestDeprovisionHappyPath verifies POST /v1/deprovision calls
-// Service.Deprovision and returns a "removed" confirmation as JSON.
-func TestDeprovisionHappyPath(testInstance *testing.T) {
+// TestProvisionMissingOrInvalidEmailRejected verifies POST /v1/provision
+// rejects a missing or malformed email with 400 {"error":"invalid email"},
+// only after app_id and user_id have already passed validation.
+func TestProvisionMissingOrInvalidEmailRejected(testInstance *testing.T) {
+	testCases := []struct {
+		name  string
+		email string
+	}{
+		{name: "missing email", email: ""},
+		{name: "malformed email", email: "not-an-email"},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			fakeService := &fakeProvisioningService{}
+			server := NewServer(ServerConfig{Service: fakeService})
+
+			requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","user_id":"alice","email":%q}`, testCase.email))
+			request := httptest.NewRequest(http.MethodPost, "/v1/provision", requestBody)
+			recorder := httptest.NewRecorder()
+
+			server.Handler().ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				subTest.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+			}
+			wantBody := `{"error":"invalid email"}` + "\n"
+			if body := recorder.Body.String(); body != wantBody {
+				subTest.Fatalf("body = %q, want %q", body, wantBody)
+			}
+			if len(fakeService.provisionCalls) != 0 {
+				subTest.Fatalf("provisionCalls = %+v, want none (validation should short-circuit)", fakeService.provisionCalls)
+			}
+		})
+	}
+}
+
+// TestDeprovisionByEmailHappyPath verifies POST /v1/deprovision with an
+// email body resolves it to the derived ntfy user id and calls
+// Service.Deprovision with that id.
+func TestDeprovisionByEmailHappyPath(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
 	server := NewServer(ServerConfig{Service: fakeService})
 
-	requestBody := strings.NewReader(`{"app_id":"myapp","user_id":"alice"}`)
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","email":%q}`, aliceEmail))
 	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
 	recorder := httptest.NewRecorder()
 
@@ -144,7 +194,7 @@ func TestDeprovisionHappyPath(testInstance *testing.T) {
 		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 
-	wantCalls := []provisioning.ProvisionRequest{{AppID: "myapp", UserID: "alice"}}
+	wantCalls := []provisioning.DeprovisionRequest{{AppID: "myapp", NtfyUserID: aliceNtfyUser}}
 	if len(fakeService.deprovisionCalls) != 1 || fakeService.deprovisionCalls[0] != wantCalls[0] {
 		testInstance.Fatalf("deprovisionCalls = %+v, want %+v", fakeService.deprovisionCalls, wantCalls)
 	}
@@ -153,8 +203,127 @@ func TestDeprovisionHappyPath(testInstance *testing.T) {
 	if decodeErr := json.Unmarshal(recorder.Body.Bytes(), &responseBody); decodeErr != nil {
 		testInstance.Fatalf("failed to decode response body: %v", decodeErr)
 	}
-	if responseBody["user_id"] != "alice" || responseBody["app_id"] != "myapp" || responseBody["removed"] != true {
-		testInstance.Fatalf("response = %+v, want user_id=alice app_id=myapp removed=true", responseBody)
+	if responseBody["user_id"] != aliceNtfyUser || responseBody["app_id"] != "myapp" || responseBody["removed"] != true {
+		testInstance.Fatalf("response = %+v, want user_id=%s app_id=myapp removed=true", responseBody, aliceNtfyUser)
+	}
+}
+
+// TestDeprovisionByNtfyUserIDHappyPath verifies POST /v1/deprovision with a
+// user_id body (an already-derived ntfy user id) calls Service.Deprovision
+// with that id directly, without deriving it from an email.
+func TestDeprovisionByNtfyUserIDHappyPath(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","user_id":%q}`, aliceNtfyUser))
+	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	wantCalls := []provisioning.DeprovisionRequest{{AppID: "myapp", NtfyUserID: aliceNtfyUser}}
+	if len(fakeService.deprovisionCalls) != 1 || fakeService.deprovisionCalls[0] != wantCalls[0] {
+		testInstance.Fatalf("deprovisionCalls = %+v, want %+v", fakeService.deprovisionCalls, wantCalls)
+	}
+}
+
+// TestDeprovisionWithNeitherEmailNorUserIDRejected verifies POST
+// /v1/deprovision with neither email nor user_id set responds 400
+// {"error":"email or user_id required"} without calling Service.Deprovision.
+func TestDeprovisionWithNeitherEmailNorUserIDRejected(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(`{"app_id":"myapp"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	wantBody := `{"error":"email or user_id required"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+	if len(fakeService.deprovisionCalls) != 0 {
+		testInstance.Fatalf("deprovisionCalls = %+v, want none (validation should short-circuit)", fakeService.deprovisionCalls)
+	}
+}
+
+// TestDeprovisionInvalidEmailRejected verifies POST /v1/deprovision with a
+// malformed email responds 400 {"error":"invalid email"}.
+func TestDeprovisionInvalidEmailRejected(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(`{"app_id":"myapp","email":"not-an-email"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	wantBody := `{"error":"invalid email"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+	if len(fakeService.deprovisionCalls) != 0 {
+		testInstance.Fatalf("deprovisionCalls = %+v, want none (validation should short-circuit)", fakeService.deprovisionCalls)
+	}
+}
+
+// TestDeprovisionInvalidNtfyUserIDShapeRejected verifies POST
+// /v1/deprovision with a user_id that does not match the derived ntfy
+// username shape responds 400 {"error":"invalid user_id"}.
+func TestDeprovisionInvalidNtfyUserIDShapeRejected(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(`{"app_id":"myapp","user_id":"alice"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	wantBody := `{"error":"invalid user_id"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+	if len(fakeService.deprovisionCalls) != 0 {
+		testInstance.Fatalf("deprovisionCalls = %+v, want none (validation should short-circuit)", fakeService.deprovisionCalls)
+	}
+}
+
+// TestDeprovisionInvalidAppIDRejectedBeforeEmailOrUserID verifies app_id is
+// validated first on POST /v1/deprovision, before email/user_id presence is
+// even considered.
+func TestDeprovisionInvalidAppIDRejectedBeforeEmailOrUserID(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(`{"app_id":"my-app"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	wantBody := `{"error":"invalid app_id"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
 	}
 }
 
@@ -211,6 +380,27 @@ func TestDeleteUserHappyPath(testInstance *testing.T) {
 	}
 	if responseBody["user_id"] != "alice" || responseBody["deleted"] != true {
 		testInstance.Fatalf("response = %+v, want user_id=alice deleted=true", responseBody)
+	}
+}
+
+// TestDeleteUserAcceptsDerivedNtfyUserIDShape verifies DELETE
+// /v1/users/{user_id} still accepts a derived ntfy username shape
+// ("u_"+16-char hash), since validateUserID (unchanged) must accept any
+// ntfy username shape.
+func TestDeleteUserAcceptsDerivedNtfyUserIDShape(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	request := httptest.NewRequest(http.MethodDelete, "/v1/users/"+aliceNtfyUser, nil)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if len(fakeService.deleteUserCalls) != 1 || fakeService.deleteUserCalls[0] != aliceNtfyUser {
+		testInstance.Fatalf("deleteUserCalls = %+v, want [%s]", fakeService.deleteUserCalls, aliceNtfyUser)
 	}
 }
 
@@ -291,7 +481,7 @@ func TestValidationFailures(testInstance *testing.T) {
 			server := NewServer(ServerConfig{Service: fakeService})
 
 			var requestBodyBuffer bytes.Buffer
-			if encodeErr := json.NewEncoder(&requestBodyBuffer).Encode(provisionRequestBody{AppID: testCase.appID, UserID: testCase.userID}); encodeErr != nil {
+			if encodeErr := json.NewEncoder(&requestBodyBuffer).Encode(provisionRequestBody{AppID: testCase.appID, UserID: testCase.userID, Email: aliceEmail}); encodeErr != nil {
 				subTest.Fatalf("failed to encode request body: %v", encodeErr)
 			}
 
@@ -314,49 +504,6 @@ func TestValidationFailures(testInstance *testing.T) {
 	}
 }
 
-// TestDeprovisionValidatesAppIDAndUserID verifies POST /v1/deprovision
-// applies the same app_id/user_id validation as POST /v1/provision, since
-// both routes share the request JSON shape.
-func TestDeprovisionValidatesAppIDAndUserID(testInstance *testing.T) {
-	testCases := []struct {
-		name    string
-		appID   string
-		userID  string
-		wantMsg string
-	}{
-		{name: "invalid app_id", appID: "my-app", userID: "alice", wantMsg: "invalid app_id"},
-		{name: "invalid user_id", appID: "myapp", userID: "Alice", wantMsg: "invalid user_id"},
-	}
-
-	for _, testCase := range testCases {
-		testInstance.Run(testCase.name, func(subTest *testing.T) {
-			fakeService := &fakeProvisioningService{}
-			server := NewServer(ServerConfig{Service: fakeService})
-
-			var requestBodyBuffer bytes.Buffer
-			if encodeErr := json.NewEncoder(&requestBodyBuffer).Encode(provisionRequestBody{AppID: testCase.appID, UserID: testCase.userID}); encodeErr != nil {
-				subTest.Fatalf("failed to encode request body: %v", encodeErr)
-			}
-
-			request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", &requestBodyBuffer)
-			recorder := httptest.NewRecorder()
-
-			server.Handler().ServeHTTP(recorder, request)
-
-			if recorder.Code != http.StatusBadRequest {
-				subTest.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
-			}
-			wantBody := `{"error":"` + testCase.wantMsg + `"}` + "\n"
-			if body := recorder.Body.String(); body != wantBody {
-				subTest.Fatalf("body = %q, want %q", body, wantBody)
-			}
-			if len(fakeService.deprovisionCalls) != 0 {
-				subTest.Fatalf("deprovisionCalls = %+v, want none (validation should short-circuit)", fakeService.deprovisionCalls)
-			}
-		})
-	}
-}
-
 // TestDeprovisionNotFoundMapsTo404 verifies that when Service.Deprovision
 // returns an error wrapping ntfycli.ErrNotFound, the handler responds 404
 // with the fixed "user does not exist" message.
@@ -366,7 +513,7 @@ func TestDeprovisionNotFoundMapsTo404(testInstance *testing.T) {
 	}
 	server := NewServer(ServerConfig{Service: fakeService})
 
-	requestBody := strings.NewReader(`{"app_id":"myapp","user_id":"alice"}`)
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","email":%q}`, aliceEmail))
 	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
 	recorder := httptest.NewRecorder()
 
@@ -415,9 +562,10 @@ func TestGenericServiceErrorMapsTo500(testInstance *testing.T) {
 	testCases := []struct {
 		name  string
 		route string
+		body  string
 	}{
-		{name: "provision", route: "/v1/provision"},
-		{name: "deprovision", route: "/v1/deprovision"},
+		{name: "provision", route: "/v1/provision", body: fmt.Sprintf(`{"app_id":"myapp","user_id":"alice","email":%q}`, aliceEmail)},
+		{name: "deprovision", route: "/v1/deprovision", body: fmt.Sprintf(`{"app_id":"myapp","email":%q}`, aliceEmail)},
 	}
 
 	for _, testCase := range testCases {
@@ -430,7 +578,7 @@ func TestGenericServiceErrorMapsTo500(testInstance *testing.T) {
 			logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
 			server := NewServer(ServerConfig{Service: fakeService, Logger: logger})
 
-			requestBody := strings.NewReader(`{"app_id":"myapp","user_id":"alice"}`)
+			requestBody := strings.NewReader(testCase.body)
 			request := httptest.NewRequest(http.MethodPost, testCase.route, requestBody)
 			recorder := httptest.NewRecorder()
 
@@ -520,5 +668,17 @@ func TestDeleteUserInvalidPathUserIDRejected(testInstance *testing.T) {
 	}
 	if len(fakeService.deleteUserCalls) != 0 {
 		testInstance.Fatalf("deleteUserCalls = %+v, want none (validation should short-circuit)", fakeService.deleteUserCalls)
+	}
+}
+
+// TestGoldenVectorHashMatchesPersonhashPackage sanity-checks that this
+// file's aliceHash/aliceNtfyUser constants stay in sync with the
+// personhash package's own golden vector.
+func TestGoldenVectorHashMatchesPersonhashPackage(testInstance *testing.T) {
+	if got := personhash.Hash(aliceEmail); got != aliceHash {
+		testInstance.Fatalf("personhash.Hash(%q) = %q, want %q (test constants are stale)", aliceEmail, got, aliceHash)
+	}
+	if got := personhash.NtfyUser(aliceEmail); got != aliceNtfyUser {
+		testInstance.Fatalf("personhash.NtfyUser(%q) = %q, want %q (test constants are stale)", aliceEmail, got, aliceNtfyUser)
 	}
 }

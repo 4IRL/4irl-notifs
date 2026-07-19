@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
 )
 
 const (
@@ -45,6 +47,7 @@ func ntfyURL() string {
 type provisionResponse struct {
 	UserID       string `json:"user_id"`
 	AppID        string `json:"app_id"`
+	PersonHash   string `json:"person_hash"`
 	TopicPattern string `json:"topic_pattern"`
 	Token        string `json:"token"`
 }
@@ -90,6 +93,25 @@ func closeBody(t *testing.T, response *http.Response) {
 	if closeErr := response.Body.Close(); closeErr != nil {
 		t.Fatalf("closing response body: %v", closeErr)
 	}
+}
+
+// readStatus issues a poll-all GET against a topic with a bearer token and
+// returns the ntfy HTTP status (200 authorized to read, 403/401 denied).
+func readStatus(t *testing.T, topic string, token string) int {
+	t.Helper()
+	request, buildErr := http.NewRequest(http.MethodGet, ntfyURL()+"/"+topic+"/json?poll=1&since=all", nil)
+	if buildErr != nil {
+		t.Fatalf("building read request: %v", buildErr)
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, readErr := http.DefaultClient.Do(request)
+	if readErr != nil {
+		t.Fatalf("reading %s: %v", topic, readErr)
+	}
+	defer closeBody(t, response)
+	return response.StatusCode
 }
 
 // publishStatus publishes a message to a topic with a bearer token and returns
@@ -142,13 +164,15 @@ func waitForHealth(t *testing.T) {
 	t.Fatalf("provisioning-api health never became ready at %s", apiBaseURL())
 }
 
-func TestProvisionGrantsScopedPublishAccess(t *testing.T) {
+func TestProvisionGrantsScopedReadOnlyAccess(t *testing.T) {
 	waitForHealth(t)
-	const userID = "itest_scope_user"
+	const email = "itest-scope@example.com"
 	const appID = "itestscope"
-	t.Cleanup(func() { deleteUser(t, userID) })
+	personHash := personhash.Hash(email)
+	ntfyUserID := personhash.NtfyUser(email)
+	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
 
-	status, body := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": userID})
+	status, body := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": "app-side-id", "email": email})
 	if status != http.StatusOK {
 		t.Fatalf("provision status = %d, body = %s", status, body)
 	}
@@ -159,31 +183,45 @@ func TestProvisionGrantsScopedPublishAccess(t *testing.T) {
 	if provisioned.Token == "" {
 		t.Fatal("provision returned an empty token")
 	}
-	if provisioned.TopicPattern != appID+"-*" {
-		t.Fatalf("topic_pattern = %q, expected %q", provisioned.TopicPattern, appID+"-*")
+	if provisioned.UserID != ntfyUserID {
+		t.Fatalf("user_id = %q, expected %q", provisioned.UserID, ntfyUserID)
+	}
+	wantTopicPattern := appID + "-" + personHash + "-*"
+	if provisioned.TopicPattern != wantTopicPattern {
+		t.Fatalf("topic_pattern = %q, expected %q", provisioned.TopicPattern, wantTopicPattern)
 	}
 
-	if inNamespace := publishStatus(t, appID+"-alerts", provisioned.Token); inNamespace != http.StatusOK {
-		t.Fatalf("in-namespace publish status = %d, expected 200", inNamespace)
+	ownTopic := appID + "-" + personHash + "-test"
+	if inNamespace := readStatus(t, ownTopic, provisioned.Token); inNamespace != http.StatusOK {
+		t.Fatalf("in-namespace read status = %d, expected 200", inNamespace)
 	}
-	if crossNamespace := publishStatus(t, "otherapp-alerts", provisioned.Token); crossNamespace != http.StatusForbidden {
-		t.Fatalf("cross-namespace publish status = %d, expected 403", crossNamespace)
+
+	otherPersonHash := personhash.Hash("someone-else@example.com")
+	crossTopic := appID + "-" + otherPersonHash + "-test"
+	if crossPerson := readStatus(t, crossTopic, provisioned.Token); crossPerson != http.StatusForbidden {
+		t.Fatalf("cross-person read status = %d, expected 403", crossPerson)
+	}
+
+	if published := publishStatus(t, ownTopic, provisioned.Token); published != http.StatusForbidden {
+		t.Fatalf("publish with read-only token status = %d, expected 403", published)
 	}
 }
 
 func TestReprovisionRotatesToken(t *testing.T) {
 	waitForHealth(t)
-	const userID = "itest_rotate_user"
+	const email = "itest-rotate@example.com"
 	const appID = "itestrotate"
-	t.Cleanup(func() { deleteUser(t, userID) })
+	personHash := personhash.Hash(email)
+	ntfyUserID := personhash.NtfyUser(email)
+	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
 
-	_, firstBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": userID})
+	_, firstBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": "app-side-id", "email": email})
 	var first provisionResponse
 	if err := json.Unmarshal(firstBody, &first); err != nil {
 		t.Fatalf("unmarshaling first provision: %v", err)
 	}
 
-	_, secondBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": userID})
+	_, secondBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": "app-side-id", "email": email})
 	var second provisionResponse
 	if err := json.Unmarshal(secondBody, &second); err != nil {
 		t.Fatalf("unmarshaling second provision: %v", err)
@@ -192,35 +230,64 @@ func TestReprovisionRotatesToken(t *testing.T) {
 	if first.Token == second.Token {
 		t.Fatal("re-provision returned the same token; expected rotation")
 	}
-	if oldToken := publishStatus(t, appID+"-alerts", first.Token); oldToken == http.StatusOK {
-		t.Fatalf("old token still authorized (status %d); expected it revoked", oldToken)
+
+	ownTopic := appID + "-" + personHash + "-test"
+	if oldToken := readStatus(t, ownTopic, first.Token); oldToken == http.StatusOK {
+		t.Fatalf("old token still authorized to read (status %d); expected it revoked", oldToken)
 	}
-	if newToken := publishStatus(t, appID+"-alerts", second.Token); newToken != http.StatusOK {
+	if newToken := readStatus(t, ownTopic, second.Token); newToken != http.StatusOK {
 		t.Fatalf("new token status = %d, expected 200", newToken)
 	}
 }
 
-func TestDeprovisionRevokesAccessButKeepsUser(t *testing.T) {
+func TestDeprovisionLeavesTheWholeFamilyOnLastApp(t *testing.T) {
 	waitForHealth(t)
-	const userID = "itest_deprov_user"
-	const appID = "itestdeprov"
-	t.Cleanup(func() { deleteUser(t, userID) })
+	const email = "itest-deprov@example.com"
+	const app1 = "itestdeprovone"
+	const app2 = "itestdeprovtwo"
+	personHash := personhash.Hash(email)
+	ntfyUserID := personhash.NtfyUser(email)
+	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
 
-	_, provisionBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": userID})
-	var provisioned provisionResponse
-	if err := json.Unmarshal(provisionBody, &provisioned); err != nil {
-		t.Fatalf("unmarshaling provision: %v", err)
+	_, provision1Body := postJSON(t, "/v1/provision", map[string]string{"app_id": app1, "user_id": "app-side-id", "email": email})
+	var provisioned1 provisionResponse
+	if err := json.Unmarshal(provision1Body, &provisioned1); err != nil {
+		t.Fatalf("unmarshaling app1 provision: %v", err)
 	}
-
-	status, deprovBody := postJSON(t, "/v1/deprovision", map[string]string{"app_id": appID, "user_id": userID})
+	status, provision2Body := postJSON(t, "/v1/provision", map[string]string{"app_id": app2, "user_id": "app-side-id", "email": email})
 	if status != http.StatusOK {
-		t.Fatalf("deprovision status = %d, body = %s", status, deprovBody)
+		t.Fatalf("app2 provision status = %d, body = %s", status, provision2Body)
 	}
 
-	if revoked := publishStatus(t, appID+"-alerts", provisioned.Token); revoked == http.StatusOK {
-		t.Fatalf("token still authorized after deprovision (status %d)", revoked)
+	// Deprovision from app1: user must remain (still provisioned into app2).
+	status, deprov1Body := postJSON(t, "/v1/deprovision", map[string]string{"app_id": app1, "email": email})
+	if status != http.StatusOK {
+		t.Fatalf("app1 deprovision status = %d, body = %s", status, deprov1Body)
 	}
 
+	ownTopic1 := app1 + "-" + personHash + "-test"
+	if revoked := readStatus(t, ownTopic1, provisioned1.Token); revoked == http.StatusOK {
+		t.Fatalf("app1 token still authorized to read after deprovision (status %d)", revoked)
+	}
+
+	if !userIsListed(t, ntfyUserID) {
+		t.Fatal("user was removed after deprovisioning from app1; expected it retained (still provisioned into app2)")
+	}
+
+	// Deprovision from app2 (the last app): user must be gone entirely.
+	status, deprov2Body := postJSON(t, "/v1/deprovision", map[string]string{"app_id": app2, "email": email})
+	if status != http.StatusOK {
+		t.Fatalf("app2 deprovision status = %d, body = %s", status, deprov2Body)
+	}
+
+	if userIsListed(t, ntfyUserID) {
+		t.Fatal("user still listed after deprovisioning from their last app; expected the whole family left")
+	}
+}
+
+// userIsListed reports whether userID appears in GET /v1/users.
+func userIsListed(t *testing.T, userID string) bool {
+	t.Helper()
 	response, getErr := http.Get(apiBaseURL() + "/v1/users")
 	if getErr != nil {
 		t.Fatalf("GET /v1/users: %v", getErr)
@@ -230,20 +297,17 @@ func TestDeprovisionRevokesAccessButKeepsUser(t *testing.T) {
 	if err := json.Unmarshal(readBody(t, response), &users); err != nil {
 		t.Fatalf("unmarshaling users: %v", err)
 	}
-	found := false
 	for _, user := range users.Users {
 		if user.UserID == userID {
-			found = true
+			return true
 		}
 	}
-	if !found {
-		t.Fatal("user was removed by deprovision; expected it retained")
-	}
+	return false
 }
 
 func TestDeleteUnknownUserReturns404(t *testing.T) {
 	waitForHealth(t)
-	request, buildErr := http.NewRequest(http.MethodDelete, apiBaseURL()+"/v1/users/itest_ghost_user", nil)
+	request, buildErr := http.NewRequest(http.MethodDelete, apiBaseURL()+"/v1/users/u_00000000000000ge", nil)
 	if buildErr != nil {
 		t.Fatalf("building request: %v", buildErr)
 	}
@@ -262,21 +326,25 @@ func TestConcurrentProvisionsAreSerializedUnderLoad(t *testing.T) {
 	const appID = "itestconc"
 	const userCount = 8
 
+	emails := make([]string, userCount)
+	for userIndex := 0; userIndex < userCount; userIndex++ {
+		emails[userIndex] = fmt.Sprintf("itest-conc-user-%d@example.com", userIndex)
+	}
+
 	var waitGroup sync.WaitGroup
 	statuses := make([]int, userCount)
 	for userIndex := 0; userIndex < userCount; userIndex++ {
 		waitGroup.Add(1)
 		go func(index int) {
 			defer waitGroup.Done()
-			userID := fmt.Sprintf("itest_conc_user_%d", index)
-			status, _ := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": userID})
+			status, _ := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": "app-side-id", "email": emails[index]})
 			statuses[index] = status
 		}(userIndex)
 	}
 	waitGroup.Wait()
 
-	for userIndex := 0; userIndex < userCount; userIndex++ {
-		deleteUser(t, fmt.Sprintf("itest_conc_user_%d", userIndex))
+	for _, email := range emails {
+		deleteUser(t, personhash.NtfyUser(email))
 	}
 	for userIndex, status := range statuses {
 		if status != http.StatusOK {

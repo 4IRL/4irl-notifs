@@ -12,9 +12,10 @@ import { strings } from './strings';
 function buildFakeClient(overrides: Partial<ApiClient> = {}): ApiClient {
   return {
     provision: vi.fn().mockResolvedValue({
-      userId: 'alice',
+      userId: 'u_abcdefgh23456777',
       appId: 'urls4irl',
-      topicPattern: 'urls4irl-*',
+      personHash: 'abcdefgh23456777',
+      topicPattern: 'urls4irl-abcdefgh23456777-*',
       token: 'tk_generated',
     }),
     deprovision: vi.fn().mockResolvedValue(undefined),
@@ -40,15 +41,17 @@ describe('App', () => {
 
   it('loads and lists users on mount', async () => {
     const client = buildFakeClient({
-      listUsers: vi
-        .fn()
-        .mockResolvedValue([
-          { userId: 'alice', apps: ['urls4irl'], topicPatterns: ['urls4irl-*'] },
-        ]),
+      listUsers: vi.fn().mockResolvedValue([
+        {
+          userId: 'u_abcdefgh23456777',
+          apps: ['urls4irl'],
+          topicPatterns: ['urls4irl-abcdefgh23456777-*'],
+        },
+      ]),
     });
     render(<App client={client} />);
 
-    expect(await screen.findByText('alice')).toBeInTheDocument();
+    expect(await screen.findByText('u_abcdefgh23456777')).toBeInTheDocument();
     expect(client.listUsers).toHaveBeenCalled();
   });
 
@@ -56,17 +59,28 @@ describe('App', () => {
     const listUsers = vi
       .fn()
       .mockResolvedValueOnce([])
-      .mockResolvedValue([{ userId: 'alice', apps: ['urls4irl'], topicPatterns: ['urls4irl-*'] }]);
+      .mockResolvedValue([
+        {
+          userId: 'u_abcdefgh23456777',
+          apps: ['urls4irl'],
+          topicPatterns: ['urls4irl-abcdefgh23456777-*'],
+        },
+      ]);
     const client = buildFakeClient({ listUsers });
     render(<App client={client} />);
 
     await userEvent.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
     await userEvent.type(screen.getByLabelText(strings.userIdLabel), 'alice');
+    await userEvent.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await userEvent.click(screen.getByRole('button', { name: strings.provisionAction }));
 
     expect(await screen.findByText('tk_generated')).toBeInTheDocument();
     await waitFor(() =>
-      expect(client.provision).toHaveBeenCalledWith({ appId: 'urls4irl', userId: 'alice' }),
+      expect(client.provision).toHaveBeenCalledWith({
+        appId: 'urls4irl',
+        userId: 'alice',
+        email: 'alice@example.com',
+      }),
     );
     // list refreshed: mount call + post-provision refresh
     await waitFor(() => expect(listUsers.mock.calls.length).toBeGreaterThanOrEqual(2));
@@ -75,50 +89,60 @@ describe('App', () => {
   it('deleting a user calls the client and refreshes', async () => {
     const listUsers = vi
       .fn()
-      .mockResolvedValueOnce([{ userId: 'alice', apps: [], topicPatterns: [] }])
+      .mockResolvedValueOnce([{ userId: 'u_abcdefgh23456777', apps: [], topicPatterns: [] }])
       .mockResolvedValue([]);
     const client = buildFakeClient({ listUsers });
     render(<App client={client} />);
 
-    const row = (await screen.findByText('alice')).closest('tr');
+    const row = (await screen.findByText('u_abcdefgh23456777')).closest('tr');
     if (row === null) {
       throw new Error('user row not found');
     }
     await userEvent.click(
-      within(row).getByRole('button', { name: `${strings.deleteAction} alice` }),
+      within(row).getByRole('button', { name: `${strings.deleteAction} u_abcdefgh23456777` }),
     );
 
-    await waitFor(() => expect(client.deleteUser).toHaveBeenCalledWith({ userId: 'alice' }));
+    await waitFor(() =>
+      expect(client.deleteUser).toHaveBeenCalledWith({ userId: 'u_abcdefgh23456777' }),
+    );
   });
 
   it('shows the ApiError message when deleting a user fails', async () => {
-    const listUsers = vi.fn().mockResolvedValue([{ userId: 'alice', apps: [], topicPatterns: [] }]);
+    const listUsers = vi
+      .fn()
+      .mockResolvedValue([{ userId: 'u_abcdefgh23456777', apps: [], topicPatterns: [] }]);
     const deleteUser = vi
       .fn()
-      .mockRejectedValue(new ApiError({ status: 404, message: 'user alice does not exist' }));
+      .mockRejectedValue(
+        new ApiError({ status: 404, message: 'user u_abcdefgh23456777 does not exist' }),
+      );
     const client = buildFakeClient({ listUsers, deleteUser });
     render(<App client={client} />);
 
-    const row = (await screen.findByText('alice')).closest('tr');
+    const row = (await screen.findByText('u_abcdefgh23456777')).closest('tr');
     if (row === null) {
       throw new Error('user row not found');
     }
     await userEvent.click(
-      within(row).getByRole('button', { name: `${strings.deleteAction} alice` }),
+      within(row).getByRole('button', { name: `${strings.deleteAction} u_abcdefgh23456777` }),
     );
 
-    expect(await screen.findByText('user alice does not exist')).toBeInTheDocument();
+    expect(await screen.findByText('user u_abcdefgh23456777 does not exist')).toBeInTheDocument();
   });
 
   it('shows the generic error message when a deprovision fails with a non-ApiError', async () => {
-    const listUsers = vi
-      .fn()
-      .mockResolvedValue([{ userId: 'alice', apps: ['urls4irl'], topicPatterns: ['urls4irl-*'] }]);
+    const listUsers = vi.fn().mockResolvedValue([
+      {
+        userId: 'u_abcdefgh23456777',
+        apps: ['urls4irl'],
+        topicPatterns: ['urls4irl-abcdefgh23456777-*'],
+      },
+    ]);
     const deprovision = vi.fn().mockRejectedValue(new Error('network down'));
     const client = buildFakeClient({ listUsers, deprovision });
     render(<App client={client} />);
 
-    const row = (await screen.findByText('alice')).closest('tr');
+    const row = (await screen.findByText('u_abcdefgh23456777')).closest('tr');
     if (row === null) {
       throw new Error('user row not found');
     }
@@ -138,9 +162,13 @@ describe('App', () => {
   });
 
   it('clears the action error once a later action succeeds', async () => {
-    const listUsers = vi
-      .fn()
-      .mockResolvedValue([{ userId: 'alice', apps: ['urls4irl'], topicPatterns: ['urls4irl-*'] }]);
+    const listUsers = vi.fn().mockResolvedValue([
+      {
+        userId: 'u_abcdefgh23456777',
+        apps: ['urls4irl'],
+        topicPatterns: ['urls4irl-abcdefgh23456777-*'],
+      },
+    ]);
     const deprovision = vi
       .fn()
       .mockRejectedValueOnce(new ApiError({ status: 500, message: 'ntfy CLI failed' }))
@@ -148,7 +176,7 @@ describe('App', () => {
     const client = buildFakeClient({ listUsers, deprovision });
     render(<App client={client} />);
 
-    const row = (await screen.findByText('alice')).closest('tr');
+    const row = (await screen.findByText('u_abcdefgh23456777')).closest('tr');
     if (row === null) {
       throw new Error('user row not found');
     }

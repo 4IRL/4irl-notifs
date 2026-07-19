@@ -11,18 +11,20 @@ import (
 	"net/http"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/provisioning"
 )
 
 // ProvisioningService is the subset of provisioning.Service the HTTP layer
 // depends on, so handlers can be tested against a fake.
 type ProvisioningService interface {
-	// Provision creates (or reuses) a user, grants the app's topic access,
-	// and returns a fresh app-labeled token.
+	// Provision creates (or reuses) the person's global ntfy user, grants
+	// the app's scoped topic access, and returns a fresh app-labeled token.
 	Provision(ctx context.Context, request provisioning.ProvisionRequest) (provisioning.ProvisionResult, error)
 	// Deprovision revokes the app's topic access and removes the app's
-	// tokens for the user.
-	Deprovision(ctx context.Context, request provisioning.ProvisionRequest) error
+	// tokens for the ntfy user, deleting the user entirely if no topic
+	// grants remain.
+	Deprovision(ctx context.Context, request provisioning.DeprovisionRequest) error
 	// ListUsers returns every provisioned user with their derived apps and
 	// raw topic patterns.
 	ListUsers(ctx context.Context) ([]provisioning.UserSummary, error)
@@ -85,16 +87,21 @@ func (server *Server) handleHealthz(responseWriter http.ResponseWriter, request 
 }
 
 // provisionRequestBody is the JSON body shared by /v1/provision and
-// /v1/deprovision.
+// /v1/deprovision. For /v1/provision, UserID is the calling app's own
+// user id and Email is required. For /v1/deprovision, both Email and
+// UserID are optional — Email resolves to the derived ntfy user id, or
+// UserID is taken as an already-derived ntfy user id directly.
 type provisionRequestBody struct {
 	AppID  string `json:"app_id"`
 	UserID string `json:"user_id"`
+	Email  string `json:"email"`
 }
 
 // provisionResponseBody is the JSON response for a successful provision.
 type provisionResponseBody struct {
 	UserID       string `json:"user_id"`
 	AppID        string `json:"app_id"`
+	PersonHash   string `json:"person_hash"`
 	TopicPattern string `json:"topic_pattern"`
 	Token        string `json:"token"`
 }
@@ -128,8 +135,9 @@ func (server *Server) handleProvision(responseWriter http.ResponseWriter, reques
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	// app_id is validated before user_id: when both are invalid, the
-	// caller sees the app_id error first (see validation.go).
+	// app_id is validated before user_id, and user_id before email: when
+	// multiple fields are invalid, the caller sees the earliest one first
+	// (see validation.go).
 	if !validateAppID(requestBody.AppID) {
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
 		return
@@ -138,10 +146,15 @@ func (server *Server) handleProvision(responseWriter http.ResponseWriter, reques
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid user_id"})
 		return
 	}
+	if !validateEmail(requestBody.Email) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid email"})
+		return
+	}
 
 	result, provisionErr := server.service.Provision(request.Context(), provisioning.ProvisionRequest{
-		AppID:  requestBody.AppID,
-		UserID: requestBody.UserID,
+		AppID:     requestBody.AppID,
+		AppUserID: requestBody.UserID,
+		Email:     requestBody.Email,
 	})
 	if provisionErr != nil {
 		server.writeServiceError(responseWriter, request, provisionErr)
@@ -151,6 +164,7 @@ func (server *Server) handleProvision(responseWriter http.ResponseWriter, reques
 	writeJSON(responseWriter, http.StatusOK, provisionResponseBody{
 		UserID:       result.UserID,
 		AppID:        result.AppID,
+		PersonHash:   result.PersonHash,
 		TopicPattern: result.TopicPattern,
 		Token:        result.Token,
 	})
@@ -163,8 +177,9 @@ type deprovisionResponseBody struct {
 	Removed bool   `json:"removed"`
 }
 
-// handleDeprovision decodes the request body and delegates to
-// Service.Deprovision, confirming removal as JSON.
+// handleDeprovision decodes the request body, resolves the target ntfy user
+// id from either an email or an already-derived ntfy user_id, and delegates
+// to Service.Deprovision, confirming removal as JSON.
 func (server *Server) handleDeprovision(responseWriter http.ResponseWriter, request *http.Request) {
 	var requestBody provisionRequestBody
 	if decodeErr := json.NewDecoder(request.Body).Decode(&requestBody); decodeErr != nil {
@@ -175,14 +190,29 @@ func (server *Server) handleDeprovision(responseWriter http.ResponseWriter, requ
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
 		return
 	}
-	if !validateUserID(requestBody.UserID) {
-		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid user_id"})
+
+	var ntfyUserID string
+	switch {
+	case requestBody.Email != "":
+		if !validateEmail(requestBody.Email) {
+			writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid email"})
+			return
+		}
+		ntfyUserID = personhash.NtfyUser(requestBody.Email)
+	case requestBody.UserID != "":
+		if !validateNtfyUserID(requestBody.UserID) {
+			writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid user_id"})
+			return
+		}
+		ntfyUserID = requestBody.UserID
+	default:
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "email or user_id required"})
 		return
 	}
 
-	deprovisionErr := server.service.Deprovision(request.Context(), provisioning.ProvisionRequest{
-		AppID:  requestBody.AppID,
-		UserID: requestBody.UserID,
+	deprovisionErr := server.service.Deprovision(request.Context(), provisioning.DeprovisionRequest{
+		AppID:      requestBody.AppID,
+		NtfyUserID: ntfyUserID,
 	})
 	if deprovisionErr != nil {
 		server.writeServiceError(responseWriter, request, deprovisionErr)
@@ -190,7 +220,7 @@ func (server *Server) handleDeprovision(responseWriter http.ResponseWriter, requ
 	}
 
 	writeJSON(responseWriter, http.StatusOK, deprovisionResponseBody{
-		UserID:  requestBody.UserID,
+		UserID:  ntfyUserID,
 		AppID:   requestBody.AppID,
 		Removed: true,
 	})

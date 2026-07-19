@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { ApiError } from './api/client';
-import type { ApiClient, AppUserPair, ProvisionResult, UserSummary } from './api/client';
+import type {
+  ApiClient,
+  AppUserPair,
+  ProvisionParams,
+  ProvisionResult,
+  UserSummary,
+} from './api/client';
 import { ProvisionForm } from './components/ProvisionForm';
 import { UsersTable } from './components/UsersTable';
 import { strings } from './strings';
@@ -48,8 +54,8 @@ function App({ client }: AppProps) {
   }, [refreshUsers]);
 
   const handleProvision = useCallback(
-    async (pair: AppUserPair): Promise<ProvisionResult> => {
-      const result = await client.provision(pair);
+    async (params: ProvisionParams): Promise<ProvisionResult> => {
+      const result = await client.provision(params);
       await refreshUsers();
       return result;
     },

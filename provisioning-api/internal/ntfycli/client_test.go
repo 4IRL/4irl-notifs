@@ -256,6 +256,7 @@ func TestAddTokenParsesTokenFromStdout(t *testing.T) {
 			if got := strings.Join(runner.calls[0].args, " "); got != "token add --label urls4irl alice" {
 				t.Fatalf("unexpected args: %q", got)
 			}
+
 		})
 	}
 }
@@ -325,14 +326,18 @@ func TestPassThroughMethodsBuildExpectedInvocations(t *testing.T) {
 			expectedArgs: "user del alice",
 		},
 		{
-			name:         "GrantAccess",
-			invoke:       func(client *Client) error { return client.GrantAccess(context.Background(), "alice", "urls4irl") },
-			expectedArgs: "access alice urls4irl-* rw",
+			name: "GrantAccess",
+			invoke: func(client *Client) error {
+				return client.GrantAccess(context.Background(), "alice", "urls4irl-76gzqgp4byjl6dje-*", PermissionReadOnly)
+			},
+			expectedArgs: "access alice urls4irl-76gzqgp4byjl6dje-* ro",
 		},
 		{
-			name:         "ResetAccess",
-			invoke:       func(client *Client) error { return client.ResetAccess(context.Background(), "alice", "urls4irl") },
-			expectedArgs: "access --reset alice urls4irl-*",
+			name: "ResetAccess",
+			invoke: func(client *Client) error {
+				return client.ResetAccess(context.Background(), "alice", "urls4irl-76gzqgp4byjl6dje-*")
+			},
+			expectedArgs: "access --reset alice urls4irl-76gzqgp4byjl6dje-*",
 		},
 		{
 			name: "RemoveToken",

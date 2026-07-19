@@ -11,7 +11,13 @@ test.describe('admin UI critical flows', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          users: [{ user_id: 'alice', apps: ['urls4irl'], topic_patterns: ['urls4irl-*'] }],
+          users: [
+            {
+              user_id: 'u_abcdefgh23456777',
+              apps: ['urls4irl'],
+              topic_patterns: ['urls4irl-abcdefgh23456777-*'],
+            },
+          ],
         }),
       });
     });
@@ -20,8 +26,8 @@ test.describe('admin UI critical flows', () => {
 
     await expect(page.getByRole('heading', { name: '4IRL Notifications Admin' })).toBeVisible();
     // exact: true — the row's actions cell has an accessible name containing
-    // "Delete alice", which a substring match would also hit.
-    await expect(page.getByRole('cell', { name: 'alice', exact: true })).toBeVisible();
+    // "Delete u_abcdefgh23456777", which a substring match would also hit.
+    await expect(page.getByRole('cell', { name: 'u_abcdefgh23456777', exact: true })).toBeVisible();
   });
 
   test('provisioning a user reveals the returned token', async ({ page }) => {
@@ -31,7 +37,13 @@ test.describe('admin UI critical flows', () => {
       const users =
         usersReturned === 0
           ? []
-          : [{ user_id: 'alice', apps: ['urls4irl'], topic_patterns: ['urls4irl-*'] }];
+          : [
+              {
+                user_id: 'u_abcdefgh23456777',
+                apps: ['urls4irl'],
+                topic_patterns: ['urls4irl-abcdefgh23456777-*'],
+              },
+            ];
       usersReturned += 1;
       await route.fulfill({
         status: 200,
@@ -44,9 +56,10 @@ test.describe('admin UI critical flows', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          user_id: 'alice',
+          user_id: 'u_abcdefgh23456777',
           app_id: 'urls4irl',
-          topic_pattern: 'urls4irl-*',
+          person_hash: 'abcdefgh23456777',
+          topic_pattern: 'urls4irl-abcdefgh23456777-*',
           token: 'tk_e2e_secret',
         }),
       });
@@ -56,6 +69,7 @@ test.describe('admin UI critical flows', () => {
 
     await page.getByLabel('App ID').fill('urls4irl');
     await page.getByLabel('User ID').fill('alice');
+    await page.getByLabel('Email').fill('alice@example.com');
     await page.getByRole('button', { name: 'Provision', exact: true }).click();
 
     await expect(page.getByText('tk_e2e_secret')).toBeVisible();

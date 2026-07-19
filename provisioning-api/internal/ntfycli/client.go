@@ -127,15 +127,15 @@ func (client *Client) DeleteUser(ctx context.Context, userID string) error {
 	return runErr
 }
 
-// GrantAccess grants read-write access to the app's wildcard topic pattern.
-func (client *Client) GrantAccess(ctx context.Context, userID string, appID string) error {
-	_, runErr := client.run(ctx, AccessGrantArgs(userID, appID), nil)
+// GrantAccess grants permission to userID on topicPattern.
+func (client *Client) GrantAccess(ctx context.Context, userID string, topicPattern string, permission Permission) error {
+	_, runErr := client.run(ctx, AccessGrantArgs(userID, topicPattern, permission), nil)
 	return runErr
 }
 
-// ResetAccess revokes the user's access to the app's wildcard topic pattern.
-func (client *Client) ResetAccess(ctx context.Context, userID string, appID string) error {
-	_, runErr := client.run(ctx, AccessResetArgs(userID, appID), nil)
+// ResetAccess revokes userID's access to topicPattern.
+func (client *Client) ResetAccess(ctx context.Context, userID string, topicPattern string) error {
+	_, runErr := client.run(ctx, AccessResetArgs(userID, topicPattern), nil)
 	return runErr
 }
 
@@ -232,10 +232,11 @@ func (client *Client) ListTokens(ctx context.Context, userID string) ([]Token, e
 // "token tk_abc... created for user alice, never expires".
 var tokenStdoutPattern = regexp.MustCompile(`\btoken (tk_[A-Za-z0-9_]+) created for user `)
 
-// AddToken creates a never-expiring token labeled with appID and returns the
-// token value parsed from the CLI confirmation line.
-func (client *Client) AddToken(ctx context.Context, userID string, appID string) (string, error) {
-	stdout, runErr := client.run(ctx, TokenAddArgs(userID, appID), nil)
+// AddToken creates a never-expiring token labeled with label (subscriber
+// tokens are labeled with the app_id) and returns the token value parsed
+// from the CLI confirmation line.
+func (client *Client) AddToken(ctx context.Context, userID string, label string) (string, error) {
+	stdout, runErr := client.run(ctx, TokenAddArgs(userID, label), nil)
 	if runErr != nil {
 		return "", runErr
 	}
