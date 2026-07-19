@@ -75,13 +75,10 @@ func NewService(config ServiceConfig) *Service {
 }
 
 // ProvisionRequest identifies the person (by email) to provision into an
-// app. AppUserID is the calling app's own user id, retained for caller
-// reference/logging only — it is never sent to ntfy; the derived ntfy
-// identity is keyed on Email alone.
+// app. The derived ntfy identity is keyed on Email alone.
 type ProvisionRequest struct {
-	AppID     string
-	AppUserID string
-	Email     string
+	AppID string
+	Email string
 }
 
 // ProvisionResult is returned to the caller; UserID is the derived ntfy

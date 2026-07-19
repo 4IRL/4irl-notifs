@@ -74,7 +74,6 @@ test.describe('admin UI critical flows', () => {
     await page.goto('/');
 
     await page.getByLabel('App ID').fill('urls4irl');
-    await page.getByLabel('User ID').fill('alice');
     await page.getByLabel('Email').fill('alice@example.com');
     await page.getByRole('button', { name: 'Provision', exact: true }).click();
 

@@ -125,7 +125,7 @@ func TestProvisionHappyPathCreatesUserGrantsAccessAndIssuesToken(t *testing.T) {
 	client := &fakeNtfyClient{addTokenValue: "tk_new_token"}
 	service := newTestService(client)
 
-	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail})
+	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail})
 	if err != nil {
 		t.Fatalf("Provision returned unexpected error: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestProvisionRemovesOnlyStaleTokensForSameApp(t *testing.T) {
 	}
 	service := newTestService(client)
 
-	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail}); err != nil {
+	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail}); err != nil {
 		t.Fatalf("Provision returned unexpected error: %v", err)
 	}
 
@@ -186,7 +186,7 @@ func TestProvisionToleratesExistingUser(t *testing.T) {
 	}
 	service := newTestService(client)
 
-	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "chores4irl", AppUserID: "app-side-id", Email: aliceEmail})
+	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "chores4irl", Email: aliceEmail})
 	if err != nil {
 		t.Fatalf("Provision must tolerate an existing user, got: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestProvisionDualWritesToPersonServiceAfterTokenIssuedWhenConfigured(t *tes
 		PersonClient:     personClient,
 	})
 
-	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: "  Alice@Example.COM "})
+	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: "  Alice@Example.COM "})
 	if err != nil {
 		t.Fatalf("Provision returned unexpected error: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestProvisionSucceedsWhenPersonServiceDualWriteFails(t *testing.T) {
 		PersonClient:     personClient,
 	})
 
-	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail})
+	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail})
 	if err != nil {
 		t.Fatalf("Provision must succeed even when the person-service dual-write fails, got: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestProvisionSkipsDualWriteWhenPersonServiceUnconfigured(t *testing.T) {
 		PersonClient:     personClient,
 	})
 
-	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail}); err != nil {
+	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail}); err != nil {
 		t.Fatalf("Provision returned unexpected error: %v", err)
 	}
 	if len(personClient.invocations) != 0 {
@@ -279,7 +279,7 @@ func TestProvisionSkipsDualWriteWhenNtfyProvisioningFailsBeforeTokenMint(t *test
 		PersonClient:     personClient,
 	})
 
-	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail}); err == nil {
+	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail}); err == nil {
 		t.Fatal("expected GrantAccess error to propagate")
 	}
 	if len(personClient.invocations) != 0 {
@@ -300,7 +300,7 @@ func TestProvisionLogsWarnWhenPersonServiceDualWriteFails(t *testing.T) {
 		Logger:           logger,
 	})
 
-	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail}); err != nil {
+	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail}); err != nil {
 		t.Fatalf("Provision returned unexpected error: %v", err)
 	}
 

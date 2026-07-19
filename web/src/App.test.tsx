@@ -80,7 +80,6 @@ describe('App', () => {
     render(<App client={client} />);
 
     await userEvent.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await userEvent.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await userEvent.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await userEvent.click(screen.getByRole('button', { name: strings.provisionAction }));
 
@@ -88,7 +87,6 @@ describe('App', () => {
     await waitFor(() =>
       expect(client.provision).toHaveBeenCalledWith({
         appId: 'urls4irl',
-        userId: 'alice',
         email: 'alice@example.com',
       }),
     );
@@ -250,7 +248,6 @@ describe('App', () => {
     await waitFor(() => expect(personClient.listPeople).toHaveBeenCalledTimes(1));
 
     await userEvent.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await userEvent.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await userEvent.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await userEvent.click(screen.getByRole('button', { name: strings.provisionAction }));
 

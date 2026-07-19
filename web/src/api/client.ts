@@ -25,10 +25,10 @@ export interface AppUserPair {
   userId: string;
 }
 
-/** Parameters for provisioning a person into an app. */
+/** Parameters for provisioning a person into an app. Identity is email-keyed;
+ *  the app's own user id is not needed (the ntfy user derives from the email). */
 export interface ProvisionParams {
   appId: string;
-  userId: string;
   email: string;
 }
 
@@ -115,11 +115,11 @@ export function createApiClient({
   }
 
   return {
-    async provision({ appId, userId, email }: ProvisionParams): Promise<ProvisionResult> {
+    async provision({ appId, email }: ProvisionParams): Promise<ProvisionResult> {
       const wire = (await request({
         path: '/v1/provision',
         method: 'POST',
-        body: { app_id: appId, user_id: userId, email },
+        body: { app_id: appId, email },
       })) as ProvisionResponseWire;
       return {
         userId: wire.user_id,

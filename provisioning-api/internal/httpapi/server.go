@@ -92,10 +92,10 @@ func (server *Server) handleHealthz(responseWriter http.ResponseWriter, request 
 }
 
 // provisionRequestBody is the JSON body shared by /v1/provision and
-// /v1/deprovision. For /v1/provision, UserID is the calling app's own
-// user id and Email is required. For /v1/deprovision, both Email and
-// UserID are optional — Email resolves to the derived ntfy user id, or
-// UserID is taken as an already-derived ntfy user id directly.
+// /v1/deprovision. For /v1/provision, only AppID and Email are used
+// (the identity is email-keyed; UserID is ignored). For /v1/deprovision,
+// both Email and UserID are optional — Email resolves to the derived ntfy
+// user id, or UserID is taken as an already-derived ntfy user id directly.
 type provisionRequestBody struct {
 	AppID  string `json:"app_id"`
 	UserID string `json:"user_id"`
@@ -140,15 +140,12 @@ func (server *Server) handleProvision(responseWriter http.ResponseWriter, reques
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	// app_id is validated before user_id, and user_id before email: when
-	// multiple fields are invalid, the caller sees the earliest one first
-	// (see validation.go).
+	// The provision path is email-keyed: identity derives from the email
+	// alone, so no user_id is accepted here. app_id is validated before
+	// email: when both are invalid, the caller sees app_id first (see
+	// validation.go).
 	if !validateAppID(requestBody.AppID) {
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
-		return
-	}
-	if !validateUserID(requestBody.UserID) {
-		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid user_id"})
 		return
 	}
 	if !validateEmail(requestBody.Email) {
@@ -157,9 +154,8 @@ func (server *Server) handleProvision(responseWriter http.ResponseWriter, reques
 	}
 
 	result, provisionErr := server.service.Provision(request.Context(), provisioning.ProvisionRequest{
-		AppID:     requestBody.AppID,
-		AppUserID: requestBody.UserID,
-		Email:     requestBody.Email,
+		AppID: requestBody.AppID,
+		Email: requestBody.Email,
 	})
 	if provisionErr != nil {
 		server.writeServiceError(responseWriter, request, provisionErr)

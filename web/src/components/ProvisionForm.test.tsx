@@ -19,11 +19,11 @@ describe('ProvisionForm', () => {
     expect(screen.getByRole('heading', { name: strings.provisionHeading })).toBeInTheDocument();
     expect(screen.getByLabelText(strings.appIdLabel)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(strings.appIdPlaceholder)).toBeInTheDocument();
-    expect(screen.getByLabelText(strings.userIdLabel)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(strings.userIdPlaceholder)).toBeInTheDocument();
     expect(screen.getByLabelText(strings.emailLabel)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(strings.emailPlaceholder)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: strings.provisionAction })).toBeInTheDocument();
+    // The provision path is email-keyed: there is no User ID input.
+    expect(screen.queryByLabelText(strings.userIdLabel)).not.toBeInTheDocument();
   });
 
   it('blocks submit and shows an error when the App ID is invalid', async () => {
@@ -33,7 +33,6 @@ describe('ProvisionForm', () => {
     render(<ProvisionForm onProvision={onProvision} />);
 
     await user.type(screen.getByLabelText(strings.appIdLabel), 'Invalid App!');
-    await user.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await user.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await user.click(screen.getByRole('button', { name: strings.provisionAction }));
 
@@ -41,28 +40,13 @@ describe('ProvisionForm', () => {
     expect(onProvision).not.toHaveBeenCalled();
   });
 
-  it('blocks submit and shows an error when the User ID is invalid', async () => {
+  it('blocks submit and shows an error when the Email is invalid, checked after App ID', async () => {
     const user = userEvent.setup();
     const onProvision = vi.fn();
 
     render(<ProvisionForm onProvision={onProvision} />);
 
     await user.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await user.type(screen.getByLabelText(strings.userIdLabel), 'Invalid User!');
-    await user.click(screen.getByRole('button', { name: strings.provisionAction }));
-
-    expect(await screen.findByText(strings.invalidUserId)).toBeInTheDocument();
-    expect(onProvision).not.toHaveBeenCalled();
-  });
-
-  it('blocks submit and shows an error when the Email is invalid, checked after App ID and User ID', async () => {
-    const user = userEvent.setup();
-    const onProvision = vi.fn();
-
-    render(<ProvisionForm onProvision={onProvision} />);
-
-    await user.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await user.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await user.type(screen.getByLabelText(strings.emailLabel), 'not-an-email');
     await user.click(screen.getByRole('button', { name: strings.provisionAction }));
 
@@ -70,7 +54,7 @@ describe('ProvisionForm', () => {
     expect(onProvision).not.toHaveBeenCalled();
   });
 
-  it('calls onProvision with the app/user/email params on a valid submit', async () => {
+  it('calls onProvision with the app/email params on a valid submit', async () => {
     const user = userEvent.setup();
     const onProvision = vi.fn().mockResolvedValue({
       userId: 'u_76gzqgp4byjl6dje',
@@ -83,14 +67,12 @@ describe('ProvisionForm', () => {
     render(<ProvisionForm onProvision={onProvision} />);
 
     await user.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await user.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await user.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await user.click(screen.getByRole('button', { name: strings.provisionAction }));
 
     await waitFor(() => {
       expect(onProvision).toHaveBeenCalledWith({
         appId: 'urls4irl',
-        userId: 'alice',
         email: 'alice@example.com',
       });
     });
@@ -117,7 +99,6 @@ describe('ProvisionForm', () => {
     render(<ProvisionForm onProvision={onProvision} />);
 
     await user.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await user.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await user.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await user.click(screen.getByRole('button', { name: strings.provisionAction }));
 
@@ -148,7 +129,6 @@ describe('ProvisionForm', () => {
     render(<ProvisionForm onProvision={onProvision} />);
 
     await user.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await user.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await user.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await user.click(screen.getByRole('button', { name: strings.provisionAction }));
 
@@ -167,7 +147,6 @@ describe('ProvisionForm', () => {
     render(<ProvisionForm onProvision={onProvision} />);
 
     await user.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await user.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await user.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await user.click(screen.getByRole('button', { name: strings.provisionAction }));
 
@@ -182,7 +161,6 @@ describe('ProvisionForm', () => {
     render(<ProvisionForm onProvision={onProvision} />);
 
     await user.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await user.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await user.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await user.click(screen.getByRole('button', { name: strings.provisionAction }));
 
@@ -205,7 +183,6 @@ describe('ProvisionForm', () => {
     render(<ProvisionForm onProvision={onProvision} />);
 
     await user.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await user.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await user.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await user.click(screen.getByRole('button', { name: strings.provisionAction }));
 
@@ -232,7 +209,6 @@ describe('ProvisionForm', () => {
     render(<ProvisionForm onProvision={onProvision} />);
 
     await user.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
-    await user.type(screen.getByLabelText(strings.userIdLabel), 'alice');
     await user.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
     await user.click(screen.getByRole('button', { name: strings.provisionAction }));
 

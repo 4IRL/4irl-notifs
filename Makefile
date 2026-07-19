@@ -7,7 +7,6 @@ COMPOSE := docker compose --project-directory . -f docker-compose.yml
 API_URL := http://127.0.0.1:8091
 NTFY_URL := http://127.0.0.1:8090
 SMOKE_APP_ID := smoketest
-SMOKE_USER_ID := smoketest-user
 SMOKE_EMAIL := smoketest@example.com
 
 ## Local stack (ntfy + provisioning-api)
@@ -56,10 +55,10 @@ notif-smoke-test: ## Provision an app publisher and a test user, publish as the 
 		-H 'Content-Type: application/json' \
 		-d '{"app_id":"$(SMOKE_APP_ID)"}' | jq -r '.token'); \
 	if [ -z "$$PUB_TOKEN" ] || [ "$$PUB_TOKEN" = "null" ]; then echo "provision-app failed"; exit 1; fi; \
-	echo "Provisioning $(SMOKE_USER_ID) into $(SMOKE_APP_ID)..."; \
+	echo "Provisioning $(SMOKE_EMAIL) into $(SMOKE_APP_ID)..."; \
 	PROVISION_RESPONSE=$$(curl -s -X POST $(API_URL)/v1/provision \
 		-H 'Content-Type: application/json' \
-		-d '{"app_id":"$(SMOKE_APP_ID)","user_id":"$(SMOKE_USER_ID)","email":"$(SMOKE_EMAIL)"}'); \
+		-d '{"app_id":"$(SMOKE_APP_ID)","email":"$(SMOKE_EMAIL)"}'); \
 	TOKEN=$$(echo "$$PROVISION_RESPONSE" | jq -r '.token'); \
 	HASH=$$(echo "$$PROVISION_RESPONSE" | jq -r '.person_hash'); \
 	NTFY_USER=$$(echo "$$PROVISION_RESPONSE" | jq -r '.user_id'); \

@@ -114,7 +114,7 @@ func TestProvisionHappyPath(testInstance *testing.T) {
 	}
 	server := NewServer(ServerConfig{Service: fakeService})
 
-	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","user_id":"alice","email":%q}`, aliceEmail))
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","email":%q}`, aliceEmail))
 	request := httptest.NewRequest(http.MethodPost, "/v1/provision", requestBody)
 	recorder := httptest.NewRecorder()
 
@@ -127,7 +127,7 @@ func TestProvisionHappyPath(testInstance *testing.T) {
 		testInstance.Fatalf("Content-Type = %q, want %q", contentType, "application/json")
 	}
 
-	wantCalls := []provisioning.ProvisionRequest{{AppID: "myapp", AppUserID: "alice", Email: aliceEmail}}
+	wantCalls := []provisioning.ProvisionRequest{{AppID: "myapp", Email: aliceEmail}}
 	if len(fakeService.provisionCalls) != 1 || fakeService.provisionCalls[0] != wantCalls[0] {
 		testInstance.Fatalf("provisionCalls = %+v, want %+v", fakeService.provisionCalls, wantCalls)
 	}
@@ -152,7 +152,7 @@ func TestProvisionHappyPath(testInstance *testing.T) {
 
 // TestProvisionMissingOrInvalidEmailRejected verifies POST /v1/provision
 // rejects a missing or malformed email with 400 {"error":"invalid email"},
-// only after app_id and user_id have already passed validation.
+// only after app_id has already passed validation.
 func TestProvisionMissingOrInvalidEmailRejected(testInstance *testing.T) {
 	testCases := []struct {
 		name  string
@@ -167,7 +167,7 @@ func TestProvisionMissingOrInvalidEmailRejected(testInstance *testing.T) {
 			fakeService := &fakeProvisioningService{}
 			server := NewServer(ServerConfig{Service: fakeService})
 
-			requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","user_id":"alice","email":%q}`, testCase.email))
+			requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","email":%q}`, testCase.email))
 			request := httptest.NewRequest(http.MethodPost, "/v1/provision", requestBody)
 			recorder := httptest.NewRecorder()
 
@@ -454,35 +454,26 @@ func TestMalformedOrEmptyBodyRejected(testInstance *testing.T) {
 	}
 }
 
-// longIdentifier is 64 characters — one past the 63-char max the app_id and
-// user_id regexes allow (1 leading char + 62 more).
+// longIdentifier is 64 characters — one past the 63-char max the app_id
+// regex allows (1 leading char + 62 more).
 var longIdentifier = strings.Repeat("a", 64)
 
-// TestValidationFailures covers every invalid app_id/user_id case against
-// POST /v1/provision: hyphenated/uppercase/empty/too-long/bad-leading-char
-// identifiers, the reserved user_id values "everyone" and "*", the reserved
-// app_id value "everyone", and that app_id is validated before user_id when
-// both are invalid.
+// TestValidationFailures covers every invalid app_id case against POST
+// /v1/provision: hyphenated/uppercase/empty/too-long/bad-leading-char app
+// ids and the reserved app_id value "everyone". The provision path is
+// email-keyed and no longer validates a user_id.
 func TestValidationFailures(testInstance *testing.T) {
 	testCases := []struct {
 		name    string
 		appID   string
-		userID  string
 		wantMsg string
 	}{
-		{name: "hyphenated app_id", appID: "my-app", userID: "alice", wantMsg: "invalid app_id"},
-		{name: "uppercase app_id", appID: "MyApp", userID: "alice", wantMsg: "invalid app_id"},
-		{name: "uppercase user_id", appID: "myapp", userID: "Alice", wantMsg: "invalid user_id"},
-		{name: "empty app_id", appID: "", userID: "alice", wantMsg: "invalid app_id"},
-		{name: "empty user_id", appID: "myapp", userID: "", wantMsg: "invalid user_id"},
-		{name: "app_id too long", appID: longIdentifier, userID: "alice", wantMsg: "invalid app_id"},
-		{name: "user_id too long", appID: "myapp", userID: longIdentifier, wantMsg: "invalid user_id"},
-		{name: "app_id bad leading char", appID: "_myapp", userID: "alice", wantMsg: "invalid app_id"},
-		{name: "user_id bad leading char", appID: "myapp", userID: "-alice", wantMsg: "invalid user_id"},
-		{name: "reserved user_id everyone", appID: "myapp", userID: "everyone", wantMsg: "invalid user_id"},
-		{name: "reserved user_id star", appID: "myapp", userID: "*", wantMsg: "invalid user_id"},
-		{name: "reserved app_id everyone", appID: "everyone", userID: "alice", wantMsg: "invalid app_id"},
-		{name: "both invalid, app_id wins", appID: "MyApp", userID: "Alice", wantMsg: "invalid app_id"},
+		{name: "hyphenated app_id", appID: "my-app", wantMsg: "invalid app_id"},
+		{name: "uppercase app_id", appID: "MyApp", wantMsg: "invalid app_id"},
+		{name: "empty app_id", appID: "", wantMsg: "invalid app_id"},
+		{name: "app_id too long", appID: longIdentifier, wantMsg: "invalid app_id"},
+		{name: "app_id bad leading char", appID: "_myapp", wantMsg: "invalid app_id"},
+		{name: "reserved app_id everyone", appID: "everyone", wantMsg: "invalid app_id"},
 	}
 
 	for _, testCase := range testCases {
@@ -491,7 +482,7 @@ func TestValidationFailures(testInstance *testing.T) {
 			server := NewServer(ServerConfig{Service: fakeService})
 
 			var requestBodyBuffer bytes.Buffer
-			if encodeErr := json.NewEncoder(&requestBodyBuffer).Encode(provisionRequestBody{AppID: testCase.appID, UserID: testCase.userID, Email: aliceEmail}); encodeErr != nil {
+			if encodeErr := json.NewEncoder(&requestBodyBuffer).Encode(provisionRequestBody{AppID: testCase.appID, Email: aliceEmail}); encodeErr != nil {
 				subTest.Fatalf("failed to encode request body: %v", encodeErr)
 			}
 
@@ -511,6 +502,38 @@ func TestValidationFailures(testInstance *testing.T) {
 				subTest.Fatalf("provisionCalls = %+v, want none (validation should short-circuit)", fakeService.provisionCalls)
 			}
 		})
+	}
+}
+
+// TestProvisionIgnoresUserIDInBody verifies the provision path no longer
+// validates or forwards a user_id: a body carrying a user_id that would
+// have been rejected under the old contract still provisions successfully,
+// and Service.Provision is called with only app_id + email.
+func TestProvisionIgnoresUserIDInBody(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{
+		provisionResult: provisioning.ProvisionResult{
+			UserID:       aliceNtfyUser,
+			AppID:        "myapp",
+			PersonHash:   aliceHash,
+			TopicPattern: "myapp-" + aliceHash + "-*",
+			Token:        "tk_abc123",
+		},
+	}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	// "Invalid User!" would have failed the old validateUserID gate.
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","user_id":"Invalid User!","email":%q}`, aliceEmail))
+	request := httptest.NewRequest(http.MethodPost, "/v1/provision", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	wantCalls := []provisioning.ProvisionRequest{{AppID: "myapp", Email: aliceEmail}}
+	if len(fakeService.provisionCalls) != 1 || fakeService.provisionCalls[0] != wantCalls[0] {
+		testInstance.Fatalf("provisionCalls = %+v, want %+v", fakeService.provisionCalls, wantCalls)
 	}
 }
 
@@ -574,7 +597,7 @@ func TestGenericServiceErrorMapsTo500(testInstance *testing.T) {
 		route string
 		body  string
 	}{
-		{name: "provision", route: "/v1/provision", body: fmt.Sprintf(`{"app_id":"myapp","user_id":"alice","email":%q}`, aliceEmail)},
+		{name: "provision", route: "/v1/provision", body: fmt.Sprintf(`{"app_id":"myapp","email":%q}`, aliceEmail)},
 		{name: "deprovision", route: "/v1/deprovision", body: fmt.Sprintf(`{"app_id":"myapp","email":%q}`, aliceEmail)},
 	}
 

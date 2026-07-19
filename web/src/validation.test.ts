@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isValidAppId, isValidEmail, isValidUserId } from './validation';
+import { isValidAppId, isValidEmail } from './validation';
 
 describe('isValidAppId', () => {
   it.each([
@@ -14,21 +14,6 @@ describe('isValidAppId', () => {
     ['1'.repeat(64), false], // too long (>63)
   ])('isValidAppId(%j) === %s', (value, expected) => {
     expect(isValidAppId(value)).toBe(expected);
-  });
-});
-
-describe('isValidUserId', () => {
-  it.each([
-    ['alice', true],
-    ['alice-2', true], // hyphens allowed in user_id
-    ['user_name', true],
-    ['Alice', false], // uppercase rejected
-    ['', false],
-    ['everyone', false], // reserved
-    ['*', false], // reserved
-    ['a'.repeat(64), false], // too long
-  ])('isValidUserId(%j) === %s', (value, expected) => {
-    expect(isValidUserId(value)).toBe(expected);
   });
 });
 

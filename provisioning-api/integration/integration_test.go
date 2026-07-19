@@ -251,7 +251,7 @@ func TestProvisionGrantsScopedReadOnlyAccess(t *testing.T) {
 	ntfyUserID := personhash.NtfyUser(email)
 	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
 
-	status, body := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": "app-side-id", "email": email})
+	status, body := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "email": email})
 	if status != http.StatusOK {
 		t.Fatalf("provision status = %d, body = %s", status, body)
 	}
@@ -294,13 +294,13 @@ func TestReprovisionRotatesToken(t *testing.T) {
 	ntfyUserID := personhash.NtfyUser(email)
 	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
 
-	_, firstBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": "app-side-id", "email": email})
+	_, firstBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "email": email})
 	var first provisionResponse
 	if err := json.Unmarshal(firstBody, &first); err != nil {
 		t.Fatalf("unmarshaling first provision: %v", err)
 	}
 
-	_, secondBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": "app-side-id", "email": email})
+	_, secondBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "email": email})
 	var second provisionResponse
 	if err := json.Unmarshal(secondBody, &second); err != nil {
 		t.Fatalf("unmarshaling second provision: %v", err)
@@ -328,12 +328,12 @@ func TestDeprovisionLeavesTheWholeFamilyOnLastApp(t *testing.T) {
 	ntfyUserID := personhash.NtfyUser(email)
 	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
 
-	_, provision1Body := postJSON(t, "/v1/provision", map[string]string{"app_id": app1, "user_id": "app-side-id", "email": email})
+	_, provision1Body := postJSON(t, "/v1/provision", map[string]string{"app_id": app1, "email": email})
 	var provisioned1 provisionResponse
 	if err := json.Unmarshal(provision1Body, &provisioned1); err != nil {
 		t.Fatalf("unmarshaling app1 provision: %v", err)
 	}
-	status, provision2Body := postJSON(t, "/v1/provision", map[string]string{"app_id": app2, "user_id": "app-side-id", "email": email})
+	status, provision2Body := postJSON(t, "/v1/provision", map[string]string{"app_id": app2, "email": email})
 	if status != http.StatusOK {
 		t.Fatalf("app2 provision status = %d, body = %s", status, provision2Body)
 	}
@@ -429,7 +429,7 @@ func TestProvisionAppPublisherEndToEnd(t *testing.T) {
 		t.Fatalf("topic_pattern = %q, expected %q", provisionedApp.TopicPattern, wantTopicPattern)
 	}
 
-	status, provisionUserBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": "app-side-id", "email": email})
+	status, provisionUserBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "email": email})
 	if status != http.StatusOK {
 		t.Fatalf("provision status = %d, body = %s", status, provisionUserBody)
 	}
@@ -500,7 +500,7 @@ func TestConcurrentProvisionsAreSerializedUnderLoad(t *testing.T) {
 		waitGroup.Add(1)
 		go func(index int) {
 			defer waitGroup.Done()
-			status, _ := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": "app-side-id", "email": emails[index]})
+			status, _ := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "email": emails[index]})
 			statuses[index] = status
 		}(userIndex)
 	}

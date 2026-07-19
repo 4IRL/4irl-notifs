@@ -4,9 +4,7 @@
 // submissions.
 
 const APP_ID_PATTERN = /^[a-z0-9][a-z0-9_]{0,62}$/;
-const USER_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 const RESERVED_EVERYONE = 'everyone';
-const RESERVED_WILDCARD = '*';
 const MAX_EMAIL_LENGTH = 254;
 
 /** Reports whether appId is a well-formed, non-reserved app identifier. */
@@ -15,14 +13,6 @@ export function isValidAppId(appId: string): boolean {
     return false;
   }
   return APP_ID_PATTERN.test(appId);
-}
-
-/** Reports whether userId is a well-formed, non-reserved user identifier. */
-export function isValidUserId(userId: string): boolean {
-  if (userId === RESERVED_EVERYONE || userId === RESERVED_WILDCARD) {
-    return false;
-  }
-  return USER_ID_PATTERN.test(userId);
 }
 
 /**

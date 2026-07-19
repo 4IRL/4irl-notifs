@@ -20,7 +20,7 @@ describe('api client', () => {
     });
   }
 
-  it('provision POSTs app_id/user_id/email and returns the parsed token result', async () => {
+  it('provision POSTs app_id/email and returns the parsed token result', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
         status: 200,
@@ -37,7 +37,6 @@ describe('api client', () => {
 
     const result = await client.provision({
       appId: 'urls4irl',
-      userId: 'alice',
       email: 'alice@example.com',
     });
 
@@ -47,7 +46,6 @@ describe('api client', () => {
     expect(calledInit).toMatchObject({ method: 'POST' });
     expect(JSON.parse(calledInit.body as string)).toEqual({
       app_id: 'urls4irl',
-      user_id: 'alice',
       email: 'alice@example.com',
     });
     expect(result).toEqual({
@@ -113,14 +111,14 @@ describe('api client', () => {
     const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
 
     await expect(
-      client.provision({ appId: 'BAD', userId: 'alice', email: 'alice@example.com' }),
+      client.provision({ appId: 'BAD', email: 'alice@example.com' }),
     ).rejects.toMatchObject({
       name: 'ApiError',
       status: 400,
       message: 'invalid app_id',
     });
     await expect(
-      client.provision({ appId: 'BAD', userId: 'alice', email: 'alice@example.com' }),
+      client.provision({ appId: 'BAD', email: 'alice@example.com' }),
     ).rejects.toBeInstanceOf(ApiError);
   });
 
