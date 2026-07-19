@@ -24,10 +24,21 @@ jobs:
     uses: ./.github/workflows/prod-deploy.yml
     permissions: read-all
     secrets:
-      NOTIFS_SSH_HOST: ${{ secrets.NOTIFS_SSH_HOST }}
-      NOTIFS_SSH_USERNAME: ${{ secrets.NOTIFS_SSH_USERNAME }}
-      NOTIFS_SSH_PRIVATE_KEY_FILENAME: ${{ secrets.NOTIFS_SSH_PRIVATE_KEY_FILENAME }}
-      NOTIFS_SSH_PRIVATE_KEY_VALUE: ${{ secrets.NOTIFS_SSH_PRIVATE_KEY_VALUE }}
-      NOTIFS_SERVICE_TOKEN_ID: ${{ secrets.NOTIFS_SERVICE_TOKEN_ID }}
-      NOTIFS_SERVICE_TOKEN_SECRET: ${{ secrets.NOTIFS_SERVICE_TOKEN_SECRET }}
-      NOTIFS_NTFY_BASE_URL: ${{ secrets.NOTIFS_NTFY_BASE_URL }}
+      PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+      PROD_SSH_USERNAME: ${{ secrets.PROD_SSH_USERNAME }}
+      PROD_SSH_PRIVATE_KEY_FILENAME: ${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
+      PROD_SSH_PRIVATE_KEY_VALUE: ${{ secrets.PROD_SSH_PRIVATE_KEY_VALUE }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+
+  # Admin UI (Cloudflare Pages) is independent of the Docker image + VPS stack, so it runs in
+  # parallel with build-prod/deploy-prod (no `needs`), gated by the same merged-to-main guard.
+  deploy-admin-ui:
+    if: github.event.pull_request.merged == true
+    name: 'CD Prod - Deploy Admin UI'
+    uses: ./.github/workflows/pages-deploy.yml
+    permissions:
+      contents: read
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

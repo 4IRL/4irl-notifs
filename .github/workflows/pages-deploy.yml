@@ -1,0 +1,52 @@
+name: Deploy admin UI to Cloudflare Pages
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+
+env:
+  # Public API hostname baked into the SPA at build time (main.tsx reads VITE_API_BASE_URL).
+  # NOT a secret — same rationale as the ntfy base URL hardcoded in docker-compose.prod.yml:
+  # a fixed, public hostname. The full frontend suite (Vitest + Playwright) already gated this
+  # commit on the PR via CI.yml -> test.yml; this job runs only after merge to main.
+  VITE_API_BASE_URL: https://notifs-api.4irl.app
+
+jobs:
+  PagesDeploy:
+    name: Build and deploy admin UI to Cloudflare Pages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup node
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build admin UI
+        working-directory: web
+        run: npm run build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: web
+          # --branch=main marks this as a PRODUCTION deployment (matches the project's
+          # production branch); dist is relative to workingDirectory (web/).
+          command: pages deploy dist --project-name=notifs-admin --branch=main

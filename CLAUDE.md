@@ -8,24 +8,28 @@ Guidance for Claude Code when working in this repository.
      Stable keys — do not rename. Account-specific GraphQL IDs are intentionally NOT inlined here
      (secrets policy); the genericized workflow resolves them at runtime by name. -->
 
-- **Repo slug:** `TODO (no git remote configured yet — no origin in .git/config; likely 4IRL/4irl-notifs, confirm before pushing)`
-- **Default branch:** `main` (only local branch; no remote yet)
-- **Plans/reviews layout:** `plans/<topic>/` (design docs, plans, and reviews all live under `plans/`, gitignored — not tracked in git)
-- **Bot identity:** n/a (no GitHub-App bot set up yet)
-- **Bot push script:** n/a
-- **Token generator:** n/a
+- **Repo slug:** `4IRL/4irl-notifs`
+- **Default branch:** `main` (synced with `origin/main`)
+- **Plans store (central):** `~/code/plans/4irl-notifs/{open,completed,research}/<topic>/` — plans now live in the central stronghold store (tracked in git for the first time), not this repo (bucket = this repo's slug basename `4irl-notifs`). Reviews/research/mocks co-located per plan under its `<topic>/`; finished topics move `open/`→`completed/` as a unit. See `~/code/CLAUDE.md` "Central Plans Store". (Legacy in-repo `plans/` migrated 07-2026.)
+- **Bot identity:** `4irl-notifs-claude[bot]` `304521357+4irl-notifs-claude[bot]@users.noreply.github.com`
+- **Bot push script:** `.claude/bot/gh-app-push.sh` (GitHub App `4irl-notifs-claude`, 4IRL org; uses GIT_ASKPASS so the token never lands in argv/URL — App & Installation IDs live in gitignored `.claude/bot/bot.env`)
+- **Bot gh wrapper:** `/Users/ggpropersi/code/.claude/scripts/gh-bot.sh <args>` — the **central, repo-agnostic** wrapper (shared by every sub-repo). Runs any `gh` subcommand as this repo's bot (e.g. `gh-bot.sh pr create ...`, `gh-bot.sh api repos/4IRL/4irl-notifs ...`) with NO `$(...)` on the command line; it auto-resolves this repo's token generator (`git root → .claude/bot/generate-gh-token.sh`), generates + injects the token internally, never printed. Invoke by **absolute path** from inside the repo (a relative `.claude/scripts/...` resolves to the sub-repo, not the central copy). Prefer this over inline `GH_TOKEN=$(...) gh ...`. Allowlisted (scoped) for `pr *`, `issue *`, `api graphql`, `api repos/*`, `label list`; `pr merge` is denied (the bot must not auto-merge to `main` — that triggers the deploy pipeline).
+- **Token generator:** `.claude/bot/generate-gh-token.sh` — logic only (committed, no IDs); reads App ID / Installation ID / key path from gitignored `.claude/bot/bot.env` (copy `bot.env.example` and fill in). Private key at `~/.claude/4irl-notifs-claude-app.pem`, outside the repo.
 - **Container runtime:** `docker compose --project-directory . -f docker-compose.yml` (local stack: ntfy + provisioning-api)
 - **App URL (Playwright MCP):** `http://127.0.0.1:5173/` (Vite dev server; prod is Cloudflare Pages behind Cloudflare Access)
 - **Test login:** n/a (admin UI is behind Cloudflare Access Google/GitHub OAuth; per-app callers use Cloudflare Access Service Tokens)
-- **Commands:**
+- **Commands:** (Makefile-first — always prefer `make <target>`; raw command shown for reference)
   | Purpose | Command |
   |---|---|
-  | Go tests | `go test ./...` (in `provisioning-api/`) |
-  | Go integration tests | `go test -tags integration ./...` (in `provisioning-api/`, needs local stack up) |
-  | UI/e2e tests | `npx playwright test` (in `web/`) |
-  | JS/unit tests | `npm test` (in `web/`, Vitest) |
-  | Build | `npm run build` (in `web/`, `tsc -b` + Vite → `dist/`) |
-  | Lint / format | `gofmt -l .` + `golangci-lint run` (in `provisioning-api/`); `npx eslint .` / `npx prettier --check .` (in `web/`) |
+  | Local stack up / down / logs | `make local-up` / `make local-down` / `make local-logs` |
+  | Go tests | `make go-test` (`go test ./...` in `provisioning-api/`) |
+  | Go integration tests | `make go-integration-test` (needs local stack up) |
+  | UI/e2e tests | `make web-e2e` (`npx playwright test` in `web/`) |
+  | JS/unit tests | `make web-test` (`npm test` in `web/`, Vitest) |
+  | Build | `make web-build` (`tsc -b` + Vite → `dist/`) |
+  | Lint / format | `make go-lint` / `make go-fmt` (Go); `make web-lint` / `make web-format` (frontend) |
+  | Admin UI dev server | `make dev-web` (foreground) / `make dev-web-bg` + `make dev-web-stop` (detached) |
+  | End-to-end smoke test | `make notif-smoke-test` |
 - **GitHub project board:** n/a
 - **Issue labels:** resolve at runtime via `gh label list` (do not invent labels)
 - **PR reviewer:** n/a
@@ -53,18 +57,21 @@ Components:
 
 ## Development Commands
 
+Makefile-first — always prefer `make <target>` (see `Claude Config → Commands`). Raw commands
+shown for reference only.
+
 | Command | Description |
 |---|---|
-| `docker compose --project-directory . -f docker-compose.yml up -d` | Start the local stack (ntfy + provisioning-api) |
-| `docker compose --project-directory . -f docker-compose.yml down` | Stop the local stack |
-| `go test ./...` (in `provisioning-api/`) | Run Go unit tests |
-| `go test -tags integration ./...` (in `provisioning-api/`) | Run Go integration tests (local stack must be up) |
-| `gofmt -l .` (in `provisioning-api/`) | Check Go formatting (no output = clean) |
-| `golangci-lint run` (in `provisioning-api/`) | Lint the Go service |
-| `npm test` (in `web/`) | Run frontend unit tests (Vitest) |
-| `npx playwright test` (in `web/`) | Run frontend e2e tests (Playwright) |
-| `npm run build` (in `web/`) | Production build (`tsc -b` + Vite → `dist/`) |
-| `npx eslint .` / `npx prettier --write .` (in `web/`) | Lint / format the frontend |
+| `make local-up` / `make local-down` / `make local-logs` | Start / stop / follow-logs for the local stack (ntfy + provisioning-api) |
+| `make go-test` (`go test ./...`) | Run Go unit tests |
+| `make go-integration-test` (`go test -tags integration ./...`) | Run Go integration tests (local stack must be up) |
+| `make go-lint` (`gofmt -l .` + `golangci-lint run`) | Check Go formatting + lint |
+| `make web-test` (`npm test`) | Run frontend unit tests (Vitest) |
+| `make web-e2e` (`npx playwright test`) | Run frontend e2e tests (Playwright) |
+| `make web-build` (`npm run build`) | Production build (`tsc -b` + Vite → `dist/`) |
+| `make web-lint` / `make web-format` (`npx eslint` / `npx prettier`) | Lint / format the frontend |
+| `make dev-web` / `make dev-web-bg` + `make dev-web-stop` | Admin UI dev server (foreground / detached) |
+| `make notif-smoke-test` | End-to-end provision → publish → deliver smoke test |
 
 ## Testing
 

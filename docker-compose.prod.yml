@@ -25,6 +25,9 @@ services:
 
   ntfy:
     restart: unless-stopped
+    # LOCKSTEP: keep this tag equal to the ntfy stage in Dockerfile (bundled CLI) and to
+    # docker-compose.yml. Bumping this tag is a compose-definition change, so the next deploy
+    # recreates ntfy automatically (subscribers drop once — expected for a server upgrade).
     image: binwiederhier/ntfy:v2.26.0
     container_name: 4irl-notifs-ntfy
     command: serve
@@ -39,11 +42,10 @@ services:
       - ntfy-auth:/var/lib/ntfy
       - ntfy-cache:/var/cache/ntfy
     environment:
-      # server.yml's base-url/behind-proxy defaults are for the local stack; env vars
-      # override the file in prod. The real public hostname is undecided and is provided
-      # at deploy time via the .env file the deploy workflow writes next to this compose
-      # file in ~/4irl-notifs/ on the VPS.
-      - NTFY_BASE_URL=${NTFY_BASE_URL:-http://localhost:8090}
+      # server.yml's base-url/behind-proxy defaults are for the local stack; this env var
+      # overrides the file in prod. The public hostname is a fixed, non-secret constant, so
+      # it is baked in here as the default (override via an env/.env only if ever needed).
+      - NTFY_BASE_URL=${NTFY_BASE_URL:-https://notifs.4irl.app}
       - NTFY_BEHIND_PROXY=true
     healthcheck:
       test:

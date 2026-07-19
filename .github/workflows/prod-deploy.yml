@@ -7,19 +7,17 @@ permissions:
 on:
   workflow_call:
     secrets:
-      NOTIFS_SSH_HOST:
+      PROD_SSH_HOST:
         required: true
-      NOTIFS_SSH_USERNAME:
+      PROD_SSH_USERNAME:
         required: true
-      NOTIFS_SSH_PRIVATE_KEY_FILENAME:
+      PROD_SSH_PRIVATE_KEY_FILENAME:
         required: true
-      NOTIFS_SSH_PRIVATE_KEY_VALUE:
+      PROD_SSH_PRIVATE_KEY_VALUE:
         required: true
-      NOTIFS_SERVICE_TOKEN_ID:
+      CF_ACCESS_CLIENT_ID:
         required: true
-      NOTIFS_SERVICE_TOKEN_SECRET:
-        required: true
-      NOTIFS_NTFY_BASE_URL:
+      CF_ACCESS_CLIENT_SECRET:
         required: true
 
 jobs:
@@ -31,8 +29,8 @@ jobs:
       - name: Install SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.NOTIFS_SSH_PRIVATE_KEY_VALUE }}" > ~/.ssh/${{ secrets.NOTIFS_SSH_PRIVATE_KEY_FILENAME }}
-          chmod 600 ~/.ssh/${{ secrets.NOTIFS_SSH_PRIVATE_KEY_FILENAME }}
+          echo "${{ secrets.PROD_SSH_PRIVATE_KEY_VALUE }}" > ~/.ssh/${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
+          chmod 600 ~/.ssh/${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
 
       - name: Install Cloudflared
         run: |
@@ -43,13 +41,13 @@ jobs:
       - name: Prepare SSH Config file
         run: |
           cat <<EOF > ~/.ssh/config
-          Host ${{ secrets.NOTIFS_SSH_HOST }}
-            HostName ${{ secrets.NOTIFS_SSH_HOST }}
-            User ${{ secrets.NOTIFS_SSH_USERNAME }}
-            IdentityFile ~/.ssh/${{ secrets.NOTIFS_SSH_PRIVATE_KEY_FILENAME }}
+          Host ${{ secrets.PROD_SSH_HOST }}
+            HostName ${{ secrets.PROD_SSH_HOST }}
+            User ${{ secrets.PROD_SSH_USERNAME }}
+            IdentityFile ~/.ssh/${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
             IdentitiesOnly yes
             AddKeysToAgent yes
-            ProxyCommand /usr/bin/cloudflared access ssh --hostname %h --id ${{ secrets.NOTIFS_SERVICE_TOKEN_ID }} --secret ${{ secrets.NOTIFS_SERVICE_TOKEN_SECRET }}
+            ProxyCommand /usr/bin/cloudflared access ssh --hostname %h --id ${{ secrets.CF_ACCESS_CLIENT_ID }} --secret ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           EOF
 
           chmod 600 ~/.ssh/config
@@ -62,27 +60,36 @@ jobs:
 
       - name: Create stack directory on VPS
         run: |
-          ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.NOTIFS_SSH_HOST }} 'mkdir -p ~/4irl-notifs/ntfy'
+          ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} 'mkdir -p ~/4irl-notifs/ntfy'
 
       - name: SCP Compose File Into Production Server
         run: |
-          scp -T -q -o StrictHostKeyChecking=no docker-compose.prod.yml ${{ secrets.NOTIFS_SSH_HOST }}:~/4irl-notifs/
+          scp -T -q -o StrictHostKeyChecking=no docker-compose.prod.yml ${{ secrets.PROD_SSH_HOST }}:~/4irl-notifs/
 
       - name: SCP ntfy Config Into Production Server
         run: |
-          scp -T -q -o StrictHostKeyChecking=no ntfy/server.yml ${{ secrets.NOTIFS_SSH_HOST }}:~/4irl-notifs/ntfy/
+          scp -T -q -o StrictHostKeyChecking=no ntfy/server.yml ${{ secrets.PROD_SSH_HOST }}:~/4irl-notifs/ntfy/
 
-      # Pull updated images, recreate if needed, run as daemon, and prune old images.
+      # Pull updated images, recreate only what changed, run as daemon, and prune old images.
       # This stack has no file-based ./secrets directory (u4i's DB/mail secrets have no
-      # counterpart here) — the only runtime parameter is NTFY_BASE_URL via .env.
+      # counterpart here) and no runtime .env — NTFY_BASE_URL is baked into the compose
+      # file's default (a fixed, non-secret public hostname).
+      #
+      # `up -d` WITHOUT --force-recreate is deliberate: compose diffs image digest + compose
+      # definition and recreates ONLY the services that changed. A typical API-only deploy
+      # (new provisioning-api :latest) therefore recreates just provisioning-api and leaves
+      # the ntfy container running — its long-lived subscriber connections survive the deploy.
+      # Caveat: compose does NOT watch bind-mounted FILE CONTENTS, so a change to
+      # ntfy/server.yml alone won't restart ntfy. When you change ntfy config, run a targeted
+      # `docker compose up -d --force-recreate ntfy` manually. An ntfy VERSION bump IS a compose
+      # definition change (image tag), so it recreates ntfy automatically on the next deploy.
       - name: Deploy Docker Compose Stack
         run: |
-          ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.NOTIFS_SSH_HOST }} '
+          ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
           cd ~/4irl-notifs;
-          echo "NTFY_BASE_URL=${{ secrets.NOTIFS_NTFY_BASE_URL }}" > .env;
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
           docker compose -f docker-compose.prod.yml pull;
-          docker compose -f docker-compose.prod.yml up --force-recreate -d;
+          docker compose -f docker-compose.prod.yml up -d --remove-orphans;
           docker image prune -f;
 
           echo "Cleaning up docker login files..."
@@ -93,7 +100,7 @@ jobs:
       # Verify the two services are up and running after any updates
       - name: Verify Docker Compose Stack
         run: >
-          ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.NOTIFS_SSH_HOST }} '
+          ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
           cd ~/4irl-notifs;
           hasNtfy=$(docker compose -f docker-compose.prod.yml ps --services --filter "status=running" | grep -x ntfy);
           hasProvisioningApi=$(docker compose -f docker-compose.prod.yml ps --services --filter "status=running" | grep -x provisioning-api);
