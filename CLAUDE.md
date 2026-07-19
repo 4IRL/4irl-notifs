@@ -32,7 +32,7 @@ Guidance for Claude Code when working in this repository.
   | End-to-end smoke test | `make notif-smoke-test` |
 - **GitHub project board:** n/a
 - **Issue labels:** resolve at runtime via `gh label list` (do not invent labels)
-- **PR reviewer:** n/a
+- **PR reviewer:** `GPropersi`   <!-- always request as reviewer on every PR -->
 
 ## Project Overview
 
