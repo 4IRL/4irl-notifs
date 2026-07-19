@@ -2,6 +2,7 @@ name: Deploy admin UI to Cloudflare Pages
 
 permissions:
   contents: read
+  actions: write   # Actions Cache write for the setup-node npm cache (paired with the caller job's grant)
 
 on:
   workflow_call:

@@ -3,6 +3,7 @@ name: Build production docker image
 permissions:
   contents: read
   packages: write
+  actions: write   # Actions Cache write for buildx layers (paired with the caller job's grant)
 
 on:
   workflow_call:
