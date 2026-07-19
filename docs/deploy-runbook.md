@@ -201,7 +201,7 @@ deploys through; do NOT create a new one):
    step 1 created) with `--watch` → every check green.
 2. Merge the PR → `Build and Deploy Production Stack` runs: build pushes
    `ghcr.io/4irl/4irl-notifs-provisioning-api:latest`; deploy SCPs the compose file + ntfy
-   config into `~/4irl-notifs/` on the VPS and brings the stack up; the workflow's verify step
+   config into `/home/4irl-notifs/` on the VPS and brings the stack up; the workflow's verify step
    confirms both services are running.
 3. From a trusted machine:
    - `curl https://notifs.4irl.app/v1/health` → `{"healthy":true}` (no Access in the way).

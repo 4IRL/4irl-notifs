@@ -60,15 +60,15 @@ jobs:
 
       - name: Create stack directory on VPS
         run: |
-          ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} 'mkdir -p ~/4irl-notifs/ntfy'
+          ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} 'mkdir -p /home/4irl-notifs/ntfy'
 
       - name: SCP Compose File Into Production Server
         run: |
-          scp -T -q -o StrictHostKeyChecking=no docker-compose.prod.yml ${{ secrets.PROD_SSH_HOST }}:~/4irl-notifs/
+          scp -T -q -o StrictHostKeyChecking=no docker-compose.prod.yml ${{ secrets.PROD_SSH_HOST }}:/home/4irl-notifs/
 
       - name: SCP ntfy Config Into Production Server
         run: |
-          scp -T -q -o StrictHostKeyChecking=no ntfy/server.yml ${{ secrets.PROD_SSH_HOST }}:~/4irl-notifs/ntfy/
+          scp -T -q -o StrictHostKeyChecking=no ntfy/server.yml ${{ secrets.PROD_SSH_HOST }}:/home/4irl-notifs/ntfy/
 
       # Pull updated images, recreate only what changed, run as daemon, and prune old images.
       # This stack has no file-based ./secrets directory (u4i's DB/mail secrets have no
@@ -86,7 +86,7 @@ jobs:
       - name: Deploy Docker Compose Stack
         run: |
           ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
-          cd ~/4irl-notifs;
+          cd /home/4irl-notifs;
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
           docker compose -f docker-compose.prod.yml pull;
           docker compose -f docker-compose.prod.yml up -d --remove-orphans;
@@ -101,7 +101,7 @@ jobs:
       - name: Verify Docker Compose Stack
         run: >
           ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
-          cd ~/4irl-notifs;
+          cd /home/4irl-notifs;
           hasNtfy=$(docker compose -f docker-compose.prod.yml ps --services --filter "status=running" | grep -x ntfy);
           hasProvisioningApi=$(docker compose -f docker-compose.prod.yml ps --services --filter "status=running" | grep -x provisioning-api);
 
