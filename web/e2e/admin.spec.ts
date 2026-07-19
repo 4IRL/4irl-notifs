@@ -21,6 +21,9 @@ test.describe('admin UI critical flows', () => {
         }),
       });
     });
+    await page.route('https://person-service.e2e.test/people', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
+    });
 
     await page.goto('/');
 
@@ -64,6 +67,9 @@ test.describe('admin UI critical flows', () => {
         }),
       });
     });
+    await page.route('https://person-service.e2e.test/people', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
+    });
 
     await page.goto('/');
 
@@ -73,5 +79,35 @@ test.describe('admin UI critical flows', () => {
     await page.getByRole('button', { name: 'Provision', exact: true }).click();
 
     await expect(page.getByText('tk_e2e_secret')).toBeVisible();
+  });
+
+  test('lists people from the person service', async ({ page }) => {
+    await page.route('**/v1/users', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ users: [] }),
+      });
+    });
+    await page.route('https://person-service.e2e.test/people', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          people: [
+            {
+              person_hash: '76gzqgp4byjl6dje',
+              email: 'alice@example.com',
+              created_at: '2026-07-19T18:12:03Z',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/');
+
+    await expect(page.getByRole('heading', { name: 'People' })).toBeVisible();
+    await expect(page.getByRole('cell', { name: 'alice@example.com' })).toBeVisible();
   });
 });

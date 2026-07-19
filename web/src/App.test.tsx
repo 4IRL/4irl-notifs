@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { ApiError } from './api/client';
 import type { ApiClient } from './api/client';
+import type { PersonApiClient } from './api/personClient';
 import { strings } from './strings';
 
 // buildFakeClient returns an ApiClient test double with vi.fn() methods,
@@ -21,6 +22,15 @@ function buildFakeClient(overrides: Partial<ApiClient> = {}): ApiClient {
     deprovision: vi.fn().mockResolvedValue(undefined),
     listUsers: vi.fn().mockResolvedValue([]),
     deleteUser: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+// buildFakePersonClient returns a PersonApiClient test double with vi.fn()
+// methods, overridable per test.
+function buildFakePersonClient(overrides: Partial<PersonApiClient> = {}): PersonApiClient {
+  return {
+    listPeople: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
 }
@@ -189,5 +199,61 @@ describe('App', () => {
 
     await userEvent.click(deprovisionButton);
     await waitFor(() => expect(screen.queryByText('ntfy CLI failed')).not.toBeInTheDocument());
+  });
+
+  it('renders the people table with data when a personClient is supplied', async () => {
+    const personClient = buildFakePersonClient({
+      listPeople: vi.fn().mockResolvedValue([
+        {
+          personHash: '76gzqgp4byjl6dje',
+          email: 'alice@example.com',
+          createdAt: '2026-07-19T18:12:03Z',
+        },
+      ]),
+    });
+    render(<App client={buildFakeClient()} personClient={personClient} />);
+
+    expect(screen.getByRole('heading', { name: strings.peopleHeading })).toBeInTheDocument();
+    expect(await screen.findByText('alice@example.com')).toBeInTheDocument();
+    expect(personClient.listPeople).toHaveBeenCalled();
+  });
+
+  it('does not render the people section when no personClient is supplied', async () => {
+    render(<App client={buildFakeClient()} />);
+
+    await waitFor(() => expect(screen.getByText(strings.usersEmpty)).toBeInTheDocument());
+    expect(screen.queryByRole('heading', { name: strings.peopleHeading })).not.toBeInTheDocument();
+  });
+
+  it('shows the people error but keeps the users table working when the person service fails', async () => {
+    const personClient = buildFakePersonClient({
+      listPeople: vi.fn().mockRejectedValue(new ApiError({ status: 503, message: 'worker down' })),
+    });
+    const client = buildFakeClient({
+      listUsers: vi
+        .fn()
+        .mockResolvedValue([{ userId: 'u_abcdefgh23456777', apps: [], topicPatterns: [] }]),
+    });
+    render(<App client={client} personClient={personClient} />);
+
+    expect(await screen.findByText('worker down')).toBeInTheDocument();
+    expect(await screen.findByText('u_abcdefgh23456777')).toBeInTheDocument();
+    // The people-load failure must never populate the shared error banner.
+    expect(screen.queryByText(strings.genericError)).not.toBeInTheDocument();
+  });
+
+  it('refreshes the people list after a successful provision', async () => {
+    const personClient = buildFakePersonClient();
+    const client = buildFakeClient();
+    render(<App client={client} personClient={personClient} />);
+
+    await waitFor(() => expect(personClient.listPeople).toHaveBeenCalledTimes(1));
+
+    await userEvent.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
+    await userEvent.type(screen.getByLabelText(strings.userIdLabel), 'alice');
+    await userEvent.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
+    await userEvent.click(screen.getByRole('button', { name: strings.provisionAction }));
+
+    await waitFor(() => expect(personClient.listPeople).toHaveBeenCalledTimes(2));
   });
 });

@@ -40,5 +40,13 @@ export const strings = {
   columnApps: 'Apps',
   columnTopicPatterns: 'Topic patterns',
 
+  peopleHeading: 'People',
+  peopleLoading: 'Loading people…',
+  peopleEmpty: 'No people recorded yet.',
+  peopleLoadError: 'Could not load people.',
+  columnPersonHash: 'Person hash',
+  columnEmail: 'Email',
+  columnCreated: 'Created',
+
   genericError: 'Something went wrong. Please try again.',
 } as const;

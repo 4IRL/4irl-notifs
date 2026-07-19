@@ -28,5 +28,8 @@ export default defineConfig({
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 120000,
+    // Bakes the people view into the e2e production build; the person
+    // service is mocked per-test via page.route (there is no real Worker).
+    env: { VITE_PERSON_SERVICE_URL: 'https://person-service.e2e.test' },
   },
 });
