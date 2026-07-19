@@ -112,6 +112,52 @@ func (service *Service) Provision(ctx context.Context, request ProvisionRequest)
 	}, nil
 }
 
+// ProvisionAppRequest identifies the app to mint a publisher identity for.
+type ProvisionAppRequest struct {
+	AppID string
+}
+
+// ProvisionAppResult is returned to the caller; PublisherUserID is the
+// derived ntfy username ("{app_id}-publisher"), and Token is the freshly
+// minted write-only ntfy access token the operator must hand off to the app.
+type ProvisionAppResult struct {
+	AppID           string
+	PublisherUserID string
+	TopicPattern    string
+	Token           string
+}
+
+// ProvisionApp ensures the app's publisher ntfy user exists, grants a
+// write-only app-wide topic ACL, and issues a fresh publisher-labeled token.
+// Unlike Provision, repeat calls do NOT remove existing publisher tokens — a
+// repeat call mints an additional token (rotation by issuing a new
+// credential; the operator revokes old ones explicitly).
+func (service *Service) ProvisionApp(ctx context.Context, request ProvisionAppRequest) (ProvisionAppResult, error) {
+	publisherUserID := ntfycli.PublisherUserID(request.AppID)
+	topicPattern := ntfycli.PublisherTopicPattern(request.AppID)
+
+	password, passwordErr := service.generatePassword()
+	if passwordErr != nil {
+		return ProvisionAppResult{}, passwordErr
+	}
+	if addUserErr := service.client.AddUser(ctx, publisherUserID, password); addUserErr != nil && !errors.Is(addUserErr, ntfycli.ErrAlreadyExists) {
+		return ProvisionAppResult{}, addUserErr
+	}
+	if grantErr := service.client.GrantAccess(ctx, publisherUserID, topicPattern, ntfycli.PermissionWriteOnly); grantErr != nil {
+		return ProvisionAppResult{}, grantErr
+	}
+	tokenValue, tokenErr := service.client.AddToken(ctx, publisherUserID, ntfycli.PublisherTokenLabel)
+	if tokenErr != nil {
+		return ProvisionAppResult{}, tokenErr
+	}
+	return ProvisionAppResult{
+		AppID:           request.AppID,
+		PublisherUserID: publisherUserID,
+		TopicPattern:    topicPattern,
+		Token:           tokenValue,
+	}, nil
+}
+
 // UserSummary is the admin-facing view of one ntfy user: the derived list of
 // apps the user is provisioned into, plus the raw topic patterns for
 // transparency.
@@ -122,7 +168,7 @@ type UserSummary struct {
 }
 
 // wildcardSuffix marks a topic pattern as an app-wide publisher-identity
-// grant (a shape belonging to a later phase, but still recognized here).
+// grant (the shape ProvisionApp creates via ntfycli.PublisherTopicPattern).
 const wildcardSuffix = "-*"
 
 // scopedTopicPattern matches a per-person scoped topic pattern,

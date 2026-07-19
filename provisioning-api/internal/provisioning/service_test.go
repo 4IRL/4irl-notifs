@@ -279,6 +279,113 @@ func TestListUsersDerivesAppsFromScopedAndWildcardPatterns(t *testing.T) {
 	}
 }
 
+func TestProvisionAppHappyPathCreatesPublisherGrantsWriteAccessAndIssuesToken(t *testing.T) {
+	client := &fakeNtfyClient{addTokenValue: "tk_publisher_token"}
+	service := newTestService(client)
+
+	result, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl"})
+	if err != nil {
+		t.Fatalf("ProvisionApp returned unexpected error: %v", err)
+	}
+
+	expectedResult := ProvisionAppResult{
+		AppID:           "urls4irl",
+		PublisherUserID: "urls4irl-publisher",
+		TopicPattern:    "urls4irl-*",
+		Token:           "tk_publisher_token",
+	}
+	if result != expectedResult {
+		t.Fatalf("result = %#v, expected %#v", result, expectedResult)
+	}
+
+	expectedInvocations := strings.Join([]string{
+		"AddUser(urls4irl-publisher,pw=generated-pw)",
+		"GrantAccess(urls4irl-publisher,urls4irl-*,wo)",
+		"AddToken(urls4irl-publisher,publisher)",
+	}, " | ")
+	if got := strings.Join(client.invocations, " | "); got != expectedInvocations {
+		t.Fatalf("invocations = %s, expected %s", got, expectedInvocations)
+	}
+}
+
+func TestProvisionAppToleratesExistingPublisherUser(t *testing.T) {
+	client := &fakeNtfyClient{
+		addUserErr:    fmt.Errorf("ntfy user: %w: user urls4irl-publisher already exists", ntfycli.ErrAlreadyExists),
+		addTokenValue: "tk_second_publisher_token",
+	}
+	service := newTestService(client)
+
+	result, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl"})
+	if err != nil {
+		t.Fatalf("ProvisionApp must tolerate an existing publisher user, got: %v", err)
+	}
+	if result.Token != "tk_second_publisher_token" {
+		t.Fatalf("token = %q, expected tk_second_publisher_token", result.Token)
+	}
+	if got := strings.Join(client.invocations, " | "); !strings.Contains(got, "GrantAccess(urls4irl-publisher,urls4irl-*,wo)") {
+		t.Fatalf("provisioning did not continue past existing publisher user: %s", got)
+	}
+}
+
+func TestProvisionAppRepeatCallMintsAdditionalTokenWithoutTouchingExisting(t *testing.T) {
+	client := &fakeNtfyClient{addTokenValue: "tk_another_token"}
+	service := newTestService(client)
+
+	if _, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl"}); err != nil {
+		t.Fatalf("ProvisionApp returned unexpected error: %v", err)
+	}
+
+	joinedInvocations := strings.Join(client.invocations, " | ")
+	if strings.Contains(joinedInvocations, "ListTokens(") {
+		t.Fatalf("ProvisionApp must never call ListTokens: %s", joinedInvocations)
+	}
+	if strings.Contains(joinedInvocations, "RemoveToken(") {
+		t.Fatalf("ProvisionApp must never call RemoveToken (repeat calls mint additional tokens): %s", joinedInvocations)
+	}
+}
+
+func TestProvisionAppPropagatesGeneratePasswordError(t *testing.T) {
+	client := &fakeNtfyClient{}
+	service := NewService(ServiceConfig{
+		Client:           client,
+		GeneratePassword: func() (string, error) { return "", errors.New("password generation failed") },
+	})
+
+	if _, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl"}); err == nil {
+		t.Fatal("expected error from GeneratePassword to propagate")
+	}
+	if len(client.invocations) != 0 {
+		t.Fatalf("expected no client invocations when password generation fails, got: %v", client.invocations)
+	}
+}
+
+func TestProvisionAppPropagatesAddUserError(t *testing.T) {
+	client := &fakeNtfyClient{addUserErr: errors.New("add user failed")}
+	service := newTestService(client)
+
+	if _, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl"}); err == nil {
+		t.Fatal("expected AddUser error to propagate")
+	}
+}
+
+func TestProvisionAppPropagatesGrantAccessError(t *testing.T) {
+	client := &fakeNtfyClient{grantAccessErr: errors.New("grant access failed")}
+	service := newTestService(client)
+
+	if _, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl"}); err == nil {
+		t.Fatal("expected GrantAccess error to propagate")
+	}
+}
+
+func TestProvisionAppPropagatesAddTokenError(t *testing.T) {
+	client := &fakeNtfyClient{addTokenErr: errors.New("add token failed")}
+	service := newTestService(client)
+
+	if _, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl"}); err == nil {
+		t.Fatal("expected AddToken error to propagate")
+	}
+}
+
 func TestDeleteUserDelegatesToClient(t *testing.T) {
 	client := &fakeNtfyClient{}
 	service := newTestService(client)

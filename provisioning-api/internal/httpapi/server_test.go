@@ -34,6 +34,10 @@ type fakeProvisioningService struct {
 
 	deleteUserErr   error
 	deleteUserCalls []string
+
+	provisionAppResult provisioning.ProvisionAppResult
+	provisionAppErr    error
+	provisionAppCalls  []provisioning.ProvisionAppRequest
 }
 
 // Provision records the request and returns the preconfigured result/error.
@@ -58,6 +62,12 @@ func (fake *fakeProvisioningService) ListUsers(_ context.Context) ([]provisionin
 func (fake *fakeProvisioningService) DeleteUser(_ context.Context, userID string) error {
 	fake.deleteUserCalls = append(fake.deleteUserCalls, userID)
 	return fake.deleteUserErr
+}
+
+// ProvisionApp records the request and returns the preconfigured result/error.
+func (fake *fakeProvisioningService) ProvisionApp(_ context.Context, request provisioning.ProvisionAppRequest) (provisioning.ProvisionAppResult, error) {
+	fake.provisionAppCalls = append(fake.provisionAppCalls, request)
+	return fake.provisionAppResult, fake.provisionAppErr
 }
 
 // aliceEmail/aliceHash/aliceNtfyUser are the golden-vector-derived identity
@@ -668,6 +678,127 @@ func TestDeleteUserInvalidPathUserIDRejected(testInstance *testing.T) {
 	}
 	if len(fakeService.deleteUserCalls) != 0 {
 		testInstance.Fatalf("deleteUserCalls = %+v, want none (validation should short-circuit)", fakeService.deleteUserCalls)
+	}
+}
+
+// TestProvisionAppHappyPath verifies POST /v1/provision-app calls
+// Service.ProvisionApp with the decoded app_id and returns the result as
+// JSON.
+func TestProvisionAppHappyPath(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{
+		provisionAppResult: provisioning.ProvisionAppResult{
+			AppID:           "myapp",
+			PublisherUserID: "myapp-publisher",
+			TopicPattern:    "myapp-*",
+			Token:           "tk_publisher_abc",
+		},
+	}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(`{"app_id":"myapp"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if contentType := recorder.Header().Get("Content-Type"); contentType != "application/json" {
+		testInstance.Fatalf("Content-Type = %q, want %q", contentType, "application/json")
+	}
+
+	wantCalls := []provisioning.ProvisionAppRequest{{AppID: "myapp"}}
+	if len(fakeService.provisionAppCalls) != 1 || fakeService.provisionAppCalls[0] != wantCalls[0] {
+		testInstance.Fatalf("provisionAppCalls = %+v, want %+v", fakeService.provisionAppCalls, wantCalls)
+	}
+
+	var responseBody map[string]string
+	if decodeErr := json.Unmarshal(recorder.Body.Bytes(), &responseBody); decodeErr != nil {
+		testInstance.Fatalf("failed to decode response body: %v", decodeErr)
+	}
+	wantBody := map[string]string{
+		"app_id":            "myapp",
+		"publisher_user_id": "myapp-publisher",
+		"topic_pattern":     "myapp-*",
+		"token":             "tk_publisher_abc",
+	}
+	for key, wantValue := range wantBody {
+		if responseBody[key] != wantValue {
+			testInstance.Fatalf("response[%q] = %q, want %q", key, responseBody[key], wantValue)
+		}
+	}
+}
+
+// TestProvisionAppInvalidAppIDRejected verifies POST /v1/provision-app
+// rejects an invalid app_id with 400 {"error":"invalid app_id"} without
+// calling Service.ProvisionApp.
+func TestProvisionAppInvalidAppIDRejected(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(`{"app_id":"My-App"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	wantBody := `{"error":"invalid app_id"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+	if len(fakeService.provisionAppCalls) != 0 {
+		testInstance.Fatalf("provisionAppCalls = %+v, want none (validation should short-circuit)", fakeService.provisionAppCalls)
+	}
+}
+
+// TestProvisionAppMalformedJSONRejected verifies POST /v1/provision-app
+// rejects malformed JSON with 400 {"error":"invalid JSON body"}.
+func TestProvisionAppMalformedJSONRejected(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(`{"app_id": "myapp",`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	wantBody := `{"error":"invalid JSON body"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+	if len(fakeService.provisionAppCalls) != 0 {
+		testInstance.Fatalf("provisionAppCalls = %+v, want none (validation should short-circuit)", fakeService.provisionAppCalls)
+	}
+}
+
+// TestProvisionAppServiceErrorMapsTo500 verifies a generic service error from
+// Service.ProvisionApp maps to 500 {"error":"internal error"}.
+func TestProvisionAppServiceErrorMapsTo500(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{
+		provisionAppErr: errors.New("connection refused to database at 10.0.0.5:9999 with credential xyz"),
+	}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(`{"app_id":"myapp"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
+	}
+	wantBody := `{"error":"internal error"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
 	}
 }
 

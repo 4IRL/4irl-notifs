@@ -30,6 +30,10 @@ type ProvisioningService interface {
 	ListUsers(ctx context.Context) ([]provisioning.UserSummary, error)
 	// DeleteUser removes a user entirely.
 	DeleteUser(ctx context.Context, userID string) error
+	// ProvisionApp creates (or reuses) the app's publisher ntfy user, grants
+	// its write-only app-wide topic access, and returns a fresh
+	// publisher-labeled token.
+	ProvisionApp(ctx context.Context, request provisioning.ProvisionAppRequest) (provisioning.ProvisionAppResult, error)
 }
 
 // ServerConfig configures a Server. Service is required; Logger defaults to
@@ -77,6 +81,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /v1/deprovision", server.handleDeprovision)
 	server.mux.HandleFunc("GET /v1/users", server.handleListUsers)
 	server.mux.HandleFunc("DELETE /v1/users/{user_id}", server.handleDeleteUser)
+	server.mux.HandleFunc("POST /v1/provision-app", server.handleProvisionApp)
 }
 
 // handleHealthz responds 200 with a plain-text "ok" body for liveness checks.
@@ -295,5 +300,50 @@ func (server *Server) handleDeleteUser(responseWriter http.ResponseWriter, reque
 	writeJSON(responseWriter, http.StatusOK, deleteUserResponseBody{
 		UserID:  userID,
 		Deleted: true,
+	})
+}
+
+// provisionAppRequestBody is the JSON body for /v1/provision-app.
+type provisionAppRequestBody struct {
+	AppID string `json:"app_id"`
+}
+
+// provisionAppResponseBody is the JSON response for a successful
+// provision-app call. The token is revealed once at mint time — first-time
+// handoff semantics, same as per-user provisioning.
+type provisionAppResponseBody struct {
+	AppID           string `json:"app_id"`
+	PublisherUserID string `json:"publisher_user_id"`
+	TopicPattern    string `json:"topic_pattern"`
+	Token           string `json:"token"`
+}
+
+// handleProvisionApp decodes the request body, delegates to
+// Service.ProvisionApp, and writes the resulting publisher identity and
+// token as JSON.
+func (server *Server) handleProvisionApp(responseWriter http.ResponseWriter, request *http.Request) {
+	var requestBody provisionAppRequestBody
+	if decodeErr := json.NewDecoder(request.Body).Decode(&requestBody); decodeErr != nil {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if !validateAppID(requestBody.AppID) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
+		return
+	}
+
+	result, provisionAppErr := server.service.ProvisionApp(request.Context(), provisioning.ProvisionAppRequest{
+		AppID: requestBody.AppID,
+	})
+	if provisionAppErr != nil {
+		server.writeServiceError(responseWriter, request, provisionAppErr)
+		return
+	}
+
+	writeJSON(responseWriter, http.StatusOK, provisionAppResponseBody{
+		AppID:           result.AppID,
+		PublisherUserID: result.PublisherUserID,
+		TopicPattern:    result.TopicPattern,
+		Token:           result.Token,
 	})
 }

@@ -87,3 +87,61 @@ func TestPermissionReadOnlyValue(t *testing.T) {
 		t.Fatalf("PermissionReadOnly = %q, expected %q", PermissionReadOnly, "ro")
 	}
 }
+
+func TestPermissionWriteOnlyValue(t *testing.T) {
+	if PermissionWriteOnly != "wo" {
+		t.Fatalf("PermissionWriteOnly = %q, expected %q", PermissionWriteOnly, "wo")
+	}
+}
+
+func TestPublisherTopicPattern(t *testing.T) {
+	testCases := []struct {
+		name     string
+		appID    string
+		expected string
+	}{
+		{name: "urls4irl", appID: "urls4irl", expected: "urls4irl-*"},
+		{name: "chores4irl", appID: "chores4irl", expected: "chores4irl-*"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := PublisherTopicPattern(testCase.appID); got != testCase.expected {
+				t.Fatalf("PublisherTopicPattern(%q) = %q, expected %q", testCase.appID, got, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestPublisherUserID(t *testing.T) {
+	testCases := []struct {
+		name     string
+		appID    string
+		expected string
+	}{
+		{name: "urls4irl", appID: "urls4irl", expected: "urls4irl-publisher"},
+		{name: "chores4irl", appID: "chores4irl", expected: "chores4irl-publisher"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := PublisherUserID(testCase.appID); got != testCase.expected {
+				t.Fatalf("PublisherUserID(%q) = %q, expected %q", testCase.appID, got, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestPublisherTokenLabelValue(t *testing.T) {
+	if PublisherTokenLabel != "publisher" {
+		t.Fatalf("PublisherTokenLabel = %q, expected %q", PublisherTokenLabel, "publisher")
+	}
+}
+
+func TestAccessGrantArgsWriteOnlyWildcardPattern(t *testing.T) {
+	got := AccessGrantArgs("urls4irl-publisher", "urls4irl-*", PermissionWriteOnly)
+	expected := []string{"access", "urls4irl-publisher", "urls4irl-*", "wo"}
+	if !reflect.DeepEqual(got, expected) {
+		t.Fatalf("got %v, expected %v", got, expected)
+	}
+}

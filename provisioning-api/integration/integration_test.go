@@ -52,6 +52,21 @@ type provisionResponse struct {
 	Token        string `json:"token"`
 }
 
+// provisionAppResponse mirrors the /v1/provision-app success body.
+type provisionAppResponse struct {
+	AppID           string `json:"app_id"`
+	PublisherUserID string `json:"publisher_user_id"`
+	TopicPattern    string `json:"topic_pattern"`
+	Token           string `json:"token"`
+}
+
+// ntfyMessage mirrors the subset of an ntfy cache message this test cares
+// about, as served by GET {topic}/json?poll=1&since=all (newline-delimited
+// JSON, one message per line).
+type ntfyMessage struct {
+	ID string `json:"id"`
+}
+
 // userListResponse mirrors the /v1/users body.
 type userListResponse struct {
 	Users []struct {
@@ -131,6 +146,70 @@ func publishStatus(t *testing.T, topic string, token string) int {
 	}
 	defer closeBody(t, response)
 	return response.StatusCode
+}
+
+// publishMessage publishes a message to a topic with a bearer token and
+// returns the ntfy HTTP status plus the published message id (empty when the
+// publish was rejected or the body did not decode).
+func publishMessage(t *testing.T, topic string, token string) (int, string) {
+	t.Helper()
+	request, buildErr := http.NewRequest(http.MethodPost, ntfyURL()+"/"+topic, strings.NewReader("integration publish "+time.Now().String()))
+	if buildErr != nil {
+		t.Fatalf("building publish request: %v", buildErr)
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, publishErr := http.DefaultClient.Do(request)
+	if publishErr != nil {
+		t.Fatalf("publishing to %s: %v", topic, publishErr)
+	}
+	defer closeBody(t, response)
+	body := readBody(t, response)
+	if response.StatusCode != http.StatusOK {
+		return response.StatusCode, ""
+	}
+	var published ntfyMessage
+	if unmarshalErr := json.Unmarshal(body, &published); unmarshalErr != nil {
+		t.Fatalf("unmarshaling publish response: %v", unmarshalErr)
+	}
+	return response.StatusCode, published.ID
+}
+
+// topicContainsMessageID polls a topic's cache with a bearer token and
+// reports whether messageID appears among the newline-delimited JSON
+// messages returned.
+func topicContainsMessageID(t *testing.T, topic string, token string, messageID string) bool {
+	t.Helper()
+	request, buildErr := http.NewRequest(http.MethodGet, ntfyURL()+"/"+topic+"/json?poll=1&since=all", nil)
+	if buildErr != nil {
+		t.Fatalf("building read request: %v", buildErr)
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, readErr := http.DefaultClient.Do(request)
+	if readErr != nil {
+		t.Fatalf("reading %s: %v", topic, readErr)
+	}
+	defer closeBody(t, response)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("polling %s status = %d, expected 200", topic, response.StatusCode)
+	}
+	body := readBody(t, response)
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		if line == "" {
+			continue
+		}
+		var message ntfyMessage
+		if unmarshalErr := json.Unmarshal([]byte(line), &message); unmarshalErr != nil {
+			t.Fatalf("unmarshaling cache line %q: %v", line, unmarshalErr)
+		}
+		if message.ID == messageID {
+			return true
+		}
+	}
+	return false
 }
 
 // deleteUser removes a user via the API; used for cleanup.
@@ -318,6 +397,90 @@ func TestDeleteUnknownUserReturns404(t *testing.T) {
 	defer closeBody(t, response)
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("delete unknown user status = %d, expected 404", response.StatusCode)
+	}
+}
+
+func TestProvisionAppPublisherEndToEnd(t *testing.T) {
+	waitForHealth(t)
+	const appID = "itestpub"
+	const email = "itest-pub-subscriber@example.com"
+	personHash := personhash.Hash(email)
+	subscriberNtfyUserID := personhash.NtfyUser(email)
+	publisherNtfyUserID := appID + "-publisher"
+	t.Cleanup(func() { deleteUser(t, publisherNtfyUserID) })
+	t.Cleanup(func() { deleteUser(t, subscriberNtfyUserID) })
+
+	status, provisionAppBody := postJSON(t, "/v1/provision-app", map[string]string{"app_id": appID})
+	if status != http.StatusOK {
+		t.Fatalf("provision-app status = %d, body = %s", status, provisionAppBody)
+	}
+	var provisionedApp provisionAppResponse
+	if unmarshalErr := json.Unmarshal(provisionAppBody, &provisionedApp); unmarshalErr != nil {
+		t.Fatalf("unmarshaling provision-app response: %v", unmarshalErr)
+	}
+	if provisionedApp.Token == "" {
+		t.Fatal("provision-app returned an empty token")
+	}
+	if provisionedApp.PublisherUserID != publisherNtfyUserID {
+		t.Fatalf("publisher_user_id = %q, expected %q", provisionedApp.PublisherUserID, publisherNtfyUserID)
+	}
+	wantTopicPattern := appID + "-*"
+	if provisionedApp.TopicPattern != wantTopicPattern {
+		t.Fatalf("topic_pattern = %q, expected %q", provisionedApp.TopicPattern, wantTopicPattern)
+	}
+
+	status, provisionUserBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "user_id": "app-side-id", "email": email})
+	if status != http.StatusOK {
+		t.Fatalf("provision status = %d, body = %s", status, provisionUserBody)
+	}
+	var provisionedUser provisionResponse
+	if unmarshalErr := json.Unmarshal(provisionUserBody, &provisionedUser); unmarshalErr != nil {
+		t.Fatalf("unmarshaling provision response: %v", unmarshalErr)
+	}
+
+	subscriberTopic := appID + "-" + personHash + "-alerts"
+	publishStatusCode, messageID := publishMessage(t, subscriberTopic, provisionedApp.Token)
+	if publishStatusCode != http.StatusOK {
+		t.Fatalf("publisher publish to %s status = %d, expected 200", subscriberTopic, publishStatusCode)
+	}
+	if messageID == "" {
+		t.Fatal("publisher publish returned an empty message id")
+	}
+	if !topicContainsMessageID(t, subscriberTopic, provisionedUser.Token, messageID) {
+		t.Fatalf("subscriber token could not read published message %s back on %s", messageID, subscriberTopic)
+	}
+
+	anyOtherTopicInNamespace := appID + "-some-other-topic"
+	if otherStatus, _ := publishMessage(t, anyOtherTopicInNamespace, provisionedApp.Token); otherStatus != http.StatusOK {
+		t.Fatalf("publisher publish to %s status = %d, expected 200", anyOtherTopicInNamespace, otherStatus)
+	}
+
+	outsideNamespaceTopic := "otherapp-alerts"
+	if outsideStatus, _ := publishMessage(t, outsideNamespaceTopic, provisionedApp.Token); outsideStatus != http.StatusForbidden {
+		t.Fatalf("publisher publish outside its namespace status = %d, expected 403", outsideStatus)
+	}
+
+	if readAsPublisher := readStatus(t, subscriberTopic, provisionedApp.Token); readAsPublisher != http.StatusForbidden {
+		t.Fatalf("publisher read status = %d, expected 403 (write-only, no read)", readAsPublisher)
+	}
+
+	status, secondProvisionAppBody := postJSON(t, "/v1/provision-app", map[string]string{"app_id": appID})
+	if status != http.StatusOK {
+		t.Fatalf("second provision-app status = %d, body = %s", status, secondProvisionAppBody)
+	}
+	var secondProvisionedApp provisionAppResponse
+	if unmarshalErr := json.Unmarshal(secondProvisionAppBody, &secondProvisionedApp); unmarshalErr != nil {
+		t.Fatalf("unmarshaling second provision-app response: %v", unmarshalErr)
+	}
+	if secondProvisionedApp.Token == provisionedApp.Token {
+		t.Fatal("repeat provision-app returned the same token; expected an additional token")
+	}
+
+	if firstStillWorks, _ := publishMessage(t, subscriberTopic, provisionedApp.Token); firstStillWorks != http.StatusOK {
+		t.Fatalf("original publisher token publish status = %d, expected 200 (additional-token semantics)", firstStillWorks)
+	}
+	if secondWorks, _ := publishMessage(t, subscriberTopic, secondProvisionedApp.Token); secondWorks != http.StatusOK {
+		t.Fatalf("new publisher token publish status = %d, expected 200", secondWorks)
 	}
 }
 

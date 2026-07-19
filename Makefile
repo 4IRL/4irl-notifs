@@ -8,7 +8,7 @@ API_URL := http://127.0.0.1:8091
 NTFY_URL := http://127.0.0.1:8090
 SMOKE_APP_ID := smoketest
 SMOKE_USER_ID := smoketest-user
-SMOKE_TOPIC := $(SMOKE_APP_ID)-alerts
+SMOKE_EMAIL := smoketest@example.com
 
 ## Local stack (ntfy + provisioning-api)
 
@@ -44,30 +44,49 @@ dev-web-stop: ## Stop the detached admin UI dev server started by dev-web-bg
 		echo "dev server stopped"; \
 	else echo "no dev server pid file found"; fi
 
-notif-smoke-test: ## Provision a test user, publish a notification, confirm delivery via ntfy's cache, then clean up
+notif-smoke-test: ## Provision an app publisher and a test user, publish as the publisher, confirm subscriber delivery via ntfy's cache, then clean up
 	@echo "Waiting for provisioning-api health..."
 	@for i in $$(seq 1 30); do \
 		curl -sf $(API_URL)/healthz >/dev/null 2>&1 && break; \
 		sleep 1; \
 	done
 	@curl -sf $(API_URL)/healthz >/dev/null || { echo "provisioning-api not healthy at $(API_URL) — run 'make local-up' first"; exit 1; }
-	@echo "Provisioning $(SMOKE_USER_ID) into $(SMOKE_APP_ID)..."
-	@TOKEN=$$(curl -s -X POST $(API_URL)/v1/provision \
+	@echo "Provisioning publisher for $(SMOKE_APP_ID)..."
+	@PUB_TOKEN=$$(curl -s -X POST $(API_URL)/v1/provision-app \
 		-H 'Content-Type: application/json' \
-		-d '{"app_id":"$(SMOKE_APP_ID)","user_id":"$(SMOKE_USER_ID)"}' | jq -r '.token'); \
-	if [ -z "$$TOKEN" ] || [ "$$TOKEN" = "null" ]; then echo "provision failed"; exit 1; fi; \
-	echo "Publishing test notification to $(SMOKE_TOPIC)..."; \
-	MSG_ID=$$(curl -s -H "Authorization: Bearer $$TOKEN" \
+		-d '{"app_id":"$(SMOKE_APP_ID)"}' | jq -r '.token'); \
+	if [ -z "$$PUB_TOKEN" ] || [ "$$PUB_TOKEN" = "null" ]; then echo "provision-app failed"; exit 1; fi; \
+	echo "Provisioning $(SMOKE_USER_ID) into $(SMOKE_APP_ID)..."; \
+	PROVISION_RESPONSE=$$(curl -s -X POST $(API_URL)/v1/provision \
+		-H 'Content-Type: application/json' \
+		-d '{"app_id":"$(SMOKE_APP_ID)","user_id":"$(SMOKE_USER_ID)","email":"$(SMOKE_EMAIL)"}'); \
+	TOKEN=$$(echo "$$PROVISION_RESPONSE" | jq -r '.token'); \
+	HASH=$$(echo "$$PROVISION_RESPONSE" | jq -r '.person_hash'); \
+	NTFY_USER=$$(echo "$$PROVISION_RESPONSE" | jq -r '.user_id'); \
+	if [ -z "$$TOKEN" ] || [ "$$TOKEN" = "null" ]; then \
+		echo "provision failed"; \
+		curl -s -X DELETE $(API_URL)/v1/users/$(SMOKE_APP_ID)-publisher >/dev/null; \
+		exit 1; \
+	fi; \
+	SMOKE_TOPIC="$(SMOKE_APP_ID)-$$HASH-alerts"; \
+	echo "Publishing test notification to $$SMOKE_TOPIC as publisher..."; \
+	MSG_ID=$$(curl -s -H "Authorization: Bearer $$PUB_TOKEN" \
 		-d "notif-smoke-test $$(date +%s)" \
-		$(NTFY_URL)/$(SMOKE_TOPIC) | jq -r '.id'); \
-	if [ -z "$$MSG_ID" ] || [ "$$MSG_ID" = "null" ]; then echo "publish failed"; curl -s -X DELETE $(API_URL)/v1/users/$(SMOKE_USER_ID) >/dev/null; exit 1; fi; \
+		$(NTFY_URL)/$$SMOKE_TOPIC | jq -r '.id'); \
+	if [ -z "$$MSG_ID" ] || [ "$$MSG_ID" = "null" ]; then \
+		echo "publish failed"; \
+		curl -s -X DELETE $(API_URL)/v1/users/$$NTFY_USER >/dev/null; \
+		curl -s -X DELETE $(API_URL)/v1/users/$(SMOKE_APP_ID)-publisher >/dev/null; \
+		exit 1; \
+	fi; \
 	echo "Polling ntfy cache for delivery..."; \
 	sleep 1; \
 	FOUND=$$(curl -s -H "Authorization: Bearer $$TOKEN" \
-		"$(NTFY_URL)/$(SMOKE_TOPIC)/json?poll=1&since=all" | jq -r "select(.id == \"$$MSG_ID\") | .id"); \
-	curl -s -X DELETE $(API_URL)/v1/users/$(SMOKE_USER_ID) >/dev/null; \
+		"$(NTFY_URL)/$$SMOKE_TOPIC/json?poll=1&since=all" | jq -r "select(.id == \"$$MSG_ID\") | .id"); \
+	curl -s -X DELETE $(API_URL)/v1/users/$$NTFY_USER >/dev/null; \
+	curl -s -X DELETE $(API_URL)/v1/users/$(SMOKE_APP_ID)-publisher >/dev/null; \
 	if [ "$$FOUND" = "$$MSG_ID" ]; then \
-		echo "PASS: message $$MSG_ID delivered on $(SMOKE_TOPIC)"; \
+		echo "PASS: message $$MSG_ID delivered on $$SMOKE_TOPIC"; \
 	else \
 		echo "FAIL: message $$MSG_ID not found in cache"; exit 1; \
 	fi
