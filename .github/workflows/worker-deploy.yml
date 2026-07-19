@@ -1,0 +1,46 @@
+name: Deploy person-service to Cloudflare Workers
+
+# Runs post-merge only (wired into prod-build-and-deploy.yml as the
+# deploy-person-service job). This job will FAIL until the operator fills in
+# the real D1 database_id into person-service/wrangler.toml (it currently
+# holds a placeholder) — see docs/deploy-runbook.md Wave 2. That is expected
+# scaffolding, not a bug in this workflow.
+
+permissions:
+  contents: read
+  actions: write   # Actions Cache write for the setup-node npm cache (paired with the caller job's grant)
+
+on:
+  workflow_call:
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+
+jobs:
+  WorkerDeploy:
+    name: Build and deploy person-service to Cloudflare Workers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup node
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: person-service/package-lock.json
+
+      - name: Install worker dependencies
+        working-directory: person-service
+        run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: person-service
+          command: deploy

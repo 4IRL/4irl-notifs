@@ -1,6 +1,7 @@
 .PHONY: local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-integration-test go-lint go-fmt \
-	web-test web-e2e web-build web-lint web-format
+	web-test web-e2e web-build web-lint web-format \
+	worker-test worker-build worker-deploy
 
 COMPOSE := docker compose --project-directory . -f docker-compose.yml
 API_URL := http://127.0.0.1:8091
@@ -101,3 +102,14 @@ web-lint: ## Lint and format-check the frontend
 
 web-format: ## Auto-format the frontend
 	cd web && npx prettier --write .
+
+## Worker (person-service)
+
+worker-test: ## Run person-service unit/integration tests (Vitest + workers pool)
+	cd person-service && npm test
+
+worker-build: ## Typecheck and dry-run bundle person-service (tsc --noEmit + wrangler deploy --dry-run)
+	cd person-service && npm run build
+
+worker-deploy: ## Deploy person-service to Cloudflare (operator-run post-merge; needs wrangler auth)
+	cd person-service && npx wrangler deploy
