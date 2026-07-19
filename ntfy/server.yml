@@ -1,12 +1,23 @@
 # ntfy server configuration — 4irl-notifs notification hub.
 #
-# Auth model (see plans/notification-service/notification-service-design.md):
+# Auth model (Wave 2 — personalized delivery; supersedes the Wave-1 broadcast ACLs of
+# the original notification-service design):
 #   - auth-default-access is deny-all: every topic grant is explicit. Topics need no
 #     pre-creation — they materialize on first publish/subscribe.
-#   - One GLOBAL ntfy user per person (not per app). The provisioning-api grants each
-#     user a wildcard ACL per app they are provisioned into.
-#   - Topic namespace convention: "{app_id}-{channel}" (e.g. "urls4irl-alerts"), so a
-#     per-app grant is the native wildcard ACL "{app_id}-*".
+#   - One GLOBAL ntfy user per person (not per app), keyed on an email hash:
+#     "u_{personHash}" where personHash = base32(sha256(normalize(email)))[:16].
+#   - Topic namespace convention: "{app_id}-{personHash}-{channel}"
+#     (e.g. "urls4irl-76gzqgp4byjl6dje-alerts"). Granularity is deliberately COARSE:
+#     one topic namespace per person per app; channels are just topic-name suffixes,
+#     with ntfy tags/priority/title carrying any finer distinction.
+#   - Role split (least privilege, no app-wide grants on end-users):
+#       publisher          "{app_id}-publisher"  write-only ("wo") on "{app_id}-*"
+#                          (minted via POST /v1/provision-app; the app backend
+#                          publishes personalized messages with this token)
+#       subscriber         "u_{personHash}"      read-only ("ro") on
+#                          "{app_id}-{personHash}-*" (their own topics only)
+#       provisioning-root  the provisioning-api edits auth.db via the bundled ntfy
+#                          CLI (admin path); it holds no topic grants of its own.
 #
 # The auth database lives on a named volume shared with the provisioning-api container,
 # which edits it via the bundled ntfy CLI (`ntfy user` / `ntfy access` / `ntfy token`).

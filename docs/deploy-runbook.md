@@ -212,6 +212,114 @@ deploys through; do NOT create a new one):
    `https://notifs.4irl.app/<app>-test` with that token.
 5. Deprovision the test user from the admin UI and confirm the token no longer works (401).
 
+## 10. Wave 2 provisioning — personalized notifications (post-merge, human)
+
+Wave 2 (the personalized-notifications initiative) shipped the person-service Cloudflare Worker +
+D1 reverse-index (personHash → email), the publisher/subscriber ACL split (publisher identity
+`{app_id}-publisher` holds write-only `wo` on `{app_id}-*`; each end-user holds read-only on
+`{app_id}-{personHash}-*`), the Go dual-write, and the admin UI's People view. All **code** is
+merged; the 8 infrastructure steps below are strictly operator work — none were executed by
+automation, and **no token, Service-Token client-id/secret, or account ID is committed anywhere**
+(placeholders only, same as §§3/6/8 above).
+
+1. **Create the D1 database + apply the migration.** From `person-service/`:
+   `wrangler d1 create person-service` → copy the returned `database_id` into
+   `person-service/wrangler.toml`, replacing the committed placeholder
+   `00000000-0000-0000-0000-000000000000` in the `[[d1_databases]]` block (commit that as a
+   follow-up PR — it's an identifier the repo does track once minted, not a secret; per this
+   repo's ask-before-committing-IDs convention, the maintainer commits it themselves rather than
+   an agent doing so). Then apply the schema: `wrangler d1 migrations apply person-service
+   --remote`. The migration (`migrations/0001_create_person.sql`) creates
+   `person(person_hash PK, email, created_at)` plus `idx_person_email`.
+2. **Deploy the Worker.** Preferred: merge-triggered CI —
+   `.github/workflows/worker-deploy.yml` runs as the `deploy-person-service` job in
+   `prod-build-and-deploy.yml`, using repo secrets `CLOUDFLARE_API_TOKEN` +
+   `CLOUDFLARE_ACCOUNT_ID` (the same two secrets §6 already wired up for Pages). **GOTCHA:** the
+   existing `CLOUDFLARE_API_TOKEN` was scoped only to `Account · Cloudflare Pages · Edit` (per
+   §6 item 1); Worker deploys additionally need `Account · Workers Scripts · Edit` and
+   `Account · D1 · Edit` — extend the token's scopes (or mint a fresh one and overwrite the
+   secret). Until the real `database_id` lands in `wrangler.toml` (step 1), the deploy job fails
+   by design — the workflow's own header comment says so; that's expected scaffolding, not a bug.
+   Manual alternative: `cd person-service && npm ci && npx wrangler deploy`.
+3. **Worker hostname + DNS + route.** Decide the Worker custom domain — suggested
+   `notifs-people.4irl.app` (`4irl.app` zone, same as the other three hostnames). Add it as a
+   Custom Domain on the person-service Worker (dashboard → Workers & Pages → person-service →
+   Settings → Domains & Routes; Cloudflare auto-creates the proxied DNS record, same pattern as
+   §4/§6), or fill in the `[[routes]]` block already commented out in `wrangler.toml`.
+   **IMPORTANT lockstep:** `pages-deploy.yml` bakes
+   `VITE_PERSON_SERVICE_URL=https://notifs-people.4irl.app` into the admin-UI build at deploy
+   time — if a different hostname is chosen, update that env value in `pages-deploy.yml` in the
+   same follow-up PR as the `database_id` (step 1). Until the Worker and its Access app (step 4)
+   are live, the admin UI's People view renders a graceful load-error line; user management is
+   unaffected.
+4. **Cloudflare Access app on the Worker hostname.** New self-hosted Access application, domain =
+   the Worker hostname from step 3. Policies (mirror §8 item 1's structure):
+   - Policy 1 (humans, for the admin-UI People view): Allow → **GitHub Organization `4IRL`**
+     (same IdP/org-visibility prereqs as §8 item 1 / §7 item 1).
+   - Policy 2 (machines, for the Go dual-write): action **Service Auth** (NOT an identity Allow —
+     an Allow action would redirect token requests to login) including the Service Token from
+     step 5.
+   - **CORS settings on this app** (the admin UI reads `GET /people` cross-origin with
+     credentials): **Allow-Origin** `https://notifs-admin.4irl.app` (never "all origins" — the
+     CORS spec forbids `*` together with credentials); **Allow-Methods** `GET`; **Allow-Headers**
+     `Content-Type`; **Allow-Credentials** ON; leave **"Bypass OPTIONS requests to origin"** OFF
+     (same rationale as §8 item 1: Access answers preflight itself, and the bypass toggle wipes
+     the app's CORS config).
+   - Reminder: the Worker performs **no auth of its own** — this Access app is the entire
+     boundary in front of it, so do not skip it.
+5. **Mint the person-service Service Token.** Zero Trust → Access → Service Auth → create a token
+   dedicated to the provisioning-api's dual-write (name it e.g.
+   `notifs-provisioning-api → person-service`). Record `<CLIENT_ID>` / `<CLIENT_SECRET>` for step
+   6; include this same token in step 4's Service Auth policy.
+6. **Install the dual-write env on the VPS.** The prod compose file (`docker-compose.prod.yml`)
+   reads three placeholders: `PERSON_SERVICE_URL`, `PERSON_SERVICE_ACCESS_CLIENT_ID`,
+   `PERSON_SERVICE_ACCESS_CLIENT_SECRET` (empty = dual-write disabled, provisioning unaffected —
+   same "empty placeholder is a safe default" pattern as the ntfy base URL in §3). Set them in
+   the compose project's environment on the VPS (e.g. an `.env` beside
+   `/home/4irl-notifs/docker-compose.prod.yml` — **not** committed):
+   `PERSON_SERVICE_URL=https://<worker-hostname>`, plus the step-5 credentials. Then
+   `docker compose -f docker-compose.prod.yml up -d` to recreate provisioning-api with the new
+   env (same targeted-recreate pattern the Operations section below uses). Verify from the
+   container logs the startup line `person-service dual-write` shows `enabled=true`.
+7. **Per-app publisher identities.** For each consuming app (urls4irl first):
+   ```
+   curl -X POST https://notifs-api.4irl.app/v1/provision-app \
+     -H 'Content-Type: application/json' \
+     -H 'CF-Access-Client-Id: <consuming-app-client-id>' \
+     -H 'CF-Access-Client-Secret: <consuming-app-client-secret>' \
+     -d '{"app_id":"urls4irl"}'
+   ```
+   → the response carries `publisher_user_id` (`{app_id}-publisher`), `topic_pattern`
+   (`{app_id}-*`), and the write-only `token` — **shown once**; hand it to that app's backend
+   secret store immediately. Repeat calls mint an *additional* token rather than replacing the
+   old one (rotation-by-issuing); revoke a stale one explicitly if needed:
+   `docker compose -f docker-compose.prod.yml exec provisioning-api ntfy token remove
+   {app_id}-publisher <token>` (the provisioning-api container bundles the `ntfy` CLI against
+   the same `auth.db` the server uses — see `docker-compose.prod.yml`). The consuming app's
+   backend publishes personalized messages to `{app_id}-{personHash}-{channel}` topics with this
+   token; it learns each user's personHash from the `/v1/provision` response's `person_hash`
+   field.
+8. **Per-consuming-app Access Service Tokens on the provisioning API.** This activates §8 item
+   1's deferred "Policy 2 (machines)": mint one Service Token per consuming app (Zero Trust →
+   Access → Service Auth), add them to a Service Auth policy on the `notifs-api.4irl.app` Access
+   app. Each app calls `/v1/provision`, `/v1/deprovision` (now also accepts `email` in the body
+   as an alternative to `user_id`, resolving to the same derived `u_<personHash>` ntfy user id —
+   the deprovision response itself carries only `user_id`/`app_id`/`removed`, not a separate
+   `person_hash` field), and `/v1/provision-app`, each with its own
+   `CF-Access-Client-Id`/`-Secret` headers.
+
+**Wave 2 verification:**
+
+- (a) After step 2/3, `curl https://<worker-hostname>/people` unauthenticated → an Access
+  redirect/403 (the gate works).
+- (b) With the step-5 Service Token headers (`CF-Access-Client-Id`/`-Secret`) → `200`
+  `{"people":[...]}` (empty list initially).
+- (c) Provision a test user with an email from the admin UI → the People table shows the
+  personHash → email row (dual-write worked).
+- (d) Publish to `{app_id}-{personHash}-test` with the app's publisher token from step 7 → `200`,
+  and the user's subscriber token can read it; the publisher token gets `403` on read (write-only)
+  and `403` publishing outside `{app_id}-*`.
+
 ## Operations: deploys, ntfy config, and ntfy version bumps
 
 The deploy runs `docker compose up -d --remove-orphans` (no `--force-recreate`) so compose
@@ -230,7 +338,7 @@ recreates **only** services whose image digest or compose definition changed. Co
   once — expected for a server upgrade). Bump `provisioning-api`'s own rebuild too, since the
   Dockerfile changed.
 
-## 10. Open items intentionally left to the maintainer
+## 11. Open items intentionally left to the maintainer
 
 - Whether to revisit Terraform-managed Access policy if the policy surface grows (explicitly
   deferred by the design doc).
