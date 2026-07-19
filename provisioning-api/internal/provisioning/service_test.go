@@ -1,9 +1,11 @@
 package provisioning
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -78,6 +80,37 @@ func newTestService(client *fakeNtfyClient) *Service {
 		Client:           client,
 		GeneratePassword: func() (string, error) { return "generated-pw", nil },
 	})
+}
+
+// fakePersonClient records invocations and plays back scripted behavior for
+// the subset of the person-service dual-write client (internal/personsvc)
+// the service depends on. When recordTo is set, invocations are appended to
+// that shared slice instead of the client's own — used to assert dual-write
+// ordering relative to a fakeNtfyClient's invocations in the same test.
+type fakePersonClient struct {
+	recordTo    *[]string
+	invocations []string
+
+	configuredValue bool
+	upsertErr       error
+}
+
+func (client *fakePersonClient) record(format string, values ...any) {
+	entry := fmt.Sprintf(format, values...)
+	if client.recordTo != nil {
+		*client.recordTo = append(*client.recordTo, entry)
+		return
+	}
+	client.invocations = append(client.invocations, entry)
+}
+
+func (client *fakePersonClient) Configured() bool {
+	return client.configuredValue
+}
+
+func (client *fakePersonClient) UpsertPerson(_ context.Context, personHash string, email string) error {
+	client.record("UpsertPerson(%s,%s)", personHash, email)
+	return client.upsertErr
 }
 
 // aliceEmail/aliceNtfyUser/aliceHash are the golden-vector-derived identity
@@ -162,6 +195,121 @@ func TestProvisionToleratesExistingUser(t *testing.T) {
 	}
 	if got := strings.Join(client.invocations, " | "); !strings.Contains(got, fmt.Sprintf("GrantAccess(%s,chores4irl-%s-*,ro)", aliceNtfyUser, aliceHash)) {
 		t.Fatalf("provisioning did not continue past existing user: %s", got)
+	}
+}
+
+func TestProvisionDualWritesToPersonServiceAfterTokenIssuedWhenConfigured(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new_token"}
+	personClient := &fakePersonClient{configuredValue: true, recordTo: &ntfyClient.invocations}
+	service := NewService(ServiceConfig{
+		Client:           ntfyClient,
+		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		PersonClient:     personClient,
+	})
+
+	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: "  Alice@Example.COM "})
+	if err != nil {
+		t.Fatalf("Provision returned unexpected error: %v", err)
+	}
+	if result.PersonHash != aliceHash {
+		t.Fatalf("PersonHash = %s, expected %s", result.PersonHash, aliceHash)
+	}
+
+	expectedInvocations := strings.Join([]string{
+		fmt.Sprintf("AddUser(%s,pw=generated-pw)", aliceNtfyUser),
+		fmt.Sprintf("GrantAccess(%s,urls4irl-%s-*,ro)", aliceNtfyUser, aliceHash),
+		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
+		fmt.Sprintf("AddToken(%s,urls4irl)", aliceNtfyUser),
+		fmt.Sprintf("UpsertPerson(%s,alice@example.com)", aliceHash),
+	}, " | ")
+	if got := strings.Join(ntfyClient.invocations, " | "); got != expectedInvocations {
+		t.Fatalf("invocations = %s, expected %s (dual-write must happen exactly once, after AddToken, with a normalized email)", got, expectedInvocations)
+	}
+}
+
+func TestProvisionSucceedsWhenPersonServiceDualWriteFails(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new_token"}
+	personClient := &fakePersonClient{configuredValue: true, upsertErr: errors.New("person-service unreachable")}
+	service := NewService(ServiceConfig{
+		Client:           ntfyClient,
+		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		PersonClient:     personClient,
+	})
+
+	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail})
+	if err != nil {
+		t.Fatalf("Provision must succeed even when the person-service dual-write fails, got: %v", err)
+	}
+
+	expectedResult := ProvisionResult{
+		UserID:       aliceNtfyUser,
+		AppID:        "urls4irl",
+		PersonHash:   aliceHash,
+		TopicPattern: "urls4irl-" + aliceHash + "-*",
+		Token:        "tk_new_token",
+	}
+	if result != expectedResult {
+		t.Fatalf("result = %#v, expected %#v", result, expectedResult)
+	}
+}
+
+func TestProvisionSkipsDualWriteWhenPersonServiceUnconfigured(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new_token"}
+	personClient := &fakePersonClient{configuredValue: false}
+	service := NewService(ServiceConfig{
+		Client:           ntfyClient,
+		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		PersonClient:     personClient,
+	})
+
+	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail}); err != nil {
+		t.Fatalf("Provision returned unexpected error: %v", err)
+	}
+	if len(personClient.invocations) != 0 {
+		t.Fatalf("UpsertPerson must not be called when the person-service client is unconfigured, got: %v", personClient.invocations)
+	}
+}
+
+func TestProvisionSkipsDualWriteWhenNtfyProvisioningFailsBeforeTokenMint(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{grantAccessErr: errors.New("grant access failed")}
+	personClient := &fakePersonClient{configuredValue: true}
+	service := NewService(ServiceConfig{
+		Client:           ntfyClient,
+		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		PersonClient:     personClient,
+	})
+
+	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail}); err == nil {
+		t.Fatal("expected GrantAccess error to propagate")
+	}
+	if len(personClient.invocations) != 0 {
+		t.Fatalf("UpsertPerson must not be called when ntfy provisioning fails before the token is minted, got: %v", personClient.invocations)
+	}
+}
+
+func TestProvisionLogsWarnWhenPersonServiceDualWriteFails(t *testing.T) {
+	var logBuffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
+
+	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new_token"}
+	personClient := &fakePersonClient{configuredValue: true, upsertErr: errors.New("person-service unreachable")}
+	service := NewService(ServiceConfig{
+		Client:           ntfyClient,
+		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		PersonClient:     personClient,
+		Logger:           logger,
+	})
+
+	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", AppUserID: "app-side-id", Email: aliceEmail}); err != nil {
+		t.Fatalf("Provision returned unexpected error: %v", err)
+	}
+
+	logOutput := logBuffer.String()
+	if !strings.Contains(logOutput, "person-service dual-write failed") {
+		t.Fatalf("expected Warn log to mention dual-write failure, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "level=WARN") {
+		t.Fatalf("expected log level to be WARN, got: %s", logOutput)
 	}
 }
 

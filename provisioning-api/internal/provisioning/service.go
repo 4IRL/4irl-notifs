@@ -10,6 +10,7 @@ package provisioning
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -29,23 +30,48 @@ type NtfyClient interface {
 	ListUsers(ctx context.Context) ([]ntfycli.User, error)
 }
 
+// PersonServiceClient is the subset of the person-service dual-write client
+// (internal/personsvc) the service depends on.
+type PersonServiceClient interface {
+	Configured() bool
+	UpsertPerson(ctx context.Context, personHash string, email string) error
+}
+
 // ServiceConfig configures a Service.
 type ServiceConfig struct {
 	Client NtfyClient
 	// GeneratePassword returns the throwaway password for newly created
 	// users (people authenticate with tokens, never this password).
 	GeneratePassword func() (string, error)
+	// PersonClient is the optional person-service dual-write client. When
+	// nil (or PersonClient.Configured() is false), Provision skips the
+	// dual-write entirely.
+	PersonClient PersonServiceClient
+	// Logger receives best-effort dual-write failure warnings. Optional;
+	// defaults to a discarding logger.
+	Logger *slog.Logger
 }
 
 // Service orchestrates ntfy CLI operations into provision/deprovision calls.
 type Service struct {
 	client           NtfyClient
 	generatePassword func() (string, error)
+	personClient     PersonServiceClient
+	logger           *slog.Logger
 }
 
 // NewService builds a Service from config.
 func NewService(config ServiceConfig) *Service {
-	return &Service{client: config.Client, generatePassword: config.GeneratePassword}
+	logger := config.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &Service{
+		client:           config.Client,
+		generatePassword: config.GeneratePassword,
+		personClient:     config.PersonClient,
+		logger:           logger,
+	}
 }
 
 // ProvisionRequest identifies the person (by email) to provision into an
@@ -103,6 +129,9 @@ func (service *Service) Provision(ctx context.Context, request ProvisionRequest)
 	if tokenErr != nil {
 		return ProvisionResult{}, tokenErr
 	}
+
+	service.dualWritePerson(ctx, personHash, request.Email)
+
 	return ProvisionResult{
 		UserID:       ntfyUserID,
 		AppID:        request.AppID,
@@ -110,6 +139,23 @@ func (service *Service) Provision(ctx context.Context, request ProvisionRequest)
 		TopicPattern: topicPattern,
 		Token:        tokenValue,
 	}, nil
+}
+
+// dualWritePerson best-effort mirrors the personHash -> email mapping to the
+// person-service Worker's D1 reverse-index, after ntfy provisioning has
+// already succeeded. ntfy is the source of truth and must succeed for
+// Provision to succeed; person-service exists only so operators can resolve
+// a personHash back to an email later (support/debugging), so a failure here
+// is logged and swallowed rather than failing the provision. Skips the call
+// entirely when no person client is configured (e.g. the local dev stack,
+// which has no Worker).
+func (service *Service) dualWritePerson(ctx context.Context, personHash string, email string) {
+	if service.personClient == nil || !service.personClient.Configured() {
+		return
+	}
+	if upsertErr := service.personClient.UpsertPerson(ctx, personHash, personhash.Normalize(email)); upsertErr != nil {
+		service.logger.Warn("person-service dual-write failed", "person_hash", personHash, "error", upsertErr)
+	}
 }
 
 // ProvisionAppRequest identifies the app to mint a publisher identity for.
