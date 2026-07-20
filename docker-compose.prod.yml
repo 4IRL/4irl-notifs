@@ -73,6 +73,13 @@ services:
       - NTFY_BIN=/usr/bin/ntfy
       - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db
       - NTFY_AUTH_DEFAULT_ACCESS=deny-all
+      # Wave-2 best-effort dual-write to the person-service Worker (D1 reverse-index
+      # personHash -> email). Empty PERSON_SERVICE_URL disables the dual-write entirely
+      # (Configured() reports false). Real values are installed directly on the VPS at
+      # deploy time via the shell environment and are never committed here.
+      - PERSON_SERVICE_URL=${PERSON_SERVICE_URL:-}
+      - PERSON_SERVICE_ACCESS_CLIENT_ID=${PERSON_SERVICE_ACCESS_CLIENT_ID:-}
+      - PERSON_SERVICE_ACCESS_CLIENT_SECRET=${PERSON_SERVICE_ACCESS_CLIENT_SECRET:-}
     volumes:
       - ntfy-auth:/var/lib/ntfy
     healthcheck:

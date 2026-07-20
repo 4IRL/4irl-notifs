@@ -44,3 +44,16 @@ jobs:
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  # person-service (Cloudflare Worker) is likewise independent of the Docker image + VPS
+  # stack, so it runs in parallel (no `needs`), gated by the same merged-to-main guard.
+  deploy-person-service:
+    if: github.event.pull_request.merged == true
+    name: 'CD Prod - Deploy person-service'
+    uses: ./.github/workflows/worker-deploy.yml
+    permissions:
+      contents: read
+      actions: write   # lets the Actions Cache save the setup-node npm cache
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

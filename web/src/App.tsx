@@ -1,26 +1,44 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { ApiError } from './api/client';
-import type { ApiClient, AppUserPair, ProvisionResult, UserSummary } from './api/client';
+import type {
+  ApiClient,
+  AppUserPair,
+  ProvisionParams,
+  ProvisionResult,
+  UserSummary,
+} from './api/client';
+import type { PersonApiClient, PersonSummary } from './api/personClient';
 import { ProvisionForm } from './components/ProvisionForm';
 import { UsersTable } from './components/UsersTable';
+import { PeopleTable } from './components/PeopleTable';
 import { strings } from './strings';
 import './App.css';
 
-/** Props for App. The API client is injected so tests can supply a double. */
+/**
+ * Props for App. The API client is injected so tests can supply a double.
+ * personClient is optional: locally there is no person-service Worker, so the
+ * people view must not render at all when it is absent.
+ */
 interface AppProps {
   client: ApiClient;
+  personClient?: PersonApiClient;
 }
 
 /**
  * App is the admin shell: it owns the user list (loaded on mount and refreshed
  * after every mutation) and wires the provision form and users table to the
- * injected API client.
+ * injected API client. When a personClient is supplied it also owns the
+ * people list (loaded on mount and refreshed after a successful provision,
+ * since provisioning dual-writes a person record on the Go side).
  */
-function App({ client }: AppProps) {
+function App({ client, personClient }: AppProps) {
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [people, setPeople] = useState<PersonSummary[]>([]);
+  const [peopleLoading, setPeopleLoading] = useState(personClient !== undefined);
+  const [peopleError, setPeopleError] = useState<string | null>(null);
 
   // `loading` starts true and flips off after the first load; later refreshes
   // (post-provision/deprovision/delete) update the list in place without
@@ -47,13 +65,46 @@ function App({ client }: AppProps) {
     void refreshUsers();
   }, [refreshUsers]);
 
+  // Mirrors refreshUsers' promise-chain style (see the lint-rule comment
+  // above). A no-op when personClient is undefined so App never touches the
+  // people state absent a configured person service. Failures set peopleError
+  // only — never the shared `error` state — so a person-service outage never
+  // blocks user management.
+  const refreshPeople = useCallback((): Promise<void> => {
+    if (personClient === undefined) {
+      return Promise.resolve();
+    }
+    return personClient
+      .listPeople()
+      .then((nextPeople) => {
+        setPeople(nextPeople);
+        setPeopleError(null);
+      })
+      .catch((rejection: unknown) => {
+        setPeopleError(rejection instanceof ApiError ? rejection.message : strings.peopleLoadError);
+      })
+      .finally(() => {
+        setPeopleLoading(false);
+      });
+  }, [personClient]);
+
+  useEffect(() => {
+    void refreshPeople();
+  }, [refreshPeople]);
+
+  // Join key: a ntfy userId is "u_" + personHash. Built fresh each render from
+  // `people`; empty when there is no personClient, so UsersTable always falls
+  // back to displaying the raw userId in that case.
+  const emailByPersonHash = new Map(people.map((person) => [person.personHash, person.email]));
+
   const handleProvision = useCallback(
-    async (pair: AppUserPair): Promise<ProvisionResult> => {
-      const result = await client.provision(pair);
+    async (params: ProvisionParams): Promise<ProvisionResult> => {
+      const result = await client.provision(params);
       await refreshUsers();
+      await refreshPeople();
       return result;
     },
-    [client, refreshUsers],
+    [client, refreshUsers, refreshPeople],
   );
 
   const handleDeprovision = useCallback(
@@ -102,9 +153,13 @@ function App({ client }: AppProps) {
         <UsersTable
           users={users}
           loading={loading}
+          emailByPersonHash={emailByPersonHash}
           onDeprovision={handleDeprovision}
           onDelete={handleDelete}
         />
+        {personClient !== undefined && (
+          <PeopleTable people={people} loading={peopleLoading} error={peopleError} />
+        )}
       </main>
     </div>
   );

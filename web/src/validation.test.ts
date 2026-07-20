@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isValidAppId, isValidUserId } from './validation';
+import { isValidAppId, isValidEmail } from './validation';
 
 describe('isValidAppId', () => {
   it.each([
@@ -17,17 +17,18 @@ describe('isValidAppId', () => {
   });
 });
 
-describe('isValidUserId', () => {
+describe('isValidEmail', () => {
   it.each([
-    ['alice', true],
-    ['alice-2', true], // hyphens allowed in user_id
-    ['user_name', true],
-    ['Alice', false], // uppercase rejected
-    ['', false],
-    ['everyone', false], // reserved
-    ['*', false], // reserved
-    ['a'.repeat(64), false], // too long
-  ])('isValidUserId(%j) === %s', (value, expected) => {
-    expect(isValidUserId(value)).toBe(expected);
+    ['alice@example.com', true],
+    ['  Alice@Example.COM  ', true], // uppercase/whitespace-padded valid
+    ['aliceexample.com', false], // missing @
+    ['alice@ex@ample.com', false], // two @s
+    ['@example.com', false], // empty local
+    ['alice@', false], // empty domain
+    ['alice @example.com', false], // internal space
+    ['', false], // empty string
+    [`${'a'.repeat(250)}@example.com`, false], // >254 chars
+  ])('isValidEmail(%j) === %s', (value, expected) => {
+    expect(isValidEmail(value)).toBe(expected);
   });
 });

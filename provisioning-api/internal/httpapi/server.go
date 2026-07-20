@@ -11,23 +11,29 @@ import (
 	"net/http"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/provisioning"
 )
 
 // ProvisioningService is the subset of provisioning.Service the HTTP layer
 // depends on, so handlers can be tested against a fake.
 type ProvisioningService interface {
-	// Provision creates (or reuses) a user, grants the app's topic access,
-	// and returns a fresh app-labeled token.
+	// Provision creates (or reuses) the person's global ntfy user, grants
+	// the app's scoped topic access, and returns a fresh app-labeled token.
 	Provision(ctx context.Context, request provisioning.ProvisionRequest) (provisioning.ProvisionResult, error)
 	// Deprovision revokes the app's topic access and removes the app's
-	// tokens for the user.
-	Deprovision(ctx context.Context, request provisioning.ProvisionRequest) error
+	// tokens for the ntfy user, deleting the user entirely if no topic
+	// grants remain.
+	Deprovision(ctx context.Context, request provisioning.DeprovisionRequest) error
 	// ListUsers returns every provisioned user with their derived apps and
 	// raw topic patterns.
 	ListUsers(ctx context.Context) ([]provisioning.UserSummary, error)
 	// DeleteUser removes a user entirely.
 	DeleteUser(ctx context.Context, userID string) error
+	// ProvisionApp creates (or reuses) the app's publisher ntfy user, grants
+	// its write-only app-wide topic access, and returns a fresh
+	// publisher-labeled token.
+	ProvisionApp(ctx context.Context, request provisioning.ProvisionAppRequest) (provisioning.ProvisionAppResult, error)
 }
 
 // ServerConfig configures a Server. Service is required; Logger defaults to
@@ -75,6 +81,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /v1/deprovision", server.handleDeprovision)
 	server.mux.HandleFunc("GET /v1/users", server.handleListUsers)
 	server.mux.HandleFunc("DELETE /v1/users/{user_id}", server.handleDeleteUser)
+	server.mux.HandleFunc("POST /v1/provision-app", server.handleProvisionApp)
 }
 
 // handleHealthz responds 200 with a plain-text "ok" body for liveness checks.
@@ -85,16 +92,21 @@ func (server *Server) handleHealthz(responseWriter http.ResponseWriter, request 
 }
 
 // provisionRequestBody is the JSON body shared by /v1/provision and
-// /v1/deprovision.
+// /v1/deprovision. For /v1/provision, only AppID and Email are used
+// (the identity is email-keyed; UserID is ignored). For /v1/deprovision,
+// both Email and UserID are optional — Email resolves to the derived ntfy
+// user id, or UserID is taken as an already-derived ntfy user id directly.
 type provisionRequestBody struct {
 	AppID  string `json:"app_id"`
 	UserID string `json:"user_id"`
+	Email  string `json:"email"`
 }
 
 // provisionResponseBody is the JSON response for a successful provision.
 type provisionResponseBody struct {
 	UserID       string `json:"user_id"`
 	AppID        string `json:"app_id"`
+	PersonHash   string `json:"person_hash"`
 	TopicPattern string `json:"topic_pattern"`
 	Token        string `json:"token"`
 }
@@ -128,20 +140,22 @@ func (server *Server) handleProvision(responseWriter http.ResponseWriter, reques
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	// app_id is validated before user_id: when both are invalid, the
-	// caller sees the app_id error first (see validation.go).
+	// The provision path is email-keyed: identity derives from the email
+	// alone, so no user_id is accepted here. app_id is validated before
+	// email: when both are invalid, the caller sees app_id first (see
+	// validation.go).
 	if !validateAppID(requestBody.AppID) {
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
 		return
 	}
-	if !validateUserID(requestBody.UserID) {
-		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid user_id"})
+	if !validateEmail(requestBody.Email) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid email"})
 		return
 	}
 
 	result, provisionErr := server.service.Provision(request.Context(), provisioning.ProvisionRequest{
-		AppID:  requestBody.AppID,
-		UserID: requestBody.UserID,
+		AppID: requestBody.AppID,
+		Email: requestBody.Email,
 	})
 	if provisionErr != nil {
 		server.writeServiceError(responseWriter, request, provisionErr)
@@ -151,6 +165,7 @@ func (server *Server) handleProvision(responseWriter http.ResponseWriter, reques
 	writeJSON(responseWriter, http.StatusOK, provisionResponseBody{
 		UserID:       result.UserID,
 		AppID:        result.AppID,
+		PersonHash:   result.PersonHash,
 		TopicPattern: result.TopicPattern,
 		Token:        result.Token,
 	})
@@ -163,8 +178,9 @@ type deprovisionResponseBody struct {
 	Removed bool   `json:"removed"`
 }
 
-// handleDeprovision decodes the request body and delegates to
-// Service.Deprovision, confirming removal as JSON.
+// handleDeprovision decodes the request body, resolves the target ntfy user
+// id from either an email or an already-derived ntfy user_id, and delegates
+// to Service.Deprovision, confirming removal as JSON.
 func (server *Server) handleDeprovision(responseWriter http.ResponseWriter, request *http.Request) {
 	var requestBody provisionRequestBody
 	if decodeErr := json.NewDecoder(request.Body).Decode(&requestBody); decodeErr != nil {
@@ -175,14 +191,29 @@ func (server *Server) handleDeprovision(responseWriter http.ResponseWriter, requ
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
 		return
 	}
-	if !validateUserID(requestBody.UserID) {
-		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid user_id"})
+
+	var ntfyUserID string
+	switch {
+	case requestBody.Email != "":
+		if !validateEmail(requestBody.Email) {
+			writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid email"})
+			return
+		}
+		ntfyUserID = personhash.NtfyUser(requestBody.Email)
+	case requestBody.UserID != "":
+		if !validateNtfyUserID(requestBody.UserID) {
+			writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid user_id"})
+			return
+		}
+		ntfyUserID = requestBody.UserID
+	default:
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "email or user_id required"})
 		return
 	}
 
-	deprovisionErr := server.service.Deprovision(request.Context(), provisioning.ProvisionRequest{
-		AppID:  requestBody.AppID,
-		UserID: requestBody.UserID,
+	deprovisionErr := server.service.Deprovision(request.Context(), provisioning.DeprovisionRequest{
+		AppID:      requestBody.AppID,
+		NtfyUserID: ntfyUserID,
 	})
 	if deprovisionErr != nil {
 		server.writeServiceError(responseWriter, request, deprovisionErr)
@@ -190,7 +221,7 @@ func (server *Server) handleDeprovision(responseWriter http.ResponseWriter, requ
 	}
 
 	writeJSON(responseWriter, http.StatusOK, deprovisionResponseBody{
-		UserID:  requestBody.UserID,
+		UserID:  ntfyUserID,
 		AppID:   requestBody.AppID,
 		Removed: true,
 	})
@@ -265,5 +296,50 @@ func (server *Server) handleDeleteUser(responseWriter http.ResponseWriter, reque
 	writeJSON(responseWriter, http.StatusOK, deleteUserResponseBody{
 		UserID:  userID,
 		Deleted: true,
+	})
+}
+
+// provisionAppRequestBody is the JSON body for /v1/provision-app.
+type provisionAppRequestBody struct {
+	AppID string `json:"app_id"`
+}
+
+// provisionAppResponseBody is the JSON response for a successful
+// provision-app call. The token is revealed once at mint time — first-time
+// handoff semantics, same as per-user provisioning.
+type provisionAppResponseBody struct {
+	AppID           string `json:"app_id"`
+	PublisherUserID string `json:"publisher_user_id"`
+	TopicPattern    string `json:"topic_pattern"`
+	Token           string `json:"token"`
+}
+
+// handleProvisionApp decodes the request body, delegates to
+// Service.ProvisionApp, and writes the resulting publisher identity and
+// token as JSON.
+func (server *Server) handleProvisionApp(responseWriter http.ResponseWriter, request *http.Request) {
+	var requestBody provisionAppRequestBody
+	if decodeErr := json.NewDecoder(request.Body).Decode(&requestBody); decodeErr != nil {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if !validateAppID(requestBody.AppID) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
+		return
+	}
+
+	result, provisionAppErr := server.service.ProvisionApp(request.Context(), provisioning.ProvisionAppRequest{
+		AppID: requestBody.AppID,
+	})
+	if provisionAppErr != nil {
+		server.writeServiceError(responseWriter, request, provisionAppErr)
+		return
+	}
+
+	writeJSON(responseWriter, http.StatusOK, provisionAppResponseBody{
+		AppID:           result.AppID,
+		PublisherUserID: result.PublisherUserID,
+		TopicPattern:    result.TopicPattern,
+		Token:           result.Token,
 	})
 }

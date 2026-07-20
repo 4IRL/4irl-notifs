@@ -12,6 +12,7 @@ describe('strings module', () => {
   it('exposes form labels and actions', () => {
     expect(strings.appIdLabel).toBe('App ID');
     expect(strings.userIdLabel).toBe('User ID');
+    expect(strings.emailLabel).toBe('Email');
     expect(strings.provisionAction).toBe('Provision');
     expect(strings.deprovisionAction).toBe('Deprovision');
     expect(strings.deleteAction).toBe('Delete');
@@ -28,6 +29,17 @@ describe('strings module', () => {
     expect(strings.invalidUserId).toBe(
       'User ID must be lowercase letters, digits, underscores, or hyphens.',
     );
+    expect(strings.invalidEmail).toBe('Enter a valid email address.');
     expect(strings.usersEmpty).toBe('No users provisioned yet.');
+  });
+
+  it('exposes the people section heading, status copy, and column headers', () => {
+    expect(strings.peopleHeading).toBe('People');
+    expect(strings.peopleLoading).toBe('Loading people…');
+    expect(strings.peopleEmpty).toBe('No people recorded yet.');
+    expect(strings.peopleLoadError).toBe('Could not load people.');
+    expect(strings.columnPersonHash).toBe('Person hash');
+    expect(strings.columnEmail).toBe('Email');
+    expect(strings.columnCreated).toBe('Created');
   });
 });

@@ -20,31 +20,39 @@ describe('api client', () => {
     });
   }
 
-  it('provision POSTs the pair and returns the parsed token result', async () => {
+  it('provision POSTs app_id/email and returns the parsed token result', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
         status: 200,
         body: {
-          user_id: 'alice',
+          user_id: 'u_76gzqgp4byjl6dje',
           app_id: 'urls4irl',
-          topic_pattern: 'urls4irl-*',
+          person_hash: '76gzqgp4byjl6dje',
+          topic_pattern: 'urls4irl-76gzqgp4byjl6dje-*',
           token: 'tk_abc',
         },
       }),
     );
     const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
 
-    const result = await client.provision({ appId: 'urls4irl', userId: 'alice' });
+    const result = await client.provision({
+      appId: 'urls4irl',
+      email: 'alice@example.com',
+    });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
     expect(calledUrl).toBe('https://api.test/v1/provision');
     expect(calledInit).toMatchObject({ method: 'POST' });
-    expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl', user_id: 'alice' });
+    expect(JSON.parse(calledInit.body as string)).toEqual({
+      app_id: 'urls4irl',
+      email: 'alice@example.com',
+    });
     expect(result).toEqual({
-      userId: 'alice',
+      userId: 'u_76gzqgp4byjl6dje',
       appId: 'urls4irl',
-      topicPattern: 'urls4irl-*',
+      personHash: '76gzqgp4byjl6dje',
+      topicPattern: 'urls4irl-76gzqgp4byjl6dje-*',
       token: 'tk_abc',
     });
   });
@@ -102,14 +110,16 @@ describe('api client', () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 400, body: { error: 'invalid app_id' } }));
     const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
 
-    await expect(client.provision({ appId: 'BAD', userId: 'alice' })).rejects.toMatchObject({
+    await expect(
+      client.provision({ appId: 'BAD', email: 'alice@example.com' }),
+    ).rejects.toMatchObject({
       name: 'ApiError',
       status: 400,
       message: 'invalid app_id',
     });
-    await expect(client.provision({ appId: 'BAD', userId: 'alice' })).rejects.toBeInstanceOf(
-      ApiError,
-    );
+    await expect(
+      client.provision({ appId: 'BAD', email: 'alice@example.com' }),
+    ).rejects.toBeInstanceOf(ApiError);
   });
 
   it('sends credentials on every request so the Cloudflare Access cookie crosses hostnames', async () => {

@@ -14,14 +14,22 @@ export interface UserSummary {
 export interface ProvisionResult {
   userId: string;
   appId: string;
+  personHash: string;
   topicPattern: string;
   token: string;
 }
 
-/** An app/user pair identifying a provision or deprovision target. */
+/** An app/user pair identifying a deprovision target; userId is the ntfy user id. */
 export interface AppUserPair {
   appId: string;
   userId: string;
+}
+
+/** Parameters for provisioning a person into an app. Identity is email-keyed;
+ *  the app's own user id is not needed (the ntfy user derives from the email). */
+export interface ProvisionParams {
+  appId: string;
+  email: string;
 }
 
 /** Identifies a user for deletion. */
@@ -55,6 +63,7 @@ interface UsersResponseWire {
 interface ProvisionResponseWire {
   user_id: string;
   app_id: string;
+  person_hash: string;
   topic_pattern: string;
   token: string;
 }
@@ -63,7 +72,7 @@ const DEFAULT_BASE_URL = '';
 
 /** The provisioning API surface consumed by the admin UI. */
 export interface ApiClient {
-  provision(pair: AppUserPair): Promise<ProvisionResult>;
+  provision(params: ProvisionParams): Promise<ProvisionResult>;
   deprovision(pair: AppUserPair): Promise<void>;
   listUsers(): Promise<UserSummary[]>;
   deleteUser(param: UserIdParam): Promise<void>;
@@ -106,20 +115,23 @@ export function createApiClient({
   }
 
   return {
-    async provision({ appId, userId }: AppUserPair): Promise<ProvisionResult> {
+    async provision({ appId, email }: ProvisionParams): Promise<ProvisionResult> {
       const wire = (await request({
         path: '/v1/provision',
         method: 'POST',
-        body: { app_id: appId, user_id: userId },
+        body: { app_id: appId, email },
       })) as ProvisionResponseWire;
       return {
         userId: wire.user_id,
         appId: wire.app_id,
+        personHash: wire.person_hash,
         topicPattern: wire.topic_pattern,
         token: wire.token,
       };
     },
 
+    // userId here is the ntfy user id (e.g. "u_<hash>"), not the app's own
+    // user id — deprovision resolves against the already-derived ntfy user.
     async deprovision({ appId, userId }: AppUserPair): Promise<void> {
       await request({
         path: '/v1/deprovision',

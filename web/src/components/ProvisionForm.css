@@ -26,8 +26,16 @@
 .provision-form input {
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--text-h);
   padding: var(--space-2);
   font-size: 1rem;
+}
+
+.provision-form input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
 }
 
 .provision-form button {
@@ -35,11 +43,15 @@
   border: none;
   border-radius: var(--radius);
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
   padding: var(--space-2) var(--space-3);
   font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
+}
+
+.provision-form button:hover:not(:disabled) {
+  background: var(--accent-hover);
 }
 
 .provision-form button:disabled {

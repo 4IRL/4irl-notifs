@@ -43,7 +43,8 @@ full design (problem, decisions, architecture).
 Components:
 - **ntfy** — self-hosted pub/sub notification server (topics, users, ACLs), deployed via Docker.
 - **provisioning-api** — barebones Go service that shells out to the `ntfy` CLI to expose
-  `provision(app_id, user_id)` / `deprovision(app_id, user_id)`. Callable by the admin UI and by
+  `provision(app_id, email)` / `deprovision(app_id, email-or-ntfy-user-id)` (identity is
+  email-keyed; the ntfy user derives from the email). Callable by the admin UI and by
   individual consuming apps, each authenticated via its own Cloudflare Access Service Token.
 - **web** — React/Vite admin UI, deployed to Cloudflare Pages behind Cloudflare Access
   (Google/GitHub OAuth).

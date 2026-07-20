@@ -16,6 +16,7 @@ import (
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/httpapi"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personsvc"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/provisioning"
 )
 
@@ -42,9 +43,24 @@ func main() {
 	ntfyClient := ntfycli.NewClient(ntfycli.ClientConfig{
 		Runner: ntfycli.ExecRunner{BinaryPath: ntfyBinaryPath},
 	})
+
+	// The person-service dual-write is Wave-2/best-effort and optional: an
+	// empty PERSON_SERVICE_URL (the local dev stack, which has no Worker)
+	// leaves personClient.Configured() false, so Provision skips the
+	// dual-write entirely.
+	personServiceURL := os.Getenv("PERSON_SERVICE_URL")
+	personClient := personsvc.NewClient(personsvc.Config{
+		BaseURL:            personServiceURL,
+		AccessClientID:     os.Getenv("PERSON_SERVICE_ACCESS_CLIENT_ID"),
+		AccessClientSecret: os.Getenv("PERSON_SERVICE_ACCESS_CLIENT_SECRET"),
+	})
+	logger.Info("person-service dual-write", "enabled", personClient.Configured(), "url", personServiceURL)
+
 	service := provisioning.NewService(provisioning.ServiceConfig{
 		Client:           ntfyClient,
 		GeneratePassword: provisioning.GenerateRandomPassword,
+		PersonClient:     personClient,
+		Logger:           logger,
 	})
 	server := httpapi.NewServer(httpapi.ServerConfig{Service: service, Logger: logger})
 

@@ -29,7 +29,9 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: |
+            web/package-lock.json
+            person-service/package-lock.json
 
       - name: Install frontend dependencies
         working-directory: web
@@ -37,6 +39,14 @@ jobs:
 
       - name: Run frontend unit tests (Vitest)
         working-directory: web
+        run: npm test
+
+      - name: Install worker dependencies
+        working-directory: person-service
+        run: npm ci
+
+      - name: Run worker tests (Vitest + workers pool)
+        working-directory: person-service
         run: npm test
 
   E2E:

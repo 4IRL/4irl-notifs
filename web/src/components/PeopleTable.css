@@ -1,0 +1,36 @@
+.people-table {
+  margin-top: var(--space-5);
+}
+
+.people-table__status {
+  color: var(--text);
+}
+
+.people-table__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.people-table__table th,
+.people-table__table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.people-table__table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.people-table__table th {
+  color: var(--text);
+  font-size: 0.75rem;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.people-table__hash {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}

@@ -17,8 +17,10 @@ export const strings = {
 
   appIdLabel: 'App ID',
   userIdLabel: 'User ID',
+  emailLabel: 'Email',
   appIdPlaceholder: 'urls4irl',
   userIdPlaceholder: 'alice',
+  emailPlaceholder: 'alice@example.com',
 
   provisionAction: 'Provision',
   deprovisionAction: 'Deprovision',
@@ -30,12 +32,21 @@ export const strings = {
 
   invalidAppId: 'App ID must be lowercase letters, digits, or underscores.',
   invalidUserId: 'User ID must be lowercase letters, digits, underscores, or hyphens.',
+  invalidEmail: 'Enter a valid email address.',
 
   usersEmpty: 'No users provisioned yet.',
   usersLoading: 'Loading users…',
   columnUser: 'User',
   columnApps: 'Apps',
   columnTopicPatterns: 'Topic patterns',
+
+  peopleHeading: 'People',
+  peopleLoading: 'Loading people…',
+  peopleEmpty: 'No people recorded yet.',
+  peopleLoadError: 'Could not load people.',
+  columnPersonHash: 'Person hash',
+  columnEmail: 'Email',
+  columnCreated: 'Created',
 
   genericError: 'Something went wrong. Please try again.',
 } as const;
