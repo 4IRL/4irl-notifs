@@ -13,6 +13,10 @@
   --accent-contrast: #1a1a1a;
   --accent-bg: #2a2320;
   --accent-border: #f97316;
+  --accent-2: #22d3ee;
+  --accent-2-hover: #67e8f9;
+  --accent-2-bg: rgba(34, 211, 238, 0.12);
+  --accent-2-border: #22d3ee;
   --danger: #f87171;
   --danger-bg: rgba(248, 113, 113, 0.12);
   --danger-border: rgba(248, 113, 113, 0.4);

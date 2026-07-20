@@ -54,13 +54,22 @@
 }
 
 .users-table__button--secondary {
-  border: 1px solid var(--accent-border);
-  background: var(--accent-bg);
-  color: var(--accent);
+  border: 1px solid var(--accent-2-border);
+  background: var(--accent-2-bg);
+  color: var(--accent-2);
+}
+
+.users-table__button--secondary:hover {
+  border-color: var(--accent-2-hover);
+  color: var(--accent-2-hover);
 }
 
 .users-table__button--danger {
   border: 1px solid var(--danger-border);
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+.users-table__button--danger:hover {
+  border-color: var(--danger);
 }
