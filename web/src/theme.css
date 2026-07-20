@@ -1,20 +1,23 @@
 /* Theme tokens for the 4IRL Notifications admin UI. Every view reuses these —
-   no per-screen one-off colors, spacing, or radii. Values are pinned by the
-   screenshotted design mock (see plans/notification-service/tmp). */
+   no per-screen one-off colors, spacing, or radii. Dark gray + orange theme. */
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --surface: #faf9fb;
-  --border: #e5e4e7;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --danger: #c62828;
-  --danger-bg: rgba(198, 40, 40, 0.08);
-  --danger-border: rgba(198, 40, 40, 0.4);
-  --ok: #1b7f4d;
-  --ok-bg: rgba(27, 127, 77, 0.1);
+  --text: #a3a3a3;
+  --text-h: #e8e8e8;
+  --bg: #1a1a1a;
+  --surface: #262626;
+  --surface-hover: #2f2f2f;
+  --border: #3a3a3a;
+  --input-bg: #1f1f1f;
+  --accent: #f97316;
+  --accent-hover: #fb923c;
+  --accent-contrast: #1a1a1a;
+  --accent-bg: #2a2320;
+  --accent-border: #f97316;
+  --danger: #f87171;
+  --danger-bg: rgba(248, 113, 113, 0.12);
+  --danger-border: rgba(248, 113, 113, 0.4);
+  --ok: #4ade80;
+  --ok-bg: rgba(74, 222, 128, 0.12);
 
   --radius: 8px;
   --space-1: 0.25rem;

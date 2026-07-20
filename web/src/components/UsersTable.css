@@ -18,6 +18,10 @@
   border-bottom: 1px solid var(--border);
 }
 
+.users-table__table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
 .users-table__table th {
   color: var(--text);
   font-size: 0.75rem;

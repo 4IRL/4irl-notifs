@@ -1,7 +1,7 @@
 /* Global element styles only — all design tokens live in theme.css. */
 :root {
   font: 16px/145% var(--sans);
-  color-scheme: light dark;
+  color-scheme: dark;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;

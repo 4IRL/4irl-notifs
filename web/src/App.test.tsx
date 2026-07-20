@@ -253,4 +253,41 @@ describe('App', () => {
 
     await waitFor(() => expect(personClient.listPeople).toHaveBeenCalledTimes(2));
   });
+
+  it('shows the email in the users table when the person client resolves the matching person', async () => {
+    const listUsers = vi.fn().mockResolvedValue([
+      {
+        userId: 'u_76gzqgp4byjl6dje',
+        apps: ['urls4irl'],
+        topicPatterns: ['urls4irl-76gzqgp4byjl6dje-*'],
+      },
+    ]);
+    const client = buildFakeClient({ listUsers });
+    const personClient = buildFakePersonClient({
+      listPeople: vi.fn().mockResolvedValue([
+        {
+          personHash: '76gzqgp4byjl6dje',
+          email: 'alice@example.com',
+          createdAt: '2026-07-19T18:12:03Z',
+        },
+      ]),
+    });
+    render(<App client={client} personClient={personClient} />);
+
+    // The email is expected in both the Users table (via emailByPersonHash)
+    // and the People table (its own email column) once people load.
+    await waitFor(() => expect(screen.getAllByText('alice@example.com')).toHaveLength(2));
+    expect(screen.queryByText('u_76gzqgp4byjl6dje')).not.toBeInTheDocument();
+  });
+
+  it('renders raw userIds in the users table when no personClient is supplied', async () => {
+    const client = buildFakeClient({
+      listUsers: vi
+        .fn()
+        .mockResolvedValue([{ userId: 'u_abcdefgh23456777', apps: [], topicPatterns: [] }]),
+    });
+    render(<App client={client} />);
+
+    expect(await screen.findByText('u_abcdefgh23456777')).toBeInTheDocument();
+  });
 });

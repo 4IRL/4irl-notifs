@@ -92,6 +92,11 @@ function App({ client, personClient }: AppProps) {
     void refreshPeople();
   }, [refreshPeople]);
 
+  // Join key: a ntfy userId is "u_" + personHash. Built fresh each render from
+  // `people`; empty when there is no personClient, so UsersTable always falls
+  // back to displaying the raw userId in that case.
+  const emailByPersonHash = new Map(people.map((person) => [person.personHash, person.email]));
+
   const handleProvision = useCallback(
     async (params: ProvisionParams): Promise<ProvisionResult> => {
       const result = await client.provision(params);
@@ -148,6 +153,7 @@ function App({ client, personClient }: AppProps) {
         <UsersTable
           users={users}
           loading={loading}
+          emailByPersonHash={emailByPersonHash}
           onDeprovision={handleDeprovision}
           onDelete={handleDelete}
         />
