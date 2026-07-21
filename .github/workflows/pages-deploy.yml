@@ -13,18 +13,13 @@ on:
         required: true
 
 env:
-  # Public API hostname baked into the SPA at build time (main.tsx reads VITE_API_BASE_URL).
-  # NOT a secret — same rationale as the ntfy base URL hardcoded in docker-compose.prod.yml:
-  # a fixed, public hostname. The full frontend suite (Vitest + Playwright) already gated this
-  # commit on the PR via CI.yml -> test.yml; this job runs only after merge to main.
-  VITE_API_BASE_URL: https://notifs-api.4irl.app
-  # Person-service Worker hostname baked into the SPA at build time (main.tsx reads
-  # VITE_PERSON_SERVICE_URL; empty would omit the People view entirely). Suggested
-  # hostname per docs/deploy-runbook.md §10 step 3 — if the operator picks a different
-  # Worker custom domain, update this value to match. Until the Worker + its Access app
-  # are live, the People section renders a graceful load-error line; user management is
-  # unaffected.
-  VITE_PERSON_SERVICE_URL: https://notifs-people.4irl.app
+  # The SPA now calls same-origin relative paths (/v1/* and /people), proxied server-side by
+  # web/functions/ to the backends — so no backend hostnames are baked in at build time. The
+  # only build-time flag is VITE_PEOPLE_ENABLED, which turns on the People view for prod (local
+  # dev omits it via an unset flag). The backend hostnames + service-token secrets are RUNTIME
+  # Pages Function bindings (PROVISIONING_API_URL, PERSON_SERVICE_URL, PROXY_ACCESS_CLIENT_ID,
+  # PROXY_ACCESS_CLIENT_SECRET), set on the Pages project — see docs/deploy-runbook.md §6.
+  VITE_PEOPLE_ENABLED: 'true'
 
 jobs:
   PagesDeploy:
