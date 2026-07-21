@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Cloudflare Pages Function local dev secrets (wrangler pages dev) — not covered
+# by the root .gitignore's .env/.env.* globs
+.dev.vars
+.dev.vars.*
+
 # Test artifacts
 coverage
 playwright-report
