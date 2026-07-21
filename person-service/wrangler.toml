@@ -3,18 +3,19 @@ main = "src/index.ts"
 compatibility_date = "2026-07-01"
 
 # The Worker performs NO auth itself — Cloudflare Access enforces at the edge post-deploy
-# (see src/index.ts header comment).
+# (see src/index.ts header comment). For that to be the ENTIRE boundary, the Worker must NOT
+# be reachable at its public *.workers.dev URL (which bypasses the custom-domain Access app):
+workers_dev = false
 
 [[d1_databases]]
 binding = "DB"
 database_name = "person-service"
-# Placeholder — the operator fills in the real database_id after running
-# `wrangler d1 create person-service`. See docs/deploy-runbook.md Wave 2.
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "6f44025d-a523-46d3-b2d2-1ad7fcd272aa"
 
-# Custom domain / route: the hostname for this Worker is an operator decision,
-# to be made when it is wired into the Cloudflare Access + DNS setup described
-# in docs/deploy-runbook.md Wave 2. Example (fill in once decided):
-# [[routes]]
-# pattern = "person-service.example.com/*"
-# custom_domain = true
+# Custom domain: the ENTIRE public surface of this Worker. Cloudflare Access (a
+# self-hosted app on this exact hostname — see docs/deploy-runbook.md Wave 2 step 4)
+# is the whole auth boundary in front of it. Lockstep: pages-deploy.yml bakes
+# VITE_PERSON_SERVICE_URL=https://notifs-people.4irl.app — keep the two in sync.
+[[routes]]
+pattern = "notifs-people.4irl.app"
+custom_domain = true

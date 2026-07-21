@@ -9,6 +9,10 @@ changelog/
 *.test
 *.out
 
+# Docker Compose secrets — transient files written from GitHub Actions secrets at
+# deploy time (and rm -rf'd right after); never committed. Mirrors urls4irl.
+secrets/
+
 # Node / Cloudflare Pages
 node_modules/
 dist/

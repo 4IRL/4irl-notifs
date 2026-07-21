@@ -31,6 +31,10 @@ jobs:
       PROD_SSH_PRIVATE_KEY_VALUE: ${{ secrets.PROD_SSH_PRIVATE_KEY_VALUE }}
       CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      # Wave-2 person-service dual-write credentials (optional; empty leaves the dual-write
+      # auth unset — fails closed, swallowed — so core provisioning is unaffected).
+      PERSON_SERVICE_ACCESS_CLIENT_ID: ${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_ID }}
+      PERSON_SERVICE_ACCESS_CLIENT_SECRET: ${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_SECRET }}
 
   # Admin UI (Cloudflare Pages) is independent of the Docker image + VPS stack, so it runs in
   # parallel with build-prod/deploy-prod (no `needs`), gated by the same merged-to-main guard.

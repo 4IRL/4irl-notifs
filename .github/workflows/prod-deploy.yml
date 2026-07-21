@@ -19,6 +19,13 @@ on:
         required: true
       CF_ACCESS_CLIENT_SECRET:
         required: true
+      # Wave-2 person-service dual-write Access Service-Token credentials. Optional:
+      # when unset they resolve to empty, written as empty ./secrets/* files, leaving
+      # the dual-write auth unset (fails closed, swallowed — core provisioning unaffected).
+      PERSON_SERVICE_ACCESS_CLIENT_ID:
+        required: false
+      PERSON_SERVICE_ACCESS_CLIENT_SECRET:
+        required: false
 
 jobs:
   ProdDeploy:
@@ -71,9 +78,13 @@ jobs:
           scp -T -q -o StrictHostKeyChecking=no ntfy/server.yml ${{ secrets.PROD_SSH_HOST }}:/home/4irl-notifs/ntfy/
 
       # Pull updated images, recreate only what changed, run as daemon, and prune old images.
-      # This stack has no file-based ./secrets directory (u4i's DB/mail secrets have no
-      # counterpart here) and no runtime .env — NTFY_BASE_URL is baked into the compose
-      # file's default (a fixed, non-secret public hostname).
+      # Secret handling mirrors urls4irl: the only runtime secrets are the Wave-2
+      # person-service Access Service-Token credentials, delivered as Docker Compose secrets.
+      # The step below writes ./secrets/* from the GitHub Actions secrets of the same name
+      # just before `up` (so compose can mount them at /run/secrets), then `rm -rf ./secrets/`
+      # immediately after — no plaintext secret persists on the host, and none enters the
+      # container environment. Non-secret hostnames (NTFY_BASE_URL, PERSON_SERVICE_URL) stay
+      # baked into the compose file's defaults.
       #
       # `up -d` WITHOUT --force-recreate is deliberate: compose diffs image digest + compose
       # definition and recreates ONLY the services that changed. A typical API-only deploy
@@ -88,9 +99,18 @@ jobs:
           ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
           cd /home/4irl-notifs;
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
+
+          mkdir -p ./secrets/;
+          chmod 700 ./secrets/;
+          echo "${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_ID }}" > ./secrets/PERSON_SERVICE_ACCESS_CLIENT_ID;
+          echo "${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_SECRET }}" > ./secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET;
+
           docker compose -f docker-compose.prod.yml pull;
           docker compose -f docker-compose.prod.yml up -d --remove-orphans;
           docker image prune -f;
+
+          echo "Removing on-host secret material (already mounted into the container)...";
+          rm -rf ./secrets/;
 
           echo "Cleaning up docker login files..."
           rm -f ~/.docker/config.json
