@@ -243,9 +243,13 @@ automation, and **no token, Service-Token client-id/secret, or account ID is com
    Manual alternative: `cd person-service && npm ci && npx wrangler deploy`.
 3. **Worker hostname + DNS + route.** Decide the Worker custom domain — suggested
    `notifs-people.4irl.app` (`4irl.app` zone, same as the other three hostnames). Add it as a
-   Custom Domain on the person-service Worker (dashboard → Workers & Pages → person-service →
-   Settings → Domains & Routes; Cloudflare auto-creates the proxied DNS record, same pattern as
-   §4/§6), or fill in the `[[routes]]` block already commented out in `wrangler.toml`.
+   Custom Domain **via the dashboard** (Workers & Pages → person-service → Settings → Domains &
+   Routes; Cloudflare auto-creates the proxied DNS record, same pattern as §4/§6). Manage it
+   **out of band — do NOT add a `[[routes]] custom_domain` block to `wrangler.toml`.** Reconciling
+   a custom domain on deploy hits the zone-scoped `/zones/<id>/workers/routes` API, which would
+   force the `CLOUDFLARE_API_TOKEN` (step 2) to also carry `Zone · Workers Routes · Edit`; keeping
+   the domain dashboard-managed lets that token stay account-scoped (Pages/Workers Scripts/D1),
+   and every CI `wrangler deploy` uploads only the script and leaves the existing domain untouched.
    **IMPORTANT lockstep:** `pages-deploy.yml` bakes
    `VITE_PERSON_SERVICE_URL=https://notifs-people.4irl.app` into the admin-UI build at deploy
    time — if a different hostname is chosen, update that env value in `pages-deploy.yml` in the

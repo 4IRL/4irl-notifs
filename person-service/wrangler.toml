@@ -12,10 +12,16 @@ binding = "DB"
 database_name = "person-service"
 database_id = "6f44025d-a523-46d3-b2d2-1ad7fcd272aa"
 
-# Custom domain: the ENTIRE public surface of this Worker. Cloudflare Access (a
-# self-hosted app on this exact hostname — see docs/deploy-runbook.md Wave 2 step 4)
-# is the whole auth boundary in front of it. Lockstep: pages-deploy.yml bakes
-# VITE_PERSON_SERVICE_URL=https://notifs-people.4irl.app — keep the two in sync.
-[[routes]]
-pattern = "notifs-people.4irl.app"
-custom_domain = true
+# Custom domain (managed OUT OF BAND — intentionally NOT declared here):
+#   notifs-people.4irl.app is the Worker's entire public surface, gated by a
+#   Cloudflare Access self-hosted app on that exact hostname (docs/deploy-runbook.md
+#   Wave 2 step 4). Lockstep: pages-deploy.yml bakes
+#   VITE_PERSON_SERVICE_URL=https://notifs-people.4irl.app — keep the two in sync.
+#
+# The domain is attached via the dashboard (Workers & Pages → person-service →
+# Domains & Routes), NOT a [[routes]] custom_domain block. Reason: reconciling a
+# custom domain on deploy hits the zone-scoped /zones/<id>/workers/routes API, which
+# would force the CI CLOUDFLARE_API_TOKEN to carry Zone · Workers Routes · Edit. We
+# keep that token account-scoped (Pages/Workers Scripts/D1 only), so `wrangler deploy`
+# here uploads the script alone and never touches zone routes. The already-attached
+# custom domain is unaffected.
