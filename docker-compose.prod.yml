@@ -74,12 +74,20 @@ services:
       - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db
       - NTFY_AUTH_DEFAULT_ACCESS=deny-all
       # Wave-2 best-effort dual-write to the person-service Worker (D1 reverse-index
-      # personHash -> email). Empty PERSON_SERVICE_URL disables the dual-write entirely
-      # (Configured() reports false). Real values are installed directly on the VPS at
-      # deploy time via the shell environment and are never committed here.
-      - PERSON_SERVICE_URL=${PERSON_SERVICE_URL:-}
-      - PERSON_SERVICE_ACCESS_CLIENT_ID=${PERSON_SERVICE_ACCESS_CLIENT_ID:-}
-      - PERSON_SERVICE_ACCESS_CLIENT_SECRET=${PERSON_SERVICE_ACCESS_CLIENT_SECRET:-}
+      # personHash -> email). The target hostname is a fixed, non-secret constant, so it
+      # is baked in as the default here (like NTFY_BASE_URL above). The Access Service-Token
+      # credentials are secret and are delivered as Docker Compose secrets (see the top-level
+      # `secrets:` block); the app reads them from the mounted /run/secrets files via the
+      # <KEY>_FILE convention, so the values never enter this container's environment.
+      # prod-deploy.yml writes ./secrets/* from GitHub Actions secrets just before `up` and
+      # deletes them right after — empty secret contents leave the dual-write auth unset,
+      # which fails closed and is swallowed (core provisioning is unaffected).
+      - PERSON_SERVICE_URL=${PERSON_SERVICE_URL:-https://notifs-people.4irl.app}
+      - PERSON_SERVICE_ACCESS_CLIENT_ID_FILE=/run/secrets/PERSON_SERVICE_ACCESS_CLIENT_ID
+      - PERSON_SERVICE_ACCESS_CLIENT_SECRET_FILE=/run/secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET
+    secrets:
+      - PERSON_SERVICE_ACCESS_CLIENT_ID
+      - PERSON_SERVICE_ACCESS_CLIENT_SECRET
     volumes:
       - ntfy-auth:/var/lib/ntfy
     healthcheck:
@@ -92,3 +100,14 @@ services:
 volumes:
   ntfy-auth:
   ntfy-cache:
+
+# The person-service Access Service-Token credentials, delivered to
+# provisioning-api as tmpfs files at /run/secrets/<NAME>. prod-deploy.yml writes
+# these ./secrets/* files from the GitHub Actions secrets of the same name just
+# before `docker compose up` and `rm -rf ./secrets/` immediately after, so no
+# plaintext secret persists on the host (the same pattern urls4irl uses).
+secrets:
+  PERSON_SERVICE_ACCESS_CLIENT_ID:
+    file: ./secrets/PERSON_SERVICE_ACCESS_CLIENT_ID
+  PERSON_SERVICE_ACCESS_CLIENT_SECRET:
+    file: ./secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET

@@ -271,16 +271,23 @@ automation, and **no token, Service-Token client-id/secret, or account ID is com
    dedicated to the provisioning-api's dual-write (name it e.g.
    `notifs-provisioning-api → person-service`). Record `<CLIENT_ID>` / `<CLIENT_SECRET>` for step
    6; include this same token in step 4's Service Auth policy.
-6. **Install the dual-write env on the VPS.** The prod compose file (`docker-compose.prod.yml`)
-   reads three placeholders: `PERSON_SERVICE_URL`, `PERSON_SERVICE_ACCESS_CLIENT_ID`,
-   `PERSON_SERVICE_ACCESS_CLIENT_SECRET` (empty = dual-write disabled, provisioning unaffected —
-   same "empty placeholder is a safe default" pattern as the ntfy base URL in §3). Set them in
-   the compose project's environment on the VPS (e.g. an `.env` beside
-   `/home/4irl-notifs/docker-compose.prod.yml` — **not** committed):
-   `PERSON_SERVICE_URL=https://<worker-hostname>`, plus the step-5 credentials. Then
-   `docker compose -f docker-compose.prod.yml up -d` to recreate provisioning-api with the new
-   env (same targeted-recreate pattern the Operations section below uses). Verify from the
-   container logs the startup line `person-service dual-write` shows `enabled=true`.
+6. **Register the dual-write credentials as GitHub Actions secrets (no VPS `.env`).** The
+   dual-write credentials are delivered as **Docker Compose secrets**, the same pattern urls4irl
+   uses — *not* a hand-placed `.env`. Set two repo secrets:
+   `PERSON_SERVICE_ACCESS_CLIENT_ID` / `PERSON_SERVICE_ACCESS_CLIENT_SECRET` (the step-5 values).
+   That is the only manual action — everything else is automated:
+   - `prod-deploy.yml` writes them to `./secrets/*` on the VPS from those GitHub secrets just
+     before `docker compose up`, then `rm -rf ./secrets/` immediately after — so no plaintext
+     secret persists on the host.
+   - `docker-compose.prod.yml` mounts them as `/run/secrets/<NAME>` (tmpfs, inside the container
+     only — the values never enter the container environment / `docker inspect`).
+   - provisioning-api reads them via the `<KEY>_FILE` convention (`internal/secretenv`).
+   - `PERSON_SERVICE_URL` is **not** a secret; it is baked into the compose default
+     (`https://notifs-people.4irl.app`, like `NTFY_BASE_URL`).
+   Empty/unset secrets are safe: they write empty files, leaving the dual-write auth unset (it
+   fails closed and is swallowed — core provisioning is unaffected). A merge to `main`
+   (re)deploys and applies them; verify from the container logs the startup line
+   `person-service dual-write` shows `enabled=true` and `auth_configured=true`.
 7. **Per-app publisher identities.** For each consuming app (urls4irl first):
    ```
    curl -X POST https://notifs-api.4irl.app/v1/provision-app \
