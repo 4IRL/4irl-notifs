@@ -14,7 +14,7 @@ export interface PersonSummary {
 
 /** Configuration for createPersonApiClient. */
 export interface PersonApiClientConfig {
-  baseUrl: string;
+  baseUrl?: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -28,21 +28,23 @@ export interface PersonApiClient {
   listPeople(): Promise<PersonSummary[]>;
 }
 
+const DEFAULT_BASE_URL = '';
+
 /** Builds a PersonApiClient bound to a base URL and fetch implementation. */
 export function createPersonApiClient({
-  baseUrl,
+  baseUrl = DEFAULT_BASE_URL,
   fetchImpl = fetch,
-}: PersonApiClientConfig): PersonApiClient {
+}: PersonApiClientConfig = {}): PersonApiClient {
   const trimmedBaseUrl = baseUrl.replace(/\/+$/, '');
 
   async function request({ path, method }: { path: string; method: string }): Promise<unknown> {
     const response = await fetchImpl(`${trimmedBaseUrl}${path}`, {
       method,
-      // In production the admin UI (Cloudflare Pages) and the person service
-      // live on different hostnames, both behind Cloudflare Access; the
-      // Access session cookie must accompany cross-origin requests or every
-      // call is redirected to the Access login. Same-origin (local) behavior
-      // is unaffected.
+      // The admin UI calls the person service same-origin: in production via a
+      // Cloudflare Pages Function that proxies `/people` to the person service
+      // server-side (default empty baseUrl → relative `/people`); locally the
+      // request stays on the dev origin. `credentials: 'include'` sends the
+      // admin app's own Access session cookie to the same-origin Function.
       credentials: 'include',
     });
 

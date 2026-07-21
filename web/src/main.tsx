@@ -7,18 +7,16 @@ import { createPersonApiClient } from './api/personClient.ts';
 import './theme.css';
 import './index.css';
 
-// The API base URL is same-origin by default; override with VITE_API_BASE_URL
-// at build time when the admin UI and the provisioning API live on different
-// hostnames (see the deploy runbook).
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '';
-const client = createApiClient({ baseUrl: apiBaseUrl });
+// Both clients are always same-origin: the provisioning API (`/v1/*`) and the
+// person service (`/people`) are reached through Cloudflare Pages Functions
+// that proxy to the backends server-side, so no build-time base URL is needed.
+// The People view is gated on the VITE_PEOPLE_ENABLED build flag (set to 'true'
+// in the Pages build) rather than a base URL: local dev has no person backend,
+// so the flag stays unset there and the People view is omitted entirely.
+const client = createApiClient({});
 
-// The person-service base URL is set at Cloudflare Pages build time via
-// VITE_PERSON_SERVICE_URL; the local stack has no person-service Worker, so
-// it stays unset there and the people view is omitted entirely.
-const personServiceUrl = import.meta.env.VITE_PERSON_SERVICE_URL ?? '';
-const personClient =
-  personServiceUrl === '' ? undefined : createPersonApiClient({ baseUrl: personServiceUrl });
+const peopleEnabled = import.meta.env.VITE_PEOPLE_ENABLED === 'true';
+const personClient = peopleEnabled ? createPersonApiClient({}) : undefined;
 
 const rootElement = document.getElementById('root');
 if (rootElement === null) {

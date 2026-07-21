@@ -87,6 +87,15 @@ describe('person api client', () => {
     });
   });
 
+  it('defaults the base URL to same-origin root', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { people: [] } }));
+    const client = createPersonApiClient({ fetchImpl: fetchMock });
+
+    await client.listPeople();
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/people');
+  });
+
   it('trims a trailing slash on the base URL', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { people: [] } }));
     const client = createPersonApiClient({
