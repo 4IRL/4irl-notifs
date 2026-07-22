@@ -69,6 +69,13 @@ export async function proxyTo({
   const authenticatedUserEmail = request.headers.get('Cf-Access-Authenticated-User-Email');
   if (authenticatedUserEmail !== null) {
     // Forwarded for audit; the backends read no user-identity header today.
+    // TRUST CAVEAT: this header is only as trustworthy as the Cloudflare Access
+    // app's hostname coverage plus the preview-URL lockdown (deploy-runbook §6
+    // item 5). Access injects it only for requests that actually traverse the
+    // Access-gated hostname; a gap in that coverage (an ungated hostname, an
+    // unlocked *.pages.dev preview) would let a caller spoof it. It must NOT be
+    // promoted to an authorization signal without first revisiting that
+    // assumption.
     headers.set('Cf-Access-Authenticated-User-Email', authenticatedUserEmail);
   }
 
