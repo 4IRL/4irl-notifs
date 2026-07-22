@@ -419,8 +419,9 @@ automation, and **no token, Service-Token client-id/secret, or account ID is com
    backend publishes personalized messages to `{app_id}-{personHash}-{channel}` topics with this
    token; it learns each user's personHash from the `/v1/provision` response's `person_hash`
    field.
-8. **Per-consuming-app Access Service Tokens on the provisioning API.** This activates §8 item
-   1's deferred "Policy 2 (machines)": mint one Service Token per consuming app (Zero Trust →
+8. **Per-consuming-app Access Service Tokens on the provisioning API.** This adds each consuming
+   app's token to §8 item 1's now-mandatory "Policy 2 (machines)" (already created at §6 for the
+   proxy token): mint one Service Token per consuming app (Zero Trust →
    Access → Service Auth), add them to a Service Auth policy on the `notifs-api.4irl.app` Access
    app. Each app calls `/v1/provision`, `/v1/deprovision` (now also accepts `email` in the body
    as an alternative to `user_id`, resolving to the same derived `u_<personHash>` ntfy user id —
