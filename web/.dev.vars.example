@@ -1,0 +1,5 @@
+# Copy this file to .dev.vars (gitignored) and run `wrangler pages dev` (or `make dev-pages`) to exercise the Pages Functions proxies locally.
+PROVISIONING_API_URL=http://localhost:8799
+PERSON_SERVICE_URL=http://localhost:8799
+PROXY_ACCESS_CLIENT_ID=test-id
+PROXY_ACCESS_CLIENT_SECRET=test-secret

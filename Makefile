@@ -1,6 +1,6 @@
 .PHONY: local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-integration-test go-lint go-fmt \
-	web-test web-e2e web-build web-lint web-format \
+	web-test web-e2e web-build web-lint web-format dev-pages \
 	worker-test worker-build worker-deploy
 
 COMPOSE := docker compose --project-directory . -f docker-compose.yml
@@ -120,6 +120,9 @@ web-lint: ## Lint and format-check the frontend
 
 web-format: ## Auto-format the frontend
 	cd web && npx prettier --write .
+
+dev-pages: ## Build + serve the admin UI via wrangler pages dev to exercise the Pages Functions proxies locally (copy web/.dev.vars.example -> web/.dev.vars first)
+	cd web && npm run pages-dev
 
 ## Worker (person-service)
 

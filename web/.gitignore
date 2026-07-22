@@ -16,6 +16,8 @@ dist-ssr
 # by the root .gitignore's .env/.env.* globs
 .dev.vars
 .dev.vars.*
+# ...but the placeholder template IS tracked (developers copy it to .dev.vars)
+!.dev.vars.example
 
 # Test artifacts
 coverage

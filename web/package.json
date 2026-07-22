@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "pages-dev": "npm run build && wrangler pages dev dist",
     "preview": "vite preview"
   },
   "dependencies": {
