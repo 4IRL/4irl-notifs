@@ -116,6 +116,9 @@ export async function proxyTo({
     return jsonError({ status: 502, error: 'upstream auth failed' });
   }
 
-  // Otherwise stream the upstream response (status + body) through unchanged.
+  // Otherwise stream the full upstream Response through unchanged — status,
+  // body, and all upstream headers pass through verbatim (no allowlist). This
+  // is safe because both backends are stateless internal services that never
+  // emit origin-affecting headers (no Set-Cookie, no caching directives).
   return response;
 }
