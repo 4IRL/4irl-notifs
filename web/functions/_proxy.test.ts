@@ -131,6 +131,23 @@ describe('proxyTo', () => {
     expect(await response.json()).toEqual({ error: 'upstream auth failed' });
   });
 
+  it('normalizes a filtered opaqueredirect response to 502 {error: "upstream auth failed"}', async () => {
+    // Defensive branch: some runtimes surface an Access login redirect as a
+    // filtered `opaqueredirect` response (status 0, `type: 'opaqueredirect'`)
+    // instead of preserving the real 3xx status. workers-types narrows
+    // `Response.type` to `'error' | 'default'` so this shape isn't constructible
+    // via `new Response(...)`; mock a Response-like object to exercise the
+    // `(response.type as string) === 'opaqueredirect'` guard in `_proxy.ts`.
+    const opaqueRedirect = { status: 0, type: 'opaqueredirect' } as unknown as Response;
+    fetchMock.mockResolvedValue(opaqueRedirect);
+    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+
+    const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: 'upstream auth failed' });
+  });
+
   it.each([401, 403])(
     'normalizes an upstream %i to 502 {error: "upstream auth failed"}',
     async (status) => {
