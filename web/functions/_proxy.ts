@@ -40,8 +40,12 @@ export async function proxyTo({
 }): Promise<Response> {
   // Misconfiguration guard: without the service-token credentials every backend
   // call would be rejected by Access, so fail fast and never touch the network.
-  // Each half is checked so a missing id OR a missing secret both trip it.
-  if (!env.PROXY_ACCESS_CLIENT_ID || !env.PROXY_ACCESS_CLIENT_SECRET) {
+  // An unset upstream base (PROVISIONING_API_URL / PERSON_SERVICE_URL) is the
+  // same class of deploy misconfiguration — guard it here so it surfaces an
+  // accurate `500 proxy misconfigured` rather than a misleading
+  // `502 upstream unreachable` after a doomed fetch to an empty/relative URL.
+  // Each condition is checked so any one missing binding trips it.
+  if (!env.PROXY_ACCESS_CLIENT_ID || !env.PROXY_ACCESS_CLIENT_SECRET || !upstreamBase) {
     return jsonError({ status: 500, error: 'proxy misconfigured' });
   }
 

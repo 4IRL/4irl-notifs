@@ -154,6 +154,20 @@ describe('proxyTo', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('returns 500 {error: "proxy misconfigured"} and never calls fetch when the upstream base is empty', async () => {
+    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+
+    const response = await proxyTo({
+      request,
+      upstreamBase: '',
+      env: makeEnv(),
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'proxy misconfigured' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('returns 502 {error: "upstream unreachable"} when the upstream fetch rejects', async () => {
     fetchMock.mockRejectedValue(new Error('network down'));
     const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
