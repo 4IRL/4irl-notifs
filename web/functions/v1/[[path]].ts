@@ -1,4 +1,5 @@
-import { proxyTo, type Env } from '../_proxy';
+import { proxyTo } from '../_proxy';
+import type { Env } from '../_proxy';
 
 // Catch-all Pages Function for `/v1/*` — covers provision, deprovision, users,
 // and users/:id. Proxies to the provisioning-api backend.

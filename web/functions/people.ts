@@ -1,4 +1,5 @@
-import { proxyTo, type Env } from './_proxy';
+import { proxyTo } from './_proxy';
+import type { Env } from './_proxy';
 
 // Pages Function for `/people` — proxies to the person-service backend.
 export const onRequest: PagesFunction<Env> = async (context) => {
