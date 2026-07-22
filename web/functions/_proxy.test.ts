@@ -63,6 +63,22 @@ describe('proxyTo', () => {
     expect(await response.json()).toEqual({ users: [] });
   });
 
+  it('omits the user-email header entirely when the inbound request lacks it', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
+    // No `Cf-Access-Authenticated-User-Email` on the inbound request.
+    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+
+    await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
+
+    const [, calledInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = calledInit.headers as Headers;
+    // The header must be truly absent (null), never the literal string 'null'
+    // from an unguarded `.set(name, request.headers.get(name))`. Covers the
+    // `!== null` guard in `_proxy.ts`.
+    expect(headers.get('Cf-Access-Authenticated-User-Email')).toBeNull();
+    expect(headers.has('Cf-Access-Authenticated-User-Email')).toBe(false);
+  });
+
   it('buffers and forwards a POST JSON body (via arrayBuffer) and content-type unchanged', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { ok: true } }));
     const payload = JSON.stringify({ app_id: 'urls4irl', email: 'alice@example.com' });
