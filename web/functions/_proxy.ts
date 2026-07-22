@@ -46,7 +46,11 @@ export async function proxyTo({
   }
 
   const url = new URL(request.url);
-  const upstreamUrl = `${upstreamBase}${url.pathname}${url.search}`;
+  // Trim trailing slashes on the base so an operator typo (e.g. a
+  // `PROVISIONING_API_URL` ending in `/`) can't produce a double-slash path
+  // that 404s. Mirrors `personClient.ts`'s `baseUrl.replace(/\/+$/, '')`.
+  const trimmedUpstreamBase = upstreamBase.replace(/\/+$/, '');
+  const upstreamUrl = `${trimmedUpstreamBase}${url.pathname}${url.search}`;
 
   // Build a fresh header set — do NOT forward the inbound Cookie (the admin
   // app's Access session cookie is not valid for the backend; the service token
