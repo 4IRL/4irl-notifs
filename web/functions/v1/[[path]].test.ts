@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Env } from '../_proxy';
+import { invoke, jsonResponse, makeEnv } from '../test-helpers';
 import { onRequest } from './[[path]]';
 
 describe('v1 catch-all proxy route', () => {
@@ -15,30 +15,11 @@ describe('v1 catch-all proxy route', () => {
     vi.unstubAllGlobals();
   });
 
-  function makeEnv(): Env {
-    return {
-      PROVISIONING_API_URL: 'https://notifs-api.4irl.app',
-      PERSON_SERVICE_URL: 'https://notifs-people.4irl.app',
-      PROXY_ACCESS_CLIENT_ID: 'id',
-      PROXY_ACCESS_CLIENT_SECRET: 'sec',
-    };
-  }
-
-  function jsonResponse({ status, body }: { status: number; body: unknown }): Response {
-    return new Response(JSON.stringify(body), {
-      status,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  function invoke({ request, env }: { request: Request; env: Env }): Response | Promise<Response> {
-    return onRequest({ request, env } as Parameters<typeof onRequest>[0]);
-  }
-
   it('forwards a GET /v1/users to the provisioning API', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
 
     await invoke({
+      onRequest,
       request: new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' }),
       env: makeEnv(),
     });
@@ -50,6 +31,7 @@ describe('v1 catch-all proxy route', () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { deleted: true } }));
 
     await invoke({
+      onRequest,
       request: new Request('https://notifs-admin.4irl.app/v1/users/u_abc', { method: 'DELETE' }),
       env: makeEnv(),
     });
