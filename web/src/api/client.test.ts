@@ -122,7 +122,7 @@ describe('api client', () => {
     ).rejects.toBeInstanceOf(ApiError);
   });
 
-  it('sends credentials on every request so the Cloudflare Access cookie crosses hostnames', async () => {
+  it("sends credentials so the admin app's Access session cookie reaches the same-origin proxy Function", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
     const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
 

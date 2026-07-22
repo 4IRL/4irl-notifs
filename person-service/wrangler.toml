@@ -15,8 +15,11 @@ database_id = "6f44025d-a523-46d3-b2d2-1ad7fcd272aa"
 # Custom domain (managed OUT OF BAND — intentionally NOT declared here):
 #   notifs-people.4irl.app is the Worker's entire public surface, gated by a
 #   Cloudflare Access self-hosted app on that exact hostname (docs/deploy-runbook.md
-#   Wave 2 step 4). Lockstep: pages-deploy.yml bakes
-#   VITE_PERSON_SERVICE_URL=https://notifs-people.4irl.app — keep the two in sync.
+#   Wave 2 step 4). Lockstep: this hostname must stay in sync with the admin-UI Pages
+#   Function's PERSON_SERVICE_URL runtime binding (set on the notifs-admin Pages project,
+#   docs/deploy-runbook.md §6) — the Function proxies /people to this host server-side.
+#   (The old VITE_PERSON_SERVICE_URL build-time bake was removed with the single-origin
+#   redesign; the People view is now gated by VITE_PEOPLE_ENABLED instead.)
 #
 # The domain is attached via the dashboard (Workers & Pages → person-service →
 # Domains & Routes), NOT a [[routes]] custom_domain block. Reason: reconciling a

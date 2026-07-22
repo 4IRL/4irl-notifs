@@ -96,10 +96,11 @@ export function createApiClient({
       method,
       headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
-      // In production the admin UI (Cloudflare Pages) and the API live on
-      // different hostnames, both behind Cloudflare Access; the Access session
-      // cookie must accompany cross-origin requests or every call is redirected
-      // to the Access login. Same-origin (local) behavior is unaffected.
+      // The admin UI calls the provisioning API same-origin: in production via a
+      // Cloudflare Pages Function that proxies `/v1/*` to the provisioning API
+      // server-side (default empty baseUrl → relative `/v1/...`); locally the
+      // request stays on the dev origin. `credentials: 'include'` sends the
+      // admin app's own Access session cookie to the same-origin Function.
       credentials: 'include',
     });
 

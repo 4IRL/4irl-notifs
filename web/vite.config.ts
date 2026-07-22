@@ -6,10 +6,12 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   server: {
-    // Dev-only: makes `npm run dev` same-origin with the local provisioning-api
-    // so the browser never needs a CORS header. Production CORS is handled
-    // entirely by the Cloudflare Access application config (see
-    // docs/deploy-runbook.md); this proxy has no effect on that build.
+    // Dev-only: mirrors the production same-origin shape locally. In production
+    // the SPA calls relative `/v1/*` and `/people`, served by same-origin
+    // Cloudflare Pages Functions (see web/functions/) that proxy to the
+    // backends — so there is no cross-origin CORS in production. This dev-server
+    // proxy reproduces that same-origin behavior for `npm run dev` and has no
+    // effect on the production build.
     proxy: {
       '/v1': 'http://127.0.0.1:8091',
     },
@@ -18,6 +20,6 @@ export default defineConfig({
     environment: 'jsdom',
     globals: false,
     setupFiles: ['./src/test-setup.ts'],
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['src/**/*.test.{ts,tsx}', 'functions/**/*.test.ts'],
   },
 });

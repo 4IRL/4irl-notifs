@@ -21,7 +21,7 @@ test.describe('admin UI critical flows', () => {
         }),
       });
     });
-    await page.route('https://person-service.e2e.test/people', async (route) => {
+    await page.route('**/people', async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
     });
 
@@ -67,7 +67,7 @@ test.describe('admin UI critical flows', () => {
         }),
       });
     });
-    await page.route('https://person-service.e2e.test/people', async (route) => {
+    await page.route('**/people', async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
     });
 
@@ -88,7 +88,7 @@ test.describe('admin UI critical flows', () => {
         body: JSON.stringify({ users: [] }),
       });
     });
-    await page.route('https://person-service.e2e.test/people', async (route) => {
+    await page.route('**/people', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
