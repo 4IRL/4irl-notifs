@@ -63,6 +63,24 @@ describe('proxyTo', () => {
     expect(await response.json()).toEqual({ users: [] });
   });
 
+  it('forwards a HEAD without a body (skips arrayBuffer) and returns the upstream response', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
+    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'HEAD' });
+
+    const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(calledUrl).toBe('https://notifs-api.4irl.app/v1/users');
+    // Like GET, a HEAD must never buffer a request body — the
+    // `method === 'GET' || method === 'HEAD'` guard leaves `body` undefined so
+    // `request.arrayBuffer()` is skipped (a HEAD Request has no body to read).
+    expect(calledInit.method).toBe('HEAD');
+    expect(calledInit.body).toBeUndefined();
+
+    expect(response.status).toBe(200);
+  });
+
   it('omits the user-email header entirely when the inbound request lacks it', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
     // No `Cf-Access-Authenticated-User-Email` on the inbound request.
