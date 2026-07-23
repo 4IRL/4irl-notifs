@@ -8,6 +8,7 @@
 // ~/code/plans/4irl-notifs/open/admin-ui-same-origin/.
 
 import { authenticateAdmin } from './_auth';
+import { jsonError } from './_http';
 
 /** Runtime bindings configured on the notifs-admin Pages project (NOT
  *  build-time VITE vars). The two URLs are plaintext vars; the two client
@@ -31,14 +32,6 @@ export interface Env {
    *  production — prod leaves it unset so a missing `ACCESS_JWT_AUD` fails closed
    *  (500) rather than open. See `_auth.ts` enforcement gating. */
   DISABLE_ACCESS_AUTH?: string;
-}
-
-/** Builds a JSON error response with the standard `{ error }` shape. */
-export function jsonError({ status, error }: { status: number; error: string }): Response {
-  return new Response(JSON.stringify({ error }), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
 }
 
 /**

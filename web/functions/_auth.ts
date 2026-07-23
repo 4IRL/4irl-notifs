@@ -11,7 +11,7 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { JWTVerifyGetKey } from 'jose';
 
-import { jsonError } from './_proxy';
+import { jsonError } from './_http';
 import type { Env } from './_proxy';
 
 // Module-memoized JWKS resolvers, keyed by Access team domain, so the team's
