@@ -231,6 +231,34 @@ describe('authenticateAdmin', () => {
     expect(await result.response.json()).toEqual({ error: 'unauthorized' });
   });
 
+  it('rejects an HS256 (symmetric) alg-confusion token as 401 — the RS256 allowlist blocks it', async () => {
+    // Correct issuer/audience/exp and the legitimate KID, but signed with the
+    // symmetric HS256 algorithm instead of RS256. A verifier without an algorithm
+    // allowlist could be tricked into treating the RSA public key bytes as an HMAC
+    // secret (the classic alg-confusion attack). The `algorithms: ['RS256']`
+    // allowlist in _auth.ts rejects HS256 outright before any HMAC check, so this
+    // forged token must fail with the standard 401.
+    const secret = new TextEncoder().encode('rsa-public-key-material-as-hmac-secret');
+    const token = await new SignJWT({ email: 'attacker@example.com' })
+      .setProtectedHeader({ alg: 'HS256', kid: KID })
+      .setIssuer(ISSUER)
+      .setAudience(AUD)
+      .setSubject('user-sub')
+      .setExpirationTime('1h')
+      .sign(secret);
+
+    const result = await authenticateAdmin({
+      request: requestWith({ header: token }),
+      env: enabledEnv(),
+      getKey,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.response.status).toBe(401);
+    expect(await result.response.json()).toEqual({ error: 'unauthorized' });
+  });
+
   it('is disabled when DISABLE_ACCESS_AUTH is "true" — returns ok:true, email:null with no verification', async () => {
     // A token that WOULD fail (garbage) proves no verification is attempted,
     // even with ACCESS_JWT_AUD + ACCESS_TEAM_DOMAIN fully configured.
