@@ -7,6 +7,8 @@
 // cross-origin request. See the design doc + plan under
 // ~/code/plans/4irl-notifs/open/admin-ui-same-origin/.
 
+import { authenticateAdmin } from './_auth';
+
 /** Runtime bindings configured on the notifs-admin Pages project (NOT
  *  build-time VITE vars). The two URLs are plaintext vars; the two client
  *  credentials are encrypted Pages secrets. */
@@ -15,10 +17,18 @@ export interface Env {
   PERSON_SERVICE_URL: string;
   PROXY_ACCESS_CLIENT_ID: string;
   PROXY_ACCESS_CLIENT_SECRET: string;
+  /** Cloudflare Access team domain (e.g. `urls4irl.cloudflareaccess.com`) used
+   *  as the JWKS host and the expected JWT issuer. Runtime Pages plaintext var;
+   *  empty locally. */
+  ACCESS_TEAM_DOMAIN: string;
+  /** The notifs-admin Access application's Application Audience (AUD) tag — the
+   *  expected JWT audience. Runtime Pages plaintext var; empty locally DISABLES
+   *  JWT auth (see `_auth.ts` enforcement gating). */
+  ACCESS_JWT_AUD: string;
 }
 
 /** Builds a JSON error response with the standard `{ error }` shape. */
-function jsonError({ status, error }: { status: number; error: string }): Response {
+export function jsonError({ status, error }: { status: number; error: string }): Response {
   return new Response(JSON.stringify({ error }), {
     status,
     headers: { 'Content-Type': 'application/json' },
@@ -49,6 +59,17 @@ export async function proxyTo({
     return jsonError({ status: 500, error: 'proxy misconfigured' });
   }
 
+  // Validate the caller's Cloudflare Access JWT (the CF_Authorization session
+  // token) BEFORE any backend call. Access no longer edge-challenges these
+  // paths (the operator adds a path-based Access **Bypass** on /v1 and /people
+  // so same-origin POSTs aren't downgraded to a login redirect), so the Function
+  // is now the authenticator. When ACCESS_JWT_AUD is unset this is a no-op
+  // (auth disabled for local dev). See `_auth.ts` + deploy-runbook §6b.
+  const auth = await authenticateAdmin({ request, env });
+  if (!auth.ok) {
+    return auth.response;
+  }
+
   const url = new URL(request.url);
   // Trim trailing slashes on the base so an operator typo (e.g. a
   // `PROVISIONING_API_URL` ending in `/`) can't produce a double-slash path
@@ -66,17 +87,16 @@ export async function proxyTo({
   }
   headers.set('CF-Access-Client-Id', env.PROXY_ACCESS_CLIENT_ID);
   headers.set('CF-Access-Client-Secret', env.PROXY_ACCESS_CLIENT_SECRET);
-  const authenticatedUserEmail = request.headers.get('Cf-Access-Authenticated-User-Email');
-  if (authenticatedUserEmail !== null) {
+  if (auth.email !== null) {
     // Forwarded for audit; the backends read no user-identity header today.
-    // TRUST CAVEAT: this header is only as trustworthy as the Cloudflare Access
-    // app's hostname coverage plus the preview-URL lockdown (deploy-runbook §6
-    // item 5). Access injects it only for requests that actually traverse the
-    // Access-gated hostname; a gap in that coverage (an ungated hostname, an
-    // unlocked *.pages.dev preview) would let a caller spoof it. It must NOT be
-    // promoted to an authorization signal without first revisiting that
-    // assumption.
-    headers.set('Cf-Access-Authenticated-User-Email', authenticatedUserEmail);
+    // This email comes from the **signature-verified** Access JWT (issuer +
+    // audience checked against the team certs JWKS in `authenticateAdmin`), NOT
+    // from an unverified inbound header — so it is trustworthy. (When
+    // ACCESS_JWT_AUD is unset, auth is disabled and `email` is null, so no
+    // audit header is forwarded — matching the pre-JWT behavior for local dev.)
+    // The inbound Cookie is still never forwarded upstream (service token is the
+    // backend's auth).
+    headers.set('Cf-Access-Authenticated-User-Email', auth.email);
   }
 
   // Buffer the body rather than streaming `request.body`. The unit tests run

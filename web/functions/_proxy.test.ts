@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// @vitest-environment node
+//
+// Runs in the node environment (not the project-default jsdom): jose's webapi
+// build fails `instanceof Uint8Array` checks under jsdom's separate realm, and
+// this Pages-Function proxy is pure Worker/Node code that needs no DOM.
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SignJWT, exportJWK, generateKeyPair } from 'jose';
+import type { JWK } from 'jose';
 
 import { proxyTo } from './_proxy';
 import { jsonResponse, makeEnv } from './test-helpers';
@@ -22,7 +29,10 @@ describe('proxyTo', () => {
     const request = new Request('https://notifs-admin.4irl.app/v1/users', {
       method: 'GET',
       headers: {
-        'Cf-Access-Authenticated-User-Email': 'admin@x.com',
+        // An inbound email header must NOT be forwarded — the audit email now
+        // comes only from a validated JWT (auth is disabled here: no AUD), so
+        // this inbound value is ignored, not trusted.
+        'Cf-Access-Authenticated-User-Email': 'spoofed@x.com',
         // The admin-app Access session cookie must NOT be forwarded upstream.
         Cookie: 'CF_Authorization=inbound-cookie',
       },
@@ -40,7 +50,9 @@ describe('proxyTo', () => {
     const headers = calledInit.headers as Headers;
     expect(headers.get('CF-Access-Client-Id')).toBe('id');
     expect(headers.get('CF-Access-Client-Secret')).toBe('sec');
-    expect(headers.get('Cf-Access-Authenticated-User-Email')).toBe('admin@x.com');
+    // Auth disabled (no ACCESS_JWT_AUD) → no validated email → header not set,
+    // and the unverified inbound email header is dropped, never forwarded.
+    expect(headers.get('Cf-Access-Authenticated-User-Email')).toBeNull();
     expect(headers.get('Cookie')).toBeNull();
 
     expect(response.status).toBe(200);
@@ -211,5 +223,101 @@ describe('proxyTo', () => {
 
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({ error: 'upstream unreachable' });
+  });
+});
+
+// Integration: with ACCESS_JWT_AUD set, proxyTo enforces the Access JWT before
+// any backend call. proxyTo does not expose the `getKey` seam, so the team certs
+// JWKS is served through the same mocked global fetch (createRemoteJWKSet fetches
+// it), consistent with how `authenticateAdmin` resolves keys in production.
+describe('proxyTo with JWT auth enabled', () => {
+  const TEAM_DOMAIN = 'urls4irl.cloudflareaccess.com';
+  const ISSUER = `https://${TEAM_DOMAIN}`;
+  const AUD = 'proxy-aud-tag';
+  const KID = 'proxy-test-key';
+  const CERTS_URL = `${ISSUER}/cdn-cgi/access/certs`;
+  const UPSTREAM_URL = 'https://notifs-api.4irl.app/v1/users';
+
+  const fetchMock = vi.fn();
+  let privateKey: CryptoKey;
+  let publicJwk: JWK;
+
+  beforeAll(async () => {
+    const pair = await generateKeyPair('RS256', { extractable: true });
+    privateKey = pair.privateKey;
+    publicJwk = { ...(await exportJWK(pair.publicKey)), kid: KID, alg: 'RS256' };
+  });
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    // Serve the JWKS for the certs endpoint; everything else is the upstream.
+    fetchMock.mockImplementation((url: string) => {
+      if (url === CERTS_URL) {
+        return Promise.resolve(jsonResponse({ status: 200, body: { keys: [publicJwk] } }));
+      }
+      return Promise.resolve(jsonResponse({ status: 200, body: { users: [] } }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const jwtEnv = () => makeEnv({ ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, ACCESS_JWT_AUD: AUD });
+
+  const signToken = ({ audience = AUD, email = 'admin@x.com' } = {}) =>
+    new SignJWT({ email })
+      .setProtectedHeader({ alg: 'RS256', kid: KID })
+      .setIssuer(ISSUER)
+      .setAudience(audience)
+      .setSubject('sub')
+      .setExpirationTime('1h')
+      .sign(privateKey);
+
+  const upstreamCalls = () =>
+    fetchMock.mock.calls.filter(([calledUrl]) => calledUrl === UPSTREAM_URL);
+
+  it('proxies through when the Access JWT is valid and forwards the JWT email upstream', async () => {
+    const token = await signToken({ email: 'admin@x.com' });
+    const request = new Request(UPSTREAM_URL, {
+      method: 'GET',
+      headers: { 'Cf-Access-Jwt-Assertion': token },
+    });
+
+    const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: jwtEnv() });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ users: [] });
+    expect(upstreamCalls()).toHaveLength(1);
+    const [, calledInit] = upstreamCalls()[0] as [string, RequestInit];
+    // The audit email now comes from the signature-verified JWT, not an inbound header.
+    expect((calledInit.headers as Headers).get('Cf-Access-Authenticated-User-Email')).toBe(
+      'admin@x.com',
+    );
+  });
+
+  it('returns 401 and never calls the upstream when the JWT is missing', async () => {
+    const request = new Request(UPSTREAM_URL, { method: 'GET' });
+
+    const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: jwtEnv() });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'unauthorized' });
+    expect(upstreamCalls()).toHaveLength(0);
+  });
+
+  it('returns 401 and never calls the upstream when the JWT is invalid (wrong audience)', async () => {
+    const token = await signToken({ audience: 'wrong-aud' });
+    const request = new Request(UPSTREAM_URL, {
+      method: 'GET',
+      headers: { 'Cf-Access-Jwt-Assertion': token },
+    });
+
+    const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: jwtEnv() });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'unauthorized' });
+    expect(upstreamCalls()).toHaveLength(0);
   });
 });

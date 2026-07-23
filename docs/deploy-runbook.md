@@ -217,6 +217,51 @@ purely with the service token (and forwards the authenticated admin's email as a
    Access-gated hostname** (the VPS Go dual-write reaches it over HTTP), now gated by its two service
    tokens (the VPS dual-write token + the new proxy token).
 
+### 6b. Access Bypass on the API paths + Pages Function JWT validation
+
+**Problem (found in production).** Cloudflare Access, gating the whole `notifs-admin.4irl.app`
+hostname, **challenges same-origin `fetch` POSTs**: it returns `302 → login` with
+`Www-Authenticate: Cloudflare-Access`, ignoring the valid `CF_Authorization` session cookie it
+otherwise honors for GETs. The redirect turns the POST into a GET, so provisioning (a POST) breaks
+with a `POST → GET` downgrade → `405`. This is **not** a CORS problem — the calls are same-origin —
+so CORS config on the admin origin app does **not** fix it. (There is intentionally no such claim
+elsewhere in this runbook; do not add one.)
+
+**Fix.** Take the API paths out from behind Access's edge challenge and have the Pages Function
+validate the Access JWT itself:
+
+1. **Operator adds a Cloudflare Access _Bypass_ policy** on the `/v1` and `/people` **paths** of
+   `notifs-admin.4irl.app` (path-based Bypass "apps" take precedence over the hostname-level Allow
+   app). Result: the SPA shell (`/`, assets) still requires the one `notifs-admin` login, but the
+   `/v1` and `/people` API paths are **not** edge-challenged — so same-origin POSTs are no longer
+   downgraded.
+
+2. **Set two new Pages plaintext env vars** on the `notifs-admin` Pages project:
+
+   - `ACCESS_TEAM_DOMAIN=urls4irl.cloudflareaccess.com` — the Access team domain (JWKS host +
+     expected JWT issuer).
+   - `ACCESS_JWT_AUD=<notifs-admin Access app Application Audience (AUD) Tag>` — copy the AUD tag
+     from the `notifs-admin` Access application's Overview.
+
+3. **The Pages Function validates the `CF_Authorization` Access JWT itself** (`web/functions/_auth.ts`,
+   called at the top of `proxyTo`): it verifies the signature against the team certs JWKS
+   (`https://<team>/cdn-cgi/access/certs`), plus the expected **issuer** (`https://<team>`) and
+   **audience** (the AUD tag), and returns `401 {error:"unauthorized"}` if the token is missing,
+   expired, or otherwise invalid. On success the validated `email` claim is forwarded upstream as
+   the audit-only `Cf-Access-Authenticated-User-Email` header (now trustworthy — it comes from a
+   signature-verified JWT, not an unverified inbound header). The token is read from the
+   `Cf-Access-Jwt-Assertion` header if present, else parsed from the `CF_Authorization` cookie.
+
+4. **CORS is not needed** for this model and can be removed — the browser only makes same-origin
+   calls to the Pages Function; there is no cross-origin request to preflight.
+
+5. **ORDERING / safety (do NOT reorder).** Set `ACCESS_JWT_AUD` (and `ACCESS_TEAM_DOMAIN`) **BEFORE**
+   adding the Access Bypass. The Function **skips JWT auth entirely when `ACCESS_JWT_AUD` is empty**
+   (the local-dev / `wrangler pages dev` path). So if the Bypass were added first, the API paths
+   would be briefly **unauthenticated** — edge challenge removed AND Function auth still off. Add the
+   Bypass only after confirming both vars are live and the Function returns `401` for an
+   unauthenticated request to `/v1` or `/people`.
+
 ## 7. Zero Trust identity + Service Tokens
 
 1. **OAuth IdP (GitHub):** decided — **GitHub only** (no Google, no one-time PIN). The Zero Trust
