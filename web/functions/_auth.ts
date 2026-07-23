@@ -100,6 +100,7 @@ export async function authenticateAdmin({
     const { payload } = await jwtVerify(token, keyResolver, {
       issuer: `https://${env.ACCESS_TEAM_DOMAIN}`,
       audience: env.ACCESS_JWT_AUD,
+      algorithms: ['RS256'],
     });
     return { ok: true, email: (payload.email as string) ?? null };
   } catch {
