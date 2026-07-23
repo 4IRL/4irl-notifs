@@ -22,9 +22,15 @@ export interface Env {
    *  empty locally. */
   ACCESS_TEAM_DOMAIN: string;
   /** The notifs-admin Access application's Application Audience (AUD) tag — the
-   *  expected JWT audience. Runtime Pages plaintext var; empty locally DISABLES
-   *  JWT auth (see `_auth.ts` enforcement gating). */
+   *  expected JWT audience. Runtime Pages plaintext var. In production this MUST
+   *  be set: when auth is NOT disabled (see `DISABLE_ACCESS_AUTH`) an empty
+   *  `ACCESS_JWT_AUD` fails CLOSED (500), it does not disable auth. */
   ACCESS_JWT_AUD: string;
+  /** Local-dev opt-out ONLY. When exactly `'true'`, JWT auth is disabled (the
+   *  `wrangler pages dev` path has no Access in front of it). MUST NOT be set in
+   *  production — prod leaves it unset so a missing `ACCESS_JWT_AUD` fails closed
+   *  (500) rather than open. See `_auth.ts` enforcement gating. */
+  DISABLE_ACCESS_AUTH?: string;
 }
 
 /** Builds a JSON error response with the standard `{ error }` shape. */
@@ -63,8 +69,9 @@ export async function proxyTo({
   // token) BEFORE any backend call. Access no longer edge-challenges these
   // paths (the operator adds a path-based Access **Bypass** on /v1 and /people
   // so same-origin POSTs aren't downgraded to a login redirect), so the Function
-  // is now the authenticator. When ACCESS_JWT_AUD is unset this is a no-op
-  // (auth disabled for local dev). See `_auth.ts` + deploy-runbook §6b.
+  // is now the authenticator. Only DISABLE_ACCESS_AUTH='true' makes this a no-op
+  // (the local-dev opt-out); otherwise auth is enforced. See `_auth.ts` +
+  // deploy-runbook §6b.
   const auth = await authenticateAdmin({ request, env });
   if (!auth.ok) {
     return auth.response;
@@ -92,7 +99,7 @@ export async function proxyTo({
     // This email comes from the **signature-verified** Access JWT (issuer +
     // audience checked against the team certs JWKS in `authenticateAdmin`), NOT
     // from an unverified inbound header — so it is trustworthy. (When
-    // ACCESS_JWT_AUD is unset, auth is disabled and `email` is null, so no
+    // DISABLE_ACCESS_AUTH='true', auth is disabled and `email` is null, so no
     // audit header is forwarded — matching the pre-JWT behavior for local dev.)
     // The inbound Cookie is still never forwarded upstream (service token is the
     // backend's auth).

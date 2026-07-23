@@ -255,12 +255,15 @@ validate the Access JWT itself:
 4. **CORS is not needed** for this model and can be removed — the browser only makes same-origin
    calls to the Pages Function; there is no cross-origin request to preflight.
 
-5. **ORDERING / safety (do NOT reorder).** Set `ACCESS_JWT_AUD` (and `ACCESS_TEAM_DOMAIN`) **BEFORE**
-   adding the Access Bypass. The Function **skips JWT auth entirely when `ACCESS_JWT_AUD` is empty**
-   (the local-dev / `wrangler pages dev` path). So if the Bypass were added first, the API paths
-   would be briefly **unauthenticated** — edge challenge removed AND Function auth still off. Add the
-   Bypass only after confirming both vars are live and the Function returns `401` for an
-   unauthenticated request to `/v1` or `/people`.
+5. **Fail-closed gating (do NOT set `DISABLE_ACCESS_AUTH` in production).** The Function disables JWT
+   auth **only** when the local-dev opt-out `DISABLE_ACCESS_AUTH=true` is set — that flag belongs to
+   `web/.dev.vars` / `wrangler pages dev` (no Access in front of the local Function) and must **never**
+   be set on the Pages project. Production leaves it unset, so a missing/empty `ACCESS_JWT_AUD` (or
+   `ACCESS_TEAM_DOMAIN`) **fails CLOSED** — the Function returns `500 {error:"proxy misconfigured"}`
+   and blocks the API rather than serving it unauthenticated. Still set `ACCESS_JWT_AUD` (and
+   `ACCESS_TEAM_DOMAIN`) **BEFORE** adding the Access Bypass so the paths are never even briefly
+   500-blocked: add the Bypass only after confirming both vars are live and the Function returns `401`
+   for an unauthenticated request (and `500` only if a var is missing) to `/v1` or `/people`.
 
 ## 7. Zero Trust identity + Service Tokens
 

@@ -30,8 +30,8 @@ describe('proxyTo', () => {
       method: 'GET',
       headers: {
         // An inbound email header must NOT be forwarded — the audit email now
-        // comes only from a validated JWT (auth is disabled here: no AUD), so
-        // this inbound value is ignored, not trusted.
+        // comes only from a validated JWT (auth is disabled here via makeEnv's
+        // DISABLE_ACCESS_AUTH:'true'), so this inbound value is ignored, not trusted.
         'Cf-Access-Authenticated-User-Email': 'spoofed@x.com',
         // The admin-app Access session cookie must NOT be forwarded upstream.
         Cookie: 'CF_Authorization=inbound-cookie',
@@ -50,8 +50,8 @@ describe('proxyTo', () => {
     const headers = calledInit.headers as Headers;
     expect(headers.get('CF-Access-Client-Id')).toBe('id');
     expect(headers.get('CF-Access-Client-Secret')).toBe('sec');
-    // Auth disabled (no ACCESS_JWT_AUD) → no validated email → header not set,
-    // and the unverified inbound email header is dropped, never forwarded.
+    // Auth disabled (DISABLE_ACCESS_AUTH:'true') → no validated email → header not
+    // set, and the unverified inbound email header is dropped, never forwarded.
     expect(headers.get('Cf-Access-Authenticated-User-Email')).toBeNull();
     expect(headers.get('Cookie')).toBeNull();
 
@@ -264,7 +264,9 @@ describe('proxyTo with JWT auth enabled', () => {
     vi.unstubAllGlobals();
   });
 
-  const jwtEnv = () => makeEnv({ ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, ACCESS_JWT_AUD: AUD });
+  // makeEnv defaults DISABLE_ACCESS_AUTH:'true'; clear it to exercise enforcement.
+  const jwtEnv = () =>
+    makeEnv({ ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, ACCESS_JWT_AUD: AUD, DISABLE_ACCESS_AUTH: '' });
 
   const signToken = ({ audience = AUD, email = 'admin@x.com' } = {}) =>
     new SignJWT({ email })

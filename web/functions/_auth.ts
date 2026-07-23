@@ -50,13 +50,16 @@ function tokenFromCookie(cookieHeader: string | null): string | null {
  * Verifies the caller's Cloudflare Access JWT and returns the authenticated
  * admin's email (for audit forwarding) or an error `Response` to short-circuit.
  *
- * ENFORCEMENT GATING: when `env.ACCESS_JWT_AUD` is empty/unset, JWT auth is
- * DISABLED and this returns `{ ok: true, email: null }` without inspecting any
- * token — this is the local-dev / `wrangler pages dev` path (no Access in front
- * of the local Function). PRODUCTION MUST set `ACCESS_JWT_AUD` (and
- * `ACCESS_TEAM_DOMAIN`), and the operator MUST NOT add the Access Bypass on
- * `/v1` and `/people` until `ACCESS_JWT_AUD` is set — otherwise those paths
- * would be briefly unauthenticated (edge challenge removed, Function auth off).
+ * ENFORCEMENT GATING (fail closed): JWT auth is DISABLED only when
+ * `env.DISABLE_ACCESS_AUTH === 'true'` — the explicit local-dev / `wrangler
+ * pages dev` opt-out (no Access in front of the local Function); it returns
+ * `{ ok: true, email: null }` without inspecting any token. Otherwise auth is
+ * ENFORCED: if `ACCESS_JWT_AUD` or `ACCESS_TEAM_DOMAIN` is empty this fails
+ * CLOSED with `500 {error:'proxy misconfigured'}` (it does NOT silently disable
+ * auth). PRODUCTION leaves `DISABLE_ACCESS_AUTH` unset, so a missing
+ * `ACCESS_JWT_AUD` blocks the API (500) rather than leaving it open — even if
+ * the operator adds the Access Bypass on `/v1` and `/people` before the vars
+ * are live.
  *
  * @param getKey - optional jose key resolver, used as a TEST SEAM so specs can
  *   supply a local JWKS. In production it defaults to a module-memoized
@@ -71,13 +74,16 @@ export async function authenticateAdmin({
   env: Env;
   getKey?: JWTVerifyGetKey;
 }): Promise<{ ok: true; email: string | null } | { ok: false; response: Response }> {
-  // Auth disabled (local dev): no AUD configured → allow, no email to forward.
-  if (!env.ACCESS_JWT_AUD) {
+  // Auth disabled (local dev only): explicit opt-out → allow, no email to
+  // forward. Never set DISABLE_ACCESS_AUTH in production.
+  if (env.DISABLE_ACCESS_AUTH === 'true') {
     return { ok: true, email: null };
   }
-  // AUD is set but the team domain is missing: we can't build the issuer or
-  // fetch the JWKS — a deploy misconfiguration, not a caller error.
-  if (!env.ACCESS_TEAM_DOMAIN) {
+  // Enforced (default). Both vars MUST be configured: without them we can't
+  // verify the audience or build the issuer / fetch the JWKS. Fail CLOSED with a
+  // 500 (a deploy misconfiguration, not a caller error) rather than fail open —
+  // symmetric handling for a missing ACCESS_JWT_AUD or ACCESS_TEAM_DOMAIN.
+  if (!env.ACCESS_JWT_AUD || !env.ACCESS_TEAM_DOMAIN) {
     return { ok: false, response: jsonError({ status: 500, error: 'proxy misconfigured' }) };
   }
 

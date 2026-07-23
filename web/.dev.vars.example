@@ -4,10 +4,13 @@ PERSON_SERVICE_URL=http://localhost:8799
 PROXY_ACCESS_CLIENT_ID=test-id
 PROXY_ACCESS_CLIENT_SECRET=test-secret
 # Cloudflare Access JWT validation for the Pages Function proxy.
-# Leaving ACCESS_JWT_AUD EMPTY disables JWT auth for local dev (wrangler pages
-# dev has no Access in front of it). PRODUCTION MUST set BOTH — and the operator
-# must not add the Access Bypass on /v1 and /people until ACCESS_JWT_AUD is set.
+# LOCAL ONLY — never set in production; prod fails closed (500) if ACCESS_JWT_AUD
+# is unset. DISABLE_ACCESS_AUTH=true disables JWT auth for local dev (wrangler
+# pages dev has no Access in front of it). In production leave DISABLE_ACCESS_AUTH
+# unset and set BOTH vars below — the operator must not add the Access Bypass on
+# /v1 and /people until they are live.
 # ACCESS_TEAM_DOMAIN is the Access team domain (JWKS host + expected issuer);
 # ACCESS_JWT_AUD is the notifs-admin Access app's Application Audience (AUD) tag.
+DISABLE_ACCESS_AUTH=true
 ACCESS_TEAM_DOMAIN=
 ACCESS_JWT_AUD=

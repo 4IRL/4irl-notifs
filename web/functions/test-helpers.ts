@@ -10,10 +10,12 @@ export function makeEnv(overrides: Partial<Env> = {}): Env {
     PERSON_SERVICE_URL: 'https://notifs-people.4irl.app',
     PROXY_ACCESS_CLIENT_ID: 'id',
     PROXY_ACCESS_CLIENT_SECRET: 'sec',
-    // Empty by default so JWT auth is DISABLED for existing proxy specs; a test
-    // opts into enforcement by overriding ACCESS_JWT_AUD (+ ACCESS_TEAM_DOMAIN).
     ACCESS_TEAM_DOMAIN: '',
     ACCESS_JWT_AUD: '',
+    // Auth DISABLED by default so existing proxy-mechanics specs run without a
+    // JWT; a test opts into enforcement by overriding DISABLE_ACCESS_AUTH to ''
+    // (plus ACCESS_JWT_AUD + ACCESS_TEAM_DOMAIN).
+    DISABLE_ACCESS_AUTH: 'true',
     ...overrides,
   };
 }

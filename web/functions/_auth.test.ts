@@ -60,7 +60,13 @@ function requestWith({
 }
 
 function enabledEnv(overrides = {}) {
-  return makeEnv({ ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, ACCESS_JWT_AUD: AUD, ...overrides });
+  // makeEnv defaults DISABLE_ACCESS_AUTH:'true'; clear it to exercise enforcement.
+  return makeEnv({
+    ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+    ACCESS_JWT_AUD: AUD,
+    DISABLE_ACCESS_AUTH: '',
+    ...overrides,
+  });
 }
 
 beforeAll(async () => {
@@ -185,22 +191,46 @@ describe('authenticateAdmin', () => {
     expect(result.response.status).toBe(401);
   });
 
-  it('is disabled when ACCESS_JWT_AUD is unset — returns ok:true, email:null with no verification', async () => {
-    // A token that WOULD fail (garbage) proves no verification is attempted.
+  it('is disabled when DISABLE_ACCESS_AUTH is "true" — returns ok:true, email:null with no verification', async () => {
+    // A token that WOULD fail (garbage) proves no verification is attempted,
+    // even with ACCESS_JWT_AUD + ACCESS_TEAM_DOMAIN fully configured.
     const result = await authenticateAdmin({
       request: requestWith({ header: 'garbage' }),
-      env: makeEnv({ ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, ACCESS_JWT_AUD: '' }),
+      env: makeEnv({
+        ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+        ACCESS_JWT_AUD: AUD,
+        DISABLE_ACCESS_AUTH: 'true',
+      }),
       getKey,
     });
 
     expect(result).toEqual({ ok: true, email: null });
   });
 
+  it('fails CLOSED (500) when ACCESS_JWT_AUD is empty and auth is NOT disabled', async () => {
+    // A token that WOULD fail (garbage) proves it never reaches verification —
+    // an empty AUD without the disable flag blocks the API rather than opening it.
+    const result = await authenticateAdmin({
+      request: requestWith({ header: 'garbage' }),
+      env: makeEnv({
+        ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+        ACCESS_JWT_AUD: '',
+        DISABLE_ACCESS_AUTH: '',
+      }),
+      getKey,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.response.status).toBe(500);
+    expect(await result.response.json()).toEqual({ error: 'proxy misconfigured' });
+  });
+
   it('returns 500 proxy misconfigured when ACCESS_JWT_AUD is set but ACCESS_TEAM_DOMAIN is empty', async () => {
     const token = await signToken();
     const result = await authenticateAdmin({
       request: requestWith({ header: token }),
-      env: makeEnv({ ACCESS_TEAM_DOMAIN: '', ACCESS_JWT_AUD: AUD }),
+      env: makeEnv({ ACCESS_TEAM_DOMAIN: '', ACCESS_JWT_AUD: AUD, DISABLE_ACCESS_AUTH: '' }),
       getKey,
     });
 
