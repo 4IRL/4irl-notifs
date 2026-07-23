@@ -102,7 +102,7 @@ export async function authenticateAdmin({
       audience: env.ACCESS_JWT_AUD,
       algorithms: ['RS256'],
     });
-    return { ok: true, email: (payload.email as string) ?? null };
+    return { ok: true, email: typeof payload.email === 'string' ? payload.email : null };
   } catch {
     // Bad signature, expired, wrong iss/aud, or malformed → treat all as 401.
     return { ok: false, response: jsonError({ status: 401, error: 'unauthorized' }) };
