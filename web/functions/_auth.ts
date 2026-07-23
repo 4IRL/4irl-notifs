@@ -14,18 +14,17 @@ import type { JWTVerifyGetKey } from 'jose';
 import { jsonError } from './_http';
 import type { Env } from './_proxy';
 
-// Module-memoized JWKS resolvers, keyed by Access team domain, so the team's
-// signing keys are cached across requests (workerd keeps the module instance
-// warm) rather than refetched from the certs endpoint on every call.
-const jwksByTeamDomain = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+// Module-memoized JWKS resolver so the team's signing keys are cached across
+// requests (workerd keeps the module instance warm) rather than refetched from
+// the certs endpoint on every call. A single team domain is fixed per
+// deployment, so one lazy singleton suffices.
+let cachedJwks: ReturnType<typeof createRemoteJWKSet> | undefined;
 
 function remoteJwksFor(teamDomain: string): ReturnType<typeof createRemoteJWKSet> {
-  let jwks = jwksByTeamDomain.get(teamDomain);
-  if (jwks === undefined) {
-    jwks = createRemoteJWKSet(new URL(`https://${teamDomain}/cdn-cgi/access/certs`));
-    jwksByTeamDomain.set(teamDomain, jwks);
+  if (cachedJwks === undefined) {
+    cachedJwks = createRemoteJWKSet(new URL(`https://${teamDomain}/cdn-cgi/access/certs`));
   }
-  return jwks;
+  return cachedJwks;
 }
 
 /** Extracts the `CF_Authorization` token from a raw `Cookie` header value. */
