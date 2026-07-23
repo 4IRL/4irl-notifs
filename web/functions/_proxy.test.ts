@@ -299,6 +299,34 @@ describe('proxyTo with JWT auth enabled', () => {
     );
   });
 
+  it('proxies a POST with a JSON body through once when the Access JWT is valid (provisioning scenario)', async () => {
+    // The concrete scenario this fix targets: a same-origin provisioning POST
+    // carrying a valid Access JWT must authenticate at the Function and forward
+    // its JSON body to the backend exactly once (no downgrade to a login redirect).
+    const PROVISION_URL = 'https://notifs-api.4irl.app/v1/provision';
+    const token = await signToken({ email: 'admin@x.com' });
+    const payload = JSON.stringify({ app_id: 'urls4irl', email: 'alice@example.com' });
+    const request = new Request(PROVISION_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Cf-Access-Jwt-Assertion': token },
+      body: payload,
+    });
+
+    const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: jwtEnv() });
+
+    expect(response.status).toBe(200);
+    const provisionCalls = fetchMock.mock.calls.filter(
+      ([calledUrl]) => calledUrl === PROVISION_URL,
+    );
+    expect(provisionCalls).toHaveLength(1);
+    const [, calledInit] = provisionCalls[0] as [string, RequestInit];
+    expect(calledInit.method).toBe('POST');
+    expect((calledInit.headers as Headers).get('Content-Type')).toBe('application/json');
+    // The JSON body is buffered (via arrayBuffer) and forwarded verbatim upstream.
+    const forwardedBody = new TextDecoder().decode(calledInit.body as ArrayBuffer);
+    expect(forwardedBody).toBe(payload);
+  });
+
   it('returns 401 and never calls the upstream when the JWT is missing', async () => {
     const request = new Request(UPSTREAM_URL, { method: 'GET' });
 
