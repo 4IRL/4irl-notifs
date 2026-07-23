@@ -122,6 +122,23 @@ describe('authenticateAdmin', () => {
     expect(await result.response.json()).toEqual({ error: 'unauthorized' });
   });
 
+  it('rejects an empty CF_Authorization cookie value as 401 (treated as no token)', async () => {
+    // `CF_Authorization=` with an empty value: tokenFromCookie coerces the empty
+    // string to null (the `|| null` in _auth.ts), so the request hits the
+    // no-token gate and is rejected with the standard 401 rather than the empty
+    // string ever reaching jwtVerify. The assertion pins that 401 rejection.
+    const result = await authenticateAdmin({
+      request: requestWith({ cookie: 'CF_Authorization=; other=1' }),
+      env: enabledEnv(),
+      getKey,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.response.status).toBe(401);
+    expect(await result.response.json()).toEqual({ error: 'unauthorized' });
+  });
+
   it('accepts a token supplied only in the CF_Authorization cookie', async () => {
     const token = await signToken();
     const result = await authenticateAdmin({
