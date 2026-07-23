@@ -16,6 +16,7 @@ const AUD = 'test-aud-tag';
 const KID = 'auth-test-key';
 
 let privateKey: CryptoKey;
+let attackerPrivateKey: CryptoKey;
 let getKey: JWTVerifyGetKey;
 
 /** Signs a test Access JWT, with per-claim overrides for the failure cases. */
@@ -74,6 +75,11 @@ beforeAll(async () => {
   privateKey = pair.privateKey;
   const publicJwk: JWK = { ...(await exportJWK(pair.publicKey)), kid: KID, alg: 'RS256' };
   getKey = createLocalJWKSet({ keys: [publicJwk] });
+
+  // A second, unrelated keypair whose public key is deliberately NOT added to the
+  // JWKS above — used to forge a well-formed token that must fail signature verification.
+  const attackerPair = await generateKeyPair('RS256', { extractable: true });
+  attackerPrivateKey = attackerPair.privateKey;
 });
 
 describe('authenticateAdmin', () => {
@@ -189,6 +195,23 @@ describe('authenticateAdmin', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected failure');
     expect(result.response.status).toBe(401);
+  });
+
+  it('rejects a token with correct claims but signed by an attacker key (not in the JWKS) as 401', async () => {
+    // Correct issuer/audience/exp and the legitimate KID, but signed with a private
+    // key whose public half is absent from the JWKS. Proves the signature itself is
+    // cryptographically verified, not just the claims.
+    const token = await signToken({ key: attackerPrivateKey });
+    const result = await authenticateAdmin({
+      request: requestWith({ header: token }),
+      env: enabledEnv(),
+      getKey,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.response.status).toBe(401);
+    expect(await result.response.json()).toEqual({ error: 'unauthorized' });
   });
 
   it('is disabled when DISABLE_ACCESS_AUTH is "true" — returns ok:true, email:null with no verification', async () => {
