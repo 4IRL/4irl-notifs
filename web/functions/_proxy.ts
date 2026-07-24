@@ -136,9 +136,22 @@ export async function proxyTo({
     return jsonError({ status: 502, error: 'upstream auth failed' });
   }
 
-  // Otherwise stream the full upstream Response through unchanged — status,
-  // body, and all upstream headers pass through verbatim (no allowlist). This
-  // is safe because both backends are stateless internal services that never
-  // emit origin-affecting headers (no Set-Cookie, no caching directives).
-  return response;
+  // Pass the upstream response through, but STRIP `Set-Cookie` first. When the
+  // proxy authenticates to a backend with the service token, Cloudflare Access
+  // on that backend replies with `Set-Cookie: CF_Authorization=<service-token
+  // JWT>`. Passed through verbatim, that cookie lands on the
+  // notifs-admin.4irl.app origin and OVERWRITES the admin's real human session
+  // cookie with the service token's token — whose `aud` is a backend app, not
+  // notifs-admin, so this Function's own JWT audience check then 401s every
+  // subsequent request (and the aud flips per backend, whichever was called
+  // last). So a backend's Set-Cookie must never reach the browser. Other
+  // upstream headers pass through unchanged — the backends are stateless JSON
+  // services that emit no other origin-affecting headers.
+  const responseHeaders = new Headers(response.headers);
+  responseHeaders.delete('Set-Cookie');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: responseHeaders,
+  });
 }

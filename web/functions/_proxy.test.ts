@@ -59,6 +59,32 @@ describe('proxyTo', () => {
     expect(await response.json()).toEqual({ users: [] });
   });
 
+  it('strips an upstream Set-Cookie so a backend Access cookie never reaches the browser', async () => {
+    // When the proxy authenticates to a backend with the service token,
+    // Cloudflare Access replies with `Set-Cookie: CF_Authorization=<service
+    // token JWT>`. Passed through, it would overwrite the admin's real human
+    // session cookie on notifs-admin.4irl.app and break the Function's own JWT
+    // check. The proxy must drop it.
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ users: [] }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Set-Cookie': 'CF_Authorization=backend-service-token-jwt; Path=/; HttpOnly; Secure',
+        },
+      }),
+    );
+    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+
+    const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
+
+    // The backend cookie is dropped; the rest of the response passes through.
+    expect(response.headers.get('Set-Cookie')).toBeNull();
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('application/json');
+    expect(await response.json()).toEqual({ users: [] });
+  });
+
   it('forwards a HEAD without a body (skips arrayBuffer) and returns the upstream response', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
     const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'HEAD' });
