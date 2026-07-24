@@ -4,6 +4,15 @@
   background: var(--surface);
   padding: var(--space-4);
   max-width: 24rem;
+  /* Always horizontally centered within the page container. */
+  margin-inline: auto;
+}
+
+/* Below 1000px the form spans the full container width. */
+@media (max-width: 1000px) {
+  .provision-form {
+    max-width: none;
+  }
 }
 
 .provision-form h2 {

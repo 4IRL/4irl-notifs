@@ -64,24 +64,26 @@ export function UsersTable({
                     ))}
                   </td>
                   <td>{topicPatterns.join(', ')}</td>
-                  <td className="users-table__actions">
-                    {apps.map((app) => (
+                  <td>
+                    <div className="users-table__actions">
+                      {apps.map((app) => (
+                        <button
+                          key={app}
+                          type="button"
+                          className="users-table__button users-table__button--secondary"
+                          onClick={() => onDeprovision({ userId, appId: app })}
+                        >
+                          {`${strings.deprovisionAction} ${app}`}
+                        </button>
+                      ))}
                       <button
-                        key={app}
                         type="button"
-                        className="users-table__button users-table__button--secondary"
-                        onClick={() => onDeprovision({ userId, appId: app })}
+                        className="users-table__button users-table__button--danger"
+                        onClick={() => onDelete({ userId })}
                       >
-                        {`${strings.deprovisionAction} ${app}`}
+                        {`${strings.deleteAction} ${displayName}`}
                       </button>
-                    ))}
-                    <button
-                      type="button"
-                      className="users-table__button users-table__button--danger"
-                      onClick={() => onDelete({ userId })}
-                    >
-                      {`${strings.deleteAction} ${displayName}`}
-                    </button>
+                    </div>
                   </td>
                 </tr>
               );
