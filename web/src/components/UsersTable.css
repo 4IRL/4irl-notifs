@@ -15,6 +15,7 @@
 .users-table__table td {
   padding: var(--space-2) var(--space-3);
   text-align: left;
+  vertical-align: middle;
   border-bottom: 1px solid var(--border);
 }
 
@@ -40,9 +41,13 @@
   font-size: 0.8125rem;
 }
 
+/* Button group lives in a wrapper div (not directly on the <td>): a
+   `display: flex` td drops out of table-row layout, so its bottom border
+   renders at content height and misaligns with the sibling cells' borders. */
 .users-table__actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
 }
 
