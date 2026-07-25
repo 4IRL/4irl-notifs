@@ -64,7 +64,7 @@ export async function proxyTo({
   // so same-origin POSTs aren't downgraded to a login redirect), so the Function
   // is now the authenticator. Only DISABLE_ACCESS_AUTH='true' makes this a no-op
   // (the local-dev opt-out); otherwise auth is enforced. See `_auth.ts` +
-  // deploy-runbook §6b.
+  // ARCHITECTURE.md ("Admin-UI same-origin proxy").
   const auth = await authenticateAdmin({ request, env });
   if (!auth.ok) {
     return auth.response;

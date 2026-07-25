@@ -3,7 +3,7 @@
 **Audience:** an engineer (or an LLM) wiring a new client application (e.g. `urls4irl`,
 `tasktracker`) into the 4IRL notification service so it can send personalized notifications to its
 users. This is a **self-service integration guide** — it is not about deploying the notification
-service itself (that is `deploy-runbook.md`).
+service itself (that is `ARCHITECTURE.md`).
 
 If you read nothing else, read the **Mental model** and **Integration in 5 steps** sections.
 
@@ -223,5 +223,5 @@ Notes:
 - [ ] All mint responses (`token`) are captured on first response — they are never re-shown.
 
 ## Related docs
-- `deploy-runbook.md` — operating/deploying the notification service (operator-facing).
+- `ARCHITECTURE.md` — how the service works + Cloudflare/auth config.
 - `admin-ui-same-origin` plan (`~/code/plans/4irl-notifs/`) — the admin console architecture.

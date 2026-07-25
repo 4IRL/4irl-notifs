@@ -6,7 +6,7 @@
 // GETs) — breaking provisioning (POST → GET downgrade → 405). The fix: the
 // operator adds an Access **Bypass** policy on the `/v1` and `/people` paths so
 // those paths are no longer edge-challenged, and THIS Function validates the
-// Access JWT itself. See deploy-runbook §6b.
+// Access JWT itself. See ARCHITECTURE.md ("Admin-UI same-origin proxy").
 
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { JWTVerifyGetKey } from 'jose';

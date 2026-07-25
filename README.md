@@ -34,7 +34,7 @@ ntfy listens on `http://127.0.0.1:8090` (config: `ntfy/server.yml`; auth databas
 Deployed to the shared VPS as an independent docker-compose stack (`docker-compose.prod.yml`)
 by `.github/workflows/prod-build-and-deploy.yml` on merge to `main`; the admin UI deploys via
 Cloudflare Pages. Public ingress, Cloudflare Access gating, and all required secrets are
-provisioned by hand — see [`docs/deploy-runbook.md`](docs/deploy-runbook.md) for the complete
-human-in-the-loop checklist.
+provisioned by hand — see [`ARCHITECTURE.md`](ARCHITECTURE.md) ("Deploy pipeline",
+"Hosts & DNS", "Authentication") for the complete human-in-the-loop checklist.
 
 See `plans/` for design docs and implementation plans (not tracked in git).

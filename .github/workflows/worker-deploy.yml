@@ -3,7 +3,7 @@ name: Deploy person-service to Cloudflare Workers
 # Runs post-merge only (wired into prod-build-and-deploy.yml as the
 # deploy-person-service job). This job will FAIL until the operator fills in
 # the real D1 database_id into person-service/wrangler.toml (it currently
-# holds a placeholder) — see docs/deploy-runbook.md Wave 2. That is expected
+# holds a placeholder) — see ARCHITECTURE.md ("Authentication (Cloudflare Zero Trust)"). That is expected
 # scaffolding, not a bug in this workflow.
 
 permissions:
