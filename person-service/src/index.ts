@@ -5,7 +5,7 @@
 // This Worker performs NO authentication/authorization itself. In
 // production, Cloudflare Access enforces access control at the edge in
 // front of this Worker's route/custom domain (see wrangler.toml and
-// docs/deploy-runbook.md Wave 2) — every request that reaches `fetch` below
+// ARCHITECTURE.md "Authentication (Cloudflare Zero Trust)") — every request that reaches `fetch` below
 // is already assumed to have passed that edge gate.
 
 export interface Env {
