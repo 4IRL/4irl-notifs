@@ -3,14 +3,8 @@
   border-radius: var(--radius);
   background: var(--surface);
   padding: var(--space-4);
-  max-width: 24rem;
-  margin-inline: auto;
-}
-
-@media (max-width: 1000px) {
-  .add-app-form {
-    max-width: none;
-  }
+  /* Width + placement are owned by the `.app__forms` flex wrapper (see App.css)
+     so the provision and add-app forms always match and lay out responsively. */
 }
 
 .add-app-form h2 {

@@ -277,8 +277,10 @@ function App({ client, personClient, appsEnabled = false }: AppProps) {
             {error}
           </p>
         )}
-        <ProvisionForm onProvision={handleProvision} />
-        {appsSectionEnabled && <AddAppForm onAddApp={handleAddApp} />}
+        <div className="app__forms">
+          <ProvisionForm onProvision={handleProvision} />
+          {appsSectionEnabled && <AddAppForm onAddApp={handleAddApp} />}
+        </div>
         <UsersTable
           users={users}
           loading={loading}

@@ -35,3 +35,22 @@
   margin: 0 auto;
   padding: var(--space-5) var(--space-4);
 }
+
+/* The provision + add-app forms sit side by side on wide screens and wrap to a
+   single, equal-width column on narrow ones. Each form owns no width itself
+   (the flex item does), so the two always match: flex-basis sets the wrap
+   threshold, max-width caps them when there's room, and justify-content keeps a
+   lone form (or a wrapped column) centered. align-items:flex-start keeps the
+   shorter form top-aligned next to the taller one. */
+.app__forms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.app__forms > * {
+  flex: 1 1 22rem;
+  max-width: 24rem;
+}
