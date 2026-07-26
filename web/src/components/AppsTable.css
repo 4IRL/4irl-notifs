@@ -1,28 +1,29 @@
-.people-table {
+.apps-table {
   margin-top: var(--space-5);
 }
 
-.people-table__status {
+.apps-table__status {
   color: var(--text);
 }
 
-.people-table__table {
+.apps-table__table {
   width: 100%;
   border-collapse: collapse;
 }
 
-.people-table__table th,
-.people-table__table td {
+.apps-table__table th,
+.apps-table__table td {
   padding: var(--space-2) var(--space-3);
   text-align: left;
+  vertical-align: middle;
   border-bottom: 1px solid var(--border);
 }
 
-.people-table__table tbody tr:hover {
+.apps-table__table tbody tr:hover {
   background: var(--surface-hover);
 }
 
-.people-table__table th {
+.apps-table__table th {
   color: var(--text);
   font-size: 0.75rem;
   font-variant: small-caps;
@@ -30,24 +31,42 @@
   text-transform: uppercase;
 }
 
-.people-table__hash {
+.apps-table__id {
   font-family: var(--mono);
   font-size: 0.8125rem;
 }
 
-.people-table__button {
+.apps-table__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.apps-table__button {
   border-radius: var(--radius);
   padding: var(--space-1) var(--space-2);
   font-size: 0.8125rem;
   cursor: pointer;
 }
 
-.people-table__button--danger {
+.apps-table__button--secondary {
+  border: 1px solid var(--accent-2-border);
+  background: var(--accent-2-bg);
+  color: var(--accent-2);
+}
+
+.apps-table__button--secondary:hover {
+  border-color: var(--accent-2-hover);
+  color: var(--accent-2-hover);
+}
+
+.apps-table__button--danger {
   border: 1px solid var(--danger-border);
   background: var(--danger-bg);
   color: var(--danger);
 }
 
-.people-table__button--danger:hover {
+.apps-table__button--danger:hover {
   border-color: var(--danger);
 }

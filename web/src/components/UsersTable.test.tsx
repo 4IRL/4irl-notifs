@@ -166,6 +166,9 @@ describe('UsersTable', () => {
     );
 
     await user.click(screen.getByRole('button', { name: `${strings.deprovisionAction} urls4irl` }));
+    await user.click(
+      screen.getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
+    );
 
     expect(onDeprovision).toHaveBeenCalledTimes(1);
     expect(onDeprovision).toHaveBeenCalledWith({ userId: 'bob', appId: 'urls4irl' });
@@ -194,7 +197,13 @@ describe('UsersTable', () => {
 
     await user.click(screen.getByRole('button', { name: `${strings.deprovisionAction} urls4irl` }));
     await user.click(
+      screen.getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
+    );
+    await user.click(
       screen.getByRole('button', { name: `${strings.deprovisionAction} chores4irl` }),
+    );
+    await user.click(
+      screen.getByRole('button', { name: `${strings.confirmDeprovisionAction} chores4irl` }),
     );
 
     expect(onDeprovision).toHaveBeenCalledTimes(2);
@@ -236,6 +245,7 @@ describe('UsersTable', () => {
     );
 
     await user.click(screen.getByRole('button', { name: `${strings.deleteAction} bob` }));
+    await user.click(screen.getByRole('button', { name: `${strings.confirmDeleteAction} bob` }));
 
     expect(onDelete).toHaveBeenCalledTimes(1);
     expect(onDelete).toHaveBeenCalledWith({ userId: 'bob' });
@@ -265,6 +275,7 @@ describe('UsersTable', () => {
     expect(aliceDelete).not.toBe(bobDelete);
 
     await user.click(bobDelete);
+    await user.click(screen.getByRole('button', { name: `${strings.confirmDeleteAction} bob` }));
 
     expect(onDelete).toHaveBeenCalledTimes(1);
     expect(onDelete).toHaveBeenCalledWith({ userId: 'bob' });
@@ -288,6 +299,9 @@ describe('UsersTable', () => {
 
     await user.click(
       screen.getByRole('button', { name: `${strings.deleteAction} alice@example.com` }),
+    );
+    await user.click(
+      screen.getByRole('button', { name: `${strings.confirmDeleteAction} alice@example.com` }),
     );
 
     expect(onDelete).toHaveBeenCalledTimes(1);

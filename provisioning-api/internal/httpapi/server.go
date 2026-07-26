@@ -34,6 +34,9 @@ type ProvisioningService interface {
 	// its write-only app-wide topic access, and returns a fresh
 	// publisher-labeled token.
 	ProvisionApp(ctx context.Context, request provisioning.ProvisionAppRequest) (provisioning.ProvisionAppResult, error)
+	// DeprovisionApp removes an app entirely: every subscriber's scoped grant
+	// for the app, the app's publisher identity, and the app registry row.
+	DeprovisionApp(ctx context.Context, request provisioning.DeprovisionAppRequest) error
 }
 
 // ServerConfig configures a Server. Service is required; Logger defaults to
@@ -82,6 +85,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /v1/users", server.handleListUsers)
 	server.mux.HandleFunc("DELETE /v1/users/{user_id}", server.handleDeleteUser)
 	server.mux.HandleFunc("POST /v1/provision-app", server.handleProvisionApp)
+	server.mux.HandleFunc("POST /v1/deprovision-app", server.handleDeprovisionApp)
 }
 
 // handleHealthz responds 200 with a plain-text "ok" body for liveness checks.
@@ -299,9 +303,14 @@ func (server *Server) handleDeleteUser(responseWriter http.ResponseWriter, reque
 	})
 }
 
-// provisionAppRequestBody is the JSON body for /v1/provision-app.
+// provisionAppRequestBody is the JSON body for /v1/provision-app. Rotate
+// selects token behavior: omitted/false mints an additional publisher token
+// (existing ones stay valid — safe, zero-downtime); true revokes every
+// existing publisher token first, then mints one fresh (hard rotation for a
+// leaked credential).
 type provisionAppRequestBody struct {
-	AppID string `json:"app_id"`
+	AppID  string `json:"app_id"`
+	Rotate bool   `json:"rotate"`
 }
 
 // provisionAppResponseBody is the JSON response for a successful
@@ -329,7 +338,8 @@ func (server *Server) handleProvisionApp(responseWriter http.ResponseWriter, req
 	}
 
 	result, provisionAppErr := server.service.ProvisionApp(request.Context(), provisioning.ProvisionAppRequest{
-		AppID: requestBody.AppID,
+		AppID:  requestBody.AppID,
+		Rotate: requestBody.Rotate,
 	})
 	if provisionAppErr != nil {
 		server.writeServiceError(responseWriter, request, provisionAppErr)
@@ -341,5 +351,46 @@ func (server *Server) handleProvisionApp(responseWriter http.ResponseWriter, req
 		PublisherUserID: result.PublisherUserID,
 		TopicPattern:    result.TopicPattern,
 		Token:           result.Token,
+	})
+}
+
+// deprovisionAppRequestBody is the JSON body for /v1/deprovision-app.
+type deprovisionAppRequestBody struct {
+	AppID string `json:"app_id"`
+}
+
+// deprovisionAppResponseBody is the JSON response for a successful
+// deprovision-app: the app was fully removed (publisher identity, every
+// subscriber's grant, and the registry row).
+type deprovisionAppResponseBody struct {
+	AppID   string `json:"app_id"`
+	Removed bool   `json:"removed"`
+}
+
+// handleDeprovisionApp decodes the request body, delegates to
+// Service.DeprovisionApp (which cascades the app's ntfy teardown and deletes
+// its registry row), and confirms removal as JSON.
+func (server *Server) handleDeprovisionApp(responseWriter http.ResponseWriter, request *http.Request) {
+	var requestBody deprovisionAppRequestBody
+	if decodeErr := json.NewDecoder(request.Body).Decode(&requestBody); decodeErr != nil {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if !validateAppID(requestBody.AppID) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
+		return
+	}
+
+	deprovisionAppErr := server.service.DeprovisionApp(request.Context(), provisioning.DeprovisionAppRequest{
+		AppID: requestBody.AppID,
+	})
+	if deprovisionAppErr != nil {
+		server.writeServiceError(responseWriter, request, deprovisionAppErr)
+		return
+	}
+
+	writeJSON(responseWriter, http.StatusOK, deprovisionAppResponseBody{
+		AppID:   requestBody.AppID,
+		Removed: true,
 	})
 }

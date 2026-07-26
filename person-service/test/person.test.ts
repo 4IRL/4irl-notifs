@@ -182,6 +182,39 @@ describe('GET /people', () => {
   });
 });
 
+describe('DELETE /person/{hash}', () => {
+  it('removes a person and returns 200', async () => {
+    const hash = 'deleteme23456777';
+    await fetchJson({
+      path: '/person',
+      method: 'PUT',
+      body: { person_hash: hash, email: 'gone@example.com' },
+    });
+
+    const response = await fetchJson({ path: `/person/${hash}`, method: 'DELETE' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ person_hash: hash, deleted: true });
+
+    const lookup = await SELF.fetch(
+      'http://person-service.local/person?email=gone@example.com',
+    );
+    expect(lookup.status).toBe(404);
+  });
+
+  it('is idempotent: deleting an absent person still returns 200', async () => {
+    const hash = 'neverherere23456';
+    const response = await fetchJson({ path: `/person/${hash}`, method: 'DELETE' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ person_hash: hash, deleted: true });
+  });
+
+  it('rejects an invalid person_hash with 400', async () => {
+    const response = await fetchJson({ path: '/person/TOO-SHORT', method: 'DELETE' });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'invalid person_hash' });
+  });
+});
+
 describe('routing', () => {
   it('returns 404 for an unknown path', async () => {
     const response = await SELF.fetch('http://person-service.local/unknown');
@@ -189,7 +222,7 @@ describe('routing', () => {
     expect(await response.json()).toEqual({ error: 'not found' });
   });
 
-  it('returns 405 for a known path with the wrong method', async () => {
+  it('returns 405 for /person (no hash) with the wrong method', async () => {
     const response = await SELF.fetch('http://person-service.local/person', { method: 'DELETE' });
     expect(response.status).toBe(405);
     expect(await response.json()).toEqual({ error: 'method not allowed' });

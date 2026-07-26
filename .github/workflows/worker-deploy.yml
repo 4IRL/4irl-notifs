@@ -37,6 +37,19 @@ jobs:
         working-directory: person-service
         run: npm ci
 
+      # Apply D1 schema migrations BEFORE deploying the Worker, so a new code
+      # path can never hit a table its migration hasn't created yet (e.g. the
+      # `app` registry table from 0002 — without this, every /apps call would
+      # 500 with "no such table: app"). `migrations apply` is idempotent:
+      # already-applied migrations are skipped.
+      - name: Apply D1 migrations
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: person-service
+          command: d1 migrations apply person-service --remote
+
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:

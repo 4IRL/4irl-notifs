@@ -37,6 +37,27 @@ export interface UserIdParam {
   userId: string;
 }
 
+/** The result of minting an app's publisher identity: the reveal-once token. */
+export interface ProvisionAppResult {
+  appId: string;
+  publisherUserId: string;
+  topicPattern: string;
+  token: string;
+}
+
+/** Parameters for minting/rotating an app's publisher token. `rotate` false
+ *  (default) mints an additional token (existing ones stay valid); `rotate`
+ *  true revokes every existing publisher token first, then mints one fresh. */
+export interface ProvisionAppParams {
+  appId: string;
+  rotate?: boolean;
+}
+
+/** Identifies an app (for the full-cascade deprovision). */
+export interface AppIdParam {
+  appId: string;
+}
+
 /** Configuration for createApiClient. */
 export interface ApiClientConfig {
   baseUrl?: string;
@@ -68,6 +89,14 @@ interface ProvisionResponseWire {
   token: string;
 }
 
+/** Wire shape of a provision-app response. */
+interface ProvisionAppResponseWire {
+  app_id: string;
+  publisher_user_id: string;
+  topic_pattern: string;
+  token: string;
+}
+
 const DEFAULT_BASE_URL = '';
 
 /** The provisioning API surface consumed by the admin UI. */
@@ -76,6 +105,8 @@ export interface ApiClient {
   deprovision(pair: AppUserPair): Promise<void>;
   listUsers(): Promise<UserSummary[]>;
   deleteUser(param: UserIdParam): Promise<void>;
+  provisionApp(params: ProvisionAppParams): Promise<ProvisionAppResult>;
+  deprovisionApp(param: AppIdParam): Promise<void>;
 }
 
 /** Builds an ApiClient bound to a base URL and fetch implementation. */
@@ -152,6 +183,24 @@ export function createApiClient({
 
     async deleteUser({ userId }: UserIdParam): Promise<void> {
       await request({ path: `/v1/users/${userId}`, method: 'DELETE' });
+    },
+
+    async provisionApp({ appId, rotate = false }: ProvisionAppParams): Promise<ProvisionAppResult> {
+      const wire = (await request({
+        path: '/v1/provision-app',
+        method: 'POST',
+        body: { app_id: appId, rotate },
+      })) as ProvisionAppResponseWire;
+      return {
+        appId: wire.app_id,
+        publisherUserId: wire.publisher_user_id,
+        topicPattern: wire.topic_pattern,
+        token: wire.token,
+      };
+    },
+
+    async deprovisionApp({ appId }: AppIdParam): Promise<void> {
+      await request({ path: '/v1/deprovision-app', method: 'POST', body: { app_id: appId } });
     },
   };
 }

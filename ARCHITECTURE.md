@@ -73,13 +73,18 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 | App | Domain(s) | AUD tag | Policy |
 |---|---|---|---|
 | `notifs-admin` | `notifs-admin.4irl.app` | `907dc277…575f` | `U4I Dev Policy` — **Allow**, GitHub org `4IRL` (human login) |
-| `notifs-admin` API bypass | `notifs-admin.4irl.app/v1`, `/people` | — | **Bypass** (Everyone) — Access does NOT gate these paths; the Function authenticates |
+| `notifs-admin` API bypass | `notifs-admin.4irl.app/v1`, `/people`, `/apps` | — | **Bypass** (Everyone) — Access does NOT gate these paths; the Function authenticates |
 | `notifs-api` | `notifs-api.4irl.app` | `91ad97d9…694150` | **Service Auth** (proxy token) only |
 | `notifs-people` | `notifs-people.4irl.app` | `5a270164…658f5a` | **Service Auth** (VPS dual-write token + proxy token) only |
 
 - `U4I Dev Policy` is a **reusable** Allow policy shared with `notifs-admin`. On the backends it was
   *detached* (Step-7 lockdown), leaving them service-token-only. Never *delete* it (would break admin login).
 - The AUD tag is per-app; `ACCESS_JWT_AUD` on the Pages project must equal `notifs-admin`'s AUD (`907dc277…`).
+- ⚠️ **The API-bypass path list is dashboard-managed and must include every same-origin API path.** When a
+  new proxied path is added (e.g. `/apps` for the app registry), the operator must add it to this Bypass
+  application alongside `/v1` and `/people` — otherwise Access edge-challenges non-GET requests to it
+  (`POST`/`PATCH`/`DELETE` → 302 login → 405), exactly the failure in the debugging table below. `GET`
+  still works, so the symptom is "list renders but every mutation fails."
 
 ### Service tokens
 
@@ -126,10 +131,11 @@ sequenceDiagram
 
 ## Admin-UI same-origin proxy
 
-- SPA calls **relative** `/v1/*` and `/people` (same-origin) — no cross-origin browser requests.
-- `web/functions/`: `_proxy.ts` (shared helper), `v1/[[path]].ts`, `people.ts`, `_auth.ts` (JWT), `_http.ts`.
+- SPA calls **relative** `/v1/*`, `/people`, and `/apps` (same-origin) — no cross-origin browser requests.
+- `web/functions/`: `_proxy.ts` (shared helper), `v1/[[path]].ts`, `people.ts`, `apps/[[path]].ts`,
+  `_auth.ts` (JWT), `_http.ts`. `/v1/*` → provisioning-api; `/people` + `/apps` → person-service.
 - Function: validate Access JWT → forward to backend with the proxy service token → strip upstream
-  `Set-Cookie` → return. People view gated by build flag `VITE_PEOPLE_ENABLED=true`.
+  `Set-Cookie` → return. People view gated by `VITE_PEOPLE_ENABLED=true`, Apps view by `VITE_APPS_ENABLED=true`.
 
 **Pages project `notifs-admin` — runtime bindings** (set in dashboard, not committed):
 
@@ -143,7 +149,7 @@ sequenceDiagram
 | `ACCESS_JWT_AUD` | plaintext | `notifs-admin` AUD (`907dc277…`) |
 | `DISABLE_ACCESS_AUTH` | plaintext | **local dev only** (`true` disables JWT check). Never set in prod. |
 
-Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`.
+Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABLED=true`.
 
 ---
 
@@ -162,7 +168,14 @@ Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`.
   `{app_id}-*`; subscriber reads its own `{app_id}-{person_hash}-*`.
 - **person-service D1** table `person(person_hash PK, email, created_at)` — reverse index so an
   operator can map an opaque hash back to an email. Populated by the provisioning-api **dual-write**
-  (Go) on every `/v1/provision`.
+  (Go) on every `/v1/provision`, and **dual-deleted** on a full user teardown (`DELETE /v1/users/{id}`
+  or a deprovision that removes the user's last app).
+- **person-service D1** table `app(app_id PK, display_name, description, created_at)` — the first-class
+  **app registry**, the operator-facing catalog behind the admin UI's Apps section (list/add/edit/remove).
+  It is advisory metadata layered over ntfy's still-derived reality: `POST /v1/provision` does **not**
+  require an app to be registered, so the registry and ntfy can diverge (an app with ntfy subscribers but
+  no registry row is not shown). The provisioning-api best-effort dual-deletes the row when an app is torn
+  down via `POST /v1/deprovision-app`.
 
 ```mermaid
 graph LR
@@ -182,8 +195,12 @@ graph LR
 ### provisioning-api endpoints (`notifs-api.4irl.app`, all Service-Auth gated)
 
 `POST /v1/provision` · `POST /v1/deprovision` · `GET /v1/users` · `DELETE /v1/users/{user_id}` ·
-`POST /v1/provision-app` · `GET /healthz`. Bodies + responses are JSON; errors `{ "error": … }`.
-Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
+`POST /v1/provision-app` · `POST /v1/deprovision-app` · `GET /healthz`. Bodies + responses are JSON;
+errors `{ "error": … }`. Notes: `DELETE /v1/users/{id}` is idempotent (200 even when the ntfy user is
+already gone; it also dual-deletes the person row). `POST /v1/provision-app` takes an optional
+`rotate` (default false = additive mint; true = revoke existing publisher tokens then mint one).
+`POST /v1/deprovision-app {app_id}` fully removes an app (publisher identity + every subscriber grant +
+registry row). Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
 
 ---
 
@@ -196,12 +213,16 @@ graph TD
   M["merge to main"] --> B["build-prod<br/>provisioning-api image → GHCR"]
   B --> D1J["deploy-prod<br/>SSH → VPS docker compose up<br/>(ntfy + provisioning-api)"]
   M --> D2["deploy-admin-ui<br/>wrangler pages deploy (notifs-admin)"]
-  M --> D3["deploy-person-service<br/>wrangler deploy Worker + D1"]
+  M --> D3["deploy-person-service<br/>wrangler d1 migrations apply → wrangler deploy Worker"]
 ```
 
 - **VPS deploy** (`prod-deploy.yml`): SSH via `cloudflared access ssh` (own SSH key + deploy service
   token), SCPs compose + ntfy config, `docker compose up -d`. Dual-write creds delivered as Docker
   Compose secrets (`PERSON_SERVICE_ACCESS_CLIENT_*`), never a plaintext `.env`.
+- **person-service D1 schema** is applied by CI: `worker-deploy.yml` runs `wrangler d1 migrations apply
+  person-service --remote` **before** `wrangler deploy`, so a new Worker code path never hits a table its
+  migration hasn't created (idempotent — applied migrations are skipped). Adding a table = add a
+  `person-service/migrations/NNNN_*.sql` file; no workflow change needed.
 - **Pages/Worker deploys**: `wrangler`, auth via repo secrets `CLOUDFLARE_API_TOKEN` (Pages-Edit +
   Workers-Scripts + D1) + `CLOUDFLARE_ACCOUNT_ID`. Worker custom domain is managed **out-of-band** in
   the dashboard (keeps the CI token account-scoped, no zone perms).
@@ -216,7 +237,8 @@ graph TD
 | Admin API `502 {"error":"upstream auth failed"}` | Proxy service token not on the backend's Service-Auth policy (or wrong policy action). |
 | Admin API `502 {"error":"upstream unreachable"}` | `PROVISIONING_API_URL`/`PERSON_SERVICE_URL` wrong/down, or Tunnel route missing. |
 | Admin API `401 {"error":"unauthorized"}` | JWT invalid/missing: `aud`≠`notifs-admin` AUD, wrong `ACCESS_TEAM_DOMAIN`, or expired session. |
-| Provisioning POST → 302 login / 405 | The `/v1`+`/people` Access **Bypass** app is missing → Access is edge-challenging the POST. |
+| Provisioning/Apps POST/PATCH/DELETE → 302 login / 405 | The path (`/v1`, `/people`, `/apps`) is missing from the Access **Bypass** app → Access is edge-challenging the write. (Apps section lists via GET but every mutation fails until `/apps` is added.) |
+| Admin API `500` "no such table: app" | person-service Worker deployed without applying D1 migration 0002 — run `wrangler d1 migrations apply person-service --remote` (CI does this automatically before deploy). |
 | Direct browser visit to a backend → 403 | Expected post-lockdown (service-token-only). Rollback = re-add `U4I Dev Policy`. |
 | ntfy publish/subscribe 403 | Wrong ntfy token, or topic outside the token's ACL (`{app_id}-*` publisher / `{app_id}-{hash}-*` subscriber). |
 

@@ -166,6 +166,116 @@ func TestUpsertPersonNonSuccessStatusReturnsErrorMentioningStatus(t *testing.T) 
 	}
 }
 
+func TestDeletePersonSendsDeleteToPerHashPath(t *testing.T) {
+	var capturedMethod string
+	var capturedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		capturedMethod = request.Method
+		capturedPath = request.URL.Path
+		responseWriter.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{BaseURL: server.URL})
+
+	if err := client.DeletePerson(context.Background(), "76gzqgp4byjl6dje"); err != nil {
+		t.Fatalf("DeletePerson returned unexpected error: %v", err)
+	}
+	if capturedMethod != http.MethodDelete {
+		t.Fatalf("method = %s, expected DELETE", capturedMethod)
+	}
+	if capturedPath != "/person/76gzqgp4byjl6dje" {
+		t.Fatalf("path = %s, expected /person/76gzqgp4byjl6dje", capturedPath)
+	}
+}
+
+func TestDeleteAppSendsDeleteToPerAppPath(t *testing.T) {
+	var capturedMethod string
+	var capturedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		capturedMethod = request.Method
+		capturedPath = request.URL.Path
+		responseWriter.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{BaseURL: server.URL})
+
+	if err := client.DeleteApp(context.Background(), "urls4irl"); err != nil {
+		t.Fatalf("DeleteApp returned unexpected error: %v", err)
+	}
+	if capturedMethod != http.MethodDelete {
+		t.Fatalf("method = %s, expected DELETE", capturedMethod)
+	}
+	if capturedPath != "/apps/urls4irl" {
+		t.Fatalf("path = %s, expected /apps/urls4irl", capturedPath)
+	}
+}
+
+func TestDeletePersonSendsAccessHeadersWhenConfigured(t *testing.T) {
+	var capturedClientID string
+	var capturedClientSecret string
+
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		capturedClientID = request.Header.Get("CF-Access-Client-Id")
+		capturedClientSecret = request.Header.Get("CF-Access-Client-Secret")
+		responseWriter.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL:            server.URL,
+		AccessClientID:     "test-client-id",
+		AccessClientSecret: "test-client-secret",
+	})
+
+	if err := client.DeletePerson(context.Background(), "76gzqgp4byjl6dje"); err != nil {
+		t.Fatalf("DeletePerson returned unexpected error: %v", err)
+	}
+	if capturedClientID != "test-client-id" {
+		t.Fatalf("CF-Access-Client-Id = %q, expected test-client-id", capturedClientID)
+	}
+	if capturedClientSecret != "test-client-secret" {
+		t.Fatalf("CF-Access-Client-Secret = %q, expected test-client-secret", capturedClientSecret)
+	}
+}
+
+func TestDeleteAppNonSuccessStatusReturnsErrorMentioningStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{BaseURL: server.URL})
+
+	err := client.DeleteApp(context.Background(), "urls4irl")
+	if err == nil {
+		t.Fatal("expected a non-nil error for a non-2xx response")
+	}
+	if !strings.Contains(err.Error(), http.StatusText(http.StatusInternalServerError)) {
+		t.Fatalf("error %q does not mention the failing status", err.Error())
+	}
+}
+
+func TestDeletePersonNonSuccessStatusReturnsErrorMentioningStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{BaseURL: server.URL})
+
+	err := client.DeletePerson(context.Background(), "76gzqgp4byjl6dje")
+	if err == nil {
+		t.Fatal("expected a non-nil error for a non-2xx response")
+	}
+	if !strings.Contains(err.Error(), http.StatusText(http.StatusInternalServerError)) {
+		t.Fatalf("error %q does not mention the failing status", err.Error())
+	}
+}
+
 func TestConfiguredReflectsWhetherBaseURLIsSet(t *testing.T) {
 	if (NewClient(Config{})).Configured() {
 		t.Fatal("Configured() must be false for an empty BaseURL")

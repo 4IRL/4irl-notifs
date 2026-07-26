@@ -4,41 +4,51 @@ import { ApiError } from './api/client';
 import type {
   ApiClient,
   AppUserPair,
+  ProvisionAppResult,
   ProvisionParams,
   ProvisionResult,
   UserSummary,
 } from './api/client';
-import type { PersonApiClient, PersonSummary } from './api/personClient';
+import type {
+  AppSummary,
+  CreateAppParams,
+  PersonApiClient,
+  PersonSummary,
+  UpdateAppParams,
+} from './api/personClient';
 import { ProvisionForm } from './components/ProvisionForm';
 import { UsersTable } from './components/UsersTable';
 import { PeopleTable } from './components/PeopleTable';
+import { AddAppForm } from './components/AddAppForm';
+import { AppsTable } from './components/AppsTable';
 import { strings } from './strings';
 import './App.css';
 
 /**
  * Props for App. The API client is injected so tests can supply a double.
  * personClient is optional: locally there is no person-service Worker, so the
- * people view must not render at all when it is absent.
+ * people/apps views must not render at all when it is absent. appsEnabled
+ * additionally gates the Apps section (VITE_APPS_ENABLED); like the People
+ * view, it also requires a personClient since the app registry lives in the
+ * person-service.
  */
 interface AppProps {
   client: ApiClient;
   personClient?: PersonApiClient;
+  appsEnabled?: boolean;
 }
 
-/**
- * App is the admin shell: it owns the user list (loaded on mount and refreshed
- * after every mutation) and wires the provision form and users table to the
- * injected API client. When a personClient is supplied it also owns the
- * people list (loaded on mount and refreshed after a successful provision,
- * since provisioning dual-writes a person record on the Go side).
- */
-function App({ client, personClient }: AppProps) {
+function App({ client, personClient, appsEnabled = false }: AppProps) {
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [people, setPeople] = useState<PersonSummary[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(personClient !== undefined);
   const [peopleError, setPeopleError] = useState<string | null>(null);
+  const appsSectionEnabled = personClient !== undefined && appsEnabled;
+  const [apps, setApps] = useState<AppSummary[]>([]);
+  const [appsLoading, setAppsLoading] = useState(appsSectionEnabled);
+  const [appsError, setAppsError] = useState<string | null>(null);
 
   // `loading` starts true and flips off after the first load; later refreshes
   // (post-provision/deprovision/delete) update the list in place without
@@ -92,10 +102,46 @@ function App({ client, personClient }: AppProps) {
     void refreshPeople();
   }, [refreshPeople]);
 
+  // Same promise-chain style and same isolation as refreshPeople: an apps-load
+  // failure sets only appsError, never the shared banner. No-op unless the Apps
+  // section is enabled (requires personClient + the build flag).
+  const refreshApps = useCallback((): Promise<void> => {
+    if (personClient === undefined || !appsEnabled) {
+      return Promise.resolve();
+    }
+    return personClient
+      .listApps()
+      .then((nextApps) => {
+        setApps(nextApps);
+        setAppsError(null);
+      })
+      .catch((rejection: unknown) => {
+        setAppsError(rejection instanceof ApiError ? rejection.message : strings.appsLoadError);
+      })
+      .finally(() => {
+        setAppsLoading(false);
+      });
+  }, [personClient, appsEnabled]);
+
+  useEffect(() => {
+    void refreshApps();
+  }, [refreshApps]);
+
   // Join key: a ntfy userId is "u_" + personHash. Built fresh each render from
   // `people`; empty when there is no personClient, so UsersTable always falls
   // back to displaying the raw userId in that case.
   const emailByPersonHash = new Map(people.map((person) => [person.personHash, person.email]));
+
+  // Live subscriber count per registered app, derived from the current users
+  // list: only "u_"-prefixed users (real subscribers) that hold the app —
+  // publisher identities surface via the app-wide wildcard and are excluded.
+  const subscriberCountByApp = new Map<string, number>();
+  for (const app of apps) {
+    const count = users.filter(
+      (user) => user.userId.startsWith('u_') && user.apps.includes(app.appId),
+    ).length;
+    subscriberCountByApp.set(app.appId, count);
+  }
 
   const handleProvision = useCallback(
     async (params: ProvisionParams): Promise<ProvisionResult> => {
@@ -137,6 +183,88 @@ function App({ client, personClient }: AppProps) {
     [client, refreshUsers],
   );
 
+  // People-row delete = full teardown. The People row carries the personHash;
+  // the ntfy user id is "u_" + personHash. Deleting that user tears down every
+  // app grant + token AND (server-side dual-delete) the person row, so refresh
+  // both lists afterward.
+  const handleDeletePerson = useCallback(
+    ({ personHash }: { personHash: string }) => {
+      void client
+        .deleteUser({ userId: `u_${personHash}` })
+        .then(() => {
+          setError(null);
+          return Promise.all([refreshUsers(), refreshPeople()]);
+        })
+        .then(() => undefined)
+        .catch((rejection: unknown) => {
+          setError(rejection instanceof ApiError ? rejection.message : strings.genericError);
+        });
+    },
+    [client, refreshUsers, refreshPeople],
+  );
+
+  // Add app = registry-first: register metadata, then mint the publisher token.
+  // A failure after registration leaves a visible registry row with no token,
+  // recoverable via Re-mint. Returns the token result for the form's reveal.
+  const handleAddApp = useCallback(
+    async ({ appId, displayName, description }: CreateAppParams): Promise<ProvisionAppResult> => {
+      if (personClient === undefined) {
+        throw new Error('person service not configured');
+      }
+      await personClient.createApp({ appId, displayName, description });
+      try {
+        const result = await client.provisionApp({ appId });
+        await refreshUsers();
+        return result;
+      } finally {
+        // Refresh the registry even if minting the publisher token throws, so
+        // the just-registered app still appears in the table (and is thus
+        // recoverable via Re-mint) rather than staying invisible until an
+        // unrelated action happens to refresh apps.
+        await refreshApps();
+      }
+    },
+    [personClient, client, refreshApps, refreshUsers],
+  );
+
+  const handleUpdateApp = useCallback(
+    async (params: UpdateAppParams): Promise<void> => {
+      if (personClient === undefined) {
+        return;
+      }
+      await personClient.updateApp(params);
+      await refreshApps();
+    },
+    [personClient, refreshApps],
+  );
+
+  // Re-mint / rotate the publisher token. Returns the reveal-once result for
+  // the edit form; nothing in the tables changes, so no refresh is needed.
+  const handleRemintToken = useCallback(
+    ({ appId, rotate }: { appId: string; rotate: boolean }): Promise<ProvisionAppResult> =>
+      client.provisionApp({ appId, rotate }),
+    [client],
+  );
+
+  // Remove app = full cascade (server-side): publisher identity + every
+  // subscriber grant + registry row. Refresh apps (row gone) and users (grants
+  // gone).
+  const handleRemoveApp = useCallback(
+    ({ appId }: { appId: string }) => {
+      void client
+        .deprovisionApp({ appId })
+        .then(() => {
+          setError(null);
+          return Promise.all([refreshApps(), refreshUsers()]);
+        })
+        .then(() => undefined)
+        .catch((rejection: unknown) => {
+          setError(rejection instanceof ApiError ? rejection.message : strings.genericError);
+        });
+    },
+    [client, refreshApps, refreshUsers],
+  );
+
   return (
     <div className="app">
       <header className="app__header">
@@ -150,6 +278,7 @@ function App({ client, personClient }: AppProps) {
           </p>
         )}
         <ProvisionForm onProvision={handleProvision} />
+        {appsSectionEnabled && <AddAppForm onAddApp={handleAddApp} />}
         <UsersTable
           users={users}
           loading={loading}
@@ -157,8 +286,24 @@ function App({ client, personClient }: AppProps) {
           onDeprovision={handleDeprovision}
           onDelete={handleDelete}
         />
+        {appsSectionEnabled && (
+          <AppsTable
+            apps={apps}
+            subscriberCountByApp={subscriberCountByApp}
+            loading={appsLoading}
+            error={appsError}
+            onUpdateApp={handleUpdateApp}
+            onRemintToken={handleRemintToken}
+            onRemoveApp={handleRemoveApp}
+          />
+        )}
         {personClient !== undefined && (
-          <PeopleTable people={people} loading={peopleLoading} error={peopleError} />
+          <PeopleTable
+            people={people}
+            loading={peopleLoading}
+            error={peopleError}
+            onDelete={handleDeletePerson}
+          />
         )}
       </main>
     </div>

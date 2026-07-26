@@ -106,6 +106,68 @@ describe('api client', () => {
     expect(calledInit).toMatchObject({ method: 'DELETE' });
   });
 
+  it('provisionApp POSTs app_id/rotate and returns the parsed publisher token result', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        status: 200,
+        body: {
+          app_id: 'urls4irl',
+          publisher_user_id: 'urls4irl-publisher',
+          topic_pattern: 'urls4irl-*',
+          token: 'tk_pub',
+        },
+      }),
+    );
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    const result = await client.provisionApp({ appId: 'urls4irl', rotate: true });
+
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe('https://api.test/v1/provision-app');
+    expect(calledInit).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl', rotate: true });
+    expect(result).toEqual({
+      appId: 'urls4irl',
+      publisherUserId: 'urls4irl-publisher',
+      topicPattern: 'urls4irl-*',
+      token: 'tk_pub',
+    });
+  });
+
+  it('provisionApp defaults rotate to false when omitted', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        status: 200,
+        body: {
+          app_id: 'urls4irl',
+          publisher_user_id: 'urls4irl-publisher',
+          topic_pattern: 'urls4irl-*',
+          token: 'tk_pub',
+        },
+      }),
+    );
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    await client.provisionApp({ appId: 'urls4irl' });
+
+    const [, calledInit] = fetchMock.mock.calls[0];
+    expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl', rotate: false });
+  });
+
+  it('deprovisionApp POSTs the app_id', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ status: 200, body: { app_id: 'urls4irl', removed: true } }),
+    );
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    await client.deprovisionApp({ appId: 'urls4irl' });
+
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe('https://api.test/v1/deprovision-app');
+    expect(calledInit).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl' });
+  });
+
   it('throws ApiError carrying the server error message on non-2xx', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 400, body: { error: 'invalid app_id' } }));
     const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
