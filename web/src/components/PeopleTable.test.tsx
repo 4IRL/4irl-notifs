@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { strings } from '../strings';
 import { PeopleTable } from './PeopleTable';
@@ -10,27 +11,29 @@ afterEach(() => {
 
 describe('PeopleTable', () => {
   it('renders the people heading', () => {
-    render(<PeopleTable people={[]} loading={false} error={null} />);
+    render(<PeopleTable people={[]} loading={false} error={null} onDelete={vi.fn()} />);
 
     expect(screen.getByRole('heading', { name: strings.peopleHeading })).toBeInTheDocument();
   });
 
   it('shows the loading copy and no table rows when loading', () => {
-    render(<PeopleTable people={[]} loading={true} error={null} />);
+    render(<PeopleTable people={[]} loading={true} error={null} onDelete={vi.fn()} />);
 
     expect(screen.getByText(strings.peopleLoading)).toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   it('shows the empty-state copy when there are no people', () => {
-    render(<PeopleTable people={[]} loading={false} error={null} />);
+    render(<PeopleTable people={[]} loading={false} error={null} onDelete={vi.fn()} />);
 
     expect(screen.getByText(strings.peopleEmpty)).toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   it('shows an alert with the error message when loading fails', () => {
-    render(<PeopleTable people={[]} loading={false} error="Could not load people." />);
+    render(
+      <PeopleTable people={[]} loading={false} error="Could not load people." onDelete={vi.fn()} />,
+    );
 
     expect(screen.getByRole('alert')).toHaveTextContent('Could not load people.');
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
@@ -50,7 +53,7 @@ describe('PeopleTable', () => {
       },
     ];
 
-    render(<PeopleTable people={people} loading={false} error={null} />);
+    render(<PeopleTable people={people} loading={false} error={null} onDelete={vi.fn()} />);
 
     expect(
       screen.getByRole('columnheader', { name: strings.columnPersonHash }),
@@ -68,5 +71,30 @@ describe('PeopleTable', () => {
     expect(screen.getByText('alice@example.com')).toBeInTheDocument();
     expect(screen.getByText('2026-07-19T18:12:03Z')).toBeInTheDocument();
     expect(screen.getByText('smoketest@example.com')).toBeInTheDocument();
+  });
+
+  it('calls onDelete with the personHash after confirming a row delete', async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+    const people = [
+      {
+        personHash: '76gzqgp4byjl6dje',
+        email: 'alice@example.com',
+        createdAt: '2026-07-19T18:12:03Z',
+      },
+    ];
+
+    render(<PeopleTable people={people} loading={false} error={null} onDelete={onDelete} />);
+
+    await user.click(
+      screen.getByRole('button', { name: `${strings.deleteAction} alice@example.com` }),
+    );
+    expect(onDelete).not.toHaveBeenCalled();
+
+    await user.click(
+      screen.getByRole('button', { name: `${strings.confirmDeleteAction} alice@example.com` }),
+    );
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(onDelete).toHaveBeenCalledWith({ personHash: '76gzqgp4byjl6dje' });
   });
 });

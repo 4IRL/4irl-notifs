@@ -384,9 +384,15 @@ func userIsListed(t *testing.T, userID string) bool {
 	return false
 }
 
-func TestDeleteUnknownUserReturns404(t *testing.T) {
+// TestDeleteUnknownUserIsIdempotent verifies the full-teardown delete contract:
+// DELETE /v1/users/{id} returns 200 {deleted:true} even for an already-gone
+// ntfy user (the service swallows ntfycli.ErrNotFound and best-effort
+// dual-deletes the person row), rather than the pre-teardown 404. This makes a
+// People-row delete idempotent and repeat-safe.
+func TestDeleteUnknownUserIsIdempotent(t *testing.T) {
 	waitForHealth(t)
-	request, buildErr := http.NewRequest(http.MethodDelete, apiBaseURL()+"/v1/users/u_00000000000000ge", nil)
+	const unknownUserID = "u_00000000000000ge"
+	request, buildErr := http.NewRequest(http.MethodDelete, apiBaseURL()+"/v1/users/"+unknownUserID, nil)
 	if buildErr != nil {
 		t.Fatalf("building request: %v", buildErr)
 	}
@@ -395,8 +401,18 @@ func TestDeleteUnknownUserReturns404(t *testing.T) {
 		t.Fatalf("delete request: %v", deleteErr)
 	}
 	defer closeBody(t, response)
-	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("delete unknown user status = %d, expected 404", response.StatusCode)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("delete unknown user status = %d, expected 200 (idempotent full teardown)", response.StatusCode)
+	}
+	var responseBody struct {
+		UserID  string `json:"user_id"`
+		Deleted bool   `json:"deleted"`
+	}
+	if decodeErr := json.NewDecoder(response.Body).Decode(&responseBody); decodeErr != nil {
+		t.Fatalf("decoding response body: %v", decodeErr)
+	}
+	if responseBody.UserID != unknownUserID || !responseBody.Deleted {
+		t.Fatalf("response = %+v, expected user_id=%s deleted=true", responseBody, unknownUserID)
 	}
 }
 

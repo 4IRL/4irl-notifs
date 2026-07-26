@@ -48,5 +48,48 @@ export const strings = {
   columnEmail: 'Email',
   columnCreated: 'Created',
 
+  // Inline two-step confirmation (no modal): every destructive action first
+  // shows a Confirm/Cancel pair before firing.
+  cancelAction: 'Cancel',
+  confirmDeleteAction: 'Confirm delete',
+  confirmDeprovisionAction: 'Confirm deprovision',
+  confirmRemoveAction: 'Confirm remove',
+
+  // Apps section.
+  appsHeading: 'Apps',
+  appsLoading: 'Loading apps…',
+  appsEmpty: 'No apps registered yet.',
+  appsLoadError: 'Could not load apps.',
+  columnAppName: 'Name',
+  columnAppId: 'App ID',
+  columnAppDescription: 'Description',
+  columnSubscribers: 'Subscribers',
+
+  addAppHeading: 'Add an app',
+  appDisplayNameLabel: 'Display name',
+  appDescriptionLabel: 'Description',
+  appDisplayNamePlaceholder: 'URLs4IRL',
+  appDescriptionPlaceholder: 'Short description (optional)',
+  addAppAction: 'Add app',
+  addingApp: 'Adding…',
+
+  editAction: 'Edit',
+  removeAction: 'Remove',
+  saveAction: 'Save',
+  savingApp: 'Saving…',
+  closeEditAction: 'Close',
+
+  remintTokenAction: 'Re-mint token',
+  rotateTokenAction: 'Revoke & re-mint',
+  confirmRotateTokenAction: 'Confirm revoke & re-mint',
+  minting: 'Minting…',
+  rotateTokenWarning:
+    'Revoking replaces the publisher token immediately — the app stops publishing until it is redeployed with the new token.',
+
+  publisherTokenRevealLead: ({ appId }: { appId: string }): string =>
+    `Publisher token for ${appId} (copy now — shown once):`,
+
+  invalidDisplayName: 'Display name is required.',
+
   genericError: 'Something went wrong. Please try again.',
 } as const;

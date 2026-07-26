@@ -107,4 +107,123 @@ describe('person api client', () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe('https://person.test/people');
   });
+
+  it('listApps GETs /apps and maps the apps array', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        status: 200,
+        body: {
+          apps: [
+            {
+              app_id: 'urls4irl',
+              display_name: 'URLs4IRL',
+              description: 'Shared URL app',
+              created_at: '2026-07-19T18:12:03Z',
+            },
+          ],
+        },
+      }),
+    );
+    const client = createPersonApiClient({ baseUrl: 'https://person.test', fetchImpl: fetchMock });
+
+    const apps = await client.listApps();
+
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe('https://person.test/apps');
+    expect(calledInit).toMatchObject({ method: 'GET', credentials: 'include' });
+    expect(apps).toEqual([
+      {
+        appId: 'urls4irl',
+        displayName: 'URLs4IRL',
+        description: 'Shared URL app',
+        createdAt: '2026-07-19T18:12:03Z',
+      },
+    ]);
+  });
+
+  it('createApp POSTs /apps with snake_case metadata and returns the mapped app', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        status: 201,
+        body: {
+          app_id: 'tasktracker',
+          display_name: 'Task Tracker',
+          description: null,
+          created_at: '2026-07-25T10:00:00Z',
+        },
+      }),
+    );
+    const client = createPersonApiClient({ baseUrl: 'https://person.test', fetchImpl: fetchMock });
+
+    const app = await client.createApp({ appId: 'tasktracker', displayName: 'Task Tracker' });
+
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe('https://person.test/apps');
+    expect(calledInit).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(calledInit.body as string)).toEqual({
+      app_id: 'tasktracker',
+      display_name: 'Task Tracker',
+    });
+    expect(app).toEqual({
+      appId: 'tasktracker',
+      displayName: 'Task Tracker',
+      description: null,
+      createdAt: '2026-07-25T10:00:00Z',
+    });
+  });
+
+  it('updateApp PATCHes only the fields provided, omitting untouched ones', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        status: 200,
+        body: {
+          app_id: 'urls4irl',
+          display_name: 'New Name',
+          description: 'kept',
+          created_at: '2026-07-19T18:12:03Z',
+        },
+      }),
+    );
+    const client = createPersonApiClient({ baseUrl: 'https://person.test', fetchImpl: fetchMock });
+
+    await client.updateApp({ appId: 'urls4irl', displayName: 'New Name' });
+
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe('https://person.test/apps/urls4irl');
+    expect(calledInit).toMatchObject({ method: 'PATCH' });
+    expect(JSON.parse(calledInit.body as string)).toEqual({ display_name: 'New Name' });
+  });
+
+  it('updateApp sends description: null to explicitly clear it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        status: 200,
+        body: {
+          app_id: 'urls4irl',
+          display_name: 'Name',
+          description: null,
+          created_at: '2026-07-19T18:12:03Z',
+        },
+      }),
+    );
+    const client = createPersonApiClient({ baseUrl: 'https://person.test', fetchImpl: fetchMock });
+
+    await client.updateApp({ appId: 'urls4irl', description: null });
+
+    const [, calledInit] = fetchMock.mock.calls[0];
+    expect(JSON.parse(calledInit.body as string)).toEqual({ description: null });
+  });
+
+  it('deleteApp DELETEs the app by id', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ status: 200, body: { app_id: 'urls4irl', deleted: true } }),
+    );
+    const client = createPersonApiClient({ baseUrl: 'https://person.test', fetchImpl: fetchMock });
+
+    await client.deleteApp({ appId: 'urls4irl' });
+
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe('https://person.test/apps/urls4irl');
+    expect(calledInit).toMatchObject({ method: 'DELETE' });
+  });
 });

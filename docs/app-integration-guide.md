@@ -93,7 +93,8 @@ Response:
 
 **Store `token`** in your backend secret store. This is your write credential for all
 `urls4irl-*` topics. (Re-calling this endpoint mints an *additional* publisher token; it does
-**not** revoke the old one — rotation is by-issuing.)
+**not** revoke the old one — rotation is by-issuing. To force-revoke existing tokens instead — e.g.
+after a leak — pass `{ "app_id": "urls4irl", "rotate": true }`; see the API reference note on `rotate`.)
 
 ### Step 2 — Provision a user (once per user, when they enable notifications)
 
@@ -184,9 +185,10 @@ All calls require the two `CF-Access-Client-*` headers. All bodies + responses a
 
 | Method & path | Body | Success response |
 |---|---|---|
-| `POST /v1/provision-app` | `{ "app_id" }` | `{ app_id, publisher_user_id, topic_pattern, token }` |
+| `POST /v1/provision-app` | `{ "app_id", "rotate"? }` | `{ app_id, publisher_user_id, topic_pattern, token }` |
 | `POST /v1/provision` | `{ "app_id", "email" }` | `{ user_id, app_id, person_hash, topic_pattern, token }` |
 | `POST /v1/deprovision` | `{ "app_id", "email" }` **or** `{ "app_id", "user_id" }` | `{ user_id, app_id, removed }` |
+| `POST /v1/deprovision-app` | `{ "app_id" }` | `{ app_id, removed }` |
 | `GET /v1/users` | — | `{ users: [{ user_id, apps, topic_patterns }] }` |
 | `DELETE /v1/users/{user_id}` | — | `{ user_id, deleted }` |
 | `GET /healthz` | — | `ok` (behind Access) |
@@ -196,8 +198,18 @@ Notes:
   (validated after trim + lowercase — case-insensitive; `Alice@x.com` == `alice@x.com`).
 - Errors are `{ "error": "<message>" }` with the matching HTTP status (`400` invalid input,
   `404` user does not exist, `403`/redirect = missing/invalid service token, `500` internal).
-- `GET /v1/users` and `DELETE /v1/users/{user_id}` are cross-app management surfaces — most app
-  integrations only need `provision-app`, `provision`, and `deprovision`.
+- **`rotate` on `/v1/provision-app`** (optional, default `false`): `false`/omitted mints an *additional*
+  publisher token and leaves existing ones valid (safe, zero-downtime rotation by-issuing — see Step 1's
+  note). `true` is a **hard rotation**: it revokes every existing publisher token first, then mints one
+  fresh — for a leaked credential. The old token stops working immediately, so the app stops publishing
+  until it is redeployed with the new token.
+- **`DELETE /v1/users/{user_id}` is idempotent**: it returns `200 { user_id, deleted: true }` even when
+  the ntfy user is already gone (it no longer `404`s for an absent user), and it also removes the
+  person-service reverse-index row. Do not branch on a `404` from this endpoint.
+- `POST /v1/deprovision-app` fully removes an app: its publisher identity, every subscriber's grant for
+  the app, and the app-registry row. It is idempotent.
+- `GET /v1/users`, `DELETE /v1/users/{user_id}`, and `/v1/deprovision-app` are cross-app management
+  surfaces — most app integrations only need `provision-app`, `provision`, and `deprovision`.
 
 ## ntfy reference — `notifs.4irl.app`
 

@@ -22,6 +22,13 @@ function buildFakeClient(overrides: Partial<ApiClient> = {}): ApiClient {
     deprovision: vi.fn().mockResolvedValue(undefined),
     listUsers: vi.fn().mockResolvedValue([]),
     deleteUser: vi.fn().mockResolvedValue(undefined),
+    provisionApp: vi.fn().mockResolvedValue({
+      appId: 'urls4irl',
+      publisherUserId: 'urls4irl-publisher',
+      topicPattern: 'urls4irl-*',
+      token: 'tk_publisher',
+    }),
+    deprovisionApp: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -31,6 +38,20 @@ function buildFakeClient(overrides: Partial<ApiClient> = {}): ApiClient {
 function buildFakePersonClient(overrides: Partial<PersonApiClient> = {}): PersonApiClient {
   return {
     listPeople: vi.fn().mockResolvedValue([]),
+    listApps: vi.fn().mockResolvedValue([]),
+    createApp: vi.fn().mockResolvedValue({
+      appId: 'urls4irl',
+      displayName: 'URLs4IRL',
+      description: null,
+      createdAt: '2026-07-25T10:00:00Z',
+    }),
+    updateApp: vi.fn().mockResolvedValue({
+      appId: 'urls4irl',
+      displayName: 'URLs4IRL',
+      description: null,
+      createdAt: '2026-07-25T10:00:00Z',
+    }),
+    deleteApp: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -109,6 +130,11 @@ describe('App', () => {
     await userEvent.click(
       within(row).getByRole('button', { name: `${strings.deleteAction} u_abcdefgh23456777` }),
     );
+    await userEvent.click(
+      within(row).getByRole('button', {
+        name: `${strings.confirmDeleteAction} u_abcdefgh23456777`,
+      }),
+    );
 
     await waitFor(() =>
       expect(client.deleteUser).toHaveBeenCalledWith({ userId: 'u_abcdefgh23456777' }),
@@ -134,6 +160,11 @@ describe('App', () => {
     await userEvent.click(
       within(row).getByRole('button', { name: `${strings.deleteAction} u_abcdefgh23456777` }),
     );
+    await userEvent.click(
+      within(row).getByRole('button', {
+        name: `${strings.confirmDeleteAction} u_abcdefgh23456777`,
+      }),
+    );
 
     expect(await screen.findByText('user u_abcdefgh23456777 does not exist')).toBeInTheDocument();
   });
@@ -156,6 +187,9 @@ describe('App', () => {
     }
     await userEvent.click(
       within(row).getByRole('button', { name: `${strings.deprovisionAction} urls4irl` }),
+    );
+    await userEvent.click(
+      within(row).getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
     );
 
     expect(await screen.findByText(strings.genericError)).toBeInTheDocument();
@@ -188,14 +222,21 @@ describe('App', () => {
     if (row === null) {
       throw new Error('user row not found');
     }
-    const deprovisionButton = within(row).getByRole('button', {
-      name: `${strings.deprovisionAction} urls4irl`,
-    });
+    // Each deprovision is now a two-step confirm (trigger → confirm); the
+    // ConfirmButton reverts to its trigger after firing.
+    async function clickDeprovision() {
+      await userEvent.click(
+        within(row!).getByRole('button', { name: `${strings.deprovisionAction} urls4irl` }),
+      );
+      await userEvent.click(
+        within(row!).getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
+      );
+    }
 
-    await userEvent.click(deprovisionButton);
+    await clickDeprovision();
     expect(await screen.findByText('ntfy CLI failed')).toBeInTheDocument();
 
-    await userEvent.click(deprovisionButton);
+    await clickDeprovision();
     await waitFor(() => expect(screen.queryByText('ntfy CLI failed')).not.toBeInTheDocument());
   });
 
@@ -289,5 +330,156 @@ describe('App', () => {
     render(<App client={client} />);
 
     expect(await screen.findByText('u_abcdefgh23456777')).toBeInTheDocument();
+  });
+
+  it('deletes a person via full teardown (deleteUser with the derived ntfy id) after confirming', async () => {
+    const client = buildFakeClient();
+    const personClient = buildFakePersonClient({
+      listPeople: vi.fn().mockResolvedValue([
+        {
+          personHash: '76gzqgp4byjl6dje',
+          email: 'alice@example.com',
+          createdAt: '2026-07-19T18:12:03Z',
+        },
+      ]),
+    });
+    render(<App client={client} personClient={personClient} />);
+
+    const row = (await screen.findByText('alice@example.com')).closest('tr');
+    if (row === null) {
+      throw new Error('person row not found');
+    }
+    await userEvent.click(
+      within(row).getByRole('button', { name: `${strings.deleteAction} alice@example.com` }),
+    );
+    await userEvent.click(
+      within(row).getByRole('button', {
+        name: `${strings.confirmDeleteAction} alice@example.com`,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(client.deleteUser).toHaveBeenCalledWith({ userId: 'u_76gzqgp4byjl6dje' }),
+    );
+  });
+
+  it('does not render the Apps section unless appsEnabled is set', async () => {
+    const personClient = buildFakePersonClient();
+    render(<App client={buildFakeClient()} personClient={personClient} />);
+
+    await waitFor(() => expect(personClient.listPeople).toHaveBeenCalled());
+    expect(screen.queryByRole('heading', { name: strings.appsHeading })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: strings.addAppHeading })).not.toBeInTheDocument();
+    expect(personClient.listApps).not.toHaveBeenCalled();
+  });
+
+  it('renders and loads the Apps section when appsEnabled', async () => {
+    const personClient = buildFakePersonClient({
+      listApps: vi.fn().mockResolvedValue([
+        {
+          appId: 'urls4irl',
+          displayName: 'URLs4IRL',
+          description: 'Shared URL app',
+          createdAt: '2026-07-25T10:00:00Z',
+        },
+      ]),
+    });
+    render(<App client={buildFakeClient()} personClient={personClient} appsEnabled />);
+
+    expect(screen.getByRole('heading', { name: strings.appsHeading })).toBeInTheDocument();
+    expect(await screen.findByText('URLs4IRL')).toBeInTheDocument();
+    expect(personClient.listApps).toHaveBeenCalled();
+  });
+
+  it('shows the live subscriber count for a registered app derived from the users list', async () => {
+    const client = buildFakeClient({
+      listUsers: vi.fn().mockResolvedValue([
+        {
+          userId: 'u_76gzqgp4byjl6dje',
+          apps: ['urls4irl'],
+          topicPatterns: ['urls4irl-76gzqgp4byjl6dje-*'],
+        },
+        {
+          userId: 'u_abcdefgh23456777',
+          apps: ['urls4irl'],
+          topicPatterns: ['urls4irl-abcdefgh23456777-*'],
+        },
+        // Publisher identity — must NOT be counted as a subscriber.
+        { userId: 'urls4irl-publisher', apps: ['urls4irl'], topicPatterns: ['urls4irl-*'] },
+      ]),
+    });
+    const personClient = buildFakePersonClient({
+      listApps: vi.fn().mockResolvedValue([
+        {
+          appId: 'urls4irl',
+          displayName: 'URLs4IRL',
+          description: null,
+          createdAt: '2026-07-25T10:00:00Z',
+        },
+      ]),
+    });
+    render(<App client={client} personClient={personClient} appsEnabled />);
+
+    const appRow = (await screen.findByText('URLs4IRL')).closest('tr');
+    if (appRow === null) {
+      throw new Error('app row not found');
+    }
+    // Two "u_" subscribers, publisher excluded.
+    expect(within(appRow).getByText('2')).toBeInTheDocument();
+  });
+
+  it('adds an app: registers metadata, mints the publisher token, and reveals it', async () => {
+    const client = buildFakeClient();
+    const personClient = buildFakePersonClient();
+    render(<App client={client} personClient={personClient} appsEnabled />);
+
+    const addSection = screen
+      .getByRole('heading', { name: strings.addAppHeading })
+      .closest('section');
+    if (addSection === null) {
+      throw new Error('add-app section not found');
+    }
+    const form = within(addSection);
+    await userEvent.type(form.getByLabelText(strings.appIdLabel), 'tasktracker');
+    await userEvent.type(form.getByLabelText(strings.appDisplayNameLabel), 'Task Tracker');
+    await userEvent.click(form.getByRole('button', { name: strings.addAppAction }));
+
+    await waitFor(() =>
+      expect(personClient.createApp).toHaveBeenCalledWith({
+        appId: 'tasktracker',
+        displayName: 'Task Tracker',
+        description: undefined,
+      }),
+    );
+    expect(client.provisionApp).toHaveBeenCalledWith({ appId: 'tasktracker' });
+    expect(await screen.findByText('tk_publisher')).toBeInTheDocument();
+  });
+
+  it('removes an app via the cascade after confirming', async () => {
+    const client = buildFakeClient();
+    const personClient = buildFakePersonClient({
+      listApps: vi.fn().mockResolvedValue([
+        {
+          appId: 'urls4irl',
+          displayName: 'URLs4IRL',
+          description: null,
+          createdAt: '2026-07-25T10:00:00Z',
+        },
+      ]),
+    });
+    render(<App client={client} personClient={personClient} appsEnabled />);
+
+    const appRow = (await screen.findByText('URLs4IRL')).closest('tr');
+    if (appRow === null) {
+      throw new Error('app row not found');
+    }
+    await userEvent.click(
+      within(appRow).getByRole('button', { name: `${strings.removeAction} URLs4IRL` }),
+    );
+    await userEvent.click(
+      within(appRow).getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+    );
+
+    await waitFor(() => expect(client.deprovisionApp).toHaveBeenCalledWith({ appId: 'urls4irl' }));
   });
 });

@@ -31,10 +31,16 @@ type NtfyClient interface {
 }
 
 // PersonServiceClient is the subset of the person-service dual-write client
-// (internal/personsvc) the service depends on.
+// (internal/personsvc) the service depends on. Writes and deletes are
+// best-effort: ntfy is the source of truth, so a person-service failure is
+// logged and swallowed rather than failing the ntfy-side operation.
 type PersonServiceClient interface {
 	Configured() bool
 	UpsertPerson(ctx context.Context, personHash string, email string) error
+	// DeletePerson removes a personHash -> email reverse-index row (idempotent).
+	DeletePerson(ctx context.Context, personHash string) error
+	// DeleteApp removes an app registry row (idempotent).
+	DeleteApp(ctx context.Context, appID string) error
 }
 
 // ServiceConfig configures a Service.
@@ -155,9 +161,44 @@ func (service *Service) dualWritePerson(ctx context.Context, personHash string, 
 	}
 }
 
+// dualDeletePerson best-effort removes the personHash -> email reverse-index
+// row from the person-service Worker, after the ntfy user has already been
+// deleted (or confirmed already gone). Symmetric to dualWritePerson: ntfy is
+// the source of truth, so a person-service failure is logged and swallowed
+// rather than failing the delete. Skips the call entirely when no person
+// client is configured (e.g. the local dev stack).
+func (service *Service) dualDeletePerson(ctx context.Context, personHash string) {
+	if service.personClient == nil || !service.personClient.Configured() {
+		return
+	}
+	if deleteErr := service.personClient.DeletePerson(ctx, personHash); deleteErr != nil {
+		service.logger.Warn("person-service dual-delete (person) failed", "person_hash", personHash, "error", deleteErr)
+	}
+}
+
+// dualDeleteApp best-effort removes the app registry row from the
+// person-service Worker, after the app's ntfy footprint (publisher identity +
+// every subscriber grant) has already been torn down. Best-effort for the same
+// reason as dualDeletePerson.
+func (service *Service) dualDeleteApp(ctx context.Context, appID string) {
+	if service.personClient == nil || !service.personClient.Configured() {
+		return
+	}
+	if deleteErr := service.personClient.DeleteApp(ctx, appID); deleteErr != nil {
+		service.logger.Warn("person-service dual-delete (app) failed", "app_id", appID, "error", deleteErr)
+	}
+}
+
 // ProvisionAppRequest identifies the app to mint a publisher identity for.
+// Rotate selects the token behavior: false (the default) is an additive mint
+// (a new publisher token is issued and any existing ones stay valid — safe,
+// zero-downtime rotation by-issuing); true is a hard rotation that first
+// revokes every existing publisher-labeled token, then mints one fresh (for a
+// leaked token — it stops working immediately, at the cost of breaking the
+// app's publishing until it is redeployed with the new token).
 type ProvisionAppRequest struct {
-	AppID string
+	AppID  string
+	Rotate bool
 }
 
 // ProvisionAppResult is returned to the caller; PublisherUserID is the
@@ -172,9 +213,12 @@ type ProvisionAppResult struct {
 
 // ProvisionApp ensures the app's publisher ntfy user exists, grants a
 // write-only app-wide topic ACL, and issues a fresh publisher-labeled token.
-// Unlike Provision, repeat calls do NOT remove existing publisher tokens — a
-// repeat call mints an additional token (rotation by issuing a new
-// credential; the operator revokes old ones explicitly).
+// By default (Rotate false) repeat calls do NOT remove existing publisher
+// tokens — a repeat call mints an additional token (safe rotation by issuing a
+// new credential; the operator revokes old ones explicitly). When Rotate is
+// true, every existing publisher-labeled token is revoked first, then one
+// fresh token is minted — a hard rotation for a leaked credential (mirrors
+// Provision's per-app token reset).
 func (service *Service) ProvisionApp(ctx context.Context, request ProvisionAppRequest) (ProvisionAppResult, error) {
 	publisherUserID := ntfycli.PublisherUserID(request.AppID)
 	topicPattern := ntfycli.PublisherTopicPattern(request.AppID)
@@ -188,6 +232,24 @@ func (service *Service) ProvisionApp(ctx context.Context, request ProvisionAppRe
 	}
 	if grantErr := service.client.GrantAccess(ctx, publisherUserID, topicPattern, ntfycli.PermissionWriteOnly); grantErr != nil {
 		return ProvisionAppResult{}, grantErr
+	}
+	// Hard rotation: revoke existing publisher-labeled tokens BEFORE minting so
+	// the newly issued one is never itself removed. Only publisher-labeled
+	// tokens are touched (there is exactly one publisher identity per app, so
+	// all its tokens are publisher tokens, but the label filter keeps this
+	// symmetric with Provision's app-labeled reset).
+	if request.Rotate {
+		existingTokens, listErr := service.client.ListTokens(ctx, publisherUserID)
+		if listErr != nil {
+			return ProvisionAppResult{}, listErr
+		}
+		for _, existingToken := range existingTokens {
+			if existingToken.Label == ntfycli.PublisherTokenLabel {
+				if removeErr := service.client.RemoveToken(ctx, publisherUserID, existingToken.Value); removeErr != nil {
+					return ProvisionAppResult{}, removeErr
+				}
+			}
+		}
 	}
 	tokenValue, tokenErr := service.client.AddToken(ctx, publisherUserID, ntfycli.PublisherTokenLabel)
 	if tokenErr != nil {
@@ -230,6 +292,21 @@ func appFromTopicPattern(topicPattern string) (string, bool) {
 	return "", false
 }
 
+// userHasScopedAppGrant reports whether the user holds a per-person scoped
+// grant ("{app_id}-{personHash}-*") for appID — i.e. they are a subscriber of
+// that app. The app-wide wildcard grant ("{app_id}-*") held by the publisher
+// identity is deliberately NOT matched, so a cascade can tear subscribers down
+// via Deprovision (which targets the scoped pattern) while the publisher
+// identity is deleted separately.
+func userHasScopedAppGrant(user ntfycli.User, appID string) bool {
+	for _, topicPattern := range user.TopicPatterns {
+		if match := scopedTopicPattern.FindStringSubmatch(topicPattern); match != nil && match[1] == appID {
+			return true
+		}
+	}
+	return false
+}
+
 // ListUsers returns every user with the apps derived from their topic
 // grants (both the scoped per-person shape and the legacy/publisher
 // wildcard shape).
@@ -256,9 +333,21 @@ func (service *Service) ListUsers(ctx context.Context) ([]UserSummary, error) {
 	return summaries, nil
 }
 
-// DeleteUser removes the user entirely (ntfy drops their grants and tokens).
+// DeleteUser removes the user entirely (ntfy drops their grants and tokens),
+// then best-effort dual-deletes the person's reverse-index row so the two
+// stores stay in sync. A full teardown is idempotent: an already-gone ntfy
+// user (ntfycli.ErrNotFound) is treated as success so the person row is still
+// cleaned up and a repeat delete does not 404. Only "u_"-prefixed ids carry a
+// person row, so the dual-delete is scoped to those (a publisher identity like
+// "{app}-publisher" has no reverse-index row).
 func (service *Service) DeleteUser(ctx context.Context, userID string) error {
-	return service.client.DeleteUser(ctx, userID)
+	if deleteErr := service.client.DeleteUser(ctx, userID); deleteErr != nil && !errors.Is(deleteErr, ntfycli.ErrNotFound) {
+		return deleteErr
+	}
+	if personHash, isPersonUser := strings.CutPrefix(userID, "u_"); isPersonUser {
+		service.dualDeletePerson(ctx, personHash)
+	}
+	return nil
 }
 
 // DeprovisionRequest identifies the app/ntfy-user pair to deprovision. The
@@ -304,9 +393,63 @@ func (service *Service) Deprovision(ctx context.Context, request DeprovisionRequ
 			continue
 		}
 		if len(ntfyUser.TopicPatterns) == 0 {
-			return service.client.DeleteUser(ctx, request.NtfyUserID)
+			// Deprovisioning the person's last app deletes their ntfy user
+			// entirely, so their reverse-index row must go too — otherwise
+			// deprovision-to-empty orphans the person row (the same bug
+			// DeleteUser's dual-delete fixes for the explicit-delete path).
+			if deleteErr := service.client.DeleteUser(ctx, request.NtfyUserID); deleteErr != nil {
+				return deleteErr
+			}
+			if personHash, isPersonUser := strings.CutPrefix(request.NtfyUserID, "u_"); isPersonUser {
+				service.dualDeletePerson(ctx, personHash)
+			}
+			return nil
 		}
 		return nil
 	}
+	return nil
+}
+
+// DeprovisionAppRequest identifies the app to fully tear down.
+type DeprovisionAppRequest struct {
+	AppID string
+}
+
+// DeprovisionApp removes an app entirely (the cascade behind the admin UI's
+// "Remove App"): it revokes every subscriber's scoped grant for the app —
+// deleting a subscriber's ntfy user when this was their last app, via the same
+// per-app Deprovision path — then deletes the app's publisher identity, then
+// best-effort deletes the app registry row. ntfy (the irreversible teardown)
+// goes first; the registry cleanup is the trivial last step. The whole
+// operation is idempotent: an already-gone publisher (ntfycli.ErrNotFound) is
+// tolerated and per-subscriber Deprovision is itself safe to repeat, so a
+// re-run — or a Remove of an already-removed app — is harmless.
+//
+// Scope: this targets the two grant shapes the current model produces — the
+// canonical publisher identity ("{app_id}-publisher", holding the app-wide
+// wildcard) and per-person scoped subscribers ("{app_id}-{personHash}-*"). A
+// raw app-wide wildcard grant held by some OTHER (non-publisher) user is a
+// legacy shape the current provisioning flow never creates, so it is
+// deliberately out of scope here rather than force-deleted by heuristic.
+func (service *Service) DeprovisionApp(ctx context.Context, request DeprovisionAppRequest) error {
+	ntfyUsers, listErr := service.client.ListUsers(ctx)
+	if listErr != nil {
+		return listErr
+	}
+	for _, ntfyUser := range ntfyUsers {
+		if !userHasScopedAppGrant(ntfyUser, request.AppID) {
+			continue
+		}
+		if deprovErr := service.Deprovision(ctx, DeprovisionRequest{AppID: request.AppID, NtfyUserID: ntfyUser.Name}); deprovErr != nil {
+			return deprovErr
+		}
+	}
+
+	publisherUserID := ntfycli.PublisherUserID(request.AppID)
+	if deleteErr := service.client.DeleteUser(ctx, publisherUserID); deleteErr != nil && !errors.Is(deleteErr, ntfycli.ErrNotFound) {
+		return deleteErr
+	}
+
+	service.dualDeleteApp(ctx, request.AppID)
 	return nil
 }

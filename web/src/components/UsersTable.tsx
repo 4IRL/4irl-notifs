@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 
 import { strings } from '../strings';
 import type { UserSummary } from '../api/client';
+import { ConfirmButton } from './ConfirmButton';
 import './UsersTable.css';
 
 /** Identifies an app-scoped deprovision target within a user's row. */
@@ -67,22 +68,20 @@ export function UsersTable({
                   <td>
                     <div className="users-table__actions">
                       {apps.map((app) => (
-                        <button
+                        <ConfirmButton
                           key={app}
-                          type="button"
+                          triggerLabel={`${strings.deprovisionAction} ${app}`}
+                          confirmLabel={`${strings.confirmDeprovisionAction} ${app}`}
                           className="users-table__button users-table__button--secondary"
-                          onClick={() => onDeprovision({ userId, appId: app })}
-                        >
-                          {`${strings.deprovisionAction} ${app}`}
-                        </button>
+                          onConfirm={() => onDeprovision({ userId, appId: app })}
+                        />
                       ))}
-                      <button
-                        type="button"
+                      <ConfirmButton
+                        triggerLabel={`${strings.deleteAction} ${displayName}`}
+                        confirmLabel={`${strings.confirmDeleteAction} ${displayName}`}
                         className="users-table__button users-table__button--danger"
-                        onClick={() => onDelete({ userId })}
-                      >
-                        {`${strings.deleteAction} ${displayName}`}
-                      </button>
+                        onConfirm={() => onDelete({ userId })}
+                      />
                     </div>
                   </td>
                 </tr>

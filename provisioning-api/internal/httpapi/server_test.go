@@ -38,6 +38,9 @@ type fakeProvisioningService struct {
 	provisionAppResult provisioning.ProvisionAppResult
 	provisionAppErr    error
 	provisionAppCalls  []provisioning.ProvisionAppRequest
+
+	deprovisionAppErr   error
+	deprovisionAppCalls []provisioning.DeprovisionAppRequest
 }
 
 // Provision records the request and returns the preconfigured result/error.
@@ -68,6 +71,12 @@ func (fake *fakeProvisioningService) DeleteUser(_ context.Context, userID string
 func (fake *fakeProvisioningService) ProvisionApp(_ context.Context, request provisioning.ProvisionAppRequest) (provisioning.ProvisionAppResult, error) {
 	fake.provisionAppCalls = append(fake.provisionAppCalls, request)
 	return fake.provisionAppResult, fake.provisionAppErr
+}
+
+// DeprovisionApp records the request and returns the preconfigured error.
+func (fake *fakeProvisioningService) DeprovisionApp(_ context.Context, request provisioning.DeprovisionAppRequest) error {
+	fake.deprovisionAppCalls = append(fake.deprovisionAppCalls, request)
+	return fake.deprovisionAppErr
 }
 
 // aliceEmail/aliceHash/aliceNtfyUser are the golden-vector-derived identity
@@ -561,28 +570,13 @@ func TestDeprovisionNotFoundMapsTo404(testInstance *testing.T) {
 	}
 }
 
-// TestDeleteUserNotFoundMapsTo404 verifies that when Service.DeleteUser
-// returns an error wrapping ntfycli.ErrNotFound, the handler responds 404
-// with the fixed "user does not exist" message.
-func TestDeleteUserNotFoundMapsTo404(testInstance *testing.T) {
-	fakeService := &fakeProvisioningService{
-		deleteUserErr: fmt.Errorf("ntfy user: %w: no such user", ntfycli.ErrNotFound),
-	}
-	server := NewServer(ServerConfig{Service: fakeService})
-
-	request := httptest.NewRequest(http.MethodDelete, "/v1/users/alice", nil)
-	recorder := httptest.NewRecorder()
-
-	server.Handler().ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusNotFound {
-		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
-	}
-	wantBody := `{"error":"user does not exist"}` + "\n"
-	if body := recorder.Body.String(); body != wantBody {
-		testInstance.Fatalf("body = %q, want %q", body, wantBody)
-	}
-}
+// NOTE: DeleteUser no longer maps ErrNotFound to 404. Full teardown is now
+// idempotent — Service.DeleteUser swallows an already-gone ntfy user and still
+// dual-deletes the person row, returning success — so the handler never
+// observes ErrNotFound from that path. (The shared writeServiceError → 404
+// mapping is still covered by TestDeprovisionNotFoundMapsTo404.) See the
+// service-layer tests TestDeleteUserSwallowsNotFoundAndStillDualDeletesPersonRow
+// and TestDeleteUserDualDeletesPersonRowAfterNtfyDelete.
 
 // TestGenericServiceErrorMapsTo500 verifies that a generic (non-ErrNotFound)
 // service error maps to 500 {"error":"internal error"} for both
@@ -812,6 +806,132 @@ func TestProvisionAppServiceErrorMapsTo500(testInstance *testing.T) {
 
 	requestBody := strings.NewReader(`{"app_id":"myapp"}`)
 	request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
+	}
+	wantBody := `{"error":"internal error"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+}
+
+// TestProvisionAppForwardsRotateFlag verifies POST /v1/provision-app forwards
+// the optional "rotate" flag to Service.ProvisionApp, defaulting to false when
+// omitted.
+func TestProvisionAppForwardsRotateFlag(testInstance *testing.T) {
+	testCases := []struct {
+		name       string
+		body       string
+		wantRotate bool
+	}{
+		{name: "rotate true", body: `{"app_id":"myapp","rotate":true}`, wantRotate: true},
+		{name: "rotate false", body: `{"app_id":"myapp","rotate":false}`, wantRotate: false},
+		{name: "rotate omitted", body: `{"app_id":"myapp"}`, wantRotate: false},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			fakeService := &fakeProvisioningService{}
+			server := NewServer(ServerConfig{Service: fakeService})
+
+			request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", strings.NewReader(testCase.body))
+			recorder := httptest.NewRecorder()
+
+			server.Handler().ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusOK {
+				subTest.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+			}
+			wantCalls := []provisioning.ProvisionAppRequest{{AppID: "myapp", Rotate: testCase.wantRotate}}
+			if len(fakeService.provisionAppCalls) != 1 || fakeService.provisionAppCalls[0] != wantCalls[0] {
+				subTest.Fatalf("provisionAppCalls = %+v, want %+v", fakeService.provisionAppCalls, wantCalls)
+			}
+		})
+	}
+}
+
+// TestDeprovisionAppHappyPath verifies POST /v1/deprovision-app calls
+// Service.DeprovisionApp with the decoded app_id and returns a confirmation.
+func TestDeprovisionAppHappyPath(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":"myapp"}`))
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	wantCalls := []provisioning.DeprovisionAppRequest{{AppID: "myapp"}}
+	if len(fakeService.deprovisionAppCalls) != 1 || fakeService.deprovisionAppCalls[0] != wantCalls[0] {
+		testInstance.Fatalf("deprovisionAppCalls = %+v, want %+v", fakeService.deprovisionAppCalls, wantCalls)
+	}
+
+	var responseBody map[string]any
+	if decodeErr := json.Unmarshal(recorder.Body.Bytes(), &responseBody); decodeErr != nil {
+		testInstance.Fatalf("failed to decode response body: %v", decodeErr)
+	}
+	if responseBody["app_id"] != "myapp" || responseBody["removed"] != true {
+		testInstance.Fatalf("response = %+v, want app_id=myapp removed=true", responseBody)
+	}
+}
+
+// TestDeprovisionAppInvalidAppIDRejected verifies POST /v1/deprovision-app
+// rejects an invalid app_id with 400 without calling Service.DeprovisionApp.
+func TestDeprovisionAppInvalidAppIDRejected(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":"My-App"}`))
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	wantBody := `{"error":"invalid app_id"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+	if len(fakeService.deprovisionAppCalls) != 0 {
+		testInstance.Fatalf("deprovisionAppCalls = %+v, want none (validation should short-circuit)", fakeService.deprovisionAppCalls)
+	}
+}
+
+// TestDeprovisionAppMalformedJSONRejected verifies POST /v1/deprovision-app
+// rejects malformed JSON with 400 {"error":"invalid JSON body"}.
+func TestDeprovisionAppMalformedJSONRejected(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":`))
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	wantBody := `{"error":"invalid JSON body"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+}
+
+// TestDeprovisionAppServiceErrorMapsTo500 verifies a generic service error
+// from Service.DeprovisionApp maps to 500 {"error":"internal error"}.
+func TestDeprovisionAppServiceErrorMapsTo500(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{deprovisionAppErr: errors.New("cascade blew up")}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":"myapp"}`))
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)

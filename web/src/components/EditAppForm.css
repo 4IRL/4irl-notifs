@@ -1,0 +1,109 @@
+.edit-app-form {
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.edit-app-form form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.edit-app-form label {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.edit-app-form input {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--text-h);
+  padding: var(--space-2);
+  font-size: 1rem;
+}
+
+.edit-app-form input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.edit-app-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.edit-app-form__button {
+  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  border: 1px solid var(--accent-2-border);
+  background: var(--accent-2-bg);
+  color: var(--accent-2);
+}
+
+.edit-app-form__button:hover:not(:disabled) {
+  border-color: var(--accent-2-hover);
+  color: var(--accent-2-hover);
+}
+
+.edit-app-form__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.edit-app-form__button--danger {
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.edit-app-form__button--danger:hover {
+  border-color: var(--danger);
+}
+
+.edit-app-form__button--ghost {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.edit-app-form__hint {
+  color: var(--text);
+  font-size: 0.8125rem;
+  margin: 0;
+}
+
+.edit-app-form__error {
+  border: 1px solid var(--danger);
+  background: var(--danger-bg);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  color: var(--danger);
+  margin: 0;
+}
+
+.edit-app-form__token-reveal {
+  border: 1px solid var(--ok);
+  background: var(--ok-bg);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  margin: 0;
+}
+
+.edit-app-form__token-reveal p {
+  margin: 0;
+}
+
+.edit-app-form__token-reveal .edit-app-form__token {
+  font-family: var(--mono);
+  word-break: break-all;
+  margin-top: var(--space-1);
+}

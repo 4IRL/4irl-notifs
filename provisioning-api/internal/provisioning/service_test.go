@@ -93,6 +93,8 @@ type fakePersonClient struct {
 
 	configuredValue bool
 	upsertErr       error
+	deletePersonErr error
+	deleteAppErr    error
 }
 
 func (client *fakePersonClient) record(format string, values ...any) {
@@ -111,6 +113,16 @@ func (client *fakePersonClient) Configured() bool {
 func (client *fakePersonClient) UpsertPerson(_ context.Context, personHash string, email string) error {
 	client.record("UpsertPerson(%s,%s)", personHash, email)
 	return client.upsertErr
+}
+
+func (client *fakePersonClient) DeletePerson(_ context.Context, personHash string) error {
+	client.record("DeletePerson(%s)", personHash)
+	return client.deletePersonErr
+}
+
+func (client *fakePersonClient) DeleteApp(_ context.Context, appID string) error {
+	client.record("DeleteApp(%s)", appID)
+	return client.deleteAppErr
 }
 
 // aliceEmail/aliceNtfyUser/aliceHash are the golden-vector-derived identity
@@ -543,5 +555,287 @@ func TestDeleteUserDelegatesToClient(t *testing.T) {
 	}
 	if got := strings.Join(client.invocations, " | "); got != "DeleteUser(alice)" {
 		t.Fatalf("invocations = %s, expected DeleteUser(alice)", got)
+	}
+}
+
+func newTestServiceWithPersonClient(client *fakeNtfyClient, personClient *fakePersonClient) *Service {
+	return NewService(ServiceConfig{
+		Client:           client,
+		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		PersonClient:     personClient,
+	})
+}
+
+func TestDeleteUserDualDeletesPersonRowAfterNtfyDelete(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{}
+	personClient := &fakePersonClient{configuredValue: true, recordTo: &ntfyClient.invocations}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
+
+	if err := service.DeleteUser(context.Background(), aliceNtfyUser); err != nil {
+		t.Fatalf("DeleteUser returned unexpected error: %v", err)
+	}
+
+	expectedInvocations := strings.Join([]string{
+		fmt.Sprintf("DeleteUser(%s)", aliceNtfyUser),
+		fmt.Sprintf("DeletePerson(%s)", aliceHash),
+	}, " | ")
+	if got := strings.Join(ntfyClient.invocations, " | "); got != expectedInvocations {
+		t.Fatalf("invocations = %s, expected %s (person row must be dual-deleted after the ntfy user)", got, expectedInvocations)
+	}
+}
+
+func TestDeleteUserSwallowsNotFoundAndStillDualDeletesPersonRow(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{
+		deleteUserErr: fmt.Errorf("ntfy user: %w: no such user", ntfycli.ErrNotFound),
+	}
+	personClient := &fakePersonClient{configuredValue: true}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
+
+	if err := service.DeleteUser(context.Background(), aliceNtfyUser); err != nil {
+		t.Fatalf("DeleteUser must treat an already-gone ntfy user as success, got: %v", err)
+	}
+	if got := strings.Join(personClient.invocations, " | "); got != fmt.Sprintf("DeletePerson(%s)", aliceHash) {
+		t.Fatalf("person invocations = %s, expected the person row to still be dual-deleted when the ntfy user was already gone", got)
+	}
+}
+
+func TestDeleteUserPropagatesNonNotFoundErrorAndSkipsDualDelete(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{deleteUserErr: errors.New("ntfy exploded")}
+	personClient := &fakePersonClient{configuredValue: true}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
+
+	if err := service.DeleteUser(context.Background(), aliceNtfyUser); err == nil {
+		t.Fatal("expected a non-ErrNotFound ntfy delete error to propagate")
+	}
+	if len(personClient.invocations) != 0 {
+		t.Fatalf("person row must not be dual-deleted when the ntfy delete fails hard, got: %v", personClient.invocations)
+	}
+}
+
+func TestDeleteUserSkipsDualDeleteForNonPersonUser(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{}
+	personClient := &fakePersonClient{configuredValue: true}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
+
+	// A publisher identity ("{app}-publisher") has no "u_" prefix and thus no
+	// reverse-index row; deleting it must not attempt a person dual-delete.
+	if err := service.DeleteUser(context.Background(), "urls4irl-publisher"); err != nil {
+		t.Fatalf("DeleteUser returned unexpected error: %v", err)
+	}
+	if len(personClient.invocations) != 0 {
+		t.Fatalf("non-person user must not trigger a person dual-delete, got: %v", personClient.invocations)
+	}
+}
+
+func TestDeprovisionDualDeletesPersonRowWhenLastAppRemoved(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: nil},
+		},
+	}
+	personClient := &fakePersonClient{configuredValue: true}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
+
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); err != nil {
+		t.Fatalf("Deprovision returned unexpected error: %v", err)
+	}
+
+	joinedNtfy := strings.Join(ntfyClient.invocations, " | ")
+	if !strings.Contains(joinedNtfy, fmt.Sprintf("DeleteUser(%s)", aliceNtfyUser)) {
+		t.Fatalf("expected DeleteUser when no topic patterns remain: %s", joinedNtfy)
+	}
+	if got := strings.Join(personClient.invocations, " | "); got != fmt.Sprintf("DeletePerson(%s)", aliceHash) {
+		t.Fatalf("person invocations = %s, expected the orphaned person row to be dual-deleted on last-app deprovision", got)
+	}
+}
+
+func TestDeprovisionAppCascadesOverSubscribersDeletesPublisherAndRegistryRow(t *testing.T) {
+	const (
+		hashTwo   = "abcdefghijklmnop"
+		hashThree = "qrstuvwxyzabcdef"
+	)
+	subscriberOne := "u_" + aliceHash
+	subscriberTwo := "u_" + hashTwo
+	unrelated := "u_" + hashThree
+
+	ntfyClient := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: subscriberOne, TopicPatterns: []string{"myapp-" + aliceHash + "-*"}},
+			{Name: subscriberTwo, TopicPatterns: []string{"myapp-" + hashTwo + "-*", "other-" + hashTwo + "-*"}},
+			{Name: "myapp-publisher", TopicPatterns: []string{"myapp-*"}},
+			{Name: unrelated, TopicPatterns: []string{"other-" + hashThree + "-*"}},
+		},
+		listTokens: []ntfycli.Token{{Value: "tk_myapp", Label: "myapp"}},
+	}
+	personClient := &fakePersonClient{configuredValue: true}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
+
+	if err := service.DeprovisionApp(context.Background(), DeprovisionAppRequest{AppID: "myapp"}); err != nil {
+		t.Fatalf("DeprovisionApp returned unexpected error: %v", err)
+	}
+
+	joined := strings.Join(ntfyClient.invocations, " | ")
+	if !strings.Contains(joined, fmt.Sprintf("ResetAccess(%s,myapp-%s-*)", subscriberOne, aliceHash)) {
+		t.Fatalf("expected subscriber one's scoped grant reset: %s", joined)
+	}
+	if !strings.Contains(joined, fmt.Sprintf("ResetAccess(%s,myapp-%s-*)", subscriberTwo, hashTwo)) {
+		t.Fatalf("expected subscriber two's scoped grant reset: %s", joined)
+	}
+	if strings.Contains(joined, unrelated) {
+		t.Fatalf("an unrelated app's subscriber must not be touched: %s", joined)
+	}
+	if !strings.Contains(joined, "DeleteUser(myapp-publisher)") {
+		t.Fatalf("expected the publisher identity to be deleted: %s", joined)
+	}
+	if got := strings.Join(personClient.invocations, " | "); got != "DeleteApp(myapp)" {
+		t.Fatalf("person invocations = %s, expected the registry row to be dual-deleted last", got)
+	}
+}
+
+func TestDeprovisionAppToleratesAlreadyGonePublisher(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{
+		listUsers:     []ntfycli.User{},
+		deleteUserErr: fmt.Errorf("ntfy user: %w: no such user", ntfycli.ErrNotFound),
+	}
+	personClient := &fakePersonClient{configuredValue: true}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
+
+	if err := service.DeprovisionApp(context.Background(), DeprovisionAppRequest{AppID: "myapp"}); err != nil {
+		t.Fatalf("DeprovisionApp must tolerate an already-gone publisher, got: %v", err)
+	}
+	if got := strings.Join(personClient.invocations, " | "); got != "DeleteApp(myapp)" {
+		t.Fatalf("person invocations = %s, expected the registry row to still be dual-deleted", got)
+	}
+}
+
+func TestDeprovisionAppPropagatesListUsersErrorAndDoesNothingElse(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{listUsersErr: errors.New("list users failed")}
+	personClient := &fakePersonClient{configuredValue: true}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
+
+	if err := service.DeprovisionApp(context.Background(), DeprovisionAppRequest{AppID: "myapp"}); err == nil {
+		t.Fatal("expected the ListUsers error to propagate")
+	}
+	joined := strings.Join(ntfyClient.invocations, " | ")
+	if strings.Contains(joined, "ResetAccess(") || strings.Contains(joined, "DeleteUser(") {
+		t.Fatalf("nothing should be torn down when the initial ListUsers fails: %s", joined)
+	}
+	if len(personClient.invocations) != 0 {
+		t.Fatalf("registry must not be touched when ListUsers fails, got: %v", personClient.invocations)
+	}
+}
+
+func TestDeprovisionAppAbortsWithoutDeletingPublisherOrRegistryWhenASubscriberFails(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: []string{"myapp-" + aliceHash + "-*"}},
+		},
+		resetAccessErr: errors.New("reset access failed"),
+	}
+	personClient := &fakePersonClient{configuredValue: true}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
+
+	if err := service.DeprovisionApp(context.Background(), DeprovisionAppRequest{AppID: "myapp"}); err == nil {
+		t.Fatal("expected a mid-cascade subscriber failure to propagate")
+	}
+	joined := strings.Join(ntfyClient.invocations, " | ")
+	if strings.Contains(joined, "DeleteUser(myapp-publisher)") {
+		t.Fatalf("the publisher must not be deleted when a subscriber teardown fails: %s", joined)
+	}
+	if len(personClient.invocations) != 0 {
+		t.Fatalf("the registry row must not be deleted when the cascade aborts, got: %v", personClient.invocations)
+	}
+}
+
+func TestDeprovisionAppPropagatesPublisherDeleteErrorAndSkipsRegistryDelete(t *testing.T) {
+	ntfyClient := &fakeNtfyClient{
+		listUsers:     []ntfycli.User{},
+		deleteUserErr: errors.New("delete publisher failed"),
+	}
+	personClient := &fakePersonClient{configuredValue: true}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
+
+	if err := service.DeprovisionApp(context.Background(), DeprovisionAppRequest{AppID: "myapp"}); err == nil {
+		t.Fatal("expected a non-ErrNotFound publisher-delete error to propagate")
+	}
+	if len(personClient.invocations) != 0 {
+		t.Fatalf("registry row must not be dual-deleted when the publisher delete fails hard, got: %v", personClient.invocations)
+	}
+}
+
+func TestProvisionAppRotatePropagatesListTokensError(t *testing.T) {
+	client := &fakeNtfyClient{listTokensErr: errors.New("list tokens failed")}
+	service := newTestService(client)
+
+	if _, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl", Rotate: true}); err == nil {
+		t.Fatal("expected the ListTokens error to propagate during rotation")
+	}
+	if strings.Contains(strings.Join(client.invocations, " | "), "AddToken(") {
+		t.Fatalf("no fresh token must be minted when the pre-mint token list fails: %v", client.invocations)
+	}
+}
+
+func TestProvisionAppRotatePropagatesRemoveTokenError(t *testing.T) {
+	client := &fakeNtfyClient{
+		listTokens:     []ntfycli.Token{{Value: "tk_old_publisher", Label: ntfycli.PublisherTokenLabel}},
+		removeTokenErr: errors.New("remove token failed"),
+	}
+	service := newTestService(client)
+
+	if _, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl", Rotate: true}); err == nil {
+		t.Fatal("expected the RemoveToken error to propagate during rotation")
+	}
+	if strings.Contains(strings.Join(client.invocations, " | "), "AddToken(") {
+		t.Fatalf("no fresh token must be minted when revoking an existing token fails: %v", client.invocations)
+	}
+}
+
+func TestProvisionAppRotateRevokesPublisherTokensBeforeMinting(t *testing.T) {
+	client := &fakeNtfyClient{
+		addTokenValue: "tk_fresh_publisher",
+		listTokens: []ntfycli.Token{
+			{Value: "tk_old_publisher", Label: ntfycli.PublisherTokenLabel},
+			{Value: "tk_leaked_publisher", Label: ntfycli.PublisherTokenLabel},
+		},
+	}
+	service := newTestService(client)
+
+	if _, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl", Rotate: true}); err != nil {
+		t.Fatalf("ProvisionApp(rotate) returned unexpected error: %v", err)
+	}
+
+	expectedInvocations := strings.Join([]string{
+		"AddUser(urls4irl-publisher,pw=generated-pw)",
+		"GrantAccess(urls4irl-publisher,urls4irl-*,wo)",
+		"ListTokens(urls4irl-publisher)",
+		"RemoveToken(urls4irl-publisher,tk_old_publisher)",
+		"RemoveToken(urls4irl-publisher,tk_leaked_publisher)",
+		"AddToken(urls4irl-publisher,publisher)",
+	}, " | ")
+	if got := strings.Join(client.invocations, " | "); got != expectedInvocations {
+		t.Fatalf("invocations = %s, expected %s (rotate must revoke existing publisher tokens BEFORE minting)", got, expectedInvocations)
+	}
+}
+
+func TestProvisionAppRotateOnlyRemovesPublisherLabeledTokens(t *testing.T) {
+	client := &fakeNtfyClient{
+		addTokenValue: "tk_fresh_publisher",
+		listTokens: []ntfycli.Token{
+			{Value: "tk_publisher", Label: ntfycli.PublisherTokenLabel},
+			{Value: "tk_unlabeled", Label: ""},
+		},
+	}
+	service := newTestService(client)
+
+	if _, err := service.ProvisionApp(context.Background(), ProvisionAppRequest{AppID: "urls4irl", Rotate: true}); err != nil {
+		t.Fatalf("ProvisionApp(rotate) returned unexpected error: %v", err)
+	}
+
+	joined := strings.Join(client.invocations, " | ")
+	if !strings.Contains(joined, "RemoveToken(urls4irl-publisher,tk_publisher)") {
+		t.Fatalf("expected the publisher-labeled token to be revoked: %s", joined)
+	}
+	if strings.Contains(joined, "RemoveToken(urls4irl-publisher,tk_unlabeled)") {
+		t.Fatalf("a non-publisher-labeled token must not be revoked: %s", joined)
 	}
 }
