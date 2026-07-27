@@ -1,0 +1,67 @@
+.app-combobox {
+  position: relative;
+}
+
+.app-combobox__input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--text-h);
+  padding: var(--space-2);
+  font-size: 1rem;
+}
+
+.app-combobox__input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.app-combobox__list {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+  max-height: 14rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.app-combobox__option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.app-combobox__option--highlighted {
+  background: var(--surface-hover);
+}
+
+.app-combobox__option-id {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--text-h);
+}
+
+.app-combobox__option-name {
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+.app-combobox__option--unprovisioned {
+  color: var(--accent);
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-1);
+}

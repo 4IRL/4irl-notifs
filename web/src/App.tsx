@@ -21,6 +21,7 @@ import { UsersTable } from './components/UsersTable';
 import { PeopleTable } from './components/PeopleTable';
 import { AddAppForm } from './components/AddAppForm';
 import { AppsTable } from './components/AppsTable';
+import { UnregisteredApps } from './components/UnregisteredApps';
 import { strings } from './strings';
 import './App.css';
 
@@ -132,16 +133,25 @@ function App({ client, personClient, appsEnabled = false }: AppProps) {
   // back to displaying the raw userId in that case.
   const emailByPersonHash = new Map(people.map((person) => [person.personHash, person.email]));
 
-  // Live subscriber count per registered app, derived from the current users
-  // list: only "u_"-prefixed users (real subscribers) that hold the app —
+  // Live subscriber count per app, keyed over every app_id in play (registered
+  // AND merely in-use), so both the Apps table and the Unprovisioned-apps
+  // section can read it. Only "u_"-prefixed users (real subscribers) count;
   // publisher identities surface via the app-wide wildcard and are excluded.
+  const registeredAppIds = new Set(apps.map((app) => app.appId));
+  const inUseAppIds = new Set(users.flatMap((user) => user.apps));
   const subscriberCountByApp = new Map<string, number>();
-  for (const app of apps) {
+  for (const appId of new Set([...registeredAppIds, ...inUseAppIds])) {
     const count = users.filter(
-      (user) => user.userId.startsWith('u_') && user.apps.includes(app.appId),
+      (user) => user.userId.startsWith('u_') && user.apps.includes(appId),
     ).length;
-    subscriberCountByApp.set(app.appId, count);
+    subscriberCountByApp.set(appId, count);
   }
+
+  // "Unprovisioned" apps: an app_id that is in use (a user/topic references it)
+  // but has no registry row — the ghost-app case. Sorted for stable display.
+  const unregisteredAppIds = [...inUseAppIds]
+    .filter((appId) => !registeredAppIds.has(appId))
+    .sort();
 
   const handleProvision = useCallback(
     async (params: ProvisionParams): Promise<ProvisionResult> => {
@@ -278,7 +288,7 @@ function App({ client, personClient, appsEnabled = false }: AppProps) {
           </p>
         )}
         <div className="app__forms">
-          <ProvisionForm onProvision={handleProvision} />
+          <ProvisionForm onProvision={handleProvision} apps={apps} />
           {appsSectionEnabled && <AddAppForm onAddApp={handleAddApp} />}
         </div>
         <UsersTable
@@ -297,6 +307,13 @@ function App({ client, personClient, appsEnabled = false }: AppProps) {
             onUpdateApp={handleUpdateApp}
             onRemintToken={handleRemintToken}
             onRemoveApp={handleRemoveApp}
+          />
+        )}
+        {appsSectionEnabled && (
+          <UnregisteredApps
+            appIds={unregisteredAppIds}
+            subscriberCountByApp={subscriberCountByApp}
+            loading={loading || appsLoading}
           />
         )}
         {personClient !== undefined && (
