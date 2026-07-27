@@ -91,5 +91,16 @@ export const strings = {
 
   invalidDisplayName: 'Display name is required.',
 
+  // App-ID combobox (Provision form).
+  useUnprovisionedApp: ({ value }: { value: string }): string =>
+    `Use unprovisioned app: “${value}”`,
+
+  // Unprovisioned (in-use but unregistered) apps section.
+  unregisteredAppsHeading: 'Unprovisioned apps',
+  unregisteredAppsLoading: 'Loading…',
+  unregisteredAppsHint:
+    'These apps have users or topics but no registry entry. Have each app register itself with 4irl-notifs — its backend calls POST /v1/provision-app with its own service token (see docs/app-integration-guide.md) — or add it above via “Add an app”.',
+  unregisteredAppsEmpty: 'None — every in-use app is registered.',
+
   genericError: 'Something went wrong. Please try again.',
 } as const;

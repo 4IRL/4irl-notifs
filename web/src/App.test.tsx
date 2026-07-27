@@ -482,4 +482,35 @@ describe('App', () => {
 
     await waitFor(() => expect(client.deprovisionApp).toHaveBeenCalledWith({ appId: 'urls4irl' }));
   });
+
+  it('lists an in-use-but-unregistered app under Unprovisioned apps with its subscriber count', async () => {
+    const client = buildFakeClient({
+      listUsers: vi.fn().mockResolvedValue([
+        {
+          userId: 'u_76gzqgp4byjl6dje',
+          apps: ['urls4irl'],
+          topicPatterns: ['urls4irl-76gzqgp4byjl6dje-*'],
+        },
+      ]),
+    });
+    // Registry is empty, so urls4irl is a "ghost" app (in use, unregistered).
+    const personClient = buildFakePersonClient({ listApps: vi.fn().mockResolvedValue([]) });
+    render(<App client={client} personClient={personClient} appsEnabled />);
+
+    // Registry section is empty…
+    expect(await screen.findByText(strings.appsEmpty)).toBeInTheDocument();
+
+    // …but the Unprovisioned-apps section surfaces urls4irl with 1 subscriber.
+    const section = screen
+      .getByRole('heading', { name: strings.unregisteredAppsHeading })
+      .closest('section');
+    if (section === null) {
+      throw new Error('unprovisioned-apps section not found');
+    }
+    const row = within(section).getByText('urls4irl').closest('tr');
+    if (row === null) {
+      throw new Error('ghost app row not found');
+    }
+    expect(within(row).getByText('1')).toBeInTheDocument();
+  });
 });

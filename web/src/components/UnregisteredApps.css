@@ -1,0 +1,43 @@
+.unregistered-apps {
+  margin-top: var(--space-5);
+}
+
+.unregistered-apps__hint {
+  color: var(--text);
+  font-size: 0.8125rem;
+  margin: 0 0 var(--space-3);
+  max-width: 70ch;
+}
+
+.unregistered-apps__status {
+  color: var(--text);
+}
+
+.unregistered-apps__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.unregistered-apps__table th,
+.unregistered-apps__table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.unregistered-apps__table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.unregistered-apps__table th {
+  color: var(--text);
+  font-size: 0.75rem;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.unregistered-apps__id {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}

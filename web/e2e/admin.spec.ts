@@ -231,4 +231,67 @@ test.describe('admin UI critical flows', () => {
 
     await expect(page.getByText('No apps registered yet.')).toBeVisible();
   });
+
+  test('App-ID combobox suggests registered apps + offers unprovisioned, and ghost apps are listed', async ({
+    page,
+  }) => {
+    // A user is provisioned into urls4irl (unregistered); tasktracker is the
+    // only registered app.
+    await page.route('**/v1/users', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          users: [
+            {
+              user_id: 'u_76gzqgp4byjl6dje',
+              apps: ['urls4irl'],
+              topic_patterns: ['urls4irl-76gzqgp4byjl6dje-*'],
+            },
+          ],
+        }),
+      });
+    });
+    await page.route('**/people', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
+    });
+    await page.route('**/apps', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          apps: [
+            {
+              app_id: 'tasktracker',
+              display_name: 'Task Tracker',
+              description: null,
+              created_at: '2026-07-25T10:00:00Z',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/');
+
+    const provisionSection = page
+      .locator('section')
+      .filter({ has: page.getByRole('heading', { name: 'Provision a user into an app' }) });
+    const appIdField = provisionSection.getByLabel('App ID');
+
+    // Typing a fragment surfaces the matching registered app.
+    await appIdField.click();
+    await appIdField.fill('task');
+    await expect(page.getByRole('option', { name: /tasktracker/i })).toBeVisible();
+
+    // Typing a valid, unregistered id surfaces the "use unprovisioned" option.
+    await appIdField.fill('newapp');
+    await expect(page.getByRole('option', { name: /Use unprovisioned app/ })).toBeVisible();
+
+    // The ghost app (urls4irl: in use, unregistered) is listed under Unprovisioned apps.
+    const ghostSection = page
+      .locator('section')
+      .filter({ has: page.getByRole('heading', { name: 'Unprovisioned apps' }) });
+    await expect(ghostSection.getByRole('cell', { name: 'urls4irl', exact: true })).toBeVisible();
+  });
 });

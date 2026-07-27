@@ -2,17 +2,22 @@ import { useState } from 'react';
 
 import type { ProvisionParams, ProvisionResult } from '../api/client';
 import { ApiError } from '../api/client';
+import type { AppSummary } from '../api/personClient';
 import { strings } from '../strings';
 import { isValidAppId, isValidEmail } from '../validation';
+import { AppCombobox } from './AppCombobox';
 import './ProvisionForm.css';
 
-/** Props for ProvisionForm. */
+/** Props for ProvisionForm. `apps` feeds the App-ID combobox's suggestions;
+ *  it defaults to empty so the field degrades to free text when the registry
+ *  is unavailable (flag off / no personClient). */
 interface ProvisionFormProps {
   onProvision: (params: ProvisionParams) => Promise<ProvisionResult>;
+  apps?: AppSummary[];
 }
 
 /** Form for provisioning a user into an app, with inline validation and a token reveal on success. */
-export function ProvisionForm({ onProvision }: ProvisionFormProps) {
+export function ProvisionForm({ onProvision, apps = [] }: ProvisionFormProps) {
   const [appId, setAppId] = useState('');
   const [email, setEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -52,12 +57,12 @@ export function ProvisionForm({ onProvision }: ProvisionFormProps) {
       <h2>{strings.provisionHeading}</h2>
       <form onSubmit={handleSubmit}>
         <label htmlFor="provision-app-id">{strings.appIdLabel}</label>
-        <input
+        <AppCombobox
           id="provision-app-id"
-          type="text"
-          placeholder={strings.appIdPlaceholder}
           value={appId}
-          onChange={(event) => setAppId(event.target.value)}
+          onChange={setAppId}
+          apps={apps}
+          placeholder={strings.appIdPlaceholder}
         />
 
         <label htmlFor="provision-email">{strings.emailLabel}</label>
