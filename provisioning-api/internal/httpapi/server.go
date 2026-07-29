@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
@@ -37,6 +38,10 @@ type ProvisioningService interface {
 	// DeprovisionApp removes an app entirely: every subscriber's scoped grant
 	// for the app, the app's publisher identity, and the app registry row.
 	DeprovisionApp(ctx context.Context, request provisioning.DeprovisionAppRequest) error
+	// TestNotify mints an ephemeral write-only publisher token, publishes the
+	// message to each recipient's concrete topic, then revokes the token,
+	// returning a per-recipient delivered/failed result.
+	TestNotify(ctx context.Context, request provisioning.TestNotifyRequest) (provisioning.TestNotifyResult, error)
 }
 
 // ServerConfig configures a Server. Service is required; Logger defaults to
@@ -86,6 +91,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("DELETE /v1/users/{user_id}", server.handleDeleteUser)
 	server.mux.HandleFunc("POST /v1/provision-app", server.handleProvisionApp)
 	server.mux.HandleFunc("POST /v1/deprovision-app", server.handleDeprovisionApp)
+	server.mux.HandleFunc("POST /v1/test-notify", server.handleTestNotify)
 }
 
 // handleHealthz responds 200 with a plain-text "ok" body for liveness checks.
@@ -395,4 +401,107 @@ func (server *Server) handleDeprovisionApp(responseWriter http.ResponseWriter, r
 		AppID:   requestBody.AppID,
 		Removed: true,
 	})
+}
+
+// defaultTestChannel is the channel a test notification is published on when
+// the request omits (or whitespace-blanks) the channel field.
+const defaultTestChannel = "alerts"
+
+// defaultTestMessage is the message body used when the request omits (or
+// whitespace-blanks) the message field.
+const defaultTestMessage = "Test notification from 4IRL admin"
+
+// testNotifyRequestBody is the JSON body for POST /v1/test-notify: dispatch a
+// test notification on a channel to one or more recipients of an app.
+// Recipients are person_hashes or emails; channel and message are optional
+// (the server supplies defaults).
+type testNotifyRequestBody struct {
+	AppID      string   `json:"app_id"`
+	Recipients []string `json:"recipients"`
+	Channel    string   `json:"channel"`
+	Message    string   `json:"message"`
+}
+
+// testNotifyResultBody is the JSON representation of one per-recipient result.
+type testNotifyResultBody struct {
+	Recipient string `json:"recipient"`
+	UserID    string `json:"user_id"`
+	Topic     string `json:"topic"`
+	OK        bool   `json:"ok"`
+	MessageID string `json:"message_id"`
+	Error     string `json:"error"`
+}
+
+// testNotifyResponseBody is the JSON response for POST /v1/test-notify. Results
+// is always non-nil so it serializes as [] rather than null when empty.
+type testNotifyResponseBody struct {
+	Results []testNotifyResultBody `json:"results"`
+}
+
+// handleTestNotify decodes the request body, trims and defaults the channel and
+// message, validates the request-level fields (app_id, channel, message length,
+// non-empty recipients), delegates to Service.TestNotify, and serializes the
+// per-recipient results as JSON. Per-recipient failures are reported inside a
+// 200 response; only request-level problems (400) or a service/mint error
+// (404/500 via writeServiceError) are non-200.
+func (server *Server) handleTestNotify(responseWriter http.ResponseWriter, request *http.Request) {
+	var requestBody testNotifyRequestBody
+	if decodeErr := json.NewDecoder(request.Body).Decode(&requestBody); decodeErr != nil {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+
+	// Trim both fields first, THEN apply defaults, so a whitespace-only channel
+	// or message trims to empty and is replaced by the default rather than sent
+	// through as blank.
+	requestBody.Channel = strings.TrimSpace(requestBody.Channel)
+	requestBody.Message = strings.TrimSpace(requestBody.Message)
+	if requestBody.Channel == "" {
+		requestBody.Channel = defaultTestChannel
+	}
+	if requestBody.Message == "" {
+		requestBody.Message = defaultTestMessage
+	}
+
+	if !validateAppID(requestBody.AppID) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
+		return
+	}
+	if !validateChannel(requestBody.Channel) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid channel"})
+		return
+	}
+	if !validateMessage(requestBody.Message) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "message too long"})
+		return
+	}
+	if len(requestBody.Recipients) == 0 {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "recipients required"})
+		return
+	}
+
+	result, testNotifyErr := server.service.TestNotify(request.Context(), provisioning.TestNotifyRequest{
+		AppID:      requestBody.AppID,
+		Recipients: requestBody.Recipients,
+		Channel:    requestBody.Channel,
+		Message:    requestBody.Message,
+	})
+	if testNotifyErr != nil {
+		server.writeServiceError(responseWriter, request, testNotifyErr)
+		return
+	}
+
+	results := make([]testNotifyResultBody, 0, len(result.Results))
+	for _, recipientResult := range result.Results {
+		results = append(results, testNotifyResultBody{
+			Recipient: recipientResult.Recipient,
+			UserID:    recipientResult.UserID,
+			Topic:     recipientResult.Topic,
+			OK:        recipientResult.OK,
+			MessageID: recipientResult.MessageID,
+			Error:     recipientResult.Error,
+		})
+	}
+
+	writeJSON(responseWriter, http.StatusOK, testNotifyResponseBody{Results: results})
 }

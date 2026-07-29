@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -41,6 +42,10 @@ type fakeProvisioningService struct {
 
 	deprovisionAppErr   error
 	deprovisionAppCalls []provisioning.DeprovisionAppRequest
+
+	testNotifyResult provisioning.TestNotifyResult
+	testNotifyErr    error
+	testNotifyCalls  []provisioning.TestNotifyRequest
 }
 
 // Provision records the request and returns the preconfigured result/error.
@@ -77,6 +82,12 @@ func (fake *fakeProvisioningService) ProvisionApp(_ context.Context, request pro
 func (fake *fakeProvisioningService) DeprovisionApp(_ context.Context, request provisioning.DeprovisionAppRequest) error {
 	fake.deprovisionAppCalls = append(fake.deprovisionAppCalls, request)
 	return fake.deprovisionAppErr
+}
+
+// TestNotify records the request and returns the preconfigured result/error.
+func (fake *fakeProvisioningService) TestNotify(_ context.Context, request provisioning.TestNotifyRequest) (provisioning.TestNotifyResult, error) {
+	fake.testNotifyCalls = append(fake.testNotifyCalls, request)
+	return fake.testNotifyResult, fake.testNotifyErr
 }
 
 // aliceEmail/aliceHash/aliceNtfyUser are the golden-vector-derived identity
@@ -942,6 +953,205 @@ func TestDeprovisionAppServiceErrorMapsTo500(testInstance *testing.T) {
 		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
 	}
 	wantBody := `{"error":"internal error"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+}
+
+// TestTestNotifyHappyPath verifies POST /v1/test-notify maps the decoded
+// request (applying the server-side channel/message defaults when omitted),
+// calls Service.TestNotify, and serializes the per-recipient results — with a
+// mixed ok:true / ok:false pair — as the exact JSON response body.
+func TestTestNotifyHappyPath(testInstance *testing.T) {
+	topic := "myapp-" + aliceHash + "-alerts"
+	fakeService := &fakeProvisioningService{
+		testNotifyResult: provisioning.TestNotifyResult{
+			Results: []provisioning.RecipientResult{
+				{Recipient: aliceHash, UserID: aliceNtfyUser, Topic: topic, OK: true, MessageID: "VkT2p9wQ", Error: ""},
+				{Recipient: aliceEmail, UserID: aliceNtfyUser, Topic: topic, OK: false, MessageID: "", Error: "ntfy publish failed (503)"},
+			},
+		},
+	}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q,%q]}`, aliceHash, aliceEmail))
+	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if contentType := recorder.Header().Get("Content-Type"); contentType != "application/json" {
+		testInstance.Fatalf("Content-Type = %q, want %q", contentType, "application/json")
+	}
+
+	// The fake must have recorded the mapped request, including the applied
+	// server-side defaults for the omitted channel and message.
+	wantCall := provisioning.TestNotifyRequest{
+		AppID:      "myapp",
+		Recipients: []string{aliceHash, aliceEmail},
+		Channel:    "alerts",
+		Message:    "Test notification from 4IRL admin",
+	}
+	if len(fakeService.testNotifyCalls) != 1 || !reflect.DeepEqual(fakeService.testNotifyCalls[0], wantCall) {
+		testInstance.Fatalf("testNotifyCalls = %+v, want [%+v]", fakeService.testNotifyCalls, wantCall)
+	}
+
+	wantBody := `{"results":[` +
+		`{"recipient":"` + aliceHash + `","user_id":"` + aliceNtfyUser + `","topic":"` + topic + `","ok":true,"message_id":"VkT2p9wQ","error":""},` +
+		`{"recipient":"` + aliceEmail + `","user_id":"` + aliceNtfyUser + `","topic":"` + topic + `","ok":false,"message_id":"","error":"ntfy publish failed (503)"}` +
+		`]}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+}
+
+// TestTestNotifyWhitespaceMessageDefaultsApplied verifies a whitespace-only
+// message is trimmed to empty and then replaced by the server default before
+// the service is called — proving trim-before-default ordering.
+func TestTestNotifyWhitespaceMessageDefaultsApplied(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"channel":"   ","message":"   "}`, aliceHash))
+	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	wantCall := provisioning.TestNotifyRequest{
+		AppID:      "myapp",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "Test notification from 4IRL admin",
+	}
+	if len(fakeService.testNotifyCalls) != 1 || !reflect.DeepEqual(fakeService.testNotifyCalls[0], wantCall) {
+		testInstance.Fatalf("testNotifyCalls = %+v, want [%+v]", fakeService.testNotifyCalls, wantCall)
+	}
+}
+
+// TestTestNotifyMalformedJSONRejected verifies POST /v1/test-notify rejects a
+// malformed body with 400 {"error":"invalid JSON body"} without calling the
+// service.
+func TestTestNotifyMalformedJSONRejected(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", strings.NewReader(`{"app_id":"myapp",`))
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	wantBody := `{"error":"invalid JSON body"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+	if len(fakeService.testNotifyCalls) != 0 {
+		testInstance.Fatalf("testNotifyCalls = %+v, want none (validation should short-circuit)", fakeService.testNotifyCalls)
+	}
+}
+
+// TestTestNotifyRequestValidationFailures covers every request-level 400 on
+// POST /v1/test-notify — invalid app_id, invalid channel, message-too-long,
+// and empty recipients — each in its declared validation order, with the exact
+// error body and the service never called.
+func TestTestNotifyRequestValidationFailures(testInstance *testing.T) {
+	tooLongMessage := strings.Repeat("a", maxMessageLength+1)
+
+	testCases := []struct {
+		name    string
+		body    string
+		wantMsg string
+	}{
+		{name: "invalid app_id", body: fmt.Sprintf(`{"app_id":"My-App","recipients":[%q]}`, aliceHash), wantMsg: "invalid app_id"},
+		{name: "invalid channel", body: fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"channel":"Bad-Channel"}`, aliceHash), wantMsg: "invalid channel"},
+		{name: "message too long", body: fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"message":%q}`, aliceHash, tooLongMessage), wantMsg: "message too long"},
+		{name: "empty recipients", body: `{"app_id":"myapp","recipients":[]}`, wantMsg: "recipients required"},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			fakeService := &fakeProvisioningService{}
+			server := NewServer(ServerConfig{Service: fakeService})
+
+			request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", strings.NewReader(testCase.body))
+			recorder := httptest.NewRecorder()
+
+			server.Handler().ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				subTest.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+			}
+			wantBody := `{"error":"` + testCase.wantMsg + `"}` + "\n"
+			if body := recorder.Body.String(); body != wantBody {
+				subTest.Fatalf("body = %q, want %q", body, wantBody)
+			}
+			if len(fakeService.testNotifyCalls) != 0 {
+				subTest.Fatalf("testNotifyCalls = %+v, want none (validation should short-circuit)", fakeService.testNotifyCalls)
+			}
+		})
+	}
+}
+
+// TestTestNotifyGenericServiceErrorMapsTo500 verifies a generic (non-ErrNotFound)
+// service error maps to 500 {"error":"internal error"}, never leaks the real
+// error into the response body, and IS logged via the configured slog.Logger.
+func TestTestNotifyGenericServiceErrorMapsTo500(testInstance *testing.T) {
+	const secretErrText = "connection refused to database at 10.0.0.5:9999 with credential xyz"
+
+	fakeService := &fakeProvisioningService{testNotifyErr: errors.New(secretErrText)}
+	var logBuffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
+	server := NewServer(ServerConfig{Service: fakeService, Logger: logger})
+
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q]}`, aliceHash))
+	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
+	}
+	wantBody := `{"error":"internal error"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+	if strings.Contains(recorder.Body.String(), secretErrText) {
+		testInstance.Fatalf("response body leaked the real error text: %s", recorder.Body.String())
+	}
+	if !strings.Contains(logBuffer.String(), secretErrText) {
+		testInstance.Fatalf("log output = %q, want it to contain the real error text %q", logBuffer.String(), secretErrText)
+	}
+}
+
+// TestTestNotifyNotFoundMapsTo404 verifies that when Service.TestNotify returns
+// an error wrapping ntfycli.ErrNotFound (a mint-path failure), the handler
+// responds 404 {"error":"user does not exist"} via the shared writeServiceError.
+func TestTestNotifyNotFoundMapsTo404(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{
+		testNotifyErr: fmt.Errorf("mint publisher token: %w: no such user", ntfycli.ErrNotFound),
+	}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q]}`, aliceHash))
+	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	wantBody := `{"error":"user does not exist"}` + "\n"
 	if body := recorder.Body.String(); body != wantBody {
 		testInstance.Fatalf("body = %q, want %q", body, wantBody)
 	}
