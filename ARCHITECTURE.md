@@ -170,7 +170,9 @@ Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABL
   announcements. Every subscriber is granted **read** on it at `Provision` (always-on per app — no
   per-user opt-out); the publisher writes it via its existing write-only `{app_id}-*` grant (no new
   publisher credential). The read grant is reset at `Deprovision` (and on `DeprovisionApp` teardown).
-  `POST /v1/provision` returns it as `broadcast_topic`.
+  `POST /v1/provision` returns it as `broadcast_topic`. **Send authz is app-side:** ntfy authenticates the
+  app-level publisher token, not the app's users, so restricting who may *trigger* a broadcast to that
+  app's admins is the consuming app's responsibility (see the integration guide's broadcast section).
 - **person-service D1** table `person(person_hash PK, email, created_at)` — reverse index so an
   operator can map an opaque hash back to an email. Populated by the provisioning-api **dual-write**
   (Go) on every `/v1/provision`, and **dual-deleted** on a full user teardown (`DELETE /v1/users/{id}`

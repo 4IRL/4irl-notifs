@@ -203,6 +203,17 @@ Priority: high
 urls4irl will be down for ~10 min at 02:00 UTC for maintenance.
 ```
 
+**⚠️ Admins only — restrict who can trigger a broadcast.** A broadcast reaches **every** subscriber of
+your app at once, so treat the send path as a privileged action. `notifs.4irl.app` authenticates your
+app-level **publisher token** — it has no knowledge of your app's individual users or their roles, so it
+**cannot** distinguish an admin from any other user; to ntfy, the token *is* the app. Enforcing
+admin-only is therefore **your app's responsibility**: keep the publisher token in your backend (Step 1 —
+never ship it to a client) and gate the broadcast-trigger endpoint behind your own admin authorization
+check. The token itself is a strong random credential (32 chars, `crypto/rand` — not guessable), so the
+real risks are a **leaked** token or a **send path reachable by non-admins**, both of which only your app
+can prevent. (A personal-channel publish only ever hits one user; a broadcast hits everyone, so it
+warrants the stricter gate.)
+
 **Receive** it on the client by also subscribing to `{app_id}-broadcast`, exactly like a personal topic
 (Step 4) but with the shared name:
 
