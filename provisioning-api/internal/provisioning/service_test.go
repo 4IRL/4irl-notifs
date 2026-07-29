@@ -510,7 +510,8 @@ func TestDeprovisionPropagatesUnknownUser(t *testing.T) {
 func TestListUsersDerivesAppsFromScopedAndWildcardPatterns(t *testing.T) {
 	client := &fakeNtfyClient{
 		listUsers: []ntfycli.User{
-			{Name: aliceNtfyUser, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "chores4irl-" + aliceHash + "-*", "custom-topic"}},
+			{Name: aliceNtfyUser, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "urls4irl-broadcast", "chores4irl-" + aliceHash + "-*", "custom-topic"}},
+			{Name: "broadcast-only-user", TopicPatterns: []string{"urls4irl-broadcast"}},
 			{Name: "legacy-app-wide-user", TopicPatterns: []string{"urls4irl-*"}},
 			{Name: "bob", TopicPatterns: nil},
 		},
@@ -523,7 +524,12 @@ func TestListUsersDerivesAppsFromScopedAndWildcardPatterns(t *testing.T) {
 	}
 
 	expected := []UserSummary{
-		{UserID: aliceNtfyUser, Apps: []string{"urls4irl", "chores4irl"}, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "chores4irl-" + aliceHash + "-*", "custom-topic"}},
+		// alice holds both the scoped and broadcast grant for urls4irl: the
+		// broadcast pattern is recognized and urls4irl is deduped to appear once.
+		{UserID: aliceNtfyUser, Apps: []string{"urls4irl", "chores4irl"}, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "urls4irl-broadcast", "chores4irl-" + aliceHash + "-*", "custom-topic"}},
+		// A broadcast-only user (no scoped grant) still surfaces the app, isolating
+		// the -broadcast recognition branch from the scoped-grant path.
+		{UserID: "broadcast-only-user", Apps: []string{"urls4irl"}, TopicPatterns: []string{"urls4irl-broadcast"}},
 		{UserID: "legacy-app-wide-user", Apps: []string{"urls4irl"}, TopicPatterns: []string{"urls4irl-*"}},
 		{UserID: "bob", Apps: []string{}, TopicPatterns: nil},
 	}

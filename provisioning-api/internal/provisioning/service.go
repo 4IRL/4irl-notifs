@@ -285,6 +285,11 @@ type UserSummary struct {
 // grant (the shape ProvisionApp creates via ntfycli.PublisherTopicPattern).
 const wildcardSuffix = "-*"
 
+// broadcastSuffix marks a topic pattern as the per-app broadcast grant
+// ("{app_id}-broadcast", built by ntfycli.BroadcastTopicPattern) — the single
+// shared topic every subscriber of the app is granted read on (Shape A).
+const broadcastSuffix = "-broadcast"
+
 // scopedTopicPattern matches a per-person scoped topic pattern,
 // "{app_id}-{personHash}-*", capturing the app_id in group 1.
 var scopedTopicPattern = regexp.MustCompile(`^([a-z0-9_]+)-([a-z2-7]{16})-\*$`)
@@ -294,6 +299,12 @@ var scopedTopicPattern = regexp.MustCompile(`^([a-z0-9_]+)-([a-z2-7]{16})-\*$`)
 func appFromTopicPattern(topicPattern string) (string, bool) {
 	if match := scopedTopicPattern.FindStringSubmatch(topicPattern); match != nil {
 		return match[1], true
+	}
+	// Recognize the broadcast grant before the "-*" wildcard fallback.
+	// Unambiguous: app_id has no hyphen and a scoped/wildcard pattern never
+	// ends in "-broadcast".
+	if appID, isBroadcast := strings.CutSuffix(topicPattern, broadcastSuffix); isBroadcast {
+		return appID, true
 	}
 	if appID, isWildcard := strings.CutSuffix(topicPattern, wildcardSuffix); isWildcard {
 		return appID, true
@@ -327,10 +338,17 @@ func (service *Service) ListUsers(ctx context.Context) ([]UserSummary, error) {
 
 	summaries := make([]UserSummary, 0, len(ntfyUsers))
 	for _, ntfyUser := range ntfyUsers {
+		// Dedupe recognized app_ids so a user holding both the scoped and
+		// broadcast grant for an app surfaces that app once (preserving
+		// first-seen order for the admin UI's stable key/render).
+		seen := make(map[string]struct{})
 		apps := []string{}
 		for _, topicPattern := range ntfyUser.TopicPatterns {
 			if appID, recognized := appFromTopicPattern(topicPattern); recognized {
-				apps = append(apps, appID)
+				if _, dup := seen[appID]; !dup {
+					seen[appID] = struct{}{}
+					apps = append(apps, appID)
+				}
 			}
 		}
 		summaries = append(summaries, UserSummary{
