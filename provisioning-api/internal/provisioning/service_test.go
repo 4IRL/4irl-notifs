@@ -752,10 +752,12 @@ func TestDeprovisionAppCascadesOverSubscribersDeletesPublisherAndRegistryRow(t *
 	const (
 		hashTwo   = "abcdefghijklmnop"
 		hashThree = "qrstuvwxyzabcdef"
+		hashFour  = "ghijklmnopqrstuv"
 	)
 	subscriberOne := "u_" + aliceHash
 	subscriberTwo := "u_" + hashTwo
 	unrelated := "u_" + hashThree
+	broadcastOnly := "u_" + hashFour
 
 	ntfyClient := &fakeNtfyClient{
 		listUsers: []ntfycli.User{
@@ -763,6 +765,10 @@ func TestDeprovisionAppCascadesOverSubscribersDeletesPublisherAndRegistryRow(t *
 			{Name: subscriberTwo, TopicPatterns: []string{"myapp-" + hashTwo + "-*", "other-" + hashTwo + "-*"}},
 			{Name: "myapp-publisher", TopicPatterns: []string{"myapp-*"}},
 			{Name: unrelated, TopicPatterns: []string{"other-" + hashThree + "-*"}},
+			// A half-torn-down remnant: holds ONLY the broadcast grant, no scoped
+			// grant. userHasScopedAppGrant would skip it; the broadened
+			// userHasAppGrant selector (Decision 4) must still tear it down.
+			{Name: broadcastOnly, TopicPatterns: []string{"myapp-broadcast"}},
 		},
 		listTokens: []ntfycli.Token{{Value: "tk_myapp", Label: "myapp"}},
 	}
@@ -779,6 +785,19 @@ func TestDeprovisionAppCascadesOverSubscribersDeletesPublisherAndRegistryRow(t *
 	}
 	if !strings.Contains(joined, fmt.Sprintf("ResetAccess(%s,myapp-%s-*)", subscriberTwo, hashTwo)) {
 		t.Fatalf("expected subscriber two's scoped grant reset: %s", joined)
+	}
+	// Per-subscriber teardown also resets the broadcast grant (rides Step 2's
+	// broadcast ResetAccess inside Deprovision).
+	if !strings.Contains(joined, fmt.Sprintf("ResetAccess(%s,myapp-broadcast)", subscriberOne)) {
+		t.Fatalf("expected subscriber one's broadcast grant reset: %s", joined)
+	}
+	if !strings.Contains(joined, fmt.Sprintf("ResetAccess(%s,myapp-broadcast)", subscriberTwo)) {
+		t.Fatalf("expected subscriber two's broadcast grant reset: %s", joined)
+	}
+	// The broadcast-only remnant (no scoped grant) is still selected and stripped
+	// via the broadened userHasAppGrant selector — defense-in-depth (Decision 4).
+	if !strings.Contains(joined, fmt.Sprintf("ResetAccess(%s,myapp-broadcast)", broadcastOnly)) {
+		t.Fatalf("expected the broadcast-only remnant to be stripped: %s", joined)
 	}
 	if strings.Contains(joined, unrelated) {
 		t.Fatalf("an unrelated app's subscriber must not be touched: %s", joined)

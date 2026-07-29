@@ -317,10 +317,33 @@ func appFromTopicPattern(topicPattern string) (string, bool) {
 // that app. The app-wide wildcard grant ("{app_id}-*") held by the publisher
 // identity is deliberately NOT matched, so a cascade can tear subscribers down
 // via Deprovision (which targets the scoped pattern) while the publisher
-// identity is deleted separately.
+// identity is deleted separately. For the broader selector that also catches a
+// broadcast-only remnant, see userHasAppGrant (below), which composes this
+// helper with the broadcast-grant check rather than folding it in here — this
+// helper's narrower scoped-only contract stays intact for any other caller.
 func userHasScopedAppGrant(user ntfycli.User, appID string) bool {
 	for _, topicPattern := range user.TopicPatterns {
 		if match := scopedTopicPattern.FindStringSubmatch(topicPattern); match != nil && match[1] == appID {
+			return true
+		}
+	}
+	return false
+}
+
+// userHasAppGrant reports whether the user holds any grant that makes them a
+// subscriber of appID — the scoped per-person grant (userHasScopedAppGrant) OR
+// the shared broadcast grant ("{app_id}-broadcast"). Composing on top of
+// userHasScopedAppGrant (rather than folding broadcast into it) keeps that
+// helper's narrower, well-documented scoped-only contract intact for any other
+// caller, while giving DeprovisionApp the broader selector it needs to also
+// catch half-torn-down (broadcast-only) remnants.
+func userHasAppGrant(user ntfycli.User, appID string) bool {
+	if userHasScopedAppGrant(user, appID) {
+		return true
+	}
+	broadcastTopic := ntfycli.BroadcastTopicPattern(appID)
+	for _, topicPattern := range user.TopicPatterns {
+		if topicPattern == broadcastTopic {
 			return true
 		}
 	}
@@ -462,19 +485,22 @@ type DeprovisionAppRequest struct {
 // tolerated and per-subscriber Deprovision is itself safe to repeat, so a
 // re-run — or a Remove of an already-removed app — is harmless.
 //
-// Scope: this targets the two grant shapes the current model produces — the
+// Scope: this targets the grant shapes the current model produces — the
 // canonical publisher identity ("{app_id}-publisher", holding the app-wide
-// wildcard) and per-person scoped subscribers ("{app_id}-{personHash}-*"). A
-// raw app-wide wildcard grant held by some OTHER (non-publisher) user is a
-// legacy shape the current provisioning flow never creates, so it is
-// deliberately out of scope here rather than force-deleted by heuristic.
+// wildcard) and per-person subscribers, selected via userHasAppGrant so that
+// both the scoped grant ("{app_id}-{personHash}-*") AND the shared broadcast
+// grant ("{app_id}-broadcast") count — the latter catches a half-torn-down
+// (broadcast-only) remnant that a scoped-only selector would skip. A raw
+// app-wide wildcard grant held by some OTHER (non-publisher) user is a legacy
+// shape the current provisioning flow never creates, so it is deliberately out
+// of scope here rather than force-deleted by heuristic.
 func (service *Service) DeprovisionApp(ctx context.Context, request DeprovisionAppRequest) error {
 	ntfyUsers, listErr := service.client.ListUsers(ctx)
 	if listErr != nil {
 		return listErr
 	}
 	for _, ntfyUser := range ntfyUsers {
-		if !userHasScopedAppGrant(ntfyUser, request.AppID) {
+		if !userHasAppGrant(ntfyUser, request.AppID) {
 			continue
 		}
 		if deprovErr := service.Deprovision(ctx, DeprovisionRequest{AppID: request.AppID, NtfyUserID: ntfyUser.Name}); deprovErr != nil {
