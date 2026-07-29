@@ -114,11 +114,12 @@ func TestHealthzReturnsOK(testInstance *testing.T) {
 func TestProvisionHappyPath(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{
 		provisionResult: provisioning.ProvisionResult{
-			UserID:       aliceNtfyUser,
-			AppID:        "myapp",
-			PersonHash:   aliceHash,
-			TopicPattern: "myapp-" + aliceHash + "-*",
-			Token:        "tk_abc123",
+			UserID:         aliceNtfyUser,
+			AppID:          "myapp",
+			PersonHash:     aliceHash,
+			TopicPattern:   "myapp-" + aliceHash + "-*",
+			BroadcastTopic: "myapp-broadcast",
+			Token:          "tk_abc123",
 		},
 	}
 	server := NewServer(ServerConfig{Service: fakeService})
@@ -146,11 +147,12 @@ func TestProvisionHappyPath(testInstance *testing.T) {
 		testInstance.Fatalf("failed to decode response body: %v", decodeErr)
 	}
 	wantBody := map[string]string{
-		"user_id":       aliceNtfyUser,
-		"app_id":        "myapp",
-		"person_hash":   aliceHash,
-		"topic_pattern": "myapp-" + aliceHash + "-*",
-		"token":         "tk_abc123",
+		"user_id":         aliceNtfyUser,
+		"app_id":          "myapp",
+		"person_hash":     aliceHash,
+		"topic_pattern":   "myapp-" + aliceHash + "-*",
+		"broadcast_topic": "myapp-broadcast",
+		"token":           "tk_abc123",
 	}
 	for key, wantValue := range wantBody {
 		if responseBody[key] != wantValue {

@@ -16,6 +16,7 @@ export interface ProvisionResult {
   appId: string;
   personHash: string;
   topicPattern: string;
+  broadcastTopic: string;
   token: string;
 }
 
@@ -86,6 +87,7 @@ interface ProvisionResponseWire {
   app_id: string;
   person_hash: string;
   topic_pattern: string;
+  broadcast_topic: string;
   token: string;
 }
 
@@ -158,6 +160,7 @@ export function createApiClient({
         appId: wire.app_id,
         personHash: wire.person_hash,
         topicPattern: wire.topic_pattern,
+        broadcastTopic: wire.broadcast_topic,
         token: wire.token,
       };
     },

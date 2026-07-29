@@ -95,7 +95,11 @@ type ProvisionResult struct {
 	AppID        string
 	PersonHash   string
 	TopicPattern string
-	Token        string
+	// BroadcastTopic is the per-app broadcast topic ("{app_id}-broadcast")
+	// this subscriber was granted read on, surfaced for parity with
+	// TopicPattern and discoverability by consuming apps.
+	BroadcastTopic string
+	Token          string
 }
 
 // Provision ensures the person's global ntfy user exists, grants a scoped
@@ -145,11 +149,12 @@ func (service *Service) Provision(ctx context.Context, request ProvisionRequest)
 	service.dualWritePerson(ctx, personHash, request.Email)
 
 	return ProvisionResult{
-		UserID:       ntfyUserID,
-		AppID:        request.AppID,
-		PersonHash:   personHash,
-		TopicPattern: topicPattern,
-		Token:        tokenValue,
+		UserID:         ntfyUserID,
+		AppID:          request.AppID,
+		PersonHash:     personHash,
+		TopicPattern:   topicPattern,
+		BroadcastTopic: ntfycli.BroadcastTopicPattern(request.AppID),
+		Token:          tokenValue,
 	}, nil
 }
 

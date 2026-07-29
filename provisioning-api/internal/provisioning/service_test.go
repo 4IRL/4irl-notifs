@@ -151,11 +151,12 @@ func TestProvisionHappyPathCreatesUserGrantsAccessAndIssuesToken(t *testing.T) {
 	}
 
 	expectedResult := ProvisionResult{
-		UserID:       aliceNtfyUser,
-		AppID:        "urls4irl",
-		PersonHash:   aliceHash,
-		TopicPattern: "urls4irl-" + aliceHash + "-*",
-		Token:        "tk_new_token",
+		UserID:         aliceNtfyUser,
+		AppID:          "urls4irl",
+		PersonHash:     aliceHash,
+		TopicPattern:   "urls4irl-" + aliceHash + "-*",
+		BroadcastTopic: "urls4irl-broadcast",
+		Token:          "tk_new_token",
 	}
 	if result != expectedResult {
 		t.Fatalf("result = %#v, expected %#v", result, expectedResult)
@@ -264,11 +265,12 @@ func TestProvisionSucceedsWhenPersonServiceDualWriteFails(t *testing.T) {
 	}
 
 	expectedResult := ProvisionResult{
-		UserID:       aliceNtfyUser,
-		AppID:        "urls4irl",
-		PersonHash:   aliceHash,
-		TopicPattern: "urls4irl-" + aliceHash + "-*",
-		Token:        "tk_new_token",
+		UserID:         aliceNtfyUser,
+		AppID:          "urls4irl",
+		PersonHash:     aliceHash,
+		TopicPattern:   "urls4irl-" + aliceHash + "-*",
+		BroadcastTopic: "urls4irl-broadcast",
+		Token:          "tk_new_token",
 	}
 	if result != expectedResult {
 		t.Fatalf("result = %#v, expected %#v", result, expectedResult)
