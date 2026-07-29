@@ -95,7 +95,11 @@ type ProvisionResult struct {
 	AppID        string
 	PersonHash   string
 	TopicPattern string
-	Token        string
+	// BroadcastTopic is the per-app broadcast topic ("{app_id}-broadcast")
+	// this subscriber was granted read on, surfaced for parity with
+	// TopicPattern and discoverability by consuming apps.
+	BroadcastTopic string
+	Token          string
 }
 
 // Provision ensures the person's global ntfy user exists, grants a scoped
@@ -117,6 +121,15 @@ func (service *Service) Provision(ctx context.Context, request ProvisionRequest)
 	if grantErr := service.client.GrantAccess(ctx, ntfyUserID, topicPattern, ntfycli.PermissionReadOnly); grantErr != nil {
 		return ProvisionResult{}, grantErr
 	}
+	// Grant read on the per-app broadcast topic ({app_id}-broadcast) so this
+	// subscriber receives site-wide announcements (Shape A: an authenticated
+	// per-user read grant, always-on per app). Both are "ro" grants on the same
+	// user; failing here returns before the token is minted (same contract as
+	// the scoped grant), and re-provisioning stays idempotent.
+	if grantErr := service.client.GrantAccess(ctx, ntfyUserID,
+		ntfycli.BroadcastTopicPattern(request.AppID), ntfycli.PermissionReadOnly); grantErr != nil {
+		return ProvisionResult{}, grantErr
+	}
 	existingTokens, listErr := service.client.ListTokens(ctx, ntfyUserID)
 	if listErr != nil {
 		return ProvisionResult{}, listErr
@@ -136,11 +149,12 @@ func (service *Service) Provision(ctx context.Context, request ProvisionRequest)
 	service.dualWritePerson(ctx, personHash, request.Email)
 
 	return ProvisionResult{
-		UserID:       ntfyUserID,
-		AppID:        request.AppID,
-		PersonHash:   personHash,
-		TopicPattern: topicPattern,
-		Token:        tokenValue,
+		UserID:         ntfyUserID,
+		AppID:          request.AppID,
+		PersonHash:     personHash,
+		TopicPattern:   topicPattern,
+		BroadcastTopic: ntfycli.BroadcastTopicPattern(request.AppID),
+		Token:          tokenValue,
 	}, nil
 }
 
@@ -276,6 +290,11 @@ type UserSummary struct {
 // grant (the shape ProvisionApp creates via ntfycli.PublisherTopicPattern).
 const wildcardSuffix = "-*"
 
+// broadcastSuffix marks a topic pattern as the per-app broadcast grant
+// ("{app_id}-broadcast", built by ntfycli.BroadcastTopicPattern) — the single
+// shared topic every subscriber of the app is granted read on (Shape A).
+const broadcastSuffix = "-broadcast"
+
 // scopedTopicPattern matches a per-person scoped topic pattern,
 // "{app_id}-{personHash}-*", capturing the app_id in group 1.
 var scopedTopicPattern = regexp.MustCompile(`^([a-z0-9_]+)-([a-z2-7]{16})-\*$`)
@@ -285,6 +304,12 @@ var scopedTopicPattern = regexp.MustCompile(`^([a-z0-9_]+)-([a-z2-7]{16})-\*$`)
 func appFromTopicPattern(topicPattern string) (string, bool) {
 	if match := scopedTopicPattern.FindStringSubmatch(topicPattern); match != nil {
 		return match[1], true
+	}
+	// Recognize the broadcast grant before the "-*" wildcard fallback.
+	// Unambiguous: app_id has no hyphen and a scoped/wildcard pattern never
+	// ends in "-broadcast".
+	if appID, isBroadcast := strings.CutSuffix(topicPattern, broadcastSuffix); isBroadcast {
+		return appID, true
 	}
 	if appID, isWildcard := strings.CutSuffix(topicPattern, wildcardSuffix); isWildcard {
 		return appID, true
@@ -297,10 +322,33 @@ func appFromTopicPattern(topicPattern string) (string, bool) {
 // that app. The app-wide wildcard grant ("{app_id}-*") held by the publisher
 // identity is deliberately NOT matched, so a cascade can tear subscribers down
 // via Deprovision (which targets the scoped pattern) while the publisher
-// identity is deleted separately.
+// identity is deleted separately. For the broader selector that also catches a
+// broadcast-only remnant, see userHasAppGrant (below), which composes this
+// helper with the broadcast-grant check rather than folding it in here — this
+// helper's narrower scoped-only contract stays intact for any other caller.
 func userHasScopedAppGrant(user ntfycli.User, appID string) bool {
 	for _, topicPattern := range user.TopicPatterns {
 		if match := scopedTopicPattern.FindStringSubmatch(topicPattern); match != nil && match[1] == appID {
+			return true
+		}
+	}
+	return false
+}
+
+// userHasAppGrant reports whether the user holds any grant that makes them a
+// subscriber of appID — the scoped per-person grant (userHasScopedAppGrant) OR
+// the shared broadcast grant ("{app_id}-broadcast"). Composing on top of
+// userHasScopedAppGrant (rather than folding broadcast into it) keeps that
+// helper's narrower, well-documented scoped-only contract intact for any other
+// caller, while giving DeprovisionApp the broader selector it needs to also
+// catch half-torn-down (broadcast-only) remnants.
+func userHasAppGrant(user ntfycli.User, appID string) bool {
+	if userHasScopedAppGrant(user, appID) {
+		return true
+	}
+	broadcastTopic := ntfycli.BroadcastTopicPattern(appID)
+	for _, topicPattern := range user.TopicPatterns {
+		if topicPattern == broadcastTopic {
 			return true
 		}
 	}
@@ -318,10 +366,17 @@ func (service *Service) ListUsers(ctx context.Context) ([]UserSummary, error) {
 
 	summaries := make([]UserSummary, 0, len(ntfyUsers))
 	for _, ntfyUser := range ntfyUsers {
+		// Dedupe recognized app_ids so a user holding both the scoped and
+		// broadcast grant for an app surfaces that app once (preserving
+		// first-seen order for the admin UI's stable key/render).
+		seen := make(map[string]struct{})
 		apps := []string{}
 		for _, topicPattern := range ntfyUser.TopicPatterns {
 			if appID, recognized := appFromTopicPattern(topicPattern); recognized {
-				apps = append(apps, appID)
+				if _, dup := seen[appID]; !dup {
+					seen[appID] = struct{}{}
+					apps = append(apps, appID)
+				}
 			}
 		}
 		summaries = append(summaries, UserSummary{
@@ -370,6 +425,16 @@ func (service *Service) Deprovision(ctx context.Context, request DeprovisionRequ
 	topicPattern := ntfycli.TopicPattern(request.AppID, personHash)
 
 	if resetErr := service.client.ResetAccess(ctx, request.NtfyUserID, topicPattern); resetErr != nil {
+		return resetErr
+	}
+	// Reset the per-app broadcast grant too, BEFORE the zero-count ListUsers
+	// check below — otherwise a user deprovisioned from their last app would keep
+	// a lingering {app_id}-broadcast grant, never reach TopicPatterns == 0, and
+	// be orphaned. Tolerate ErrNotFound (Decision 3): a pre-existing subscriber
+	// provisioned before broadcast shipped has no broadcast grant to reset.
+	if resetErr := service.client.ResetAccess(ctx, request.NtfyUserID,
+		ntfycli.BroadcastTopicPattern(request.AppID)); resetErr != nil &&
+		!errors.Is(resetErr, ntfycli.ErrNotFound) {
 		return resetErr
 	}
 	existingTokens, listErr := service.client.ListTokens(ctx, request.NtfyUserID)
@@ -425,19 +490,22 @@ type DeprovisionAppRequest struct {
 // tolerated and per-subscriber Deprovision is itself safe to repeat, so a
 // re-run — or a Remove of an already-removed app — is harmless.
 //
-// Scope: this targets the two grant shapes the current model produces — the
+// Scope: this targets the grant shapes the current model produces — the
 // canonical publisher identity ("{app_id}-publisher", holding the app-wide
-// wildcard) and per-person scoped subscribers ("{app_id}-{personHash}-*"). A
-// raw app-wide wildcard grant held by some OTHER (non-publisher) user is a
-// legacy shape the current provisioning flow never creates, so it is
-// deliberately out of scope here rather than force-deleted by heuristic.
+// wildcard) and per-person subscribers, selected via userHasAppGrant so that
+// both the scoped grant ("{app_id}-{personHash}-*") AND the shared broadcast
+// grant ("{app_id}-broadcast") count — the latter catches a half-torn-down
+// (broadcast-only) remnant that a scoped-only selector would skip. A raw
+// app-wide wildcard grant held by some OTHER (non-publisher) user is a legacy
+// shape the current provisioning flow never creates, so it is deliberately out
+// of scope here rather than force-deleted by heuristic.
 func (service *Service) DeprovisionApp(ctx context.Context, request DeprovisionAppRequest) error {
 	ntfyUsers, listErr := service.client.ListUsers(ctx)
 	if listErr != nil {
 		return listErr
 	}
 	for _, ntfyUser := range ntfyUsers {
-		if !userHasScopedAppGrant(ntfyUser, request.AppID) {
+		if !userHasAppGrant(ntfyUser, request.AppID) {
 			continue
 		}
 		if deprovErr := service.Deprovision(ctx, DeprovisionRequest{AppID: request.AppID, NtfyUserID: ntfyUser.Name}); deprovErr != nil {

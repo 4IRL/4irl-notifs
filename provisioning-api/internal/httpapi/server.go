@@ -108,11 +108,12 @@ type provisionRequestBody struct {
 
 // provisionResponseBody is the JSON response for a successful provision.
 type provisionResponseBody struct {
-	UserID       string `json:"user_id"`
-	AppID        string `json:"app_id"`
-	PersonHash   string `json:"person_hash"`
-	TopicPattern string `json:"topic_pattern"`
-	Token        string `json:"token"`
+	UserID         string `json:"user_id"`
+	AppID          string `json:"app_id"`
+	PersonHash     string `json:"person_hash"`
+	TopicPattern   string `json:"topic_pattern"`
+	BroadcastTopic string `json:"broadcast_topic"`
+	Token          string `json:"token"`
 }
 
 // writeJSON encodes body as JSON with the given status code and
@@ -167,11 +168,12 @@ func (server *Server) handleProvision(responseWriter http.ResponseWriter, reques
 	}
 
 	writeJSON(responseWriter, http.StatusOK, provisionResponseBody{
-		UserID:       result.UserID,
-		AppID:        result.AppID,
-		PersonHash:   result.PersonHash,
-		TopicPattern: result.TopicPattern,
-		Token:        result.Token,
+		UserID:         result.UserID,
+		AppID:          result.AppID,
+		PersonHash:     result.PersonHash,
+		TopicPattern:   result.TopicPattern,
+		BroadcastTopic: result.BroadcastTopic,
+		Token:          result.Token,
 	})
 }
 

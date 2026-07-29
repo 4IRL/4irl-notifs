@@ -18,17 +18,19 @@ import (
 type fakeNtfyClient struct {
 	invocations []string
 
-	addUserErr     error
-	grantAccessErr error
-	resetAccessErr error
-	deleteUserErr  error
-	addTokenValue  string
-	addTokenErr    error
-	listTokens     []ntfycli.Token
-	listTokensErr  error
-	removeTokenErr error
-	listUsers      []ntfycli.User
-	listUsersErr   error
+	addUserErr              error
+	grantAccessErr          error
+	grantAccessErrByPattern map[string]error
+	resetAccessErr          error
+	resetAccessErrByPattern map[string]error
+	deleteUserErr           error
+	addTokenValue           string
+	addTokenErr             error
+	listTokens              []ntfycli.Token
+	listTokensErr           error
+	removeTokenErr          error
+	listUsers               []ntfycli.User
+	listUsersErr            error
 }
 
 func (client *fakeNtfyClient) record(format string, values ...any) {
@@ -47,11 +49,17 @@ func (client *fakeNtfyClient) DeleteUser(_ context.Context, userID string) error
 
 func (client *fakeNtfyClient) GrantAccess(_ context.Context, userID string, topicPattern string, permission ntfycli.Permission) error {
 	client.record("GrantAccess(%s,%s,%s)", userID, topicPattern, permission)
+	if err, scripted := client.grantAccessErrByPattern[topicPattern]; scripted {
+		return err
+	}
 	return client.grantAccessErr
 }
 
 func (client *fakeNtfyClient) ResetAccess(_ context.Context, userID string, topicPattern string) error {
 	client.record("ResetAccess(%s,%s)", userID, topicPattern)
+	if err, scripted := client.resetAccessErrByPattern[topicPattern]; scripted {
+		return err
+	}
 	return client.resetAccessErr
 }
 
@@ -143,11 +151,12 @@ func TestProvisionHappyPathCreatesUserGrantsAccessAndIssuesToken(t *testing.T) {
 	}
 
 	expectedResult := ProvisionResult{
-		UserID:       aliceNtfyUser,
-		AppID:        "urls4irl",
-		PersonHash:   aliceHash,
-		TopicPattern: "urls4irl-" + aliceHash + "-*",
-		Token:        "tk_new_token",
+		UserID:         aliceNtfyUser,
+		AppID:          "urls4irl",
+		PersonHash:     aliceHash,
+		TopicPattern:   "urls4irl-" + aliceHash + "-*",
+		BroadcastTopic: "urls4irl-broadcast",
+		Token:          "tk_new_token",
 	}
 	if result != expectedResult {
 		t.Fatalf("result = %#v, expected %#v", result, expectedResult)
@@ -156,6 +165,7 @@ func TestProvisionHappyPathCreatesUserGrantsAccessAndIssuesToken(t *testing.T) {
 	expectedInvocations := strings.Join([]string{
 		fmt.Sprintf("AddUser(%s,pw=generated-pw)", aliceNtfyUser),
 		fmt.Sprintf("GrantAccess(%s,urls4irl-%s-*,ro)", aliceNtfyUser, aliceHash),
+		fmt.Sprintf("GrantAccess(%s,urls4irl-broadcast,ro)", aliceNtfyUser),
 		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
 		fmt.Sprintf("AddToken(%s,urls4irl)", aliceNtfyUser),
 	}, " | ")
@@ -230,6 +240,7 @@ func TestProvisionDualWritesToPersonServiceAfterTokenIssuedWhenConfigured(t *tes
 	expectedInvocations := strings.Join([]string{
 		fmt.Sprintf("AddUser(%s,pw=generated-pw)", aliceNtfyUser),
 		fmt.Sprintf("GrantAccess(%s,urls4irl-%s-*,ro)", aliceNtfyUser, aliceHash),
+		fmt.Sprintf("GrantAccess(%s,urls4irl-broadcast,ro)", aliceNtfyUser),
 		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
 		fmt.Sprintf("AddToken(%s,urls4irl)", aliceNtfyUser),
 		fmt.Sprintf("UpsertPerson(%s,alice@example.com)", aliceHash),
@@ -254,11 +265,12 @@ func TestProvisionSucceedsWhenPersonServiceDualWriteFails(t *testing.T) {
 	}
 
 	expectedResult := ProvisionResult{
-		UserID:       aliceNtfyUser,
-		AppID:        "urls4irl",
-		PersonHash:   aliceHash,
-		TopicPattern: "urls4irl-" + aliceHash + "-*",
-		Token:        "tk_new_token",
+		UserID:         aliceNtfyUser,
+		AppID:          "urls4irl",
+		PersonHash:     aliceHash,
+		TopicPattern:   "urls4irl-" + aliceHash + "-*",
+		BroadcastTopic: "urls4irl-broadcast",
+		Token:          "tk_new_token",
 	}
 	if result != expectedResult {
 		t.Fatalf("result = %#v, expected %#v", result, expectedResult)
@@ -296,6 +308,25 @@ func TestProvisionSkipsDualWriteWhenNtfyProvisioningFailsBeforeTokenMint(t *test
 	}
 	if len(personClient.invocations) != 0 {
 		t.Fatalf("UpsertPerson must not be called when ntfy provisioning fails before the token is minted, got: %v", personClient.invocations)
+	}
+}
+
+func TestProvisionPropagatesBroadcastGrantAccessError(t *testing.T) {
+	broadcastGrantErr := errors.New("broadcast grant failed")
+	client := &fakeNtfyClient{
+		addTokenValue:           "tk_new_token",
+		grantAccessErrByPattern: map[string]error{"urls4irl-broadcast": broadcastGrantErr},
+	}
+	service := newTestService(client)
+
+	_, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail})
+	if !errors.Is(err, broadcastGrantErr) {
+		t.Fatalf("expected the broadcast GrantAccess error to propagate, got: %v", err)
+	}
+
+	// The scoped grant must have succeeded — only the broadcast grant failed.
+	if got := strings.Join(client.invocations, " | "); !strings.Contains(got, fmt.Sprintf("GrantAccess(%s,urls4irl-%s-*,ro)", aliceNtfyUser, aliceHash)) {
+		t.Fatalf("expected the scoped grant to have succeeded before the broadcast grant failed: %s", got)
 	}
 }
 
@@ -343,12 +374,76 @@ func TestDeprovisionResetsAccessAndRemovesAppTokens(t *testing.T) {
 
 	expectedInvocations := strings.Join([]string{
 		fmt.Sprintf("ResetAccess(%s,urls4irl-%s-*)", aliceNtfyUser, aliceHash),
+		fmt.Sprintf("ResetAccess(%s,urls4irl-broadcast)", aliceNtfyUser),
 		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
 		fmt.Sprintf("RemoveToken(%s,tk_urls4irl_token)", aliceNtfyUser),
 		"ListUsers()",
 	}, " | ")
 	if got := strings.Join(client.invocations, " | "); got != expectedInvocations {
 		t.Fatalf("invocations = %s, expected %s", got, expectedInvocations)
+	}
+}
+
+func TestDeprovisionTreatsBroadcastResetNotFoundAsSuccess(t *testing.T) {
+	client := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: []string{"chores4irl-" + aliceHash + "-*"}},
+		},
+		resetAccessErrByPattern: map[string]error{
+			"urls4irl-broadcast": fmt.Errorf("ntfy access: %w: no such grant", ntfycli.ErrNotFound),
+		},
+	}
+	service := newTestService(client)
+
+	// A pre-existing subscriber (provisioned before broadcast shipped) has no
+	// broadcast grant, so resetting it returns ErrNotFound — which the broadcast
+	// reset must tolerate (Decision 3), unlike the scoped reset.
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); err != nil {
+		t.Fatalf("Deprovision must tolerate ErrNotFound on the broadcast reset, got: %v", err)
+	}
+}
+
+func TestDeprovisionPropagatesBroadcastResetAccessError(t *testing.T) {
+	broadcastResetErr := errors.New("broadcast reset failed")
+	client := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: []string{"chores4irl-" + aliceHash + "-*"}},
+		},
+		resetAccessErrByPattern: map[string]error{"urls4irl-broadcast": broadcastResetErr},
+	}
+	service := newTestService(client)
+
+	// A genuine (non-ErrNotFound) failure on the broadcast reset must propagate,
+	// mirroring the Provision-side broadcast-grant error path.
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); !errors.Is(err, broadcastResetErr) {
+		t.Fatalf("expected the broadcast ResetAccess error to propagate, got: %v", err)
+	}
+}
+
+func TestDeprovisionDeletesUserWhenOnlyBroadcastRemnantRemains(t *testing.T) {
+	client := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: nil},
+		},
+	}
+	service := newTestService(client)
+
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); err != nil {
+		t.Fatalf("Deprovision returned unexpected error: %v", err)
+	}
+
+	joined := strings.Join(client.invocations, " | ")
+	scopedResetIdx := strings.Index(joined, fmt.Sprintf("ResetAccess(%s,urls4irl-%s-*)", aliceNtfyUser, aliceHash))
+	broadcastResetIdx := strings.Index(joined, fmt.Sprintf("ResetAccess(%s,urls4irl-broadcast)", aliceNtfyUser))
+	deleteUserIdx := strings.Index(joined, fmt.Sprintf("DeleteUser(%s)", aliceNtfyUser))
+
+	if scopedResetIdx == -1 || broadcastResetIdx == -1 || deleteUserIdx == -1 {
+		t.Fatalf("expected the scoped reset, broadcast reset, and DeleteUser all to fire: %s", joined)
+	}
+	// The load-bearing ordering: both resets MUST land before DeleteUser so the
+	// post-reset zero-count can reach 0 and delete the user (Decision 3).
+	if scopedResetIdx > deleteUserIdx || broadcastResetIdx > deleteUserIdx {
+		t.Fatalf("both the scoped and broadcast resets must land before DeleteUser: %s", joined)
 	}
 }
 
@@ -417,7 +512,8 @@ func TestDeprovisionPropagatesUnknownUser(t *testing.T) {
 func TestListUsersDerivesAppsFromScopedAndWildcardPatterns(t *testing.T) {
 	client := &fakeNtfyClient{
 		listUsers: []ntfycli.User{
-			{Name: aliceNtfyUser, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "chores4irl-" + aliceHash + "-*", "custom-topic"}},
+			{Name: aliceNtfyUser, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "urls4irl-broadcast", "chores4irl-" + aliceHash + "-*", "custom-topic"}},
+			{Name: "broadcast-only-user", TopicPatterns: []string{"urls4irl-broadcast"}},
 			{Name: "legacy-app-wide-user", TopicPatterns: []string{"urls4irl-*"}},
 			{Name: "bob", TopicPatterns: nil},
 		},
@@ -430,7 +526,12 @@ func TestListUsersDerivesAppsFromScopedAndWildcardPatterns(t *testing.T) {
 	}
 
 	expected := []UserSummary{
-		{UserID: aliceNtfyUser, Apps: []string{"urls4irl", "chores4irl"}, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "chores4irl-" + aliceHash + "-*", "custom-topic"}},
+		// alice holds both the scoped and broadcast grant for urls4irl: the
+		// broadcast pattern is recognized and urls4irl is deduped to appear once.
+		{UserID: aliceNtfyUser, Apps: []string{"urls4irl", "chores4irl"}, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "urls4irl-broadcast", "chores4irl-" + aliceHash + "-*", "custom-topic"}},
+		// A broadcast-only user (no scoped grant) still surfaces the app, isolating
+		// the -broadcast recognition branch from the scoped-grant path.
+		{UserID: "broadcast-only-user", Apps: []string{"urls4irl"}, TopicPatterns: []string{"urls4irl-broadcast"}},
 		{UserID: "legacy-app-wide-user", Apps: []string{"urls4irl"}, TopicPatterns: []string{"urls4irl-*"}},
 		{UserID: "bob", Apps: []string{}, TopicPatterns: nil},
 	}
@@ -653,10 +754,12 @@ func TestDeprovisionAppCascadesOverSubscribersDeletesPublisherAndRegistryRow(t *
 	const (
 		hashTwo   = "abcdefghijklmnop"
 		hashThree = "qrstuvwxyzabcdef"
+		hashFour  = "ghijklmnopqrstuv"
 	)
 	subscriberOne := "u_" + aliceHash
 	subscriberTwo := "u_" + hashTwo
 	unrelated := "u_" + hashThree
+	broadcastOnly := "u_" + hashFour
 
 	ntfyClient := &fakeNtfyClient{
 		listUsers: []ntfycli.User{
@@ -664,6 +767,10 @@ func TestDeprovisionAppCascadesOverSubscribersDeletesPublisherAndRegistryRow(t *
 			{Name: subscriberTwo, TopicPatterns: []string{"myapp-" + hashTwo + "-*", "other-" + hashTwo + "-*"}},
 			{Name: "myapp-publisher", TopicPatterns: []string{"myapp-*"}},
 			{Name: unrelated, TopicPatterns: []string{"other-" + hashThree + "-*"}},
+			// A half-torn-down remnant: holds ONLY the broadcast grant, no scoped
+			// grant. userHasScopedAppGrant would skip it; the broadened
+			// userHasAppGrant selector (Decision 4) must still tear it down.
+			{Name: broadcastOnly, TopicPatterns: []string{"myapp-broadcast"}},
 		},
 		listTokens: []ntfycli.Token{{Value: "tk_myapp", Label: "myapp"}},
 	}
@@ -680,6 +787,19 @@ func TestDeprovisionAppCascadesOverSubscribersDeletesPublisherAndRegistryRow(t *
 	}
 	if !strings.Contains(joined, fmt.Sprintf("ResetAccess(%s,myapp-%s-*)", subscriberTwo, hashTwo)) {
 		t.Fatalf("expected subscriber two's scoped grant reset: %s", joined)
+	}
+	// Per-subscriber teardown also resets the broadcast grant (rides Step 2's
+	// broadcast ResetAccess inside Deprovision).
+	if !strings.Contains(joined, fmt.Sprintf("ResetAccess(%s,myapp-broadcast)", subscriberOne)) {
+		t.Fatalf("expected subscriber one's broadcast grant reset: %s", joined)
+	}
+	if !strings.Contains(joined, fmt.Sprintf("ResetAccess(%s,myapp-broadcast)", subscriberTwo)) {
+		t.Fatalf("expected subscriber two's broadcast grant reset: %s", joined)
+	}
+	// The broadcast-only remnant (no scoped grant) is still selected and stripped
+	// via the broadened userHasAppGrant selector — defense-in-depth (Decision 4).
+	if !strings.Contains(joined, fmt.Sprintf("ResetAccess(%s,myapp-broadcast)", broadcastOnly)) {
+		t.Fatalf("expected the broadcast-only remnant to be stripped: %s", joined)
 	}
 	if strings.Contains(joined, unrelated) {
 		t.Fatalf("an unrelated app's subscriber must not be touched: %s", joined)
@@ -837,5 +957,58 @@ func TestProvisionAppRotateOnlyRemovesPublisherLabeledTokens(t *testing.T) {
 	}
 	if strings.Contains(joined, "RemoveToken(urls4irl-publisher,tk_unlabeled)") {
 		t.Fatalf("a non-publisher-labeled token must not be revoked: %s", joined)
+	}
+}
+
+func TestUserHasAppGrant(t *testing.T) {
+	// A realistic 16-char base32 personHash (matches base32(sha256(email))[:16],
+	// the [a-z2-7]{16} shape scopedTopicPattern requires).
+	const myappHash = "76gzqgp4byjl6dje"
+
+	testCases := []struct {
+		name          string
+		topicPatterns []string
+		appID         string
+		expected      bool
+	}{
+		{
+			name:          "scoped-only grant makes the user a subscriber",
+			topicPatterns: []string{"myapp-" + myappHash + "-*"},
+			appID:         "myapp",
+			expected:      true,
+		},
+		{
+			name:          "broadcast-only grant makes the user a subscriber",
+			topicPatterns: []string{ntfycli.BroadcastTopicPattern("myapp")},
+			appID:         "myapp",
+			expected:      true,
+		},
+		{
+			name:          "both scoped and broadcast grants make the user a subscriber",
+			topicPatterns: []string{"myapp-" + myappHash + "-*", ntfycli.BroadcastTopicPattern("myapp")},
+			appID:         "myapp",
+			expected:      true,
+		},
+		{
+			name:          "unrelated app's scoped grant does not make the user a subscriber",
+			topicPatterns: []string{"otherapp-" + myappHash + "-*"},
+			appID:         "myapp",
+			expected:      false,
+		},
+		{
+			name:          "unrelated app's broadcast grant does not make the user a subscriber",
+			topicPatterns: []string{ntfycli.BroadcastTopicPattern("otherapp")},
+			appID:         "myapp",
+			expected:      false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			user := ntfycli.User{Name: aliceNtfyUser, TopicPatterns: testCase.topicPatterns}
+			if got := userHasAppGrant(user, testCase.appID); got != testCase.expected {
+				t.Fatalf("userHasAppGrant(%#v, %q) = %v, expected %v", user.TopicPatterns, testCase.appID, got, testCase.expected)
+			}
+		})
 	}
 }

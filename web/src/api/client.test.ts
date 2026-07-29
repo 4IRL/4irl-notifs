@@ -29,6 +29,7 @@ describe('api client', () => {
           app_id: 'urls4irl',
           person_hash: '76gzqgp4byjl6dje',
           topic_pattern: 'urls4irl-76gzqgp4byjl6dje-*',
+          broadcast_topic: 'urls4irl-broadcast',
           token: 'tk_abc',
         },
       }),
@@ -53,6 +54,7 @@ describe('api client', () => {
       appId: 'urls4irl',
       personHash: '76gzqgp4byjl6dje',
       topicPattern: 'urls4irl-76gzqgp4byjl6dje-*',
+      broadcastTopic: 'urls4irl-broadcast',
       token: 'tk_abc',
     });
   });
