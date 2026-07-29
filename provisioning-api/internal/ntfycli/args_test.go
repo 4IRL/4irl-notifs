@@ -113,6 +113,25 @@ func TestPublisherTopicPattern(t *testing.T) {
 	}
 }
 
+func TestBroadcastTopicPattern(t *testing.T) {
+	testCases := []struct {
+		name     string
+		appID    string
+		expected string
+	}{
+		{name: "urls4irl", appID: "urls4irl", expected: "urls4irl-broadcast"},
+		{name: "chores4irl", appID: "chores4irl", expected: "chores4irl-broadcast"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := BroadcastTopicPattern(testCase.appID); got != testCase.expected {
+				t.Fatalf("BroadcastTopicPattern(%q) = %q, expected %q", testCase.appID, got, testCase.expected)
+			}
+		})
+	}
+}
+
 func TestPublisherUserID(t *testing.T) {
 	testCases := []struct {
 		name     string
