@@ -82,6 +82,33 @@ func TestTopicPattern(t *testing.T) {
 	}
 }
 
+func TestPersonChannelTopic(t *testing.T) {
+	testCases := []struct {
+		name       string
+		appID      string
+		personHash string
+		channel    string
+		expected   string
+	}{
+		{name: "urls4irl alerts", appID: "urls4irl", personHash: "76gzqgp4byjl6dje", channel: "alerts", expected: "urls4irl-76gzqgp4byjl6dje-alerts"},
+		{name: "chores4irl digest", appID: "chores4irl", personHash: "abcdefgh23456777", channel: "digest", expected: "chores4irl-abcdefgh23456777-digest"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := PersonChannelTopic(testCase.appID, testCase.personHash, testCase.channel); got != testCase.expected {
+				t.Fatalf("PersonChannelTopic(%q, %q, %q) = %q, expected %q", testCase.appID, testCase.personHash, testCase.channel, got, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestTestNotifyTokenLabelValue(t *testing.T) {
+	if TestNotifyTokenLabel != "test-notify" {
+		t.Fatalf("TestNotifyTokenLabel = %q, expected %q", TestNotifyTokenLabel, "test-notify")
+	}
+}
+
 func TestPermissionReadOnlyValue(t *testing.T) {
 	if PermissionReadOnly != "ro" {
 		t.Fatalf("PermissionReadOnly = %q, expected %q", PermissionReadOnly, "ro")

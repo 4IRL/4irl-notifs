@@ -1,6 +1,9 @@
 package httpapi
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidateEmail(t *testing.T) {
 	testCases := []struct {
@@ -18,7 +21,7 @@ func TestValidateEmail(t *testing.T) {
 		{name: "empty local part", email: "@example.com", expected: false},
 		{name: "empty domain part", email: "alice@", expected: false},
 		{name: "internal whitespace", email: "alice @example.com", expected: false},
-		{name: "too long", email: strings254LocalPart() + "@example.com", expected: false},
+		{name: "too long", email: longLocalPart() + "@example.com", expected: false},
 	}
 
 	for _, testCase := range testCases {
@@ -30,14 +33,58 @@ func TestValidateEmail(t *testing.T) {
 	}
 }
 
-// strings254LocalPart returns a local-part long enough that, combined with
+// longLocalPart returns a local-part long enough that, combined with
 // "@example.com", the full address exceeds the 254-character maximum.
-func strings254LocalPart() string {
-	localPart := make([]byte, 250)
-	for index := range localPart {
-		localPart[index] = 'a'
+func longLocalPart() string {
+	return strings.Repeat("a", 250)
+}
+
+func TestValidateChannel(t *testing.T) {
+	testCases := []struct {
+		name     string
+		channel  string
+		expected bool
+	}{
+		{name: "simple lowercase", channel: "alerts", expected: true},
+		{name: "another valid", channel: "digest", expected: true},
+		{name: "alnum with underscore", channel: "a_b2", expected: true},
+		{name: "single char", channel: "a", expected: true},
+		{name: "max length 32", channel: strings.Repeat("a", 32), expected: true},
+		{name: "empty", channel: "", expected: false},
+		{name: "uppercase", channel: "Alerts", expected: false},
+		{name: "hyphen", channel: "has-hyphen", expected: false},
+		{name: "too long 33", channel: strings.Repeat("a", 33), expected: false},
+		{name: "leading underscore", channel: "_lead", expected: false},
 	}
-	return string(localPart)
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := validateChannel(testCase.channel); got != testCase.expected {
+				t.Fatalf("validateChannel(%q) = %v, expected %v", testCase.channel, got, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestValidateMessage(t *testing.T) {
+	testCases := []struct {
+		name     string
+		message  string
+		expected bool
+	}{
+		{name: "empty is valid", message: "", expected: true},
+		{name: "short message", message: "hello", expected: true},
+		{name: "at max length 4096", message: strings.Repeat("x", 4096), expected: true},
+		{name: "over max length 4097", message: strings.Repeat("x", 4097), expected: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := validateMessage(testCase.message); got != testCase.expected {
+				t.Fatalf("validateMessage(len=%d) = %v, expected %v", len(testCase.message), got, testCase.expected)
+			}
+		})
+	}
 }
 
 func TestValidateNtfyUserID(t *testing.T) {
