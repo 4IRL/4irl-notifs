@@ -13,10 +13,10 @@ If you read nothing else, read the **Mental model** and **Integration in 5 steps
 
 The notification service is two hosts:
 
-| Host | What it is | How you authenticate to it |
-|---|---|---|
-| `https://notifs-api.4irl.app` | **Provisioning API** — creates users/tokens/ACLs. | Cloudflare Access **service token** (your app's own). |
-| `https://notifs.4irl.app` | **ntfy server** — the actual pub/sub. You publish and subscribe here. | An **ntfy access token** (`Authorization: Bearer …`). |
+| Host                          | What it is                                                            | How you authenticate to it                            |
+| ----------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------- |
+| `https://notifs-api.4irl.app` | **Provisioning API** — creates users/tokens/ACLs.                     | Cloudflare Access **service token** (your app's own). |
+| `https://notifs.4irl.app`     | **ntfy server** — the actual pub/sub. You publish and subscribe here. | An **ntfy access token** (`Authorization: Bearer …`). |
 
 You provision against the **provisioning API**, then publish/subscribe against **ntfy**.
 
@@ -26,10 +26,10 @@ raw email in a topic. You do **not** compute the hash yourself; the API returns 
 
 **There are two kinds of token, doing two different jobs:**
 
-| Token | Minted by | Scope | Lives where | Used to |
-|---|---|---|---|---|
-| **Publisher token** | `POST /v1/provision-app` (once per app) | write-only on `{app_id}-*` | your app's **backend** secret store | **publish** notifications |
-| **Subscriber token** | `POST /v1/provision` (once per user) | read-only on `{app_id}-{person_hash}-*` | the user's **client** (or your backend, if you relay) | **receive** notifications |
+| Token                | Minted by                               | Scope                                   | Lives where                                           | Used to                   |
+| -------------------- | --------------------------------------- | --------------------------------------- | ----------------------------------------------------- | ------------------------- |
+| **Publisher token**  | `POST /v1/provision-app` (once per app) | write-only on `{app_id}-*`              | your app's **backend** secret store                   | **publish** notifications |
+| **Subscriber token** | `POST /v1/provision` (once per user)    | read-only on `{app_id}-{person_hash}-*` | the user's **client** (or your backend, if you relay) | **receive** notifications |
 
 **Topic naming** (you choose `{channel}`):
 
@@ -115,6 +115,7 @@ Response:
   "app_id": "urls4irl",
   "person_hash": "v4sf4e5teivpe3zi",
   "topic_pattern": "urls4irl-v4sf4e5teivpe3zi-*",
+  "broadcast_topic": "urls4irl-broadcast",
   "token": "tk_<subscriber-token>"
 }
 ```
@@ -155,11 +156,16 @@ Authorization: Bearer tk_<subscriber-token>
 ```
 
 ntfy supports `/json` (streaming JSON), `/sse`, and WebSocket subscriptions, plus the ntfy
-mobile/desktop apps. Two delivery models — pick one:
-- **Client-direct:** hand the subscriber token to the user's browser/app; it subscribes to ntfy
-  directly. Simplest; the token lives on the client.
+mobile/desktop apps. Two delivery models:
+- **Client-direct (recommended for this deployment):** hand the subscriber token to the user's
+  browser/app; it subscribes to ntfy directly. Simplest; the token lives on the client.
 - **Backend-relay:** your backend holds the subscriber token, subscribes, and forwards to the user
-  over your own channel (WebSocket/SSE/web-push). Keeps the token server-side.
+  over your own channel (WebSocket/SSE/web-push). Keeps the token server-side — use only when a token
+  must never reach the client (your backend then owns reconnection/offline delivery that ntfy would
+  otherwise handle).
+
+> **iOS clients need one extra step:** the ntfy iOS app's **Default Server** must be set to exactly
+> `https://notifs.4irl.app`, or notifications silently never arrive. See **Usage recommendations** below.
 
 ### Step 5 — Deprovision (when the user disables notifications or leaves)
 
@@ -179,19 +185,89 @@ have no remaining topic access from any app. (You may pass `"user_id": "u_…"` 
 
 ---
 
+## Broadcast / site-wide announcements
+
+Sometimes you want to reach **all** of your app's subscribers at once — a maintenance window, an outage
+notice, a site-wide announcement — rather than one user's personal channel. Each app has a single shared
+**broadcast topic** for exactly this: `{app_id}-broadcast` (e.g. `urls4irl-broadcast`).
+
+**Publish** to it with your **publisher token** — the write-only `{app_id}-*` credential from Step 1
+already covers `{app_id}-broadcast`, so there is **no** extra token to mint:
+
+```
+POST https://notifs.4irl.app/urls4irl-broadcast
+Authorization: Bearer tk_<publisher-token>
+Title: Scheduled maintenance
+Priority: high
+
+urls4irl will be down for ~10 min at 02:00 UTC for maintenance.
+```
+
+**Receive** it on the client by also subscribing to `{app_id}-broadcast`, exactly like a personal topic
+(Step 4) but with the shared name:
+
+```
+GET https://notifs.4irl.app/urls4irl-broadcast/json
+Authorization: Bearer tk_<subscriber-token>
+```
+
+Every provisioned user is granted **read** on `{app_id}-broadcast` automatically at `POST /v1/provision`
+— it is always-on per app (no per-user opt-in/opt-out), so **no extra registration** is needed. The
+topic name is also returned as `broadcast_topic` in the `/v1/provision` response (see Step 2), so your
+client can discover it instead of hardcoding. The grant is removed when the user is deprovisioned, so a
+departed user stops receiving broadcasts.
+
+---
+
+## Usage recommendations (this deployment)
+
+The 5 steps above are the mechanics; this is how to use them well against `notifs.4irl.app`.
+
+**Delivery: prefer client-direct.** This deployment is built for client-direct delivery — the user's
+device subscribes to ntfy itself. Reach for backend-relay only when a token must never live on the
+client; it makes your backend own the reconnection/offline story ntfy otherwise handles for free.
+
+**iOS (ntfy app) — the Default Server gotcha.** iOS can't hold a background connection, so iOS delivery
+goes through APNs bridged via ntfy.sh. Two consequences for you:
+- The user's ntfy iOS app **Default Server** (or per-subscription server) must equal
+  `https://notifs.4irl.app` **exactly** — https, no trailing slash. Any mismatch and the wake-up can't
+  be matched, so notifications **silently never arrive**. Put this in your iOS onboarding steps.
+- Expect a short APNs wake latency on iOS; Android/desktop/web are instant. Don't design flows that
+  assume sub-second iOS delivery.
+
+**Periodic / bulk sends (e.g. hourly digests).** Publishing is one POST per user-topic — cheap at this
+scale, but mind two limits:
+- A backend publishing many messages from one IP looks like a single ntfy **visitor** and will hit the
+  per-visitor rate limit. Ask the operator to raise/exempt your publisher before a bulk job.
+- Each **iOS-bound** message also costs one upstream poll to ntfy.sh (rate-limited) — the operator sets
+  `upstream-access-token`.
+- **Coalesce** many-per-user notifications into a single **digest** message (`{app}-{hash}-digest`)
+  instead of N separate ones — fewer requests and better UX.
+
+**Missed-message catch-up.** The server retains messages for **24h**. When a client reconnects after
+downtime, backfill with `since=`:
+`GET https://notifs.4irl.app/{topic}/json?since=<id|duration|timestamp>` (up to 24h back). Don't rely on
+a live stream alone to guarantee delivery across reconnects.
+
+**Notification types & user preferences.** Model each notif type as a `{channel}` in
+`{app_id}-{person_hash}-{channel}`. Enforce user preferences at **publish time** — simply don't emit a
+type the user disabled — so a broad subscriber token can't be used to receive muted types.
+
+---
+
 ## API reference — `notifs-api.4irl.app`
 
 All calls require the two `CF-Access-Client-*` headers. All bodies + responses are JSON.
 
-| Method & path | Body | Success response |
-|---|---|---|
-| `POST /v1/provision-app` | `{ "app_id", "rotate"? }` | `{ app_id, publisher_user_id, topic_pattern, token }` |
-| `POST /v1/provision` | `{ "app_id", "email" }` | `{ user_id, app_id, person_hash, topic_pattern, token }` |
-| `POST /v1/deprovision` | `{ "app_id", "email" }` **or** `{ "app_id", "user_id" }` | `{ user_id, app_id, removed }` |
-| `POST /v1/deprovision-app` | `{ "app_id" }` | `{ app_id, removed }` |
-| `GET /v1/users` | — | `{ users: [{ user_id, apps, topic_patterns }] }` |
-| `DELETE /v1/users/{user_id}` | — | `{ user_id, deleted }` |
-| `GET /healthz` | — | `ok` (behind Access) |
+| Method & path                | Body                                                     | Success response                                                          |
+| ---------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `POST /v1/provision-app`     | `{ "app_id", "rotate"? }`                                | `{ app_id, publisher_user_id, topic_pattern, token }`                     |
+| `POST /v1/provision`         | `{ "app_id", "email" }`                                  | `{ user_id, app_id, person_hash, topic_pattern, broadcast_topic, token }` |
+| `POST /v1/deprovision`       | `{ "app_id", "email" }` **or** `{ "app_id", "user_id" }` | `{ user_id, app_id, removed }`                                            |
+| `POST /v1/deprovision-app`   | `{ "app_id" }`                                           | `{ app_id, removed }`                                                     |
+| `GET /v1/users`              | —                                                        | `{ users: [{ user_id, apps, topic_patterns }] }`                          |
+| `DELETE /v1/users/{user_id}` | —                                                        | `{ user_id, deleted }`                                                    |
+| `GET /healthz`               | —                                                        | `ok` (behind Access)                                                      |
 
 Notes:
 - `user_id` is always the derived ntfy id `u_<person_hash>`. `email` must be a valid address
@@ -231,7 +307,11 @@ Notes:
       deliver it to the client). Do this once per user, not per login.
 - [ ] Publish to `{app_id}-{person_hash}-{channel}` with the publisher token.
 - [ ] User's client subscribes to `{app_id}-{person_hash}-{channel}` with the subscriber token.
+- [ ] (Optional) Site-wide announcements: publish to `{app_id}-broadcast` with the publisher token;
+      clients subscribe to `{app_id}-broadcast` (read grant added automatically at provision, returned as `broadcast_topic`).
 - [ ] On opt-out / account deletion: call `POST /v1/deprovision`.
+- [ ] iOS users: ntfy app **Default Server** set to exactly `https://notifs.4irl.app` (else silent no-delivery).
+- [ ] Bulk/periodic sender: publisher rate-limit raised/exempted by operator; many-per-user sends coalesced into a digest.
 - [ ] All mint responses (`token`) are captured on first response — they are never re-shown.
 
 ## Related docs

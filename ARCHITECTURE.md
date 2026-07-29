@@ -8,12 +8,12 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 
 ## Components
 
-| Component | Tech | Host | Role |
-|---|---|---|---|
-| **ntfy** | ntfy `v2.26.0`, Docker (VPS) | `notifs.4irl.app` | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`. |
-| **provisioning-api** | Go, Docker (VPS) | `notifs-api.4irl.app` | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
-| **person-service** | Cloudflare Worker + D1 | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
-| **admin UI** | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app` | Human console. SPA + same-origin `/v1/*` + `/people` proxy Functions. |
+| Component            | Tech                                            | Host                     | Role                                                                              |
+| -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
+| **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
+| **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
+| **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
+| **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*` + `/people` proxy Functions.             |
 
 Two live environments: **local** (docker-compose: ntfy + provisioning-api) and **production** (the
 VPS + Cloudflare). ntfy + provisioning-api run on the VPS; person-service + admin UI are Cloudflare-native.
@@ -49,12 +49,12 @@ graph TD
 
 ## Hosts & DNS (all under the `4irl.app` Cloudflare zone)
 
-| Host | Fronted by | Access-gated? | Origin |
-|---|---|---|---|
-| `notifs-admin.4irl.app` | Cloudflare Pages | Yes (human login) | Pages project `notifs-admin` |
-| `notifs-api.4irl.app` | Tunnel → `127.0.0.1:8091` | Yes (service-token only) | provisioning-api container |
-| `notifs.4irl.app` | Tunnel → `127.0.0.1:8090` | **No** (ntfy token auth) | ntfy container |
-| `notifs-people.4irl.app` | Worker custom domain | Yes (service-token only) | person-service Worker |
+| Host                     | Fronted by                | Access-gated?            | Origin                       |
+| ------------------------ | ------------------------- | ------------------------ | ---------------------------- |
+| `notifs-admin.4irl.app`  | Cloudflare Pages          | Yes (human login)        | Pages project `notifs-admin` |
+| `notifs-api.4irl.app`    | Tunnel → `127.0.0.1:8091` | Yes (service-token only) | provisioning-api container   |
+| `notifs.4irl.app`        | Tunnel → `127.0.0.1:8090` | **No** (ntfy token auth) | ntfy container               |
+| `notifs-people.4irl.app` | Worker custom domain      | Yes (service-token only) | person-service Worker        |
 
 - The Tunnel is a **shared, remotely-managed** connector (also fronts urls4irl); notifs routes were
   added as public hostnames — no new daemon/credential, dashboard-only.
@@ -70,12 +70,12 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 
 ### Access applications
 
-| App | Domain(s) | AUD tag | Policy |
-|---|---|---|---|
-| `notifs-admin` | `notifs-admin.4irl.app` | `907dc277…575f` | `U4I Dev Policy` — **Allow**, GitHub org `4IRL` (human login) |
-| `notifs-admin` API bypass | `notifs-admin.4irl.app/v1`, `/people`, `/apps` | — | **Bypass** (Everyone) — Access does NOT gate these paths; the Function authenticates |
-| `notifs-api` | `notifs-api.4irl.app` | `91ad97d9…694150` | **Service Auth** (proxy token) only |
-| `notifs-people` | `notifs-people.4irl.app` | `5a270164…658f5a` | **Service Auth** (VPS dual-write token + proxy token) only |
+| App                       | Domain(s)                                      | AUD tag           | Policy                                                                               |
+| ------------------------- | ---------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------ |
+| `notifs-admin`            | `notifs-admin.4irl.app`                        | `907dc277…575f`   | `U4I Dev Policy` — **Allow**, GitHub org `4IRL` (human login)                        |
+| `notifs-admin` API bypass | `notifs-admin.4irl.app/v1`, `/people`, `/apps` | —                 | **Bypass** (Everyone) — Access does NOT gate these paths; the Function authenticates |
+| `notifs-api`              | `notifs-api.4irl.app`                          | `91ad97d9…694150` | **Service Auth** (proxy token) only                                                  |
+| `notifs-people`           | `notifs-people.4irl.app`                       | `5a270164…658f5a` | **Service Auth** (VPS dual-write token + proxy token) only                           |
 
 - `U4I Dev Policy` is a **reusable** Allow policy shared with `notifs-admin`. On the backends it was
   *detached* (Step-7 lockdown), leaving them service-token-only. Never *delete* it (would break admin login).
@@ -88,11 +88,11 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 
 ### Service tokens
 
-| Token | Presented by | Authorized on |
-|---|---|---|
-| `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`) | `notifs-api` + `notifs-people` Service Auth |
-| VPS dual-write token | provisioning-api (Go) | `notifs-people` Service Auth |
-| *(future)* per-consuming-app tokens | urls4irl / tasktracker backends | `notifs-api` Service Auth |
+| Token                               | Presented by                                  | Authorized on                               |
+| ----------------------------------- | --------------------------------------------- | ------------------------------------------- |
+| `notifs-admin-proxy → backends`     | Pages Function (`CF-Access-Client-Id/Secret`) | `notifs-api` + `notifs-people` Service Auth |
+| VPS dual-write token                | provisioning-api (Go)                         | `notifs-people` Service Auth                |
+| *(future)* per-consuming-app tokens | urls4irl / tasktracker backends               | `notifs-api` Service Auth                   |
 
 ### Admin-UI request flow (the important one)
 
@@ -139,15 +139,15 @@ sequenceDiagram
 
 **Pages project `notifs-admin` — runtime bindings** (set in dashboard, not committed):
 
-| Binding | Type | Value / purpose |
-|---|---|---|
-| `PROVISIONING_API_URL` | plaintext | `https://notifs-api.4irl.app` |
-| `PERSON_SERVICE_URL` | plaintext | `https://notifs-people.4irl.app` |
-| `PROXY_ACCESS_CLIENT_ID` | secret | proxy service token client id |
-| `PROXY_ACCESS_CLIENT_SECRET` | secret | proxy service token client secret |
-| `ACCESS_TEAM_DOMAIN` | plaintext | `urls4irl.cloudflareaccess.com` (JWKS host + issuer) |
-| `ACCESS_JWT_AUD` | plaintext | `notifs-admin` AUD (`907dc277…`) |
-| `DISABLE_ACCESS_AUTH` | plaintext | **local dev only** (`true` disables JWT check). Never set in prod. |
+| Binding                      | Type      | Value / purpose                                                    |
+| ---------------------------- | --------- | ------------------------------------------------------------------ |
+| `PROVISIONING_API_URL`       | plaintext | `https://notifs-api.4irl.app`                                      |
+| `PERSON_SERVICE_URL`         | plaintext | `https://notifs-people.4irl.app`                                   |
+| `PROXY_ACCESS_CLIENT_ID`     | secret    | proxy service token client id                                      |
+| `PROXY_ACCESS_CLIENT_SECRET` | secret    | proxy service token client secret                                  |
+| `ACCESS_TEAM_DOMAIN`         | plaintext | `urls4irl.cloudflareaccess.com` (JWKS host + issuer)               |
+| `ACCESS_JWT_AUD`             | plaintext | `notifs-admin` AUD (`907dc277…`)                                   |
+| `DISABLE_ACCESS_AUTH`        | plaintext | **local dev only** (`true` disables JWT check). Never set in prod. |
 
 Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABLED=true`.
 
@@ -159,13 +159,18 @@ Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABL
   email = same person across every app. ntfy user id = `u_<person_hash>`.
 - **Two tokens** (each revealed once at mint):
 
-| Token | Endpoint | ntfy ACL | Held by |
-|---|---|---|---|
-| **Publisher** | `POST /v1/provision-app {app_id}` | write-only `{app_id}-*` | app backend (one per app) |
-| **Subscriber** | `POST /v1/provision {app_id,email}` | read-only `{app_id}-{person_hash}-*` | end-user client |
+| Token          | Endpoint                            | ntfy ACL                             | Held by                   |
+| -------------- | ----------------------------------- | ------------------------------------ | ------------------------- |
+| **Publisher**  | `POST /v1/provision-app {app_id}`   | write-only `{app_id}-*`              | app backend (one per app) |
+| **Subscriber** | `POST /v1/provision {app_id,email}` | read-only `{app_id}-{person_hash}-*` | end-user client           |
 
 - **Topics:** `{app_id}-{person_hash}-{channel}` (app picks `{channel}`). Publisher writes any
   `{app_id}-*`; subscriber reads its own `{app_id}-{person_hash}-*`.
+- **Broadcast topic:** `{app_id}-broadcast` — one shared per-app topic for site-wide / maintenance
+  announcements. Every subscriber is granted **read** on it at `Provision` (always-on per app — no
+  per-user opt-out); the publisher writes it via its existing write-only `{app_id}-*` grant (no new
+  publisher credential). The read grant is reset at `Deprovision` (and on `DeprovisionApp` teardown).
+  `POST /v1/provision` returns it as `broadcast_topic`.
 - **person-service D1** table `person(person_hash PK, email, created_at)` — reverse index so an
   operator can map an opaque hash back to an email. Populated by the provisioning-api **dual-write**
   (Go) on every `/v1/provision`, and **dual-deleted** on a full user teardown (`DELETE /v1/users/{id}`
@@ -204,6 +209,36 @@ registry row). Full contract: `docs/app-integration-guide.md` + `provisioning-ap
 
 ---
 
+## Client delivery & iOS push
+
+Clients receive **client-direct**: the user's device holds the subscriber token and subscribes to
+ntfy (`notifs.4irl.app`) directly — no app backend in the delivery path.
+
+| Client                  | Transport                                  | Latency          |
+| ----------------------- | ------------------------------------------ | ---------------- |
+| Browser / desktop / web | direct stream (`/json`, `/sse`, WebSocket) | instant          |
+| Android (ntfy app)      | persistent foreground-service connection   | instant          |
+| iOS (ntfy app)          | **APNs, bridged via ntfy.sh** (see below)  | short wake delay |
+
+**iOS is the special case.** iOS forbids the long-lived background connection Android uses, and the
+ntfy iOS app is signed with **ntfy.sh's** APNs credentials — so a self-hosted server cannot wake it
+directly. `ntfy/server.yml` sets `upstream-base-url: https://ntfy.sh`: on each publish this server
+forwards a minimal **poll request** (topic name + message ID, never the body) to ntfy.sh, which sends
+the APNs wake-up; the iOS app then fetches the real body **from this server**. Free ntfy.sh bridge but
+rate-limited — set `upstream-access-token` (a free ntfy.sh account, via `NTFY_UPSTREAM_ACCESS_TOKEN`)
+to raise the poll ceiling under bulk load. Privacy trade-off (accepted): topic names — which embed the
+`person_hash` — plus timing reach ntfy.sh; message bodies never do.
+
+**iOS device setup — exact match or silent failure.** The ntfy iOS app's **Default Server** (or the
+per-subscription server) must equal `base-url` **character-for-character**: `https://notifs.4irl.app`,
+https scheme, no trailing slash. The APNs wake-up references the server by `base-url`; if the app's
+server URL differs at all, it can't correlate the wake to a subscription and silently fetches nothing.
+(`base-url` is `http://localhost:8090` in the committed file for local dev; prod overrides it to
+`https://notifs.4irl.app` via `NTFY_BASE_URL`.)
+
+**Retention:** `cache-duration: 24h` — a client offline, or an iOS device fetching after a delayed
+wake, backfills missed messages via `since=` for up to 24h.
+
 ## Deploy pipeline
 
 `prod-build-and-deploy.yml` runs on **merge to `main`** and fans out:
@@ -231,16 +266,17 @@ graph TD
 
 ## Debugging quick reference
 
-| Symptom | Likely cause |
-|---|---|
-| Admin API `500 {"error":"proxy misconfigured"}` | A Pages binding unset/misnamed, or `ACCESS_JWT_AUD` unset in prod (fail-closed). |
-| Admin API `502 {"error":"upstream auth failed"}` | Proxy service token not on the backend's Service-Auth policy (or wrong policy action). |
-| Admin API `502 {"error":"upstream unreachable"}` | `PROVISIONING_API_URL`/`PERSON_SERVICE_URL` wrong/down, or Tunnel route missing. |
-| Admin API `401 {"error":"unauthorized"}` | JWT invalid/missing: `aud`≠`notifs-admin` AUD, wrong `ACCESS_TEAM_DOMAIN`, or expired session. |
+| Symptom                                               | Likely cause                                                                                                                                                                                         |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Admin API `500 {"error":"proxy misconfigured"}`       | A Pages binding unset/misnamed, or `ACCESS_JWT_AUD` unset in prod (fail-closed).                                                                                                                     |
+| Admin API `502 {"error":"upstream auth failed"}`      | Proxy service token not on the backend's Service-Auth policy (or wrong policy action).                                                                                                               |
+| Admin API `502 {"error":"upstream unreachable"}`      | `PROVISIONING_API_URL`/`PERSON_SERVICE_URL` wrong/down, or Tunnel route missing.                                                                                                                     |
+| Admin API `401 {"error":"unauthorized"}`              | JWT invalid/missing: `aud`≠`notifs-admin` AUD, wrong `ACCESS_TEAM_DOMAIN`, or expired session.                                                                                                       |
 | Provisioning/Apps POST/PATCH/DELETE → 302 login / 405 | The path (`/v1`, `/people`, `/apps`) is missing from the Access **Bypass** app → Access is edge-challenging the write. (Apps section lists via GET but every mutation fails until `/apps` is added.) |
-| Admin API `500` "no such table: app" | person-service Worker deployed without applying D1 migration 0002 — run `wrangler d1 migrations apply person-service --remote` (CI does this automatically before deploy). |
-| Direct browser visit to a backend → 403 | Expected post-lockdown (service-token-only). Rollback = re-add `U4I Dev Policy`. |
-| ntfy publish/subscribe 403 | Wrong ntfy token, or topic outside the token's ACL (`{app_id}-*` publisher / `{app_id}-{hash}-*` subscriber). |
+| Admin API `500` "no such table: app"                  | person-service Worker deployed without applying D1 migration 0002 — run `wrangler d1 migrations apply person-service --remote` (CI does this automatically before deploy).                           |
+| Direct browser visit to a backend → 403               | Expected post-lockdown (service-token-only). Rollback = re-add `U4I Dev Policy`.                                                                                                                     |
+| ntfy publish/subscribe 403                            | Wrong ntfy token, or topic outside the token's ACL (`{app_id}-*` publisher / `{app_id}-{hash}-*` subscriber).                                                                                        |
+| iOS notifications silent/delayed (Android & web fine) | ntfy iOS app **Default Server** ≠ `base-url` (`https://notifs.4irl.app`), or `upstream-base-url`/`upstream-access-token` unset or rate-limited on the server.                                        |
 
 **Where to look:** Pages Functions logs (`wrangler pages deployment tail`); Cloudflare Access audit
 logs (per-app); VPS `docker compose logs`; provisioning-api emits structured errors server-side (never
