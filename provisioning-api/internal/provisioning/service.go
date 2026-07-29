@@ -117,6 +117,15 @@ func (service *Service) Provision(ctx context.Context, request ProvisionRequest)
 	if grantErr := service.client.GrantAccess(ctx, ntfyUserID, topicPattern, ntfycli.PermissionReadOnly); grantErr != nil {
 		return ProvisionResult{}, grantErr
 	}
+	// Grant read on the per-app broadcast topic ({app_id}-broadcast) so this
+	// subscriber receives site-wide announcements (Shape A: an authenticated
+	// per-user read grant, always-on per app). Both are "ro" grants on the same
+	// user; failing here returns before the token is minted (same contract as
+	// the scoped grant), and re-provisioning stays idempotent.
+	if grantErr := service.client.GrantAccess(ctx, ntfyUserID,
+		ntfycli.BroadcastTopicPattern(request.AppID), ntfycli.PermissionReadOnly); grantErr != nil {
+		return ProvisionResult{}, grantErr
+	}
 	existingTokens, listErr := service.client.ListTokens(ctx, ntfyUserID)
 	if listErr != nil {
 		return ProvisionResult{}, listErr
@@ -370,6 +379,16 @@ func (service *Service) Deprovision(ctx context.Context, request DeprovisionRequ
 	topicPattern := ntfycli.TopicPattern(request.AppID, personHash)
 
 	if resetErr := service.client.ResetAccess(ctx, request.NtfyUserID, topicPattern); resetErr != nil {
+		return resetErr
+	}
+	// Reset the per-app broadcast grant too, BEFORE the zero-count ListUsers
+	// check below — otherwise a user deprovisioned from their last app would keep
+	// a lingering {app_id}-broadcast grant, never reach TopicPatterns == 0, and
+	// be orphaned. Tolerate ErrNotFound (Decision 3): a pre-existing subscriber
+	// provisioned before broadcast shipped has no broadcast grant to reset.
+	if resetErr := service.client.ResetAccess(ctx, request.NtfyUserID,
+		ntfycli.BroadcastTopicPattern(request.AppID)); resetErr != nil &&
+		!errors.Is(resetErr, ntfycli.ErrNotFound) {
 		return resetErr
 	}
 	existingTokens, listErr := service.client.ListTokens(ctx, request.NtfyUserID)

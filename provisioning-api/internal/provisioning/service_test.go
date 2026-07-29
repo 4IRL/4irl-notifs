@@ -18,17 +18,19 @@ import (
 type fakeNtfyClient struct {
 	invocations []string
 
-	addUserErr     error
-	grantAccessErr error
-	resetAccessErr error
-	deleteUserErr  error
-	addTokenValue  string
-	addTokenErr    error
-	listTokens     []ntfycli.Token
-	listTokensErr  error
-	removeTokenErr error
-	listUsers      []ntfycli.User
-	listUsersErr   error
+	addUserErr              error
+	grantAccessErr          error
+	grantAccessErrByPattern map[string]error
+	resetAccessErr          error
+	resetAccessErrByPattern map[string]error
+	deleteUserErr           error
+	addTokenValue           string
+	addTokenErr             error
+	listTokens              []ntfycli.Token
+	listTokensErr           error
+	removeTokenErr          error
+	listUsers               []ntfycli.User
+	listUsersErr            error
 }
 
 func (client *fakeNtfyClient) record(format string, values ...any) {
@@ -47,11 +49,17 @@ func (client *fakeNtfyClient) DeleteUser(_ context.Context, userID string) error
 
 func (client *fakeNtfyClient) GrantAccess(_ context.Context, userID string, topicPattern string, permission ntfycli.Permission) error {
 	client.record("GrantAccess(%s,%s,%s)", userID, topicPattern, permission)
+	if err, scripted := client.grantAccessErrByPattern[topicPattern]; scripted {
+		return err
+	}
 	return client.grantAccessErr
 }
 
 func (client *fakeNtfyClient) ResetAccess(_ context.Context, userID string, topicPattern string) error {
 	client.record("ResetAccess(%s,%s)", userID, topicPattern)
+	if err, scripted := client.resetAccessErrByPattern[topicPattern]; scripted {
+		return err
+	}
 	return client.resetAccessErr
 }
 
@@ -156,6 +164,7 @@ func TestProvisionHappyPathCreatesUserGrantsAccessAndIssuesToken(t *testing.T) {
 	expectedInvocations := strings.Join([]string{
 		fmt.Sprintf("AddUser(%s,pw=generated-pw)", aliceNtfyUser),
 		fmt.Sprintf("GrantAccess(%s,urls4irl-%s-*,ro)", aliceNtfyUser, aliceHash),
+		fmt.Sprintf("GrantAccess(%s,urls4irl-broadcast,ro)", aliceNtfyUser),
 		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
 		fmt.Sprintf("AddToken(%s,urls4irl)", aliceNtfyUser),
 	}, " | ")
@@ -230,6 +239,7 @@ func TestProvisionDualWritesToPersonServiceAfterTokenIssuedWhenConfigured(t *tes
 	expectedInvocations := strings.Join([]string{
 		fmt.Sprintf("AddUser(%s,pw=generated-pw)", aliceNtfyUser),
 		fmt.Sprintf("GrantAccess(%s,urls4irl-%s-*,ro)", aliceNtfyUser, aliceHash),
+		fmt.Sprintf("GrantAccess(%s,urls4irl-broadcast,ro)", aliceNtfyUser),
 		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
 		fmt.Sprintf("AddToken(%s,urls4irl)", aliceNtfyUser),
 		fmt.Sprintf("UpsertPerson(%s,alice@example.com)", aliceHash),
@@ -299,6 +309,25 @@ func TestProvisionSkipsDualWriteWhenNtfyProvisioningFailsBeforeTokenMint(t *test
 	}
 }
 
+func TestProvisionPropagatesBroadcastGrantAccessError(t *testing.T) {
+	broadcastGrantErr := errors.New("broadcast grant failed")
+	client := &fakeNtfyClient{
+		addTokenValue:           "tk_new_token",
+		grantAccessErrByPattern: map[string]error{"urls4irl-broadcast": broadcastGrantErr},
+	}
+	service := newTestService(client)
+
+	_, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail})
+	if !errors.Is(err, broadcastGrantErr) {
+		t.Fatalf("expected the broadcast GrantAccess error to propagate, got: %v", err)
+	}
+
+	// The scoped grant must have succeeded — only the broadcast grant failed.
+	if got := strings.Join(client.invocations, " | "); !strings.Contains(got, fmt.Sprintf("GrantAccess(%s,urls4irl-%s-*,ro)", aliceNtfyUser, aliceHash)) {
+		t.Fatalf("expected the scoped grant to have succeeded before the broadcast grant failed: %s", got)
+	}
+}
+
 func TestProvisionLogsWarnWhenPersonServiceDualWriteFails(t *testing.T) {
 	var logBuffer bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
@@ -343,12 +372,76 @@ func TestDeprovisionResetsAccessAndRemovesAppTokens(t *testing.T) {
 
 	expectedInvocations := strings.Join([]string{
 		fmt.Sprintf("ResetAccess(%s,urls4irl-%s-*)", aliceNtfyUser, aliceHash),
+		fmt.Sprintf("ResetAccess(%s,urls4irl-broadcast)", aliceNtfyUser),
 		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
 		fmt.Sprintf("RemoveToken(%s,tk_urls4irl_token)", aliceNtfyUser),
 		"ListUsers()",
 	}, " | ")
 	if got := strings.Join(client.invocations, " | "); got != expectedInvocations {
 		t.Fatalf("invocations = %s, expected %s", got, expectedInvocations)
+	}
+}
+
+func TestDeprovisionTreatsBroadcastResetNotFoundAsSuccess(t *testing.T) {
+	client := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: []string{"chores4irl-" + aliceHash + "-*"}},
+		},
+		resetAccessErrByPattern: map[string]error{
+			"urls4irl-broadcast": fmt.Errorf("ntfy access: %w: no such grant", ntfycli.ErrNotFound),
+		},
+	}
+	service := newTestService(client)
+
+	// A pre-existing subscriber (provisioned before broadcast shipped) has no
+	// broadcast grant, so resetting it returns ErrNotFound — which the broadcast
+	// reset must tolerate (Decision 3), unlike the scoped reset.
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); err != nil {
+		t.Fatalf("Deprovision must tolerate ErrNotFound on the broadcast reset, got: %v", err)
+	}
+}
+
+func TestDeprovisionPropagatesBroadcastResetAccessError(t *testing.T) {
+	broadcastResetErr := errors.New("broadcast reset failed")
+	client := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: []string{"chores4irl-" + aliceHash + "-*"}},
+		},
+		resetAccessErrByPattern: map[string]error{"urls4irl-broadcast": broadcastResetErr},
+	}
+	service := newTestService(client)
+
+	// A genuine (non-ErrNotFound) failure on the broadcast reset must propagate,
+	// mirroring the Provision-side broadcast-grant error path.
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); !errors.Is(err, broadcastResetErr) {
+		t.Fatalf("expected the broadcast ResetAccess error to propagate, got: %v", err)
+	}
+}
+
+func TestDeprovisionDeletesUserWhenOnlyBroadcastRemnantRemains(t *testing.T) {
+	client := &fakeNtfyClient{
+		listUsers: []ntfycli.User{
+			{Name: aliceNtfyUser, TopicPatterns: nil},
+		},
+	}
+	service := newTestService(client)
+
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); err != nil {
+		t.Fatalf("Deprovision returned unexpected error: %v", err)
+	}
+
+	joined := strings.Join(client.invocations, " | ")
+	scopedResetIdx := strings.Index(joined, fmt.Sprintf("ResetAccess(%s,urls4irl-%s-*)", aliceNtfyUser, aliceHash))
+	broadcastResetIdx := strings.Index(joined, fmt.Sprintf("ResetAccess(%s,urls4irl-broadcast)", aliceNtfyUser))
+	deleteUserIdx := strings.Index(joined, fmt.Sprintf("DeleteUser(%s)", aliceNtfyUser))
+
+	if scopedResetIdx == -1 || broadcastResetIdx == -1 || deleteUserIdx == -1 {
+		t.Fatalf("expected the scoped reset, broadcast reset, and DeleteUser all to fire: %s", joined)
+	}
+	// The load-bearing ordering: both resets MUST land before DeleteUser so the
+	// post-reset zero-count can reach 0 and delete the user (Decision 3).
+	if scopedResetIdx > deleteUserIdx || broadcastResetIdx > deleteUserIdx {
+		t.Fatalf("both the scoped and broadcast resets must land before DeleteUser: %s", joined)
 	}
 }
 
