@@ -666,6 +666,98 @@ func TestDeprovisionLegacySubscriberWithoutBroadcastGrantSucceeds(t *testing.T) 
 	}
 }
 
+// grantBroadcastOnlyGrantViaCLI constructs a "broadcast-only remnant" subscriber
+// — the shape a half-torn-down user would have (holds ONLY the shared
+// {app_id}-broadcast grant, with NO scoped {app_id}-{personHash}-* grant) — by
+// creating the ntfy user and granting ONLY the broadcast topic directly via the
+// ntfy CLI, bypassing POST /v1/provision entirely. It mirrors
+// grantLegacyScopedGrantViaCLI but targets ntfycli.BroadcastTopicPattern instead
+// of the scoped per-person pattern, reusing the same ntfycli arg builders
+// production uses (UserAddArgs/AccessGrantArgs) so the test cannot drift from the
+// real CLI arg shapes, and passing the password out-of-band via NTFY_PASSWORD.
+func grantBroadcastOnlyGrantViaCLI(t *testing.T, ntfyUserID string, broadcastTopic string) {
+	t.Helper()
+	const remnantPassword = "broadcast-remnant-password"
+	runNtfyCLIInContainer(t, []string{"NTFY_PASSWORD=" + remnantPassword}, ntfycli.UserAddArgs(ntfyUserID)...)
+	runNtfyCLIInContainer(t, nil, ntfycli.AccessGrantArgs(ntfyUserID, broadcastTopic, ntfycli.PermissionReadOnly)...)
+}
+
+// TestDeprovisionAppRemovesBroadcastOnlyRemnantEndToEnd empirically tests the
+// CRITICAL review claim about Decision 4: DeprovisionApp selects subscribers via
+// userHasAppGrant (scoped OR broadcast). When the cascade hits a broadcast-only
+// remnant (holds ONLY {app_id}-broadcast, never held the scoped
+// {app_id}-{personHash}-* topic), Deprovision's FIRST (scoped) ResetAccess call
+// targets a topic the user was never granted. The reviewer claims real ntfy
+// returns ErrNotFound there, aborting the whole cascade with a misleading 404
+// (publisher never deleted, registry row never cleaned). The counter-hypothesis
+// is that `ntfy access --reset <existing-user> <never-granted-topic>` exits 0
+// (success no-op, because "does not exist" → ErrNotFound is only for a MISSING
+// USER on a non-zero exit), so the reset is nil and the cascade completes.
+//
+// This test faithfully reproduces the remnant→DeprovisionApp cascade against the
+// real ntfy CLI and asserts the cascade completes (200; publisher deleted;
+// remnant deleted). A non-200 here CONFIRMS the CRITICAL.
+func TestDeprovisionAppRemovesBroadcastOnlyRemnantEndToEnd(t *testing.T) {
+	waitForHealth(t)
+	const appID = "itestremnant"
+	// The remnant's ntfy user id must be "u_"-shaped so Deprovision derives the
+	// scoped pattern ({app_id}-{personHash}-*) exactly as it would in production.
+	const remnantEmail = "itest-remnant-subscriber@example.com"
+	remnantNtfyUserID := personhash.NtfyUser(remnantEmail)
+	publisherNtfyUserID := appID + "-publisher"
+	t.Cleanup(func() { deleteUser(t, publisherNtfyUserID) })
+	t.Cleanup(func() { deleteUser(t, remnantNtfyUserID) })
+
+	// Create the app publisher (holds the write-only {app_id}-* wildcard grant).
+	status, provisionAppBody := postJSON(t, "/v1/provision-app", map[string]string{"app_id": appID})
+	if status != http.StatusOK {
+		t.Fatalf("provision-app status = %d, body = %s", status, provisionAppBody)
+	}
+	var provisionedApp provisionAppResponse
+	if unmarshalErr := json.Unmarshal(provisionAppBody, &provisionedApp); unmarshalErr != nil {
+		t.Fatalf("unmarshaling provision-app response: %v", unmarshalErr)
+	}
+	if provisionedApp.PublisherUserID != publisherNtfyUserID {
+		t.Fatalf("publisher_user_id = %q, expected %q", provisionedApp.PublisherUserID, publisherNtfyUserID)
+	}
+
+	// Build the broadcast-only remnant directly via the ntfy CLI: ONLY the shared
+	// {app_id}-broadcast grant, and NO scoped {app_id}-{personHash}-* grant. This
+	// is the exact half-torn-down shape the CRITICAL is about.
+	broadcastTopic := ntfycli.BroadcastTopicPattern(appID)
+	grantBroadcastOnlyGrantViaCLI(t, remnantNtfyUserID, broadcastTopic)
+
+	// Both users must be present before the cascade so the assertions below prove
+	// the cascade actually removed them (not that they never existed).
+	if !userIsListed(t, publisherNtfyUserID) {
+		t.Fatalf("publisher %q not listed before deprovision-app", publisherNtfyUserID)
+	}
+	if !userIsListed(t, remnantNtfyUserID) {
+		t.Fatalf("remnant %q not listed before deprovision-app", remnantNtfyUserID)
+	}
+
+	// Run the cascade. DeprovisionApp selects the remnant via userHasAppGrant
+	// (broadcast match) and calls Deprovision, whose FIRST ResetAccess targets the
+	// never-granted scoped topic {app_id}-{personHash}-*. If real ntfy returns
+	// ErrNotFound there, this comes back 404 (CRITICAL confirmed); if it is a
+	// success no-op, the cascade completes and returns 200 (CRITICAL refuted).
+	status, deprovBody := postJSON(t, "/v1/deprovision-app", map[string]string{"app_id": appID})
+	if status != http.StatusOK {
+		t.Fatalf("deprovision-app of broadcast-only-remnant app status = %d, body = %s "+
+			"(CRITICAL would be CONFIRMED: scoped ResetAccess on a never-granted topic "+
+			"aborted the cascade)", status, deprovBody)
+	}
+
+	// The cascade must have run to completion: the publisher is deleted AND the
+	// remnant (whose only grant, broadcast, was reset to zero patterns) is deleted.
+	if userIsListed(t, publisherNtfyUserID) {
+		t.Fatalf("publisher %q still listed after deprovision-app; cascade did not delete it", publisherNtfyUserID)
+	}
+	if userIsListed(t, remnantNtfyUserID) {
+		t.Fatalf("broadcast-only remnant %q still listed after deprovision-app; cascade did not tear it down", remnantNtfyUserID)
+	}
+}
+
 func TestConcurrentProvisionsAreSerializedUnderLoad(t *testing.T) {
 	waitForHealth(t)
 	const appID = "itestconc"

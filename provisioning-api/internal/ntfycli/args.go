@@ -32,7 +32,9 @@ func PublisherTopicPattern(appID string) string {
 // BroadcastTopicPattern returns the per-app broadcast topic: "{app_id}-broadcast". A single
 // shared topic every subscriber of the app is granted read on (Shape A). Note this is an exact
 // topic name, NOT a "-*" wildcard namespace.
-func BroadcastTopicPattern(appID string) string { return appID + "-broadcast" }
+func BroadcastTopicPattern(appID string) string {
+	return appID + "-broadcast"
+}
 
 // PublisherUserID returns the derived ntfy username for an app's publisher
 // identity: "{app_id}-publisher". The app_id charset has no hyphens, so the

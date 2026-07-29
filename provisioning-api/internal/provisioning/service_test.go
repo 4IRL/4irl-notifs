@@ -959,3 +959,56 @@ func TestProvisionAppRotateOnlyRemovesPublisherLabeledTokens(t *testing.T) {
 		t.Fatalf("a non-publisher-labeled token must not be revoked: %s", joined)
 	}
 }
+
+func TestUserHasAppGrant(t *testing.T) {
+	// A realistic 16-char base32 personHash (matches base32(sha256(email))[:16],
+	// the [a-z2-7]{16} shape scopedTopicPattern requires).
+	const myappHash = "76gzqgp4byjl6dje"
+
+	testCases := []struct {
+		name          string
+		topicPatterns []string
+		appID         string
+		expected      bool
+	}{
+		{
+			name:          "scoped-only grant makes the user a subscriber",
+			topicPatterns: []string{"myapp-" + myappHash + "-*"},
+			appID:         "myapp",
+			expected:      true,
+		},
+		{
+			name:          "broadcast-only grant makes the user a subscriber",
+			topicPatterns: []string{ntfycli.BroadcastTopicPattern("myapp")},
+			appID:         "myapp",
+			expected:      true,
+		},
+		{
+			name:          "both scoped and broadcast grants make the user a subscriber",
+			topicPatterns: []string{"myapp-" + myappHash + "-*", ntfycli.BroadcastTopicPattern("myapp")},
+			appID:         "myapp",
+			expected:      true,
+		},
+		{
+			name:          "unrelated app's scoped grant does not make the user a subscriber",
+			topicPatterns: []string{"otherapp-" + myappHash + "-*"},
+			appID:         "myapp",
+			expected:      false,
+		},
+		{
+			name:          "unrelated app's broadcast grant does not make the user a subscriber",
+			topicPatterns: []string{ntfycli.BroadcastTopicPattern("otherapp")},
+			appID:         "myapp",
+			expected:      false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			user := ntfycli.User{Name: aliceNtfyUser, TopicPatterns: testCase.topicPatterns}
+			if got := userHasAppGrant(user, testCase.appID); got != testCase.expected {
+				t.Fatalf("userHasAppGrant(%#v, %q) = %v, expected %v", user.TopicPatterns, testCase.appID, got, testCase.expected)
+			}
+		})
+	}
+}

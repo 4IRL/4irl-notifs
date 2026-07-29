@@ -47,6 +47,15 @@ services:
       # it is baked in here as the default (override via an env/.env only if ever needed).
       - NTFY_BASE_URL=${NTFY_BASE_URL:-https://notifs.4irl.app}
       - NTFY_BEHIND_PROXY=true
+      # iOS-bridge upstream poll rate-limit token. ntfy natively maps the NTFY_-prefixed
+      # env var onto its `upstream-access-token` config key (see ntfy/server.yml), so it
+      # must be a real env var on this container — not a /run/secrets/*_FILE like the
+      # provisioning-api secrets below (ntfy does not read the *_FILE convention for this
+      # setting). The token is secret, so no value is baked in: it defaults to empty (the
+      # free unauthenticated bridge — fails open to the lower poll limit) and is set
+      # out-of-band by the operator (a GitHub Actions secret exported into the deploy shell,
+      # or a VPS-side .env beside this compose file). Never commit the real token value.
+      - NTFY_UPSTREAM_ACCESS_TOKEN=${NTFY_UPSTREAM_ACCESS_TOKEN:-}
     healthcheck:
       test:
         [
