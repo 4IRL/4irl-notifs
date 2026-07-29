@@ -33,7 +33,22 @@ auth-file: /var/lib/ntfy/auth.db
 auth-default-access: deny-all
 
 cache-file: /var/cache/ntfy/cache.db
+# Server-side message retention (bumped from ntfy's 12h default). A device that was
+# offline — or an iOS device fetching the body after a delayed APNs wake — can still
+# catch up via `since=` for up to 24h.
+cache-duration: "24h"
 
 # Local stack runs without a reverse proxy; the production deployment sits behind a
 # Cloudflare Tunnel and overrides this with NTFY_BEHIND_PROXY=true.
 behind-proxy: false
+
+# iOS background push. iOS forbids the long-lived background connection the Android app
+# uses, and the ntfy iOS app is signed with ntfy.sh's APNs credentials — so a self-hosted
+# server cannot wake it directly. On each publish, this server forwards a minimal poll
+# request (topic name + message ID, NEVER the body) to ntfy.sh, which sends the APNs
+# wake-up; the iOS app then fetches the real message body from HERE. Free bridge, but
+# rate-limited: set upstream-access-token to a (free) ntfy.sh account to raise the poll
+# limit under bulk load. Trade-off: topic names (which embed the personHash) + timing
+# leak to ntfy.sh; message bodies do not. Android/desktop/web never touch ntfy.sh.
+upstream-base-url: "https://ntfy.sh"
+# upstream-access-token: "<ntfy.sh account token>"   # set in prod via env (NTFY_UPSTREAM_ACCESS_TOKEN); do not commit the token
