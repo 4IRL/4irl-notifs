@@ -16,6 +16,7 @@ import (
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/httpapi"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfypublish"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personsvc"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/provisioning"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/secretenv"
@@ -79,10 +80,20 @@ func main() {
 		"auth_configured", accessClientID != "" && accessClientSecret != "",
 	)
 
+	// The ntfy HTTP publisher powers the admin "send test notification" flow —
+	// the only path that makes a real HTTP call to the ntfy server (everything
+	// else shells the ntfy CLI against the shared auth DB). An empty
+	// NTFY_PUBLISH_URL leaves publisher.Configured() false, so TestNotify
+	// returns 500 while the rest of the API keeps working.
+	ntfyPublishURL := os.Getenv("NTFY_PUBLISH_URL")
+	publisher := ntfypublish.NewClient(ntfypublish.Config{BaseURL: ntfyPublishURL})
+	logger.Info("ntfy publisher", "configured", publisher.Configured(), "url", ntfyPublishURL)
+
 	service := provisioning.NewService(provisioning.ServiceConfig{
 		Client:           ntfyClient,
 		GeneratePassword: provisioning.GenerateRandomPassword,
 		PersonClient:     personClient,
+		Publisher:        publisher,
 		Logger:           logger,
 	})
 	server := httpapi.NewServer(httpapi.ServerConfig{Service: service, Logger: logger})
