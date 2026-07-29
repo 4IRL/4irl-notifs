@@ -35,6 +35,9 @@ jobs:
       # auth unset — fails closed, swallowed — so core provisioning is unaffected).
       PERSON_SERVICE_ACCESS_CLIENT_ID: ${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_ID }}
       PERSON_SERVICE_ACCESS_CLIENT_SECRET: ${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_SECRET }}
+      # ntfy iOS-bridge upstream poll token (optional; empty leaves the upstream bridge on
+      # ntfy.sh's free/anonymous rate limit — fails open, iOS push still works).
+      NTFY_UPSTREAM_ACCESS_TOKEN: ${{ secrets.NTFY_UPSTREAM_ACCESS_TOKEN }}
 
   # Admin UI (Cloudflare Pages) is independent of the Docker image + VPS stack, so it runs in
   # parallel with build-prod/deploy-prod (no `needs`), gated by the same merged-to-main guard.

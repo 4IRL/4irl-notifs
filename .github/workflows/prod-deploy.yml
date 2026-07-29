@@ -26,6 +26,14 @@ on:
         required: false
       PERSON_SERVICE_ACCESS_CLIENT_SECRET:
         required: false
+      # ntfy iOS-bridge upstream poll rate-limit token for ntfy.sh. Optional: when the repo
+      # secret is unset it resolves to empty, leaving the upstream bridge on ntfy.sh's
+      # free/anonymous per-IP poll limit (fails open — iOS push still works, just rate-limited
+      # under bulk/periodic sends). Unlike the PERSON_SERVICE_* Docker secrets above (delivered
+      # as /run/secrets/*_FILE), ntfy needs this as a real ENV VAR, so it is exported into the
+      # deploy shell just before `docker compose up` rather than written to a secrets file.
+      NTFY_UPSTREAM_ACCESS_TOKEN:
+        required: false
 
 jobs:
   ProdDeploy:
@@ -78,12 +86,15 @@ jobs:
           scp -T -q -o StrictHostKeyChecking=no ntfy/server.yml ${{ secrets.PROD_SSH_HOST }}:/home/4irl-notifs/ntfy/
 
       # Pull updated images, recreate only what changed, run as daemon, and prune old images.
-      # Secret handling mirrors urls4irl: the only runtime secrets are the Wave-2
-      # person-service Access Service-Token credentials, delivered as Docker Compose secrets.
-      # The step below writes ./secrets/* from the GitHub Actions secrets of the same name
-      # just before `up` (so compose can mount them at /run/secrets), then `rm -rf ./secrets/`
-      # immediately after — no plaintext secret persists on the host, and none enters the
-      # container environment. Non-secret hostnames (NTFY_BASE_URL, PERSON_SERVICE_URL) stay
+      # Secret handling mirrors urls4irl: the person-service Access Service-Token credentials
+      # are delivered as Docker Compose secrets. The step below writes ./secrets/* from the
+      # GitHub Actions secrets of the same name just before `up` (so compose can mount them at
+      # /run/secrets), then `rm -rf ./secrets/` immediately after — no plaintext secret persists
+      # on the host, and none enters the container environment. The ntfy iOS-bridge upstream
+      # token (NTFY_UPSTREAM_ACCESS_TOKEN) is the exception: ntfy reads it as a real ENV VAR,
+      # not a /run/secrets/*_FILE, so it is `export`ed into this deploy shell just before `up`
+      # (empty when the repo secret is unset — fails open to the free bridge; never echoed, and
+      # not written to disk). Non-secret hostnames (NTFY_BASE_URL, PERSON_SERVICE_URL) stay
       # baked into the compose file's defaults.
       #
       # `up -d` WITHOUT --force-recreate is deliberate: compose diffs image digest + compose
@@ -106,6 +117,7 @@ jobs:
           echo "${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_SECRET }}" > ./secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET;
 
           docker compose -f docker-compose.prod.yml pull;
+          export NTFY_UPSTREAM_ACCESS_TOKEN="${{ secrets.NTFY_UPSTREAM_ACCESS_TOKEN }}";
           docker compose -f docker-compose.prod.yml up -d --remove-orphans;
           docker image prune -f;
 

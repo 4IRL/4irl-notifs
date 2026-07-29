@@ -52,9 +52,10 @@ services:
       # must be a real env var on this container — not a /run/secrets/*_FILE like the
       # provisioning-api secrets below (ntfy does not read the *_FILE convention for this
       # setting). The token is secret, so no value is baked in: it defaults to empty (the
-      # free unauthenticated bridge — fails open to the lower poll limit) and is set
-      # out-of-band by the operator (a GitHub Actions secret exported into the deploy shell,
-      # or a VPS-side .env beside this compose file). Never commit the real token value.
+      # free unauthenticated bridge — fails open to the lower poll limit). prod-deploy.yml
+      # `export`s it from the `NTFY_UPSTREAM_ACCESS_TOKEN` GitHub Actions repo secret into the
+      # deploy shell just before `docker compose up`, so set that repo secret to activate the
+      # higher poll ceiling (leave it unset for the free bridge). Never commit the real value.
       - NTFY_UPSTREAM_ACCESS_TOKEN=${NTFY_UPSTREAM_ACCESS_TOKEN:-}
     healthcheck:
       test:

@@ -225,8 +225,9 @@ ntfy iOS app is signed with **ntfy.sh's** APNs credentials — so a self-hosted 
 directly. `ntfy/server.yml` sets `upstream-base-url: https://ntfy.sh`: on each publish this server
 forwards a minimal **poll request** (topic name + message ID, never the body) to ntfy.sh, which sends
 the APNs wake-up; the iOS app then fetches the real body **from this server**. Free ntfy.sh bridge but
-rate-limited — set `upstream-access-token` (a free ntfy.sh account, via `NTFY_UPSTREAM_ACCESS_TOKEN`)
-to raise the poll ceiling under bulk load. Privacy trade-off (accepted): topic names — which embed the
+rate-limited — set the `NTFY_UPSTREAM_ACCESS_TOKEN` GitHub Actions repo secret (a free ntfy.sh account
+token; `prod-deploy.yml` exports it into the deploy shell as ntfy's `upstream-access-token`) to raise
+the poll ceiling under bulk load. Privacy trade-off (accepted): topic names — which embed the
 `person_hash` — plus timing reach ntfy.sh; message bodies never do.
 
 **iOS device setup — exact match or silent failure.** The ntfy iOS app's **Default Server** (or the
