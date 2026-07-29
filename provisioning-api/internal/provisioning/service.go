@@ -10,12 +10,14 @@ package provisioning
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/validation"
 )
 
 // NtfyClient is the subset of the ntfy CLI client the service depends on.
@@ -43,6 +45,15 @@ type PersonServiceClient interface {
 	DeleteApp(ctx context.Context, appID string) error
 }
 
+// NotificationPublisher is the subset of the outbound ntfy HTTP publisher
+// (internal/ntfypublish) that TestNotify depends on: a Configured() gate and a
+// Publish that POSTs a message to a concrete topic with a bearer token,
+// returning the ntfy message id.
+type NotificationPublisher interface {
+	Configured() bool
+	Publish(ctx context.Context, topic string, token string, message string) (string, error)
+}
+
 // ServiceConfig configures a Service.
 type ServiceConfig struct {
 	Client NtfyClient
@@ -53,6 +64,10 @@ type ServiceConfig struct {
 	// nil (or PersonClient.Configured() is false), Provision skips the
 	// dual-write entirely.
 	PersonClient PersonServiceClient
+	// Publisher is the optional outbound ntfy HTTP publisher. When nil (or
+	// Publisher.Configured() is false), TestNotify returns an error rather
+	// than attempting a publish.
+	Publisher NotificationPublisher
 	// Logger receives best-effort dual-write failure warnings. Optional;
 	// defaults to a discarding logger.
 	Logger *slog.Logger
@@ -63,6 +78,7 @@ type Service struct {
 	client           NtfyClient
 	generatePassword func() (string, error)
 	personClient     PersonServiceClient
+	publisher        NotificationPublisher
 	logger           *slog.Logger
 }
 
@@ -76,6 +92,7 @@ func NewService(config ServiceConfig) *Service {
 		client:           config.Client,
 		generatePassword: config.GeneratePassword,
 		personClient:     config.PersonClient,
+		publisher:        config.Publisher,
 		logger:           logger,
 	}
 }
@@ -277,6 +294,110 @@ func (service *Service) ProvisionApp(ctx context.Context, request ProvisionAppRe
 	}, nil
 }
 
+// TestNotifyRequest is the admin "send test notification" request: dispatch a
+// message on a channel to one or more recipients of an app. Recipients are
+// either bare person-hashes or emails (resolved per-recipient). The httpapi
+// layer owns the wire shape, so these fields carry no json tags.
+type TestNotifyRequest struct {
+	AppID      string
+	Recipients []string
+	Channel    string
+	Message    string
+}
+
+// RecipientResult is the per-recipient outcome of a TestNotify dispatch. OK
+// reports whether the publish to that recipient's topic succeeded; a malformed
+// recipient or a failed publish sets OK false with a populated Error, without
+// failing the rest of the batch.
+type RecipientResult struct {
+	Recipient string
+	UserID    string
+	Topic     string
+	OK        bool
+	MessageID string
+	Error     string
+}
+
+// TestNotifyResult wraps the per-recipient results of a TestNotify dispatch.
+type TestNotifyResult struct {
+	Results []RecipientResult
+}
+
+// TestNotify mints an ephemeral, write-only publisher token (idempotently
+// ensuring the app's publisher identity first, exactly like ProvisionApp), then
+// publishes the message to each recipient's concrete topic
+// ("{app_id}-{personHash}-{channel}") over HTTP, then revokes the token in an
+// always-run deferred cleanup. The ephemeral token is labeled distinctly
+// (TestNotifyTokenLabel) so ProvisionApp's publisher-token rotate never sweeps
+// it. Results are reported per recipient: a malformed recipient or a failed
+// publish is recorded as OK false without failing the whole batch (mint/publish
+// order: mint once, publish to all, revoke once). A revoke failure is logged,
+// never fatal.
+func (service *Service) TestNotify(ctx context.Context, request TestNotifyRequest) (TestNotifyResult, error) {
+	if service.publisher == nil || !service.publisher.Configured() {
+		return TestNotifyResult{}, fmt.Errorf("ntfy publisher not configured")
+	}
+
+	publisherUserID := ntfycli.PublisherUserID(request.AppID)
+	topicPattern := ntfycli.PublisherTopicPattern(request.AppID)
+
+	password, passwordErr := service.generatePassword()
+	if passwordErr != nil {
+		return TestNotifyResult{}, passwordErr
+	}
+	if addUserErr := service.client.AddUser(ctx, publisherUserID, password); addUserErr != nil && !errors.Is(addUserErr, ntfycli.ErrAlreadyExists) {
+		return TestNotifyResult{}, addUserErr
+	}
+	if grantErr := service.client.GrantAccess(ctx, publisherUserID, topicPattern, ntfycli.PermissionWriteOnly); grantErr != nil {
+		return TestNotifyResult{}, grantErr
+	}
+
+	token, tokenErr := service.client.AddToken(ctx, publisherUserID, ntfycli.TestNotifyTokenLabel)
+	if tokenErr != nil {
+		return TestNotifyResult{}, tokenErr
+	}
+	// Revoke the ephemeral token unconditionally once the dispatch returns, even
+	// if a publish errors or panics. A revoke failure is logged, not fatal — the
+	// notifications were already sent and a stale write-only token is low-risk.
+	defer func() {
+		if removeErr := service.client.RemoveToken(ctx, publisherUserID, token); removeErr != nil {
+			service.logger.Warn("test-notify token revoke failed", "user", publisherUserID, "err", removeErr)
+		}
+	}()
+
+	results := make([]RecipientResult, 0, len(request.Recipients))
+	for _, recipient := range request.Recipients {
+		result := RecipientResult{Recipient: recipient}
+
+		var personHash string
+		switch {
+		case personHashPattern.MatchString(recipient):
+			personHash = recipient
+		case validation.IsValidEmail(recipient):
+			personHash = personhash.Hash(recipient)
+		default:
+			result.Error = "invalid recipient"
+			results = append(results, result)
+			continue
+		}
+
+		result.UserID = "u_" + personHash
+		topic := ntfycli.PersonChannelTopic(request.AppID, personHash, request.Channel)
+		result.Topic = topic
+
+		messageID, pubErr := service.publisher.Publish(ctx, topic, token, request.Message)
+		if pubErr != nil {
+			result.Error = pubErr.Error()
+		} else {
+			result.OK = true
+			result.MessageID = messageID
+		}
+		results = append(results, result)
+	}
+
+	return TestNotifyResult{Results: results}, nil
+}
+
 // UserSummary is the admin-facing view of one ntfy user: the derived list of
 // apps the user is provisioned into, plus the raw topic patterns for
 // transparency.
@@ -298,6 +419,11 @@ const broadcastSuffix = "-broadcast"
 // scopedTopicPattern matches a per-person scoped topic pattern,
 // "{app_id}-{personHash}-*", capturing the app_id in group 1.
 var scopedTopicPattern = regexp.MustCompile(`^([a-z0-9_]+)-([a-z2-7]{16})-\*$`)
+
+// personHashPattern matches a bare person-hash (the base32(sha256(email))[:16]
+// shape, [a-z2-7]{16}). TestNotify uses it to tell a person-hash recipient
+// apart from an email recipient during per-recipient resolution.
+var personHashPattern = regexp.MustCompile(`^[a-z2-7]{16}$`)
 
 // appFromTopicPattern derives the app_id a topic pattern grants access
 // into, and whether the pattern is a recognized provisioning grant at all.
