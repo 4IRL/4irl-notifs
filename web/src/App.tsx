@@ -7,6 +7,7 @@ import type {
   ProvisionAppResult,
   ProvisionParams,
   ProvisionResult,
+  TestNotifyParams,
   UserSummary,
 } from './api/client';
 import type {
@@ -17,6 +18,7 @@ import type {
   UpdateAppParams,
 } from './api/personClient';
 import { ProvisionForm } from './components/ProvisionForm';
+import { SendTestNotification } from './components/SendTestNotification';
 import { UsersTable } from './components/UsersTable';
 import { PeopleTable } from './components/PeopleTable';
 import { AddAppForm } from './components/AddAppForm';
@@ -248,6 +250,14 @@ function App({ client, personClient, appsEnabled = false }: AppProps) {
     [personClient, refreshApps],
   );
 
+  // Thin pass-through to the API client. SendTestNotification owns its own
+  // selection/send/results state (mirroring ProvisionForm), so this never
+  // touches the shared `error` banner or refreshes any list.
+  const handleTestNotify = useCallback(
+    (params: TestNotifyParams) => client.testNotify(params),
+    [client],
+  );
+
   // Re-mint / rotate the publisher token. Returns the reveal-once result for
   // the edit form; nothing in the tables changes, so no refresh is needed.
   const handleRemintToken = useCallback(
@@ -291,6 +301,12 @@ function App({ client, personClient, appsEnabled = false }: AppProps) {
           <ProvisionForm onProvision={handleProvision} apps={apps} />
           {appsSectionEnabled && <AddAppForm onAddApp={handleAddApp} />}
         </div>
+        <SendTestNotification
+          users={users}
+          loading={loading}
+          emailByPersonHash={emailByPersonHash}
+          onSendTest={handleTestNotify}
+        />
         <UsersTable
           users={users}
           loading={loading}

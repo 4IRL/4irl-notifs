@@ -514,4 +514,66 @@ describe('App', () => {
     }
     expect(within(row).getByText('1')).toBeInTheDocument();
   });
+
+  it('sends a test notification: picks the app, selects a user, and renders the results panel', async () => {
+    const testNotify = vi.fn().mockResolvedValue({
+      results: [
+        {
+          recipient: '76gzqgp4byjl6dje',
+          userId: 'u_76gzqgp4byjl6dje',
+          topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+          ok: true,
+          messageId: 'VkT2p9wQ',
+          error: '',
+        },
+      ],
+    });
+    const client = buildFakeClient({
+      listUsers: vi.fn().mockResolvedValue([
+        {
+          userId: 'u_76gzqgp4byjl6dje',
+          apps: ['urls4irl'],
+          topicPatterns: ['urls4irl-76gzqgp4byjl6dje-*'],
+        },
+      ]),
+      testNotify,
+    });
+    render(<App client={client} />);
+
+    // Scope every query to the Send-test section so the mirrored userId text in
+    // the Users table below can never satisfy a locator by accident.
+    const section = (await screen.findByRole('heading', { name: strings.sendTestHeading })).closest(
+      'section',
+    );
+    if (section === null) {
+      throw new Error('send-test section not found');
+    }
+    const sendTest = within(section);
+
+    // targetApp defaults to the only sorted option (urls4irl) once users load.
+    await waitFor(() =>
+      expect((sendTest.getByLabelText(strings.sendTestTargetAppLabel) as HTMLSelectElement).value).toBe(
+        'urls4irl',
+      ),
+    );
+
+    await userEvent.click(
+      sendTest.getByRole('checkbox', {
+        name: strings.sendTestSelectAria({ who: 'u_76gzqgp4byjl6dje' }),
+      }),
+    );
+    await userEvent.click(sendTest.getByRole('button', { name: strings.sendTestAction }));
+
+    await waitFor(() =>
+      expect(testNotify).toHaveBeenCalledWith({
+        appId: 'urls4irl',
+        recipients: ['76gzqgp4byjl6dje'],
+        channel: strings.sendTestDefaultChannel,
+        message: strings.sendTestDefaultMessage,
+      }),
+    );
+
+    const results = await sendTest.findByRole('status');
+    expect(within(results).getByText(strings.sendTestDelivered)).toBeInTheDocument();
+  });
 });
