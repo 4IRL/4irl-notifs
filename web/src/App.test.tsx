@@ -552,9 +552,9 @@ describe('App', () => {
 
     // targetApp defaults to the only sorted option (urls4irl) once users load.
     await waitFor(() =>
-      expect((sendTest.getByLabelText(strings.sendTestTargetAppLabel) as HTMLSelectElement).value).toBe(
-        'urls4irl',
-      ),
+      expect(
+        (sendTest.getByLabelText(strings.sendTestTargetAppLabel) as HTMLSelectElement).value,
+      ).toBe('urls4irl'),
     );
 
     await userEvent.click(
