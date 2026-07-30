@@ -405,11 +405,13 @@ describe('SendTestNotification', () => {
     expect(screen.getByText(`u_${carolHash}`)).toBeInTheDocument();
   });
 
-  it('falls back to the raw userId in the results panel when the personHash has no email mapping', async () => {
+  it('falls back to the recipient personHash in the results panel when the userId has no email mapping', async () => {
     const person = userEvent.setup();
     // Interaction uses alice (mapped); the returned result carries an unmapped
-    // personHash, so the results row must fall back to the raw `result.userId`
-    // (exercises the `emailByPersonHash.get(result.userId.slice(2)) ?? result.userId` fallback).
+    // userId whose personHash is absent from emailByPersonHash, so the results
+    // row must fall back through `result.recipient` (the raw personHash) rather
+    // than render blank (exercises the
+    // `emailByPersonHash.get(result.userId.slice(2)) ?? result.recipient` fallback).
     const onSendTest = vi.fn().mockResolvedValue({
       results: [
         {
@@ -430,6 +432,36 @@ describe('SendTestNotification', () => {
     await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
 
     const status = await screen.findByRole('status');
-    expect(within(status).getByText(`u_${carolHash}`)).toBeInTheDocument();
+    expect(within(status).getByText(carolHash)).toBeInTheDocument();
+  });
+
+  it('renders the recipient in the results panel for an invalid recipient with an empty userId', async () => {
+    const person = userEvent.setup();
+    // An invalid recipient comes back with userId: '' (no ntfy user resolved),
+    // so ''.slice(2) misses the email map. The panel must fall back through
+    // result.recipient rather than render blank (exercises the
+    // `?? result.recipient` tier of the results-panel display-name fallback).
+    const invalidRecipient = 'not-a-real-hash';
+    const onSendTest = vi.fn().mockResolvedValue({
+      results: [
+        {
+          recipient: invalidRecipient,
+          userId: '',
+          topic: '',
+          ok: false,
+          messageId: '',
+          error: 'invalid recipient',
+        },
+      ],
+    });
+    renderSection({ onSendTest });
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+
+    const status = await screen.findByRole('status');
+    expect(within(status).getByText(invalidRecipient)).toBeInTheDocument();
   });
 });

@@ -283,7 +283,8 @@ export function SendTestNotification({
             })}
           </p>
           {results.map((result) => {
-            const who = emailByPersonHash.get(result.userId.slice(2)) ?? result.userId;
+            const who =
+              emailByPersonHash.get(result.userId.slice(2)) ?? result.recipient ?? result.userId;
             return (
               <div key={result.recipient} className="send-test__result-row">
                 <span
