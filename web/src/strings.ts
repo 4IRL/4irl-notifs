@@ -80,6 +80,7 @@ export const strings = {
   sendTestColumnUser: 'User',
   sendTestColumnApp: 'App',
   sendTestColumnTopic: 'Topic',
+  sendTestSelectColumnAria: 'Select',
   sendTestInvalidChannel: 'Channel must be lowercase letters, numbers, or underscores.',
   sendTestSelectedCount: ({ count }: SelectedCountParams): string => `${count} selected`,
   sendTestSelectAria: ({ who }: SelectAriaParams): string => `Select ${who}`,

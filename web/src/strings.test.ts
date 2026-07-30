@@ -50,6 +50,7 @@ describe('strings module', () => {
     expect(strings.sendTestColumnUser).toBe('User');
     expect(strings.sendTestColumnApp).toBe('App');
     expect(strings.sendTestColumnTopic).toBe('Topic');
+    expect(strings.sendTestSelectColumnAria).toBe('Select');
     expect(strings.sendTestInvalidChannel).toBe(
       'Channel must be lowercase letters, numbers, or underscores.',
     );

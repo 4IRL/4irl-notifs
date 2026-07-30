@@ -214,7 +214,11 @@ export function SendTestNotification({
               <table className="send-test__table">
                 <thead>
                   <tr>
-                    <th scope="col" className="send-test__th-select" aria-label="Select" />
+                    <th
+                      scope="col"
+                      className="send-test__th-select"
+                      aria-label={strings.sendTestSelectColumnAria}
+                    />
                     <th scope="col">{strings.sendTestColumnUser}</th>
                     <th scope="col">{strings.sendTestColumnApp}</th>
                     <th scope="col">{strings.sendTestColumnTopic}</th>
