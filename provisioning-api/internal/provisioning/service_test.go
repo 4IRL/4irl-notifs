@@ -1019,6 +1019,39 @@ func TestUserHasAppGrant(t *testing.T) {
 	}
 }
 
+func TestPersonHashPattern(t *testing.T) {
+	// personHashPattern is `^[a-z2-7]{16}$` — the base32(sha256(email))[:16]
+	// shape TestNotify uses to tell a bare person-hash recipient apart from an
+	// email. Valid alphabet is [a-z] plus digits 2-7; digits 0/1/8/9 are
+	// excluded by base32.
+	testCases := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{name: "exact 16 valid", input: "76gzqgp4byjl6dje", expected: true},
+		{name: "all letters valid", input: "abcdefghijklmnop", expected: true},
+		{name: "valid digits 2-7", input: "abcdefghij234567", expected: true},
+		{name: "empty", input: "", expected: false},
+		{name: "too short 15", input: "76gzqgp4byjl6dj", expected: false},
+		{name: "too long 17", input: "76gzqgp4byjl6djee", expected: false},
+		{name: "trailing newline", input: "76gzqgp4byjl6dje\n", expected: false},
+		{name: "uppercase", input: "76GZQGP4BYJL6DJE", expected: false},
+		{name: "disallowed digit 0", input: "76gzqgp4byjl6dj0", expected: false},
+		{name: "disallowed digit 1", input: "76gzqgp4byjl6dj1", expected: false},
+		{name: "disallowed digit 8", input: "76gzqgp4byjl6dj8", expected: false},
+		{name: "disallowed digit 9", input: "76gzqgp4byjl6dj9", expected: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := personHashPattern.MatchString(testCase.input); got != testCase.expected {
+				t.Fatalf("personHashPattern.MatchString(%q) = %v, expected %v", testCase.input, got, testCase.expected)
+			}
+		})
+	}
+}
+
 // fakePublisher records Publish invocations and plays back scripted behavior
 // for the NotificationPublisher the service depends on. When recordTo is set,
 // invocations are appended to that shared slice (used to assert publish
