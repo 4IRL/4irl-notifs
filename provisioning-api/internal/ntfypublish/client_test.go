@@ -115,6 +115,29 @@ func TestPublishNonSuccessStatusReturnsErrorMentioningStatus(t *testing.T) {
 	}
 }
 
+func TestPublishMalformedJSONResponseReturnsDecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.WriteHeader(http.StatusOK)
+		if _, writeErr := responseWriter.Write([]byte("not json at all")); writeErr != nil {
+			t.Fatalf("failed to write response body: %v", writeErr)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{BaseURL: server.URL})
+
+	messageID, err := client.Publish(context.Background(), "urls4irl-76gzqgp4byjl6dje-alerts", "tk_ephemeral", "hello")
+	if err == nil {
+		t.Fatal("expected a non-nil error for a malformed JSON response")
+	}
+	if !strings.Contains(err.Error(), "decode response") {
+		t.Fatalf("error %q does not mention %q", err.Error(), "decode response")
+	}
+	if messageID != "" {
+		t.Fatalf("messageID = %q, expected empty on decode failure", messageID)
+	}
+}
+
 func TestConfiguredReflectsWhetherBaseURLIsSet(t *testing.T) {
 	if (NewClient(Config{})).Configured() {
 		t.Fatal("Configured() must be false for an empty BaseURL")
