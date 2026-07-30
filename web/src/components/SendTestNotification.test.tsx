@@ -14,6 +14,8 @@ afterEach(() => {
 const aliceHash = '76gzqgp4byjl6dje';
 const bobHash = '4x2k9m7pqrs1twvz';
 const daveHash = '9df3hh0aa5ee2bbc';
+// Deliberately absent from emailByPersonHash to exercise the raw-identifier fallback.
+const carolHash = 'c4r0lnoemailhash';
 const aliceEmail = 'alice@example.com';
 const bobEmail = 'bob@example.com';
 const daveEmail = 'dave@example.com';
@@ -390,5 +392,44 @@ describe('SendTestNotification', () => {
 
     expect(screen.getByText(strings.sendTestNoUsersForApp)).toBeInTheDocument();
     expect(screen.queryByText(strings.sendTestSelectHint)).not.toBeInTheDocument();
+  });
+
+  it('falls back to the raw userId in a scoped row when the personHash has no email mapping', () => {
+    // A subscriber on urls4irl whose personHash is absent from emailByPersonHash;
+    // the row must display the raw `u_`-prefixed identifier rather than blank
+    // (exercises the `emailByPersonHash.get(personHash) ?? userId` fallback).
+    renderSection({
+      users: [user(`u_${carolHash}`, ['urls4irl'])],
+    });
+
+    expect(screen.getByText(`u_${carolHash}`)).toBeInTheDocument();
+  });
+
+  it('falls back to the raw userId in the results panel when the personHash has no email mapping', async () => {
+    const person = userEvent.setup();
+    // Interaction uses alice (mapped); the returned result carries an unmapped
+    // personHash, so the results row must fall back to the raw `result.userId`
+    // (exercises the `emailByPersonHash.get(result.userId.slice(2)) ?? result.userId` fallback).
+    const onSendTest = vi.fn().mockResolvedValue({
+      results: [
+        {
+          recipient: carolHash,
+          userId: `u_${carolHash}`,
+          topic: `urls4irl-${carolHash}-alerts`,
+          ok: true,
+          messageId: 'VkT2p9wQ',
+          error: '',
+        },
+      ],
+    });
+    renderSection({ onSendTest });
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+
+    const status = await screen.findByRole('status');
+    expect(within(status).getByText(`u_${carolHash}`)).toBeInTheDocument();
   });
 });
