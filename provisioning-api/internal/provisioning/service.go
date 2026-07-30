@@ -391,9 +391,9 @@ func (service *Service) TestNotify(ctx context.Context, request TestNotifyReques
 		topic := ntfycli.PersonChannelTopic(request.AppID, personHash, request.Channel)
 		result.Topic = topic
 
-		messageID, pubErr := service.publisher.Publish(ctx, topic, token, request.Message)
-		if pubErr != nil {
-			result.Error = pubErr.Error()
+		messageID, publishErr := service.publisher.Publish(ctx, topic, token, request.Message)
+		if publishErr != nil {
+			result.Error = publishErr.Error()
 		} else {
 			result.OK = true
 			result.MessageID = messageID
