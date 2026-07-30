@@ -60,6 +60,9 @@ describe('strings module', () => {
     expect(strings.sendTestResultsSummary({ sent: 2, total: 3, failed: 1 })).toBe(
       'Sent to 2 of 3 users · 1 failed',
     );
+    expect(
+      strings.sendTestResultDetail({ messageId: 'VkT2p9wQ', topic: 'urls4irl-hash-alerts' }),
+    ).toBe('id VkT2p9wQ · urls4irl-hash-alerts');
   });
 
   it('exposes the people section heading, status copy, and column headers', () => {

@@ -25,6 +25,12 @@ interface ResultsSummaryParams {
   failed: number;
 }
 
+/** Parameters for a delivered send-test recipient's mono detail line. */
+interface ResultDetailParams {
+  messageId: string;
+  topic: string;
+}
+
 export const strings = {
   appTitle: '4IRL Notifications Admin',
   headerBadge: 'ntfy hub',
@@ -79,6 +85,8 @@ export const strings = {
   sendTestSelectAria: ({ who }: SelectAriaParams): string => `Select ${who}`,
   sendTestResultsSummary: ({ sent, total, failed }: ResultsSummaryParams): string =>
     `Sent to ${sent} of ${total} users · ${failed} failed`,
+  sendTestResultDetail: ({ messageId, topic }: ResultDetailParams): string =>
+    `id ${messageId} · ${topic}`,
 
   peopleHeading: 'People',
   peopleLoading: 'Loading people…',

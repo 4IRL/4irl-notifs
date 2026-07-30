@@ -1,0 +1,271 @@
+.send-test {
+  margin-top: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: var(--space-4);
+}
+
+.send-test h2 {
+  color: var(--text-h);
+  margin-top: 0;
+  margin-bottom: var(--space-3);
+}
+
+/* Picker row: target-app select + channel + message. Wraps instead of
+   overflowing on narrow viewports (the app has no @media queries). A tighter
+   gap than App.css's `.app__forms` since these controls sit closer together. */
+.send-test__picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.send-test__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.send-test__field--app {
+  min-width: 16rem;
+}
+
+.send-test__field--channel {
+  width: 10rem;
+}
+
+.send-test__field--message {
+  flex: 1 1 20rem;
+}
+
+.send-test label {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+/* One shared height across the select + both inputs: identical box model, so
+   the picker-row controls line up exactly. Message stays a single-line input
+   (never a taller textarea) so it matches the select/channel height. */
+.send-test__control {
+  box-sizing: border-box;
+  height: 2.5rem;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--text-h);
+  padding: var(--space-2);
+  font-size: 1rem;
+  line-height: 1.2;
+  font-family: var(--sans);
+}
+
+.send-test__control:focus,
+.send-test input:focus,
+.send-test select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.send-test__status {
+  color: var(--text);
+}
+
+/* Columns can be wide (topic previews) on narrow screens; scroll the table
+   inside its own container rather than the page body. */
+.send-test__table-wrap {
+  overflow-x: auto;
+}
+
+.send-test__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.send-test__table th,
+.send-test__table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+}
+
+.send-test__table th {
+  color: var(--text);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.send-test__table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.send-test__row--selected {
+  background: var(--accent-bg);
+}
+
+.send-test__th-select,
+.send-test__td-select {
+  width: 2.5rem;
+  text-align: center;
+  /* Extra clickable padding widens the tap target without enlarging the
+     checkbox itself (the cell width is already reserved at 2.5rem). */
+  padding-left: var(--space-2);
+  padding-right: var(--space-2);
+}
+
+.send-test__td-select input[type='checkbox'] {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.send-test__td-select input[type='checkbox']:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.send-test__user {
+  color: var(--text-h);
+}
+
+.send-test__chip {
+  display: inline-block;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 0.8rem;
+}
+
+.send-test__topic {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+/* Bulk action bar: live count on the left, orange Send on the right. */
+.send-test__bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.send-test__count {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.send-test__spacer {
+  flex: 1 1 auto;
+}
+
+.send-test__submit {
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  padding: var(--space-2) var(--space-3);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.send-test__submit:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.send-test__submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.send-test__submit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.send-test__hint {
+  color: var(--text);
+  font-size: 0.85rem;
+  margin: var(--space-2) 0 0;
+}
+
+.send-test__error {
+  border: 1px solid var(--danger);
+  background: var(--danger-bg);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  color: var(--danger);
+  margin: var(--space-3) 0 0;
+}
+
+/* Per-recipient results panel. */
+.send-test__results {
+  margin-top: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  background: var(--input-bg);
+}
+
+.send-test__summary {
+  color: var(--text-h);
+  font-weight: 600;
+  margin: 0 0 var(--space-3);
+}
+
+.send-test__result-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.send-test__result-row:last-child {
+  border-bottom: none;
+}
+
+.send-test__pill {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.send-test__pill--ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border: 1px solid var(--ok);
+}
+
+.send-test__pill--fail {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+}
+
+.send-test__who {
+  color: var(--text-h);
+}
+
+.send-test__detail {
+  color: var(--text);
+  font-size: 0.85rem;
+  font-family: var(--mono);
+}
