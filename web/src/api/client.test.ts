@@ -170,6 +170,91 @@ describe('api client', () => {
     expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl' });
   });
 
+  it('testNotify POSTs the snake_case body and maps the results to camelCase', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        status: 200,
+        body: {
+          results: [
+            {
+              recipient: '76gzqgp4byjl6dje',
+              user_id: 'u_76gzqgp4byjl6dje',
+              topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+              ok: true,
+              message_id: 'VkT2p9wQ',
+              error: '',
+            },
+            {
+              recipient: 'alice@example.com',
+              user_id: 'u_76gzqgp4byjl6dje',
+              topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+              ok: false,
+              message_id: '',
+              error: 'ntfy publish failed (503)',
+            },
+          ],
+        },
+      }),
+    );
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    const result = await client.testNotify({
+      appId: 'urls4irl',
+      recipients: ['76gzqgp4byjl6dje', 'alice@example.com'],
+      channel: 'alerts',
+      message: 'Test notification from 4IRL admin',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe('https://api.test/v1/test-notify');
+    expect(calledInit).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(calledInit.body as string)).toEqual({
+      app_id: 'urls4irl',
+      recipients: ['76gzqgp4byjl6dje', 'alice@example.com'],
+      channel: 'alerts',
+      message: 'Test notification from 4IRL admin',
+    });
+    expect(result).toEqual({
+      results: [
+        {
+          recipient: '76gzqgp4byjl6dje',
+          userId: 'u_76gzqgp4byjl6dje',
+          topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+          ok: true,
+          messageId: 'VkT2p9wQ',
+          error: '',
+        },
+        {
+          recipient: 'alice@example.com',
+          userId: 'u_76gzqgp4byjl6dje',
+          topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+          ok: false,
+          messageId: '',
+          error: 'ntfy publish failed (503)',
+        },
+      ],
+    });
+  });
+
+  it('testNotify throws ApiError carrying the server error message on 400', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 400, body: { error: 'invalid channel' } }));
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    await expect(
+      client.testNotify({
+        appId: 'urls4irl',
+        recipients: ['76gzqgp4byjl6dje'],
+        channel: 'BAD',
+        message: 'hi',
+      }),
+    ).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 400,
+      message: 'invalid channel',
+    });
+  });
+
   it('throws ApiError carrying the server error message on non-2xx', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 400, body: { error: 'invalid app_id' } }));
     const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });

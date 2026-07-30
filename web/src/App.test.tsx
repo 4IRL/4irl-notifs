@@ -29,6 +29,7 @@ function buildFakeClient(overrides: Partial<ApiClient> = {}): ApiClient {
       token: 'tk_publisher',
     }),
     deprovisionApp: vi.fn().mockResolvedValue(undefined),
+    testNotify: vi.fn().mockResolvedValue({ results: [] }),
     ...overrides,
   };
 }

@@ -59,6 +59,29 @@ export interface AppIdParam {
   appId: string;
 }
 
+/** Parameters for dispatching a test notification to selected recipients. */
+export interface TestNotifyParams {
+  appId: string;
+  recipients: string[];
+  channel: string;
+  message: string;
+}
+
+/** The per-recipient outcome of a test-notify dispatch. */
+export interface TestNotifyRecipientResult {
+  recipient: string;
+  userId: string;
+  topic: string;
+  ok: boolean;
+  messageId: string;
+  error: string;
+}
+
+/** The result of a test-notify dispatch: one entry per recipient. */
+export interface TestNotifyResult {
+  results: TestNotifyRecipientResult[];
+}
+
 /** Configuration for createApiClient. */
 export interface ApiClientConfig {
   baseUrl?: string;
@@ -99,6 +122,18 @@ interface ProvisionAppResponseWire {
   token: string;
 }
 
+/** Wire shape of a test-notify response (snake_case per-recipient results). */
+interface TestNotifyResponseWire {
+  results: Array<{
+    recipient: string;
+    user_id: string;
+    topic: string;
+    ok: boolean;
+    message_id: string;
+    error: string;
+  }>;
+}
+
 const DEFAULT_BASE_URL = '';
 
 /** The provisioning API surface consumed by the admin UI. */
@@ -109,6 +144,7 @@ export interface ApiClient {
   deleteUser(param: UserIdParam): Promise<void>;
   provisionApp(params: ProvisionAppParams): Promise<ProvisionAppResult>;
   deprovisionApp(param: AppIdParam): Promise<void>;
+  testNotify(params: TestNotifyParams): Promise<TestNotifyResult>;
 }
 
 /** Builds an ApiClient bound to a base URL and fetch implementation. */
@@ -204,6 +240,29 @@ export function createApiClient({
 
     async deprovisionApp({ appId }: AppIdParam): Promise<void> {
       await request({ path: '/v1/deprovision-app', method: 'POST', body: { app_id: appId } });
+    },
+
+    async testNotify({
+      appId,
+      recipients,
+      channel,
+      message,
+    }: TestNotifyParams): Promise<TestNotifyResult> {
+      const wire = (await request({
+        path: '/v1/test-notify',
+        method: 'POST',
+        body: { app_id: appId, recipients, channel, message },
+      })) as TestNotifyResponseWire;
+      return {
+        results: wire.results.map((result) => ({
+          recipient: result.recipient,
+          userId: result.user_id,
+          topic: result.topic,
+          ok: result.ok,
+          messageId: result.message_id,
+          error: result.error,
+        })),
+      };
     },
   };
 }

@@ -8,6 +8,23 @@ interface TokenRevealParams {
   appId: string;
 }
 
+/** Parameters for the send-test selected-count line. */
+interface SelectedCountParams {
+  count: number;
+}
+
+/** Parameters for a send-test row checkbox accessible name. */
+interface SelectAriaParams {
+  who: string;
+}
+
+/** Parameters for the send-test results summary line. */
+interface ResultsSummaryParams {
+  sent: number;
+  total: number;
+  failed: number;
+}
+
 export const strings = {
   appTitle: '4IRL Notifications Admin',
   headerBadge: 'ntfy hub',
@@ -39,6 +56,29 @@ export const strings = {
   columnUser: 'User',
   columnApps: 'Apps',
   columnTopicPatterns: 'Topic patterns',
+
+  // Send test notification section.
+  sendTestHeading: 'Send test notification',
+  sendTestTargetAppLabel: 'Target app',
+  sendTestChannelLabel: 'Channel',
+  sendTestMessageLabel: 'Message',
+  sendTestDefaultChannel: 'alerts',
+  sendTestDefaultMessage: 'Test notification from 4IRL admin',
+  sendTestAction: 'Send test notification',
+  sendTestSending: 'Sending…',
+  sendTestLoading: 'Loading users…',
+  sendTestSelectHint: 'Select one or more users to send a test.',
+  sendTestNoUsersForApp: 'No users provisioned for this app.',
+  sendTestDelivered: 'Delivered',
+  sendTestFailed: 'Failed',
+  sendTestColumnUser: 'User',
+  sendTestColumnApp: 'App',
+  sendTestColumnTopic: 'Topic',
+  sendTestInvalidChannel: 'Channel must be lowercase letters, numbers, or underscores.',
+  sendTestSelectedCount: ({ count }: SelectedCountParams): string => `${count} selected`,
+  sendTestSelectAria: ({ who }: SelectAriaParams): string => `Select ${who}`,
+  sendTestResultsSummary: ({ sent, total, failed }: ResultsSummaryParams): string =>
+    `Sent to ${sent} of ${total} users · ${failed} failed`,
 
   peopleHeading: 'People',
   peopleLoading: 'Loading people…',
