@@ -1172,6 +1172,69 @@ func TestTestNotifyReturnsErrorWhenTokenMintFails(t *testing.T) {
 	}
 }
 
+func TestTestNotifyPropagatesAddUserError(t *testing.T) {
+	client := &fakeNtfyClient{addUserErr: errors.New("add user failed")}
+	publisher := &fakePublisher{configuredValue: true, recordTo: &client.invocations}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	}); err == nil {
+		t.Fatal("expected AddUser error to propagate")
+	}
+	// A hard AddUser failure (not ErrAlreadyExists) aborts the mint before any publish.
+	if strings.Contains(strings.Join(client.invocations, " | "), "Publish(") {
+		t.Fatalf("no publish must happen when the publisher-identity AddUser fails: %v", client.invocations)
+	}
+}
+
+func TestTestNotifyPropagatesGrantAccessError(t *testing.T) {
+	client := &fakeNtfyClient{grantAccessErr: errors.New("grant access failed")}
+	publisher := &fakePublisher{configuredValue: true, recordTo: &client.invocations}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	}); err == nil {
+		t.Fatal("expected GrantAccess error to propagate")
+	}
+	// The write-access grant fails before the ephemeral token is minted.
+	if strings.Contains(strings.Join(client.invocations, " | "), "AddToken(") {
+		t.Fatalf("no ephemeral token must be minted when the write-access grant fails: %v", client.invocations)
+	}
+}
+
+func TestTestNotifyToleratesExistingPublisherUser(t *testing.T) {
+	client := &fakeNtfyClient{
+		addUserErr:    fmt.Errorf("ntfy user: %w: user urls4irl-publisher already exists", ntfycli.ErrAlreadyExists),
+		addTokenValue: "tk_ephemeral",
+	}
+	publisher := &fakePublisher{configuredValue: true, recordTo: &client.invocations, defaultMessageID: "msg_one"}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	})
+	if err != nil {
+		t.Fatalf("TestNotify must tolerate an existing publisher user, got: %v", err)
+	}
+	if len(result.Results) != 1 || !result.Results[0].OK {
+		t.Fatalf("the recipient must still be published to past the existing publisher user: %#v", result.Results)
+	}
+	if got := strings.Join(client.invocations, " | "); !strings.Contains(got, "GrantAccess(urls4irl-publisher,urls4irl-*,wo)") {
+		t.Fatalf("provisioning did not continue past the existing publisher user: %s", got)
+	}
+}
+
 func TestTestNotifyOneRecipientPublishFailureDoesNotFailBatch(t *testing.T) {
 	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
 	publishErr := errors.New("ntfy publish failed (503)")
