@@ -1065,6 +1065,7 @@ func TestTestNotifyMalformedJSONRejected(testInstance *testing.T) {
 // error body and the service never called.
 func TestTestNotifyRequestValidationFailures(testInstance *testing.T) {
 	tooLongMessage := strings.Repeat("a", maxMessageLength+1)
+	tooManyRecipients := `{"app_id":"myapp","recipients":[` + strings.TrimSuffix(strings.Repeat(`"r",`, maxRecipients+1), ",") + `]}`
 
 	testCases := []struct {
 		name    string
@@ -1075,6 +1076,7 @@ func TestTestNotifyRequestValidationFailures(testInstance *testing.T) {
 		{name: "invalid channel", body: fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"channel":"Bad-Channel"}`, aliceHash), wantMsg: "invalid channel"},
 		{name: "message too long", body: fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"message":%q}`, aliceHash, tooLongMessage), wantMsg: "message too long"},
 		{name: "empty recipients", body: `{"app_id":"myapp","recipients":[]}`, wantMsg: "recipients required"},
+		{name: "too many recipients", body: tooManyRecipients, wantMsg: "too many recipients"},
 	}
 
 	for _, testCase := range testCases {

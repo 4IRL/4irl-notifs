@@ -87,6 +87,37 @@ func TestValidateMessage(t *testing.T) {
 	}
 }
 
+func TestValidateRecipientsCount(t *testing.T) {
+	testCases := []struct {
+		name       string
+		recipients []string
+		expected   bool
+	}{
+		{name: "empty is within bound", recipients: []string{}, expected: true},
+		{name: "single recipient", recipients: []string{"alice@example.com"}, expected: true},
+		{name: "at max count 100", recipients: makeRecipients(maxRecipients), expected: true},
+		{name: "over max count 101", recipients: makeRecipients(maxRecipients + 1), expected: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := validateRecipientsCount(testCase.recipients); got != testCase.expected {
+				t.Fatalf("validateRecipientsCount(len=%d) = %v, expected %v", len(testCase.recipients), got, testCase.expected)
+			}
+		})
+	}
+}
+
+// makeRecipients returns a slice of count placeholder recipient strings, used
+// to exercise the recipient-count bound without inflating each test case.
+func makeRecipients(count int) []string {
+	recipients := make([]string, count)
+	for index := range recipients {
+		recipients[index] = "r"
+	}
+	return recipients
+}
+
 func TestValidateNtfyUserID(t *testing.T) {
 	testCases := []struct {
 		name     string

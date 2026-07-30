@@ -34,6 +34,10 @@ const reservedWildcardUserID = "*"
 // maxMessageLength is the maximum accepted test-notification message length.
 const maxMessageLength = 4096
 
+// maxRecipients is the maximum number of recipients accepted in a single
+// test-notification request, bounding the per-request publish fan-out.
+const maxRecipients = 100
+
 // validateAppID reports whether appID is a well-formed, non-reserved app_id.
 func validateAppID(appID string) bool {
 	if appID == reservedEveryone {
@@ -68,6 +72,13 @@ func validateChannel(channel string) bool {
 // length. An empty message is valid; the handler applies the default first.
 func validateMessage(message string) bool {
 	return len(message) <= maxMessageLength
+}
+
+// validateRecipientsCount reports whether recipients is within the maximum
+// accepted count. An empty slice is within bound; the handler applies the
+// non-empty check separately first.
+func validateRecipientsCount(recipients []string) bool {
+	return len(recipients) <= maxRecipients
 }
 
 // validateNtfyUserID reports whether ntfyUserID matches the derived-username

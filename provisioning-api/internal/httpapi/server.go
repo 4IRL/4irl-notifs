@@ -440,7 +440,7 @@ type testNotifyResponseBody struct {
 
 // handleTestNotify decodes the request body, trims and defaults the channel and
 // message, validates the request-level fields (app_id, channel, message length,
-// non-empty recipients), delegates to Service.TestNotify, and serializes the
+// non-empty recipients, recipient count), delegates to Service.TestNotify, and serializes the
 // per-recipient results as JSON. Per-recipient failures are reported inside a
 // 200 response; only request-level problems (400) or a service/mint error
 // (404/500 via writeServiceError) are non-200.
@@ -477,6 +477,10 @@ func (server *Server) handleTestNotify(responseWriter http.ResponseWriter, reque
 	}
 	if len(requestBody.Recipients) == 0 {
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "recipients required"})
+		return
+	}
+	if !validateRecipientsCount(requestBody.Recipients) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "too many recipients"})
 		return
 	}
 
