@@ -81,6 +81,34 @@ func TestHashShapeAndDistinctness(t *testing.T) {
 	}
 }
 
+func TestNtfyUserFromHash(t *testing.T) {
+	testCases := []struct {
+		name     string
+		hash     string
+		expected string
+	}{
+		{name: "golden vector hash", hash: "76gzqgp4byjl6dje", expected: "u_76gzqgp4byjl6dje"},
+		{name: "arbitrary hash", hash: "aaaaaaaaaaaaaaaa", expected: "u_aaaaaaaaaaaaaaaa"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if ntfyUser := NtfyUserFromHash(testCase.hash); ntfyUser != testCase.expected {
+				t.Fatalf("NtfyUserFromHash(%q) = %q, expected %q", testCase.hash, ntfyUser, testCase.expected)
+			}
+		})
+	}
+}
+
+// NtfyUser must be consistent with NtfyUserFromHash: prefixing the hash of an
+// email yields the same username as hashing then prefixing separately.
+func TestNtfyUserMatchesNtfyUserFromHash(t *testing.T) {
+	const email = "alice@example.com"
+	if got, want := NtfyUser(email), NtfyUserFromHash(Hash(email)); got != want {
+		t.Fatalf("NtfyUser(%q) = %q, expected %q (NtfyUserFromHash(Hash(email)))", email, got, want)
+	}
+}
+
 func TestNtfyUser(t *testing.T) {
 	testCases := []struct {
 		name     string

@@ -38,8 +38,15 @@ func Hash(email string) string {
 	return strings.ToLower(encoded[:hashLength])
 }
 
+// NtfyUserFromHash returns the global ntfy username for a person hash:
+// "u_" + hash. Callers that already hold the hash (rather than the email)
+// use this so the "u_" prefix stays single-sourced here.
+func NtfyUserFromHash(hash string) string {
+	return ntfyUserPrefix + hash
+}
+
 // NtfyUser returns the global ntfy username for an email address:
 // "u_" + Hash(email). One ntfy user per person, shared by every 4IRL app.
 func NtfyUser(email string) string {
-	return ntfyUserPrefix + Hash(email)
+	return NtfyUserFromHash(Hash(email))
 }

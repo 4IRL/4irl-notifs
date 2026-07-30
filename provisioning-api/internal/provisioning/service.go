@@ -387,7 +387,7 @@ func (service *Service) TestNotify(ctx context.Context, request TestNotifyReques
 			continue
 		}
 
-		result.UserID = "u_" + personHash
+		result.UserID = personhash.NtfyUserFromHash(personHash)
 		topic := ntfycli.PersonChannelTopic(request.AppID, personHash, request.Channel)
 		result.Topic = topic
 
