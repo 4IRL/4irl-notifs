@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
@@ -359,8 +360,13 @@ func (service *Service) TestNotify(ctx context.Context, request TestNotifyReques
 	// Revoke the ephemeral token unconditionally once the dispatch returns, even
 	// if a publish errors or panics. A revoke failure is logged, not fatal — the
 	// notifications were already sent and a stale write-only token is low-risk.
+	// Use a fresh background context (not the cancellable request ctx) so a
+	// client disconnect mid-batch can't cancel the revoke and strand the
+	// ephemeral write-only token.
 	defer func() {
-		if removeErr := service.client.RemoveToken(ctx, publisherUserID, token); removeErr != nil {
+		revokeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if removeErr := service.client.RemoveToken(revokeCtx, publisherUserID, token); removeErr != nil {
 			service.logger.Warn("test-notify token revoke failed", "user", publisherUserID, "err", removeErr)
 		}
 	}()
