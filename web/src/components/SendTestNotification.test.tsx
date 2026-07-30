@@ -334,7 +334,9 @@ describe('SendTestNotification', () => {
     expect(screen.getByText(strings.sendTestSelectedCount({ count: 1 }))).toBeInTheDocument();
 
     // Per-app deprovision: alice still exists in `users` but no longer carries
-    // `urls4irl`; bob keeps urls4irl so the target app stays valid.
+    // `urls4irl`; bob keeps urls4irl so the target app stays valid. The selected
+    // count is derived at render time (effectivelySelected = scoped ∩ selected),
+    // so alice drops out of the count on the next render with no reconcile effect.
     rerender(
       <SendTestNotification
         users={[
@@ -354,6 +356,10 @@ describe('SendTestNotification', () => {
   });
 
   it('defaults the target app to the first sorted option once users load asynchronously', async () => {
+    // effectiveTargetApp is derived at render time (falls back to the first
+    // sorted option when the admin hasn't chosen a valid app), so the <select>
+    // reflects the default synchronously on the render that receives the loaded
+    // users — no default-app effect running after paint.
     const { rerender } = renderSection({ users: [], loading: true });
 
     expect(screen.queryByRole('option', { name: 'urls4irl' })).not.toBeInTheDocument();

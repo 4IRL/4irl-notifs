@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { JSX } from 'react';
 
 import { ApiError } from '../api/client';
@@ -39,8 +39,10 @@ export function SendTestNotification({
     new Set(users.filter((user) => user.userId.startsWith('u_')).flatMap((user) => user.apps)),
   ).sort();
 
-  // targetApp starts empty and is defaulted to appOptions[0] by the reconcile
-  // effect below, once `users` has loaded (it may be empty at first render).
+  // `targetApp` holds only an explicit admin choice; it starts empty and stays
+  // empty until the admin picks an option. The app actually in effect is derived
+  // at render time (see `effectiveTargetApp` below), so there is no reconcile
+  // effect and no state to sync as `users` loads asynchronously.
   const [targetApp, setTargetApp] = useState('');
   const [channel, setChannel] = useState<string>(strings.sendTestDefaultChannel);
   const [message, setMessage] = useState<string>(strings.sendTestDefaultMessage);
@@ -49,49 +51,24 @@ export function SendTestNotification({
   const [results, setResults] = useState<TestNotifyRecipientResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Derived at render time: fall back to the first sorted option whenever the
+  // admin hasn't chosen a still-valid app (initial empty state, or the chosen
+  // app disappearing after a deprovision). This replaces the old default-app
+  // effect and is what the <select> displays.
+  const effectiveTargetApp = appOptions.includes(targetApp) ? targetApp : (appOptions[0] ?? '');
+
   const scopedUsers = users.filter(
-    (user) => user.userId.startsWith('u_') && user.apps.includes(targetApp),
+    (user) => user.userId.startsWith('u_') && user.apps.includes(effectiveTargetApp),
   );
 
-  // Single reconcile effect with two responsibilities against the latest
-  // `users`/`targetApp`: (1) drop any selected id whose owner is no longer
-  // scoped to the current app (covers both full removal and a per-app
-  // deprovision); (2) default `targetApp` to the first option once the async
-  // users load resolves, and re-default if the current app later disappears.
-  // This is a synchronous derived-state adjustment (not external-system sync),
-  // so it must run before paint: the default-app and stale-drop have to apply
-  // within the same commit as the users prop arriving. Both setState calls use a
-  // bail-out form (functional updater / equality guard) so an already-consistent
-  // state never re-renders. set-state-in-effect is disabled only on the
-  // selection-drop updater — that rule targets external-sync effects, and
-  // App.tsx's async-only microtask workaround is unusable here (it would defer
-  // the default app past first paint); the guarded setTargetApp is already
-  // accepted. exhaustive-deps is disabled because appOptions is derived wholly
-  // from `users` (already a dep) — a fresh array each render.
-  useEffect(() => {
-    const scopedIds = new Set(
-      users
-        .filter((user) => user.userId.startsWith('u_') && user.apps.includes(targetApp))
-        .map((user) => user.userId),
-    );
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSelected((previous) => {
-      let changed = false;
-      const next = new Set<string>();
-      for (const id of previous) {
-        if (scopedIds.has(id)) {
-          next.add(id);
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : previous;
-    });
-    if (!appOptions.includes(targetApp)) {
-      setTargetApp(appOptions[0] ?? '');
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [users, targetApp]);
+  // Derived at render time: the selected ids that are still scoped to the
+  // effective app. This replaces the old stale-selection pruning effect — a
+  // selection whose owner is no longer scoped (full removal or per-app
+  // deprovision, or simply an app switch) is filtered out here rather than
+  // mutated out of `selected` state.
+  const effectivelySelected = new Set(
+    scopedUsers.map((user) => user.userId).filter((userId) => selected.has(userId)),
+  );
 
   function toggleRecipient(userId: string) {
     setSelected((previous) => {
@@ -124,7 +101,7 @@ export function SendTestNotification({
     // The channel/message inputs live inside the <form> in every gating branch,
     // so Enter can submit even when the Send button is disabled. Guard the
     // no-selection case here so an Enter press never dispatches an empty batch.
-    if (selected.size === 0) {
+    if (effectivelySelected.size === 0) {
       return;
     }
 
@@ -135,8 +112,8 @@ export function SendTestNotification({
 
     setError(null);
     setIsSending(true);
-    const recipients = Array.from(selected).map((userId) => userId.slice(2));
-    onSendTest({ appId: targetApp, recipients, channel, message })
+    const recipients = Array.from(effectivelySelected).map((userId) => userId.slice(2));
+    onSendTest({ appId: effectiveTargetApp, recipients, channel, message })
       .then((result) => {
         setResults(result.results);
       })
@@ -158,7 +135,7 @@ export function SendTestNotification({
             <select
               id="send-test-app"
               className="send-test__control"
-              value={targetApp}
+              value={effectiveTargetApp}
               onChange={handleAppChange}
               disabled={isSending}
             >
@@ -228,8 +205,8 @@ export function SendTestNotification({
                   {scopedUsers.map(({ userId }) => {
                     const personHash = userId.slice(2);
                     const displayName = emailByPersonHash.get(personHash) ?? userId;
-                    const topic = `${targetApp}-${personHash}-${channel}`;
-                    const isSelected = selected.has(userId);
+                    const topic = `${effectiveTargetApp}-${personHash}-${channel}`;
+                    const isSelected = effectivelySelected.has(userId);
                     return (
                       <tr
                         key={userId}
@@ -248,7 +225,7 @@ export function SendTestNotification({
                         </td>
                         <td className="send-test__user">{displayName}</td>
                         <td>
-                          <span className="send-test__chip">{targetApp}</span>
+                          <span className="send-test__chip">{effectiveTargetApp}</span>
                         </td>
                         <td className="send-test__topic">{topic}</td>
                       </tr>
@@ -260,19 +237,21 @@ export function SendTestNotification({
 
             <div className="send-test__bar">
               <span className="send-test__count">
-                {strings.sendTestSelectedCount({ count: selected.size })}
+                {strings.sendTestSelectedCount({ count: effectivelySelected.size })}
               </span>
               <span className="send-test__spacer" />
               <button
                 type="submit"
                 className="send-test__submit"
-                disabled={isSending || selected.size === 0}
+                disabled={isSending || effectivelySelected.size === 0}
               >
                 {isSending ? strings.sendTestSending : strings.sendTestAction}
               </button>
             </div>
 
-            {selected.size === 0 && <p className="send-test__hint">{strings.sendTestSelectHint}</p>}
+            {effectivelySelected.size === 0 && (
+              <p className="send-test__hint">{strings.sendTestSelectHint}</p>
+            )}
           </>
         )}
       </form>

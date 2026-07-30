@@ -57,6 +57,18 @@ function buildFakePersonClient(overrides: Partial<PersonApiClient> = {}): Person
   };
 }
 
+// The Users table and the Send-test-notification table both render subscriber
+// identifiers/emails, so a document-wide text query can match either. Scope
+// user-row / email lookups to a specific section (found by its heading) so a
+// coincidental match in the send-test table never makes these queries ambiguous.
+function sectionByHeading(name: string): HTMLElement {
+  const section = screen.getByRole('heading', { name }).closest('section');
+  if (section === null) {
+    throw new Error(`section for heading "${name}" not found`);
+  }
+  return section;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -83,7 +95,9 @@ describe('App', () => {
     });
     render(<App client={client} />);
 
-    expect(await screen.findByText('u_abcdefgh23456777')).toBeInTheDocument();
+    expect(
+      await within(sectionByHeading(strings.usersHeading)).findByText('u_abcdefgh23456777'),
+    ).toBeInTheDocument();
     expect(client.listUsers).toHaveBeenCalled();
   });
 
@@ -182,7 +196,9 @@ describe('App', () => {
     const client = buildFakeClient({ listUsers, deprovision });
     render(<App client={client} />);
 
-    const row = (await screen.findByText('u_abcdefgh23456777')).closest('tr');
+    const row = (
+      await within(sectionByHeading(strings.usersHeading)).findByText('u_abcdefgh23456777')
+    ).closest('tr');
     if (row === null) {
       throw new Error('user row not found');
     }
@@ -219,7 +235,9 @@ describe('App', () => {
     const client = buildFakeClient({ listUsers, deprovision });
     render(<App client={client} />);
 
-    const row = (await screen.findByText('u_abcdefgh23456777')).closest('tr');
+    const row = (
+      await within(sectionByHeading(strings.usersHeading)).findByText('u_abcdefgh23456777')
+    ).closest('tr');
     if (row === null) {
       throw new Error('user row not found');
     }
@@ -317,8 +335,17 @@ describe('App', () => {
     render(<App client={client} personClient={personClient} />);
 
     // The email is expected in both the Users table (via emailByPersonHash)
-    // and the People table (its own email column) once people load.
-    await waitFor(() => expect(screen.getAllByText('alice@example.com')).toHaveLength(2));
+    // and the People table (its own email column) once people load. Scope each
+    // assertion to its section — the send-test table also renders the resolved
+    // email, so a document-wide count is no longer the right signal.
+    await waitFor(() =>
+      expect(
+        within(sectionByHeading(strings.usersHeading)).getByText('alice@example.com'),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      within(sectionByHeading(strings.peopleHeading)).getByText('alice@example.com'),
+    ).toBeInTheDocument();
     expect(screen.queryByText('u_76gzqgp4byjl6dje')).not.toBeInTheDocument();
   });
 
