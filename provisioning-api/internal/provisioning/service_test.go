@@ -1269,8 +1269,11 @@ func TestTestNotifyToleratesExistingPublisherUser(t *testing.T) {
 }
 
 func TestTestNotifyOneRecipientPublishFailureDoesNotFailBatch(t *testing.T) {
+	var logBuffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
+
 	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
-	publishErr := errors.New("ntfy publish failed (503)")
+	rawPublishErr := errors.New("ntfy publish failed (503): raw upstream body snippet")
 	publisher := &fakePublisher{
 		configuredValue: true,
 		recordTo:        &client.invocations,
@@ -1278,10 +1281,15 @@ func TestTestNotifyOneRecipientPublishFailureDoesNotFailBatch(t *testing.T) {
 			"urls4irl-" + aliceHash + "-alerts": "msg_one",
 		},
 		errByTopic: map[string]error{
-			"urls4irl-" + hashTwo + "-alerts": publishErr,
+			"urls4irl-" + hashTwo + "-alerts": rawPublishErr,
 		},
 	}
-	service := newTestServiceWithPublisher(client, publisher)
+	service := NewService(ServiceConfig{
+		Client:           client,
+		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		Publisher:        publisher,
+		Logger:           logger,
+	})
 
 	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
@@ -1293,12 +1301,34 @@ func TestTestNotifyOneRecipientPublishFailureDoesNotFailBatch(t *testing.T) {
 		t.Fatalf("one recipient's publish failure must not fail the batch, got: %v", err)
 	}
 
+	// The client-facing per-recipient error is the generic sanitized string, never
+	// the raw ntfy error text (which can carry a snippet of the upstream HTTP body).
 	expectedResults := []RecipientResult{
 		{Recipient: aliceHash, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-alerts", OK: true, MessageID: "msg_one", Error: ""},
-		{Recipient: hashTwo, UserID: "u_" + hashTwo, Topic: "urls4irl-" + hashTwo + "-alerts", OK: false, MessageID: "", Error: publishErr.Error()},
+		{Recipient: hashTwo, UserID: "u_" + hashTwo, Topic: "urls4irl-" + hashTwo + "-alerts", OK: false, MessageID: "", Error: publishFailedMessage},
 	}
 	if !reflect.DeepEqual(result.Results, expectedResults) {
 		t.Fatalf("results = %#v, expected %#v", result.Results, expectedResults)
+	}
+	// Defense in depth: the raw upstream error text must not leak into any result.
+	for _, recipientResult := range result.Results {
+		if strings.Contains(recipientResult.Error, "raw upstream body snippet") {
+			t.Fatalf("raw ntfy error text must not reach the client, got: %q", recipientResult.Error)
+		}
+	}
+	// The real error is logged server-side (Warn) with the topic and raw error.
+	logOutput := logBuffer.String()
+	if !strings.Contains(logOutput, "test-notify publish failed") {
+		t.Fatalf("expected a Warn log about the publish failure, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "level=WARN") {
+		t.Fatalf("expected the publish-failure log level to be WARN, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "raw upstream body snippet") {
+		t.Fatalf("expected the raw ntfy error to be logged server-side, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "urls4irl-"+hashTwo+"-alerts") {
+		t.Fatalf("expected the failing topic to be logged server-side, got: %s", logOutput)
 	}
 	// The token is minted once and revoked once regardless of per-recipient failures.
 	if !strings.Contains(strings.Join(client.invocations, " | "), "RemoveToken(urls4irl-publisher,tk_ephemeral)") {

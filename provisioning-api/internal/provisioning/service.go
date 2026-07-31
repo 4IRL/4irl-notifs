@@ -324,6 +324,12 @@ type TestNotifyResult struct {
 	Results []RecipientResult
 }
 
+// publishFailedMessage is the generic per-recipient publish-failure text
+// returned to the client. The real publish error (which can include a snippet
+// of ntfy's raw HTTP error body) is logged server-side instead of surfaced,
+// mirroring writeServiceError's log-real / return-generic convention.
+const publishFailedMessage = "publish failed"
+
 // TestNotify mints an ephemeral, write-only publisher token (idempotently
 // ensuring the app's publisher identity first, exactly like ProvisionApp), then
 // publishes the message to each recipient's concrete topic
@@ -393,7 +399,12 @@ func (service *Service) TestNotify(ctx context.Context, request TestNotifyReques
 
 		messageID, publishErr := service.publisher.Publish(ctx, topic, token, request.Message)
 		if publishErr != nil {
-			result.Error = publishErr.Error()
+			// Log the real error server-side, but return only a generic message
+			// to the client so ntfy's raw HTTP body snippet never reaches the
+			// admin (consistent with writeServiceError's log-real/return-generic
+			// convention).
+			service.logger.Warn("test-notify publish failed", "topic", topic, "err", publishErr)
+			result.Error = publishFailedMessage
 		} else {
 			result.OK = true
 			result.MessageID = messageID
