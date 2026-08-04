@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isValidAppId, isValidEmail } from './validation';
+import { isValidAppId, isValidChannel, isValidEmail } from './validation';
 
 describe('isValidAppId', () => {
   it.each([
@@ -30,5 +30,20 @@ describe('isValidEmail', () => {
     [`${'a'.repeat(250)}@example.com`, false], // >254 chars
   ])('isValidEmail(%j) === %s', (value, expected) => {
     expect(isValidEmail(value)).toBe(expected);
+  });
+});
+
+describe('isValidChannel', () => {
+  it.each([
+    ['alerts', true],
+    ['digest', true],
+    ['a_b2', true],
+    ['', false], // empty
+    ['Alerts', false], // uppercase rejected
+    ['has-hyphen', false], // hyphens not allowed
+    ['a'.repeat(33), false], // too long (>32)
+    ['_lead', false], // leading underscore not allowed
+  ])('isValidChannel(%j) === %s', (value, expected) => {
+    expect(isValidChannel(value)).toBe(expected);
   });
 });

@@ -943,6 +943,7 @@ func TestProvisionAppRotateOnlyRemovesPublisherLabeledTokens(t *testing.T) {
 		listTokens: []ntfycli.Token{
 			{Value: "tk_publisher", Label: ntfycli.PublisherTokenLabel},
 			{Value: "tk_unlabeled", Label: ""},
+			{Value: "tk_test_notify", Label: ntfycli.TestNotifyTokenLabel},
 		},
 	}
 	service := newTestService(client)
@@ -957,6 +958,11 @@ func TestProvisionAppRotateOnlyRemovesPublisherLabeledTokens(t *testing.T) {
 	}
 	if strings.Contains(joined, "RemoveToken(urls4irl-publisher,tk_unlabeled)") {
 		t.Fatalf("a non-publisher-labeled token must not be revoked: %s", joined)
+	}
+	// A test-notify-labeled token (minted by TestNotify) must survive ProvisionApp's
+	// rotate reset, which filters on Label == PublisherTokenLabel only.
+	if strings.Contains(joined, "RemoveToken(urls4irl-publisher,tk_test_notify)") {
+		t.Fatalf("a test-notify-labeled token must not be swept by the publisher rotate: %s", joined)
 	}
 }
 
@@ -1010,5 +1016,446 @@ func TestUserHasAppGrant(t *testing.T) {
 				t.Fatalf("userHasAppGrant(%#v, %q) = %v, expected %v", user.TopicPatterns, testCase.appID, got, testCase.expected)
 			}
 		})
+	}
+}
+
+func TestPersonHashPattern(t *testing.T) {
+	// personHashPattern is `^[a-z2-7]{16}$` — the base32(sha256(email))[:16]
+	// shape TestNotify uses to tell a bare person-hash recipient apart from an
+	// email. Valid alphabet is [a-z] plus digits 2-7; digits 0/1/8/9 are
+	// excluded by base32.
+	testCases := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{name: "exact 16 valid", input: "76gzqgp4byjl6dje", expected: true},
+		{name: "all letters valid", input: "abcdefghijklmnop", expected: true},
+		{name: "valid digits 2-7", input: "abcdefghij234567", expected: true},
+		{name: "empty", input: "", expected: false},
+		{name: "too short 15", input: "76gzqgp4byjl6dj", expected: false},
+		{name: "too long 17", input: "76gzqgp4byjl6djee", expected: false},
+		{name: "trailing newline", input: "76gzqgp4byjl6dje\n", expected: false},
+		{name: "uppercase", input: "76GZQGP4BYJL6DJE", expected: false},
+		{name: "disallowed digit 0", input: "76gzqgp4byjl6dj0", expected: false},
+		{name: "disallowed digit 1", input: "76gzqgp4byjl6dj1", expected: false},
+		{name: "disallowed digit 8", input: "76gzqgp4byjl6dj8", expected: false},
+		{name: "disallowed digit 9", input: "76gzqgp4byjl6dj9", expected: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := personHashPattern.MatchString(testCase.input); got != testCase.expected {
+				t.Fatalf("personHashPattern.MatchString(%q) = %v, expected %v", testCase.input, got, testCase.expected)
+			}
+		})
+	}
+}
+
+// fakePublisher records Publish invocations and plays back scripted behavior
+// for the NotificationPublisher the service depends on. When recordTo is set,
+// invocations are appended to that shared slice (used to assert publish
+// ordering relative to a fakeNtfyClient's mint/revoke calls in the same test).
+type fakePublisher struct {
+	recordTo    *[]string
+	invocations []string
+
+	configuredValue  bool
+	messageIDByTopic map[string]string
+	errByTopic       map[string]error
+	defaultMessageID string
+}
+
+func (publisher *fakePublisher) record(format string, values ...any) {
+	entry := fmt.Sprintf(format, values...)
+	if publisher.recordTo != nil {
+		*publisher.recordTo = append(*publisher.recordTo, entry)
+		return
+	}
+	publisher.invocations = append(publisher.invocations, entry)
+}
+
+func (publisher *fakePublisher) Configured() bool {
+	return publisher.configuredValue
+}
+
+func (publisher *fakePublisher) Publish(_ context.Context, topic string, token string, _ string) (string, error) {
+	publisher.record("Publish(%s,%s)", topic, token)
+	if err, scripted := publisher.errByTopic[topic]; scripted {
+		return "", err
+	}
+	if messageID, scripted := publisher.messageIDByTopic[topic]; scripted {
+		return messageID, nil
+	}
+	return publisher.defaultMessageID, nil
+}
+
+// newTestServiceWithPublisher is the sibling of newTestService used by the
+// TestNotify tests: it wires a NotificationPublisher into the service while
+// keeping the same generated-password stub. newTestService stays untouched.
+func newTestServiceWithPublisher(client *fakeNtfyClient, publisher NotificationPublisher) *Service {
+	return NewService(ServiceConfig{
+		Client:           client,
+		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		Publisher:        publisher,
+	})
+}
+
+// hashTwo is a second valid person-hash ([a-z2-7]{16}) used to prove
+// per-recipient behavior in the multi-recipient TestNotify tests.
+const hashTwo = "abcdefghijklmnop"
+
+func TestTestNotifyMintsPublishesPerRecipientThenRevokes(t *testing.T) {
+	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
+	publisher := &fakePublisher{
+		configuredValue: true,
+		recordTo:        &client.invocations,
+		messageIDByTopic: map[string]string{
+			"urls4irl-" + aliceHash + "-alerts": "msg_one",
+			"urls4irl-" + hashTwo + "-alerts":   "msg_two",
+		},
+	}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash, hashTwo},
+		Channel:    "alerts",
+		Message:    "hello",
+	})
+	if err != nil {
+		t.Fatalf("TestNotify returned unexpected error: %v", err)
+	}
+
+	// The load-bearing ordering: mint (AddToken) before every Publish, and the
+	// deferred RemoveToken after all publishes.
+	expectedInvocations := strings.Join([]string{
+		"AddUser(urls4irl-publisher,pw=generated-pw)",
+		"GrantAccess(urls4irl-publisher,urls4irl-*,wo)",
+		"AddToken(urls4irl-publisher,test-notify)",
+		"Publish(urls4irl-" + aliceHash + "-alerts,tk_ephemeral)",
+		"Publish(urls4irl-" + hashTwo + "-alerts,tk_ephemeral)",
+		"RemoveToken(urls4irl-publisher,tk_ephemeral)",
+	}, " | ")
+	if got := strings.Join(client.invocations, " | "); got != expectedInvocations {
+		t.Fatalf("invocations = %s, expected %s", got, expectedInvocations)
+	}
+
+	expectedResults := []RecipientResult{
+		{Recipient: aliceHash, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-alerts", OK: true, MessageID: "msg_one", Error: ""},
+		{Recipient: hashTwo, UserID: "u_" + hashTwo, Topic: "urls4irl-" + hashTwo + "-alerts", OK: true, MessageID: "msg_two", Error: ""},
+	}
+	if !reflect.DeepEqual(result.Results, expectedResults) {
+		t.Fatalf("results = %#v, expected %#v", result.Results, expectedResults)
+	}
+}
+
+func TestTestNotifyResolvesEmailRecipientToPersonHash(t *testing.T) {
+	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
+	publisher := &fakePublisher{
+		configuredValue:  true,
+		recordTo:         &client.invocations,
+		defaultMessageID: "msg_email",
+	}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceEmail},
+		Channel:    "alerts",
+		Message:    "hello",
+	})
+	if err != nil {
+		t.Fatalf("TestNotify returned unexpected error: %v", err)
+	}
+
+	// An email recipient resolves to the golden person-hash and publishes to the
+	// same concrete topic a bare hash would.
+	if !strings.Contains(strings.Join(client.invocations, " | "), "Publish(urls4irl-"+aliceHash+"-alerts,tk_ephemeral)") {
+		t.Fatalf("email recipient must resolve to the golden person-hash topic: %v", client.invocations)
+	}
+	expectedResults := []RecipientResult{
+		{Recipient: aliceEmail, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-alerts", OK: true, MessageID: "msg_email", Error: ""},
+	}
+	if !reflect.DeepEqual(result.Results, expectedResults) {
+		t.Fatalf("results = %#v, expected %#v", result.Results, expectedResults)
+	}
+}
+
+func TestTestNotifyReturnsErrorWhenTokenMintFails(t *testing.T) {
+	client := &fakeNtfyClient{addTokenErr: errors.New("add token failed")}
+	publisher := &fakePublisher{configuredValue: true, recordTo: &client.invocations}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	}); err == nil {
+		t.Fatal("expected the AddToken mint error to propagate")
+	}
+
+	joined := strings.Join(client.invocations, " | ")
+	if strings.Contains(joined, "Publish(") {
+		t.Fatalf("no publish must happen when the token mint fails: %s", joined)
+	}
+	if strings.Contains(joined, "RemoveToken(") {
+		t.Fatalf("no token must be revoked when the mint itself never succeeded: %s", joined)
+	}
+}
+
+func TestTestNotifyPropagatesAddUserError(t *testing.T) {
+	client := &fakeNtfyClient{addUserErr: errors.New("add user failed")}
+	publisher := &fakePublisher{configuredValue: true, recordTo: &client.invocations}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	}); err == nil {
+		t.Fatal("expected AddUser error to propagate")
+	}
+	// A hard AddUser failure (not ErrAlreadyExists) aborts the mint before any publish.
+	if strings.Contains(strings.Join(client.invocations, " | "), "Publish(") {
+		t.Fatalf("no publish must happen when the publisher-identity AddUser fails: %v", client.invocations)
+	}
+}
+
+func TestTestNotifyPropagatesGrantAccessError(t *testing.T) {
+	client := &fakeNtfyClient{grantAccessErr: errors.New("grant access failed")}
+	publisher := &fakePublisher{configuredValue: true, recordTo: &client.invocations}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	}); err == nil {
+		t.Fatal("expected GrantAccess error to propagate")
+	}
+	// The write-access grant fails before the ephemeral token is minted.
+	if strings.Contains(strings.Join(client.invocations, " | "), "AddToken(") {
+		t.Fatalf("no ephemeral token must be minted when the write-access grant fails: %v", client.invocations)
+	}
+}
+
+func TestTestNotifyToleratesExistingPublisherUser(t *testing.T) {
+	client := &fakeNtfyClient{
+		addUserErr:    fmt.Errorf("ntfy user: %w: user urls4irl-publisher already exists", ntfycli.ErrAlreadyExists),
+		addTokenValue: "tk_ephemeral",
+	}
+	publisher := &fakePublisher{configuredValue: true, recordTo: &client.invocations, defaultMessageID: "msg_one"}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	})
+	if err != nil {
+		t.Fatalf("TestNotify must tolerate an existing publisher user, got: %v", err)
+	}
+	if len(result.Results) != 1 || !result.Results[0].OK {
+		t.Fatalf("the recipient must still be published to past the existing publisher user: %#v", result.Results)
+	}
+	if got := strings.Join(client.invocations, " | "); !strings.Contains(got, "GrantAccess(urls4irl-publisher,urls4irl-*,wo)") {
+		t.Fatalf("provisioning did not continue past the existing publisher user: %s", got)
+	}
+}
+
+func TestTestNotifyOneRecipientPublishFailureDoesNotFailBatch(t *testing.T) {
+	var logBuffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
+
+	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
+	rawPublishErr := errors.New("ntfy publish failed (503): raw upstream body snippet")
+	publisher := &fakePublisher{
+		configuredValue: true,
+		recordTo:        &client.invocations,
+		messageIDByTopic: map[string]string{
+			"urls4irl-" + aliceHash + "-alerts": "msg_one",
+		},
+		errByTopic: map[string]error{
+			"urls4irl-" + hashTwo + "-alerts": rawPublishErr,
+		},
+	}
+	service := NewService(ServiceConfig{
+		Client:           client,
+		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		Publisher:        publisher,
+		Logger:           logger,
+	})
+
+	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash, hashTwo},
+		Channel:    "alerts",
+		Message:    "hello",
+	})
+	if err != nil {
+		t.Fatalf("one recipient's publish failure must not fail the batch, got: %v", err)
+	}
+
+	// The client-facing per-recipient error is the generic sanitized string, never
+	// the raw ntfy error text (which can carry a snippet of the upstream HTTP body).
+	expectedResults := []RecipientResult{
+		{Recipient: aliceHash, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-alerts", OK: true, MessageID: "msg_one", Error: ""},
+		{Recipient: hashTwo, UserID: "u_" + hashTwo, Topic: "urls4irl-" + hashTwo + "-alerts", OK: false, MessageID: "", Error: publishFailedMessage},
+	}
+	if !reflect.DeepEqual(result.Results, expectedResults) {
+		t.Fatalf("results = %#v, expected %#v", result.Results, expectedResults)
+	}
+	// Defense in depth: the raw upstream error text must not leak into any result.
+	for _, recipientResult := range result.Results {
+		if strings.Contains(recipientResult.Error, "raw upstream body snippet") {
+			t.Fatalf("raw ntfy error text must not reach the client, got: %q", recipientResult.Error)
+		}
+	}
+	// The real error is logged server-side (Warn) with the topic and raw error.
+	logOutput := logBuffer.String()
+	if !strings.Contains(logOutput, "test-notify publish failed") {
+		t.Fatalf("expected a Warn log about the publish failure, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "level=WARN") {
+		t.Fatalf("expected the publish-failure log level to be WARN, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "raw upstream body snippet") {
+		t.Fatalf("expected the raw ntfy error to be logged server-side, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "urls4irl-"+hashTwo+"-alerts") {
+		t.Fatalf("expected the failing topic to be logged server-side, got: %s", logOutput)
+	}
+	// The token is minted once and revoked once regardless of per-recipient failures.
+	if !strings.Contains(strings.Join(client.invocations, " | "), "RemoveToken(urls4irl-publisher,tk_ephemeral)") {
+		t.Fatalf("the ephemeral token must still be revoked after a per-recipient failure: %v", client.invocations)
+	}
+}
+
+func TestTestNotifyInvalidRecipientSkipsPublish(t *testing.T) {
+	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
+	publisher := &fakePublisher{
+		configuredValue:  true,
+		recordTo:         &client.invocations,
+		defaultMessageID: "msg_one",
+	}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{"bogus", aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	})
+	if err != nil {
+		t.Fatalf("an invalid recipient must not fail the batch, got: %v", err)
+	}
+
+	expectedResults := []RecipientResult{
+		{Recipient: "bogus", UserID: "", Topic: "", OK: false, MessageID: "", Error: "invalid recipient"},
+		{Recipient: aliceHash, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-alerts", OK: true, MessageID: "msg_one", Error: ""},
+	}
+	if !reflect.DeepEqual(result.Results, expectedResults) {
+		t.Fatalf("results = %#v, expected %#v", result.Results, expectedResults)
+	}
+	// Exactly one Publish (for the valid recipient); the invalid one is never published.
+	if publishCount := strings.Count(strings.Join(client.invocations, " | "), "Publish("); publishCount != 1 {
+		t.Fatalf("expected exactly one Publish (invalid recipient skipped), got %d: %v", publishCount, client.invocations)
+	}
+}
+
+func TestTestNotifyReturnsErrorWhenPublisherUnconfigured(t *testing.T) {
+	// Explicitly unconfigured publisher.
+	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
+	publisher := &fakePublisher{configuredValue: false}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	}); err == nil {
+		t.Fatal("expected an error when the publisher is unconfigured")
+	}
+	if len(client.invocations) != 0 {
+		t.Fatalf("nothing must be minted when the publisher is unconfigured, got: %v", client.invocations)
+	}
+
+	// A nil publisher (no Publisher wired into the service at all) is likewise gated.
+	clientNil := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
+	serviceNil := newTestService(clientNil)
+	if _, err := serviceNil.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	}); err == nil {
+		t.Fatal("expected an error when no publisher is configured (nil)")
+	}
+	if len(clientNil.invocations) != 0 {
+		t.Fatalf("nothing must be minted when the publisher is nil, got: %v", clientNil.invocations)
+	}
+}
+
+func TestTestNotifyPropagatesGeneratePasswordError(t *testing.T) {
+	client := &fakeNtfyClient{}
+	publisher := &fakePublisher{configuredValue: true, recordTo: &client.invocations}
+	service := NewService(ServiceConfig{
+		Client:           client,
+		GeneratePassword: func() (string, error) { return "", errors.New("password generation failed") },
+		Publisher:        publisher,
+	})
+
+	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	}); err == nil {
+		t.Fatal("expected the GeneratePassword error to propagate")
+	}
+	// Password generation happens before any ntfy call or publish.
+	if len(client.invocations) != 0 {
+		t.Fatalf("nothing must be invoked when password generation fails, got: %v", client.invocations)
+	}
+}
+
+func TestTestNotifyLogsWarnWhenTokenRevokeFails(t *testing.T) {
+	var logBuffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
+
+	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral", removeTokenErr: errors.New("revoke failed")}
+	publisher := &fakePublisher{configuredValue: true, defaultMessageID: "msg_one"}
+	service := NewService(ServiceConfig{
+		Client:           client,
+		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		Publisher:        publisher,
+		Logger:           logger,
+	})
+
+	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "urls4irl",
+		Recipients: []string{aliceHash},
+		Channel:    "alerts",
+		Message:    "hello",
+	})
+	if err != nil {
+		t.Fatalf("a revoke failure must be logged, not fatal, got: %v", err)
+	}
+	if len(result.Results) != 1 || !result.Results[0].OK {
+		t.Fatalf("the recipient result must remain OK despite the revoke failure: %#v", result.Results)
+	}
+
+	logOutput := logBuffer.String()
+	if !strings.Contains(logOutput, "test-notify token revoke failed") {
+		t.Fatalf("expected a Warn log about the revoke failure, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "level=WARN") {
+		t.Fatalf("expected the log level to be WARN, got: %s", logOutput)
 	}
 }

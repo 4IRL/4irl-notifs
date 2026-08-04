@@ -60,6 +60,11 @@ services:
       - NTFY_BIN=/usr/bin/ntfy
       - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db
       - NTFY_AUTH_DEFAULT_ACCESS=deny-all
+      # In-compose HTTP origin of the ntfy server, used by the admin "send test
+      # notification" flow (the only path that makes a real HTTP call to ntfy —
+      # everything else shells the CLI). The ntfy service listens on :80 inside
+      # the compose network. LOCKSTEP: keep this env in sync with docker-compose.prod.yml.
+      - NTFY_PUBLISH_URL=http://ntfy:80
     volumes:
       - ntfy-auth:/var/lib/ntfy
     healthcheck:

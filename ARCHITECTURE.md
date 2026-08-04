@@ -202,12 +202,15 @@ graph LR
 ### provisioning-api endpoints (`notifs-api.4irl.app`, all Service-Auth gated)
 
 `POST /v1/provision` · `POST /v1/deprovision` · `GET /v1/users` · `DELETE /v1/users/{user_id}` ·
-`POST /v1/provision-app` · `POST /v1/deprovision-app` · `GET /healthz`. Bodies + responses are JSON;
-errors `{ "error": … }`. Notes: `DELETE /v1/users/{id}` is idempotent (200 even when the ntfy user is
-already gone; it also dual-deletes the person row). `POST /v1/provision-app` takes an optional
-`rotate` (default false = additive mint; true = revoke existing publisher tokens then mint one).
+`POST /v1/provision-app` · `POST /v1/deprovision-app` · `POST /v1/test-notify` · `GET /healthz`. Bodies +
+responses are JSON; errors `{ "error": … }`. Notes: `DELETE /v1/users/{id}` is idempotent (200 even when
+the ntfy user is already gone; it also dual-deletes the person row). `POST /v1/provision-app` takes an
+optional `rotate` (default false = additive mint; true = revoke existing publisher tokens then mint one).
 `POST /v1/deprovision-app {app_id}` fully removes an app (publisher identity + every subscriber grant +
-registry row). Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
+registry row). `POST /v1/test-notify {app_id, recipients, channel?, message?}` mints an ephemeral
+write-only publisher token, publishes the message to each recipient's `{app_id}-{person_hash}-{channel}`
+topic, then revokes the token in an always-run cleanup; per-recipient failures are reported inside a 200
+response. Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
 
 ---
 

@@ -33,6 +33,39 @@ describe('strings module', () => {
     expect(strings.usersEmpty).toBe('No users provisioned yet.');
   });
 
+  it('exposes the send-test-notification copy, including param builders', () => {
+    expect(strings.sendTestHeading).toBe('Send test notification');
+    expect(strings.sendTestTargetAppLabel).toBe('Target app');
+    expect(strings.sendTestChannelLabel).toBe('Channel');
+    expect(strings.sendTestMessageLabel).toBe('Message');
+    expect(strings.sendTestDefaultChannel).toBe('alerts');
+    expect(strings.sendTestDefaultMessage).toBe('Test notification from 4IRL admin');
+    expect(strings.sendTestAction).toBe('Send test notification');
+    expect(strings.sendTestSending).toBe('Sending…');
+    expect(strings.sendTestLoading).toBe('Loading users…');
+    expect(strings.sendTestSelectHint).toBe('Select one or more users to send a test.');
+    expect(strings.sendTestNoUsersForApp).toBe('No users provisioned for this app.');
+    expect(strings.sendTestDelivered).toBe('Delivered');
+    expect(strings.sendTestFailed).toBe('Failed');
+    expect(strings.sendTestColumnUser).toBe('User');
+    expect(strings.sendTestColumnApp).toBe('App');
+    expect(strings.sendTestColumnTopic).toBe('Topic');
+    expect(strings.sendTestSelectColumnAria).toBe('Select');
+    expect(strings.sendTestInvalidChannel).toBe(
+      'Channel must be lowercase letters, numbers, or underscores.',
+    );
+    expect(strings.sendTestSelectedCount({ count: 2 })).toBe('2 selected');
+    expect(strings.sendTestSelectAria({ who: 'alice@example.com' })).toBe(
+      'Select alice@example.com',
+    );
+    expect(strings.sendTestResultsSummary({ sent: 2, total: 3, failed: 1 })).toBe(
+      'Sent to 2 of 3 users · 1 failed',
+    );
+    expect(
+      strings.sendTestResultDetail({ messageId: 'VkT2p9wQ', topic: 'urls4irl-hash-alerts' }),
+    ).toBe('id VkT2p9wQ · urls4irl-hash-alerts');
+  });
+
   it('exposes the people section heading, status copy, and column headers', () => {
     expect(strings.peopleHeading).toBe('People');
     expect(strings.peopleLoading).toBe('Loading people…');

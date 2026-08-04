@@ -4,6 +4,7 @@
 // submissions.
 
 const APP_ID_PATTERN = /^[a-z0-9][a-z0-9_]{0,62}$/;
+const CHANNEL_PATTERN = /^[a-z0-9][a-z0-9_]{0,31}$/;
 const RESERVED_EVERYONE = 'everyone';
 const MAX_EMAIL_LENGTH = 254;
 
@@ -13,6 +14,17 @@ export function isValidAppId(appId: string): boolean {
     return false;
   }
   return APP_ID_PATTERN.test(appId);
+}
+
+/**
+ * Reports whether channel is a well-formed ntfy channel segment, mirroring the
+ * server-side rule (internal/httpapi/validation.go `channelPattern`): 1–32
+ * characters, lowercase alphanumerics plus underscore, no leading underscore
+ * and no hyphens (so topic segments stay unambiguous). A UX pre-check only —
+ * the server remains the source of truth.
+ */
+export function isValidChannel(channel: string): boolean {
+  return CHANNEL_PATTERN.test(channel);
 }
 
 /**

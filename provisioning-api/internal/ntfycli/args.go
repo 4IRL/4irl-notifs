@@ -11,6 +11,14 @@ func TopicPattern(appID string, personHash string) string {
 	return appID + "-" + personHash + "-*"
 }
 
+// PersonChannelTopic returns the concrete publish topic for a person on a
+// channel: "{app_id}-{personHash}-{channel}". Unlike the wildcard TopicPattern
+// ("{app_id}-{personHash}-*"), this is a fully-resolved topic name a publisher
+// writes a message to; the app's "{app_id}-*" write grant covers it.
+func PersonChannelTopic(appID string, personHash string, channel string) string {
+	return appID + "-" + personHash + "-" + channel
+}
+
 // Permission is an ntfy access-grant permission level.
 type Permission string
 
@@ -48,6 +56,12 @@ func PublisherUserID(appID string) string {
 // Subscriber tokens are labeled with the app_id; publisher tokens with this
 // constant.
 const PublisherTokenLabel = "publisher"
+
+// TestNotifyTokenLabel is the token label used for the ephemeral, write-only
+// tokens minted by the admin "send test notification" flow. It is distinct
+// from PublisherTokenLabel so ProvisionApp's publisher-token rotate reset
+// (which filters on Label == "publisher") never sweeps a test-notify token.
+const TestNotifyTokenLabel = "test-notify"
 
 // UserAddArgs builds the CLI arguments creating a user. The password is
 // supplied out-of-band via the NTFY_PASSWORD environment variable.

@@ -63,6 +63,21 @@ type provisionAppResponse struct {
 	Token           string `json:"token"`
 }
 
+// testNotifyResult mirrors one entry of the /v1/test-notify results array.
+type testNotifyResult struct {
+	Recipient string `json:"recipient"`
+	UserID    string `json:"user_id"`
+	Topic     string `json:"topic"`
+	OK        bool   `json:"ok"`
+	MessageID string `json:"message_id"`
+	Error     string `json:"error"`
+}
+
+// testNotifyResponse mirrors the /v1/test-notify success body.
+type testNotifyResponse struct {
+	Results []testNotifyResult `json:"results"`
+}
+
 // ntfyMessage mirrors the subset of an ntfy cache message this test cares
 // about, as served by GET {topic}/json?poll=1&since=all (newline-delimited
 // JSON, one message per line).
@@ -81,6 +96,25 @@ type userListResponse struct {
 
 // postJSON issues a POST with a JSON body and returns the status code and body.
 func postJSON(t *testing.T, path string, payload map[string]string) (int, []byte) {
+	t.Helper()
+	encoded, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		t.Fatalf("marshaling payload: %v", marshalErr)
+	}
+	response, postErr := http.Post(apiBaseURL()+path, "application/json", bytes.NewReader(encoded))
+	if postErr != nil {
+		t.Fatalf("POST %s: %v", path, postErr)
+	}
+	defer closeBody(t, response)
+	body := readBody(t, response)
+	return response.StatusCode, body
+}
+
+// postJSONBody issues a POST with an arbitrary JSON-serializable payload and
+// returns the status code and body. Unlike postJSON (which takes a flat
+// map[string]string), this supports nested/array fields such as the
+// test-notify `recipients` list.
+func postJSONBody(t *testing.T, path string, payload any) (int, []byte) {
 	t.Helper()
 	encoded, marshalErr := json.Marshal(payload)
 	if marshalErr != nil {
@@ -503,6 +537,117 @@ func TestProvisionAppPublisherEndToEnd(t *testing.T) {
 	}
 }
 
+// TestSendTestNotificationEndToEnd exercises POST /v1/test-notify against the
+// live stack: it provisions a real subscriber, sends a test notification, and
+// proves (1) the message is actually deliverable on the subscriber's real topic
+// and (2) the ephemeral write-only token minted for the publish is revoked
+// afterwards (no residual test-notify-labeled token remains on the publisher).
+//
+// It also documents observed ntfy behavior for a second, never-provisioned
+// recipient: the ephemeral publisher's {app_id}-* write grant covers ANY topic
+// in the namespace, so ntfy accepts a publish to an unsubscribed topic and the
+// per-recipient result is ok:true. Here "delivered" means "accepted by ntfy",
+// NOT that any device is subscribed to receive it.
+func TestSendTestNotificationEndToEnd(t *testing.T) {
+	waitForHealth(t)
+	const appID = "itesttestnotify"
+	const email = "itest-test-notify-subscriber@example.com"
+	personHash := personhash.Hash(email)
+	subscriberNtfyUserID := personhash.NtfyUser(email)
+	publisherUserID := ntfycli.PublisherUserID(appID)
+	// The publisher identity is created on demand by TestNotify's idempotent
+	// identity-ensure; clean it up (and the subscriber) after the test.
+	t.Cleanup(func() { deleteUser(t, publisherUserID) })
+	t.Cleanup(func() { deleteUser(t, subscriberNtfyUserID) })
+
+	// Provision a real subscriber so a concrete person topic and a subscriber
+	// read token exist to verify deliverability against.
+	status, provisionBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "email": email})
+	if status != http.StatusOK {
+		t.Fatalf("provision status = %d, body = %s", status, provisionBody)
+	}
+	var provisionedUser provisionResponse
+	if unmarshalErr := json.Unmarshal(provisionBody, &provisionedUser); unmarshalErr != nil {
+		t.Fatalf("unmarshaling provision response: %v", unmarshalErr)
+	}
+	if provisionedUser.Token == "" {
+		t.Fatal("provision returned an empty subscriber token")
+	}
+
+	// A second recipient: a syntactically valid (16 [a-z2-7]) but
+	// never-provisioned person hash, for the partial/never-subscribed case.
+	const unprovisionedHash = "aaaaaaaaaaaaaaaa"
+
+	const message = "integration test-notify message"
+	status, testNotifyBody := postJSONBody(t, "/v1/test-notify", map[string]any{
+		"app_id":     appID,
+		"recipients": []string{personHash, unprovisionedHash},
+		"channel":    "alerts",
+		"message":    message,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("test-notify status = %d, body = %s", status, testNotifyBody)
+	}
+	var testNotify testNotifyResponse
+	if unmarshalErr := json.Unmarshal(testNotifyBody, &testNotify); unmarshalErr != nil {
+		t.Fatalf("unmarshaling test-notify response: %v", unmarshalErr)
+	}
+	if len(testNotify.Results) != 2 {
+		t.Fatalf("test-notify results len = %d, expected 2; body = %s", len(testNotify.Results), testNotifyBody)
+	}
+
+	// Recipient 0 (a real subscriber): delivered with a non-empty message id on
+	// the concrete {app_id}-{hash}-alerts topic, resolved to the subscriber user.
+	first := testNotify.Results[0]
+	wantTopic := ntfycli.PersonChannelTopic(appID, personHash, "alerts")
+	if !first.OK {
+		t.Fatalf("recipient[0].ok = false, error = %q; expected delivered", first.Error)
+	}
+	if first.MessageID == "" {
+		t.Fatal("recipient[0] delivered but message_id is empty")
+	}
+	if first.Topic != wantTopic {
+		t.Fatalf("recipient[0].topic = %q, expected %q", first.Topic, wantTopic)
+	}
+	if first.UserID != subscriberNtfyUserID {
+		t.Fatalf("recipient[0].user_id = %q, expected %q", first.UserID, subscriberNtfyUserID)
+	}
+
+	// The published message must actually be deliverable on the subscriber's
+	// real topic — read it back with the subscriber's own read token.
+	if !topicContainsMessageID(t, wantTopic, provisionedUser.Token, first.MessageID) {
+		t.Fatalf("subscriber token could not read test-notify message %s back on %s", first.MessageID, wantTopic)
+	}
+
+	// Recipient 1 (valid hash, never provisioned): documents observed ntfy
+	// behavior. The ephemeral publisher's {app_id}-* write grant covers the
+	// unused topic, so ntfy 2xxes the publish and reports ok:true — "delivered"
+	// means "accepted by ntfy", not that a device is subscribed to receive it.
+	second := testNotify.Results[1]
+	wantSecondTopic := ntfycli.PersonChannelTopic(appID, unprovisionedHash, "alerts")
+	if second.Topic != wantSecondTopic {
+		t.Fatalf("recipient[1].topic = %q, expected %q", second.Topic, wantSecondTopic)
+	}
+	if !second.OK {
+		t.Fatalf("recipient[1].ok = false, error = %q; expected ntfy to accept a publish to an "+
+			"unsubscribed but in-namespace topic (ok:true == accepted by ntfy, not device-delivered)", second.Error)
+	}
+	if second.MessageID == "" {
+		t.Fatal("recipient[1] accepted (ok:true) but message_id is empty; ntfy returns an id on a 2xx publish")
+	}
+
+	// The ephemeral write-only token minted for the publish must be revoked in
+	// the always-run cleanup: NO test-notify-labeled token may remain on the app
+	// publisher. Read the raw `ntfy token list` output for the publisher and
+	// assert the test-notify label does not appear.
+	tokenListing := runNtfyCLIInContainer(t, nil, ntfycli.TokenListArgs(publisherUserID)...)
+	if strings.Contains(tokenListing, ntfycli.TestNotifyTokenLabel) {
+		t.Fatalf("residual %q-labeled token found on %s after test-notify; the defer'd RemoveToken "+
+			"did not run or targeted the wrong token.\ntoken list output:\n%s",
+			ntfycli.TestNotifyTokenLabel, publisherUserID, tokenListing)
+	}
+}
+
 // provisioningAPIContainer is the fixed container name of the provisioning-api
 // service (per docker-compose.yml). The service bundles the ntfy CLI and shares
 // the ntfy-auth volume with the ntfy server container, so shelling into it lets
@@ -517,7 +662,11 @@ const provisioningAPIContainer = "4irl-notifs-provisioning-api"
 // Using `docker exec` against the fixed container name (rather than
 // `docker compose exec`) keeps the invocation independent of the test process's
 // working directory, which is provisioning-api/ under `make go-integration-test`.
-func runNtfyCLIInContainer(t *testing.T, hostEnv []string, ntfyArgs ...string) {
+//
+// It returns the combined stdout+stderr of the CLI invocation so a caller can
+// assert on the output (e.g. the `token list` listing). Callers that only need
+// the run-or-fail behavior may discard the returned string.
+func runNtfyCLIInContainer(t *testing.T, hostEnv []string, ntfyArgs ...string) string {
 	t.Helper()
 	dockerArgs := []string{"exec"}
 	for _, entry := range hostEnv {
@@ -532,6 +681,7 @@ func runNtfyCLIInContainer(t *testing.T, hostEnv []string, ntfyArgs ...string) {
 	if runErr != nil {
 		t.Fatalf("docker exec ntfy %v failed: %v\noutput: %s", ntfyArgs, runErr, output)
 	}
+	return string(output)
 }
 
 // grantLegacyScopedGrantViaCLI constructs a broadcast-less "legacy" subscriber —

@@ -31,9 +31,15 @@ test.describe('admin UI critical flows', () => {
     await page.goto('/');
 
     await expect(page.getByRole('heading', { name: '4IRL Notifications Admin' })).toBeVisible();
-    // exact: true — the row's actions cell has an accessible name containing
-    // "Delete u_abcdefgh23456777", which a substring match would also hit.
-    await expect(page.getByRole('cell', { name: 'u_abcdefgh23456777', exact: true })).toBeVisible();
+    // Scope to the Users section: the same user id is now mirrored in the
+    // Send-test section's scoped-rows table, so a global cell match resolves to
+    // two elements. exact: true still excludes the row's "Delete ..." actions cell.
+    const usersSection = page
+      .locator('section')
+      .filter({ has: page.getByRole('heading', { name: 'Users' }) });
+    await expect(
+      usersSection.getByRole('cell', { name: 'u_abcdefgh23456777', exact: true }),
+    ).toBeVisible();
   });
 
   test('provisioning a user reveals the returned token', async ({ page }) => {
@@ -293,5 +299,69 @@ test.describe('admin UI critical flows', () => {
       .locator('section')
       .filter({ has: page.getByRole('heading', { name: 'Unprovisioned apps' }) });
     await expect(ghostSection.getByRole('cell', { name: 'urls4irl', exact: true })).toBeVisible();
+  });
+
+  test('sends a test notification and shows a delivered result', async ({ page }) => {
+    // Two subscribers on one app so the Send-test section has scoped rows.
+    await page.route('**/v1/users', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          users: [
+            {
+              user_id: 'u_76gzqgp4byjl6dje',
+              apps: ['urls4irl'],
+              topic_patterns: ['urls4irl-76gzqgp4byjl6dje-*'],
+            },
+            {
+              user_id: 'u_4x2k9m7pqrs1twvz',
+              apps: ['urls4irl'],
+              topic_patterns: ['urls4irl-4x2k9m7pqrs1twvz-*'],
+            },
+          ],
+        }),
+      });
+    });
+    await page.route('**/people', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
+    });
+    await page.route('**/apps', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"apps":[]}' });
+    });
+    await page.route('**/v1/test-notify', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          results: [
+            {
+              recipient: '76gzqgp4byjl6dje',
+              user_id: 'u_76gzqgp4byjl6dje',
+              topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+              ok: true,
+              message_id: 'abc',
+              error: '',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/');
+
+    // Scope everything to the Send-test section (by its heading) so the mirrored
+    // user id in the Users table below never satisfies a locator by accident.
+    const sendTestSection = page
+      .locator('section')
+      .filter({ has: page.getByRole('heading', { name: 'Send test notification' }) });
+
+    // targetApp defaults to the only sorted option (urls4irl) once users load.
+    await expect(sendTestSection.getByLabel('Target app')).toHaveValue('urls4irl');
+
+    await sendTestSection.getByRole('checkbox', { name: 'Select u_76gzqgp4byjl6dje' }).check();
+    await sendTestSection.getByRole('button', { name: 'Send test notification' }).click();
+
+    await expect(sendTestSection.getByText('Delivered')).toBeVisible();
   });
 });
