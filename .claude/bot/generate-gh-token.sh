@@ -8,5 +8,7 @@
 # `.claude/bot/generate-gh-token.sh` and still gets a valid `ghs_` token, just
 # minted from the shared App. GH_APP_REPO pins resolution to this repo regardless
 # of the caller's CWD. Tokens expire after 1 hour. No App-specific IDs live here
-# (safe for a public repo); the private key lives at ~/.claude/, outside the repo.
-exec env GH_APP_REPO="4IRL/4irl-notifs" "$HOME/.claude/generate-gh-token.sh"
+# (safe for a public repo). The real generator is TRACKED in the stronghold
+# (~/code/.claude/scripts/generate-gh-token.sh); only the private key lives at
+# ~/.claude/, outside every repo.
+exec env GH_APP_REPO="4IRL/4irl-notifs" "$HOME/code/.claude/scripts/generate-gh-token.sh"
