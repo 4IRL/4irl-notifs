@@ -212,6 +212,40 @@ write-only publisher token, publishes the message to each recipient's `{app_id}-
 topic, then revokes the token in an always-run cleanup; per-recipient failures are reported inside a 200
 response. Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
 
+### Scheduling & time-based notifications are app-owned — notifs stays a dumb pipe
+
+**Decision:** 4irl-notifs does **not** schedule notifications and holds **no** cron, timer, or
+schedule registry. Each consuming app **implements its own scheduler and its own decision logic**,
+and publishes app-direct to ntfy (publisher token) when it decides to. Two kinds of trigger, both
+app-side:
+
+- **Immediate / event-driven** — an app event happens (a chore completed, a member joined a UTub);
+  the app publishes right then. No clock involved.
+- **Time-based / scheduled** — "is anything due / overdue / worth a daily digest?" is the passage of
+  time, which no event fires for. The app runs its **own** periodic sweep (its own cron), decides
+  who to notify, dedups, and publishes. The clock, the domain logic, and the dedup/high-watermark
+  cursor all live **in the app**, never here.
+
+**Why 4irl-notifs stays out of it:** every current 4IRL consumer can already schedule itself —
+`tasktracker`/chore-reaper runs a `scheduled()` sweep on its own Cloudflare Worker (native Cron
+Triggers, in the same Worker as its API); `urls4irl` is an always-on Flask app that crons itself
+trivially. A centralized scheduler here would serve only a hypothetical app that needs scheduled
+sends **yet cannot run any cron of its own** — currently an empty set. Building it now is
+speculative (YAGNI), and it would drag notifs into the delivery/decision path it is deliberately out
+of. The invariant to protect: **4irl-notifs never learns an app's domain** (chores, URLs, due dates,
+UTubs) — it provisions identities/tokens and pipes bytes to ntfy; *what* to send and *when* is
+always the app's job.
+
+**If a can't-cron app ever onboards** (the escape hatch, documented so it isn't re-derived — **not**
+built until there's a real consumer): add a schedule registry (a new `person-service` D1 table) + a
+single coarse cron tick (`[triggers].crons` + a `scheduled()` handler on the person-service Worker)
+that **fans in identical schedules** (one row-set per `(cron, tz)`, not per user) and makes one
+**signed, batched outbound callback** per fire-bucket to the app's registered URL. Even then the app
+still owns the decision and the publish — notifs would supply only the clock, never the domain
+logic. Quantize any such schedules to a fixed grid (e.g. 5-minute buckets) so distinct fire moments
+stay bounded and one cron trigger covers unbounded schedules (Workers free tier caps triggers at 3
+per Worker — a non-issue only because the tick is a clock, not the registry).
+
 ---
 
 ## Client delivery & iOS push
