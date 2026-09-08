@@ -164,6 +164,12 @@ Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABL
 | **Publisher**  | `POST /v1/provision-app {app_id}`   | write-only `{app_id}-*`              | app backend (one per app) |
 | **Subscriber** | `POST /v1/provision {app_id,email}` | read-only `{app_id}-{person_hash}-*` | end-user client           |
 
+- **Subscriber auth — token vs. password.** The subscriber token (above) is what an app hands a
+  programmatic/Android client to subscribe. **iOS is different:** the ntfy iOS app's subscribe screen has
+  **no token field**, so an iOS subscriber logs into the ntfy app with a **username + password** —
+  `u_<person_hash>` + a **self-chosen password** the app sets for them via `POST /v1/set-password`. The
+  ntfy access token is therefore Android/programmatic-only; iOS relies on the password path. (Same ntfy
+  user either way — the password and the token are two auth methods onto the one `u_<person_hash>` identity.)
 - **Topics:** `{app_id}-{person_hash}-{channel}` (app picks `{channel}`). Publisher writes any
   `{app_id}-*`; subscriber reads its own `{app_id}-{person_hash}-*`.
 - **Broadcast topic:** `{app_id}-broadcast` — one shared per-app topic for site-wide / maintenance
@@ -201,8 +207,9 @@ graph LR
 
 ### provisioning-api endpoints (`notifs-api.4irl.app`, all Service-Auth gated)
 
-`POST /v1/provision` · `POST /v1/deprovision` · `GET /v1/users` · `DELETE /v1/users/{user_id}` ·
-`POST /v1/provision-app` · `POST /v1/deprovision-app` · `POST /v1/test-notify` · `GET /healthz`. Bodies +
+`POST /v1/provision` · `POST /v1/deprovision` · `POST /v1/set-password` · `GET /v1/users` ·
+`DELETE /v1/users/{user_id}` · `POST /v1/provision-app` · `POST /v1/deprovision-app` ·
+`POST /v1/test-notify` · `GET /healthz`. Bodies +
 responses are JSON; errors `{ "error": … }`. Notes: `DELETE /v1/users/{id}` is idempotent (200 even when
 the ntfy user is already gone; it also dual-deletes the person row). `POST /v1/provision-app` takes an
 optional `rotate` (default false = additive mint; true = revoke existing publisher tokens then mint one).
@@ -210,7 +217,12 @@ optional `rotate` (default false = additive mint; true = revoke existing publish
 registry row). `POST /v1/test-notify {app_id, recipients, channel?, message?}` mints an ephemeral
 write-only publisher token, publishes the message to each recipient's `{app_id}-{person_hash}-{channel}`
 topic, then revokes the token in an always-run cleanup; per-recipient failures are reported inside a 200
-response. Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
+response. `POST /v1/set-password {app_id, email, password}` → `{user_id, app_id, updated}` sets a person's
+ntfy password (via `ntfy user change-pass`) so they can log into the ntfy iOS app directly with
+`u_<person_hash>` + that password; the user must already be provisioned (missing user → `404
+{"error":"user does not exist"}`), the password is validated at 8–128 chars (`400 {"error":"invalid
+password"}`), and like every `/v1/*` route it is Service-Auth gated at the edge (no Go-level auth). Full
+contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
 
 ### Scheduling & time-based notifications are app-owned — notifs stays a dumb pipe
 
@@ -275,6 +287,13 @@ https scheme, no trailing slash. The APNs wake-up references the server by `base
 server URL differs at all, it can't correlate the wake to a subscription and silently fetches nothing.
 (`base-url` is `http://localhost:8090` in the committed file for local dev; prod overrides it to
 `https://notifs.4irl.app` via `NTFY_BASE_URL`.)
+
+**iOS login is username+password, not a token.** Unlike Android/programmatic clients (which subscribe
+with the subscriber token), the ntfy iOS app's subscribe screen has no token field — an iOS user signs
+in with **`u_<person_hash>` + a self-chosen password**, which the app sets for them via `POST
+/v1/set-password` (see the endpoint inventory and `docs/app-integration-guide.md`). So the integration
+step for iOS is: provision the subscriber, then call `set-password` so they have a credential to log in
+with; the subscriber access token remains Android/programmatic-only.
 
 **Retention:** `cache-duration: 24h` — a client offline, or an iOS device fetching after a delayed
 wake, backfills missed messages via `since=` for up to 24h.

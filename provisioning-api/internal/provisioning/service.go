@@ -2,9 +2,9 @@
 // notification hub: one global ntfy user per person, derived from an
 // email-hash identity shared by every 4IRL app, with a scoped read-only
 // topic ACL ("{app_id}-{personHash}-*") plus one app-labeled access token
-// granted per app the person is provisioned into. The person never
-// authenticates with the ntfy password; consuming apps store the issued
-// token.
+// granted per app the person is provisioned into. Most consuming apps
+// authenticate via the issued token; a person may separately set an ntfy
+// password (via Service.SetPassword) to log into the ntfy iOS app directly.
 package provisioning
 
 import (
