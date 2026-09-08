@@ -42,6 +42,8 @@ type ProvisioningService interface {
 	// message to each recipient's concrete topic, then revokes the token,
 	// returning a per-recipient delivered/failed result.
 	TestNotify(ctx context.Context, request provisioning.TestNotifyRequest) (provisioning.TestNotifyResult, error)
+	// SetPassword changes the identified person's ntfy password.
+	SetPassword(ctx context.Context, request provisioning.SetPasswordRequest) (provisioning.SetPasswordResult, error)
 }
 
 // ServerConfig configures a Server. Service is required; Logger defaults to
@@ -92,6 +94,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /v1/provision-app", server.handleProvisionApp)
 	server.mux.HandleFunc("POST /v1/deprovision-app", server.handleDeprovisionApp)
 	server.mux.HandleFunc("POST /v1/test-notify", server.handleTestNotify)
+	server.mux.HandleFunc("POST /v1/set-password", server.handleSetPassword)
 }
 
 // handleHealthz responds 200 with a plain-text "ok" body for liveness checks.
@@ -508,4 +511,60 @@ func (server *Server) handleTestNotify(responseWriter http.ResponseWriter, reque
 	}
 
 	writeJSON(responseWriter, http.StatusOK, testNotifyResponseBody{Results: results})
+}
+
+// setPasswordRequestBody is the JSON body for POST /v1/set-password.
+type setPasswordRequestBody struct {
+	AppID    string `json:"app_id"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// setPasswordResponseBody is the JSON response for a successful password change.
+type setPasswordResponseBody struct {
+	UserID  string `json:"user_id"`
+	AppID   string `json:"app_id"`
+	Updated bool   `json:"updated"`
+}
+
+// handleSetPassword decodes the request body, validates app_id, email, and the
+// caller-supplied password (in that order), delegates to Service.SetPassword,
+// and confirms the change as JSON. A missing user surfaces ntfycli.ErrNotFound
+// through writeServiceError as a 404.
+func (server *Server) handleSetPassword(responseWriter http.ResponseWriter, request *http.Request) {
+	var requestBody setPasswordRequestBody
+	if decodeErr := json.NewDecoder(request.Body).Decode(&requestBody); decodeErr != nil {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	// app_id is validated before email before password: when several are
+	// invalid, the caller sees them in that fixed order.
+	if !validateAppID(requestBody.AppID) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
+		return
+	}
+	if !validateEmail(requestBody.Email) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid email"})
+		return
+	}
+	if !validatePassword(requestBody.Password) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid password"})
+		return
+	}
+
+	result, setPasswordErr := server.service.SetPassword(request.Context(), provisioning.SetPasswordRequest{
+		AppID:    requestBody.AppID,
+		Email:    requestBody.Email,
+		Password: requestBody.Password,
+	})
+	if setPasswordErr != nil {
+		server.writeServiceError(responseWriter, request, setPasswordErr)
+		return
+	}
+
+	writeJSON(responseWriter, http.StatusOK, setPasswordResponseBody{
+		UserID:  result.UserID,
+		AppID:   requestBody.AppID,
+		Updated: true,
+	})
 }
