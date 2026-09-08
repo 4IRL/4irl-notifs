@@ -166,6 +166,28 @@ func readStatus(t *testing.T, topic string, token string) int {
 	return response.StatusCode
 }
 
+// readStatusWithBasicAuth issues a poll-all GET against a topic authenticating
+// with an ntfy username+password via HTTP Basic-Auth (the exact credential the
+// ntfy iOS app logs in with — u_<person_hash> + a self-chosen password) and
+// returns the ntfy HTTP status (200 authorized to read, 401/403 denied). It
+// mirrors readStatus but swaps the Bearer access-token header for Basic-Auth, so
+// it exercises the username+password auth mechanism the set-password endpoint
+// enables rather than the token auth used by the other read helpers.
+func readStatusWithBasicAuth(t *testing.T, topic string, username string, password string) int {
+	t.Helper()
+	request, buildErr := http.NewRequest(http.MethodGet, ntfyURL()+"/"+topic+"/json?poll=1&since=all", nil)
+	if buildErr != nil {
+		t.Fatalf("building read request: %v", buildErr)
+	}
+	request.SetBasicAuth(username, password)
+	response, readErr := http.DefaultClient.Do(request)
+	if readErr != nil {
+		t.Fatalf("reading %s: %v", topic, readErr)
+	}
+	defer closeBody(t, response)
+	return response.StatusCode
+}
+
 // publishStatus publishes a message to a topic with a bearer token and returns
 // the ntfy HTTP status (200 authorized, 403/401 denied).
 func publishStatus(t *testing.T, topic string, token string) int {
@@ -905,6 +927,74 @@ func TestDeprovisionAppRemovesBroadcastOnlyRemnantEndToEnd(t *testing.T) {
 	}
 	if userIsListed(t, remnantNtfyUserID) {
 		t.Fatalf("broadcast-only remnant %q still listed after deprovision-app; cascade did not tear it down", remnantNtfyUserID)
+	}
+}
+
+// TestSetPasswordChangesNtfyPassword proves POST /v1/set-password actually
+// changes a subscriber's ntfy password end-to-end against the live stack. The
+// ONE and ONLY accepted proof of success is that an HTTP Basic-Auth read with
+// the NEW credential succeeds (200) — the exact mechanism the ntfy iOS app uses
+// to log in with u_<person_hash> + a self-chosen password. It also confirms the
+// OLD password no longer authenticates, and that set-password on an
+// un-provisioned email returns 404 {"error":"user does not exist"}.
+func TestSetPasswordChangesNtfyPassword(t *testing.T) {
+	waitForHealth(t)
+	const email = "itest-setpw@example.com"
+	const appID = "itestsetpw"
+	const oldPassword = "old-sekrit-password"
+	const newPassword = "new-sekrit-password"
+	personHash := personhash.Hash(email)
+	ntfyUserID := personhash.NtfyUser(email)
+	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
+
+	// Provision the subscriber so the u_<hash> user exists AND holds a read grant
+	// on its own scoped topic pattern — the Basic-Auth read below is then an
+	// authorization success (200), not a 403 on an ungranted topic.
+	status, provisionBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "email": email})
+	if status != http.StatusOK {
+		t.Fatalf("provision status = %d, body = %s", status, provisionBody)
+	}
+	ownTopic := appID + "-" + personHash + "-test"
+
+	// Set a KNOWN old password via the endpoint under test (provision mints an
+	// unknown throwaway), establishing a baseline the "old no longer works"
+	// assertion can rest on.
+	status, setOldBody := postJSON(t, "/v1/set-password", map[string]string{"app_id": appID, "email": email, "password": oldPassword})
+	if status != http.StatusOK {
+		t.Fatalf("set-password (old) status = %d, body = %s", status, setOldBody)
+	}
+	if withOld := readStatusWithBasicAuth(t, ownTopic, ntfyUserID, oldPassword); withOld != http.StatusOK {
+		t.Fatalf("Basic-Auth read with old password status = %d, expected 200 (baseline that the old credential worked)", withOld)
+	}
+
+	// Change to the NEW password.
+	status, setNewBody := postJSON(t, "/v1/set-password", map[string]string{"app_id": appID, "email": email, "password": newPassword})
+	if status != http.StatusOK {
+		t.Fatalf("set-password (new) status = %d, body = %s", status, setNewBody)
+	}
+
+	// THE proof: a Basic-Auth read with the NEW credential succeeds (200).
+	if withNew := readStatusWithBasicAuth(t, ownTopic, ntfyUserID, newPassword); withNew != http.StatusOK {
+		t.Fatalf("Basic-Auth read with new password status = %d, expected 200 (the set-password change did not take effect)", withNew)
+	}
+
+	// The OLD credential must no longer authenticate: the same topic returned 200
+	// with it moments ago (baseline above), and only the password changed, so a
+	// bad-credential auth denial (401/403) is the precise expected outcome — assert
+	// that explicitly rather than "any non-200" so a spurious 5xx cannot pass.
+	if withOld := readStatusWithBasicAuth(t, ownTopic, ntfyUserID, oldPassword); withOld != http.StatusUnauthorized && withOld != http.StatusForbidden {
+		t.Fatalf("Basic-Auth read with old password status = %d, expected 401 or 403 (old credential should have been overwritten)", withOld)
+	}
+
+	// set-password on an un-provisioned email → 404 {"error":"user does not exist"}.
+	const unprovisionedEmail = "itest-setpw-missing@example.com"
+	t.Cleanup(func() { deleteUser(t, personhash.NtfyUser(unprovisionedEmail)) })
+	status, missingBody := postJSON(t, "/v1/set-password", map[string]string{"app_id": appID, "email": unprovisionedEmail, "password": newPassword})
+	if status != http.StatusNotFound {
+		t.Fatalf("set-password for un-provisioned email status = %d, expected 404; body = %s", status, missingBody)
+	}
+	if !strings.Contains(string(missingBody), "user does not exist") {
+		t.Fatalf("set-password 404 body = %s, expected it to contain %q", missingBody, "user does not exist")
 	}
 }
 
