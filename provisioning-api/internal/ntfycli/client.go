@@ -121,6 +121,12 @@ func (client *Client) AddUser(ctx context.Context, userID string, password strin
 	return runErr
 }
 
+// ChangePassword sets userID's password (passed via NTFY_PASSWORD, never argv).
+func (client *Client) ChangePassword(ctx context.Context, userID string, password string) error {
+	_, runErr := client.run(ctx, UserChangePassArgs(userID), []string{"NTFY_PASSWORD=" + password})
+	return runErr
+}
+
 // DeleteUser removes a user; ntfy also drops the user's ACL entries and tokens.
 func (client *Client) DeleteUser(ctx context.Context, userID string) error {
 	_, runErr := client.run(ctx, UserDeleteArgs(userID), nil)
