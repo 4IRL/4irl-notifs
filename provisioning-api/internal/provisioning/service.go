@@ -24,6 +24,7 @@ import (
 // NtfyClient is the subset of the ntfy CLI client the service depends on.
 type NtfyClient interface {
 	AddUser(ctx context.Context, userID string, password string) error
+	ChangePassword(ctx context.Context, userID string, password string) error
 	DeleteUser(ctx context.Context, userID string) error
 	GrantAccess(ctx context.Context, userID string, topicPattern string, permission ntfycli.Permission) error
 	ResetAccess(ctx context.Context, userID string, topicPattern string) error
@@ -118,6 +119,33 @@ type ProvisionResult struct {
 	// TopicPattern and discoverability by consuming apps.
 	BroadcastTopic string
 	Token          string
+}
+
+// SetPasswordRequest identifies the person (by email) whose ntfy password
+// is being changed to Password. AppID rides along for parity/logging (the
+// ntfy password is global per person, so the service body uses only Email
+// and Password).
+type SetPasswordRequest struct {
+	AppID    string
+	Email    string
+	Password string
+}
+
+// SetPasswordResult is returned to the caller; UserID is the derived ntfy
+// username whose password was changed.
+type SetPasswordResult struct {
+	UserID string
+}
+
+// SetPassword changes the person's ntfy password via the CLI, deriving
+// their ntfy user id from the email. The user must already exist (a
+// missing user propagates ntfycli.ErrNotFound).
+func (service *Service) SetPassword(ctx context.Context, request SetPasswordRequest) (SetPasswordResult, error) {
+	ntfyUserID := personhash.NtfyUser(request.Email)
+	if changePassErr := service.client.ChangePassword(ctx, ntfyUserID, request.Password); changePassErr != nil {
+		return SetPasswordResult{}, changePassErr
+	}
+	return SetPasswordResult{UserID: ntfyUserID}, nil
 }
 
 // Provision ensures the person's global ntfy user exists, grants a scoped
