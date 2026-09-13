@@ -1206,8 +1206,9 @@ func TestSetPasswordHappyPath(testInstance *testing.T) {
 }
 
 // TestSetPasswordValidationRejections verifies POST /v1/set-password rejects
-// malformed JSON and each invalid field in app_id→email→password order with
-// the exact 400 error body, and never calls Service.SetPassword.
+// malformed JSON, an empty body, and each invalid field in
+// app_id→email→password order with the exact 400 error body, and never calls
+// Service.SetPassword.
 func TestSetPasswordValidationRejections(testInstance *testing.T) {
 	testCases := []struct {
 		name    string
@@ -1215,6 +1216,7 @@ func TestSetPasswordValidationRejections(testInstance *testing.T) {
 		wantMsg string
 	}{
 		{name: "malformed JSON", body: `{"app_id":"tasktracker",`, wantMsg: "invalid JSON body"},
+		{name: "empty body", body: "", wantMsg: "invalid JSON body"},
 		{name: "invalid app_id", body: fmt.Sprintf(`{"app_id":"My-App","email":%q,"password":"sekrit-pw"}`, aliceEmail), wantMsg: "invalid app_id"},
 		{name: "invalid email", body: `{"app_id":"tasktracker","email":"not-an-email","password":"sekrit-pw"}`, wantMsg: "invalid email"},
 		{name: "empty password", body: fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":""}`, aliceEmail), wantMsg: "invalid password"},
