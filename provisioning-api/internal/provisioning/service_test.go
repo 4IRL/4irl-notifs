@@ -665,41 +665,6 @@ func TestDeleteUserDelegatesToClient(t *testing.T) {
 	}
 }
 
-func TestSetPasswordDelegatesToClient(t *testing.T) {
-	client := &fakeNtfyClient{}
-	service := newTestService(client)
-
-	result, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"})
-	if err != nil {
-		t.Fatalf("SetPassword returned unexpected error: %v", err)
-	}
-	if result.UserID != aliceNtfyUser {
-		t.Fatalf("result.UserID = %q, expected %q", result.UserID, aliceNtfyUser)
-	}
-	if got := strings.Join(client.invocations, " | "); got != fmt.Sprintf("ChangePassword(%s,pw=sekrit-pw)", aliceNtfyUser) {
-		t.Fatalf("invocations = %s, expected ChangePassword(%s,pw=sekrit-pw)", got, aliceNtfyUser)
-	}
-}
-
-func TestSetPasswordPropagatesClientError(t *testing.T) {
-	client := &fakeNtfyClient{changePasswordErr: errors.New("boom")}
-	service := newTestService(client)
-
-	if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err == nil {
-		t.Fatal("expected the ChangePassword error to propagate")
-	}
-}
-
-func TestSetPasswordPropagatesNotFound(t *testing.T) {
-	client := &fakeNtfyClient{changePasswordErr: fmt.Errorf("ntfy user: %w: no such user", ntfycli.ErrNotFound)}
-	service := newTestService(client)
-
-	_, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"})
-	if !errors.Is(err, ntfycli.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound to propagate, got: %v", err)
-	}
-}
-
 func newTestServiceWithPersonClient(client *fakeNtfyClient, personClient *fakePersonClient) *Service {
 	return NewService(ServiceConfig{
 		Client:           client,
@@ -766,6 +731,41 @@ func TestDeleteUserSkipsDualDeleteForNonPersonUser(t *testing.T) {
 	}
 	if len(personClient.invocations) != 0 {
 		t.Fatalf("non-person user must not trigger a person dual-delete, got: %v", personClient.invocations)
+	}
+}
+
+func TestSetPasswordDelegatesToClient(t *testing.T) {
+	client := &fakeNtfyClient{}
+	service := newTestService(client)
+
+	result, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"})
+	if err != nil {
+		t.Fatalf("SetPassword returned unexpected error: %v", err)
+	}
+	if result.UserID != aliceNtfyUser {
+		t.Fatalf("result.UserID = %q, expected %q", result.UserID, aliceNtfyUser)
+	}
+	if got := strings.Join(client.invocations, " | "); got != fmt.Sprintf("ChangePassword(%s,pw=sekrit-pw)", aliceNtfyUser) {
+		t.Fatalf("invocations = %s, expected ChangePassword(%s,pw=sekrit-pw)", got, aliceNtfyUser)
+	}
+}
+
+func TestSetPasswordPropagatesClientError(t *testing.T) {
+	client := &fakeNtfyClient{changePasswordErr: errors.New("boom")}
+	service := newTestService(client)
+
+	if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err == nil {
+		t.Fatal("expected the ChangePassword error to propagate")
+	}
+}
+
+func TestSetPasswordPropagatesNotFound(t *testing.T) {
+	client := &fakeNtfyClient{changePasswordErr: fmt.Errorf("ntfy user: %w: no such user", ntfycli.ErrNotFound)}
+	service := newTestService(client)
+
+	_, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"})
+	if !errors.Is(err, ntfycli.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound to propagate, got: %v", err)
 	}
 }
 
