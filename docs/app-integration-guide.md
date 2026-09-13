@@ -230,6 +230,52 @@ departed user stops receiving broadcasts.
 
 ---
 
+## iOS subscriber login — set a password
+
+The subscriber token (Step 2/Step 4) is what a **programmatic or Android** client uses to subscribe.
+**iOS is different:** the ntfy iOS app's subscribe screen has **no token field** — an iOS user signs into
+the ntfy app with a **username + password**, not a token. The username is the derived ntfy user id
+`u_<person_hash>` (the `user_id` from `/v1/provision`); the password is one **your app sets for them** via
+`POST /v1/set-password`. So for any user who will subscribe on iOS, provision them first, then let them
+choose a password and call this endpoint.
+
+```
+POST https://notifs-api.4irl.app/v1/set-password
+Content-Type: application/json
+CF-Access-Client-Id: <id>
+CF-Access-Client-Secret: <secret>
+
+{ "app_id": "urls4irl", "email": "alice@example.com", "password": "her-chosen-password" }
+```
+
+Response:
+
+```json
+{
+  "user_id": "u_v4sf4e5teivpe3zi",
+  "app_id": "urls4irl",
+  "updated": true
+}
+```
+
+The user then logs into the ntfy iOS app with **username `u_v4sf4e5teivpe3zi` + that password** (after
+setting the Default Server to `https://notifs.4irl.app`, see below), and their existing read ACL lets
+them subscribe to their own `{app_id}-{person_hash}-*` topics and `{app_id}-broadcast`.
+
+**Rules:**
+- **Provision first.** The user must already exist (from `POST /v1/provision`); setting a password on an
+  un-provisioned email returns `404 { "error": "user does not exist" }`. You cannot set a password on a
+  user that hasn't been created.
+- **Password policy: 8–128 characters.** Anything shorter/longer/empty →
+  `400 { "error": "invalid password" }`. The password is used verbatim (no trimming). Collect it from the
+  user; do not reuse the subscriber token as a password.
+- **Re-callable.** `change-pass` overwrites the existing password, so calling `set-password` again just
+  resets it — use this for a "change my ntfy password" flow.
+- **Android/programmatic clients don't need this** — they authenticate with the subscriber token. Only the
+  iOS app (and any other username+password ntfy client) needs a password set.
+
+---
+
 ## Usage recommendations (this deployment)
 
 The 5 steps above are the mechanics; this is how to use them well against `notifs.4irl.app`.
@@ -275,6 +321,7 @@ All calls require the two `CF-Access-Client-*` headers. All bodies + responses a
 | `POST /v1/provision-app`     | `{ "app_id", "rotate"? }`                                | `{ app_id, publisher_user_id, topic_pattern, token }`                     |
 | `POST /v1/provision`         | `{ "app_id", "email" }`                                  | `{ user_id, app_id, person_hash, topic_pattern, broadcast_topic, token }` |
 | `POST /v1/deprovision`       | `{ "app_id", "email" }` **or** `{ "app_id", "user_id" }` | `{ user_id, app_id, removed }`                                            |
+| `POST /v1/set-password`      | `{ "app_id", "email", "password" }`                      | `{ user_id, app_id, updated }`                                            |
 | `POST /v1/deprovision-app`   | `{ "app_id" }`                                           | `{ app_id, removed }`                                                     |
 | `GET /v1/users`              | —                                                        | `{ users: [{ user_id, apps, topic_patterns }] }`                          |
 | `DELETE /v1/users/{user_id}` | —                                                        | `{ user_id, deleted }`                                                    |
@@ -293,6 +340,13 @@ Notes:
 - **`DELETE /v1/users/{user_id}` is idempotent**: it returns `200 { user_id, deleted: true }` even when
   the ntfy user is already gone (it no longer `404`s for an absent user), and it also removes the
   person-service reverse-index row. Do not branch on a `404` from this endpoint.
+- **`POST /v1/set-password`** sets a person's ntfy password so they can log into the ntfy **iOS** app
+  directly (username + password — see "iOS subscriber login" below). The user **must already be
+  provisioned**: setting a password on a not-yet-provisioned email returns `404 { "error": "user does not
+  exist" }`. The password is validated at **8–128 characters** (`400 { "error": "invalid password" }`
+  otherwise; `app_id` and `email` are validated first, in that order). `change-pass` overwrites any
+  existing password, so calling it again simply resets the credential. The response `{ user_id, app_id,
+  updated }` echoes the derived `user_id` (`u_<person_hash>`) with `updated: true`.
 - `POST /v1/deprovision-app` fully removes an app: its publisher identity, every subscriber's grant for
   the app, and the app-registry row. It is idempotent.
 - `GET /v1/users`, `DELETE /v1/users/{user_id}`, and `/v1/deprovision-app` are cross-app management
@@ -321,6 +375,8 @@ Notes:
 - [ ] (Optional) Site-wide announcements: publish to `{app_id}-broadcast` with the publisher token;
       clients subscribe to `{app_id}-broadcast` (read grant added automatically at provision, returned as `broadcast_topic`).
 - [ ] On opt-out / account deletion: call `POST /v1/deprovision`.
+- [ ] iOS users: call `POST /v1/set-password` (after provisioning) so they have a username+password to log
+      into the ntfy iOS app with (`u_<person_hash>` + the password) — the iOS app has no token field.
 - [ ] iOS users: ntfy app **Default Server** set to exactly `https://notifs.4irl.app` (else silent no-delivery).
 - [ ] Bulk/periodic sender: publisher rate-limit raised/exempted by operator; many-per-user sends coalesced into a digest.
 - [ ] All mint responses (`token`) are captured on first response — they are never re-shown.

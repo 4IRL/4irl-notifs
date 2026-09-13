@@ -46,6 +46,10 @@ type fakeProvisioningService struct {
 	testNotifyResult provisioning.TestNotifyResult
 	testNotifyErr    error
 	testNotifyCalls  []provisioning.TestNotifyRequest
+
+	setPasswordResult provisioning.SetPasswordResult
+	setPasswordErr    error
+	setPasswordCalls  []provisioning.SetPasswordRequest
 }
 
 // Provision records the request and returns the preconfigured result/error.
@@ -88,6 +92,12 @@ func (fake *fakeProvisioningService) DeprovisionApp(_ context.Context, request p
 func (fake *fakeProvisioningService) TestNotify(_ context.Context, request provisioning.TestNotifyRequest) (provisioning.TestNotifyResult, error) {
 	fake.testNotifyCalls = append(fake.testNotifyCalls, request)
 	return fake.testNotifyResult, fake.testNotifyErr
+}
+
+// SetPassword records the request and returns the preconfigured result/error.
+func (fake *fakeProvisioningService) SetPassword(_ context.Context, request provisioning.SetPasswordRequest) (provisioning.SetPasswordResult, error) {
+	fake.setPasswordCalls = append(fake.setPasswordCalls, request)
+	return fake.setPasswordResult, fake.setPasswordErr
 }
 
 // aliceEmail/aliceHash/aliceNtfyUser are the golden-vector-derived identity
@@ -1156,6 +1166,141 @@ func TestTestNotifyNotFoundMapsTo404(testInstance *testing.T) {
 	wantBody := `{"error":"user does not exist"}` + "\n"
 	if body := recorder.Body.String(); body != wantBody {
 		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+}
+
+// TestSetPasswordHappyPath verifies POST /v1/set-password calls
+// Service.SetPassword with the decoded app_id/email/password and returns
+// the derived user_id, echoed app_id, and updated:true as JSON.
+func TestSetPasswordHappyPath(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{
+		setPasswordResult: provisioning.SetPasswordResult{UserID: aliceNtfyUser},
+	}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":"sekrit-pw"}`, aliceEmail))
+	request := httptest.NewRequest(http.MethodPost, "/v1/set-password", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if contentType := recorder.Header().Get("Content-Type"); contentType != "application/json" {
+		testInstance.Fatalf("Content-Type = %q, want %q", contentType, "application/json")
+	}
+
+	wantCall := provisioning.SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}
+	if len(fakeService.setPasswordCalls) != 1 || fakeService.setPasswordCalls[0] != wantCall {
+		testInstance.Fatalf("setPasswordCalls = %+v, want [%+v]", fakeService.setPasswordCalls, wantCall)
+	}
+
+	var responseBody map[string]any
+	if decodeErr := json.Unmarshal(recorder.Body.Bytes(), &responseBody); decodeErr != nil {
+		testInstance.Fatalf("failed to decode response body: %v", decodeErr)
+	}
+	if responseBody["user_id"] != aliceNtfyUser || responseBody["app_id"] != "tasktracker" || responseBody["updated"] != true {
+		testInstance.Fatalf("response = %+v, want user_id=%s app_id=tasktracker updated=true", responseBody, aliceNtfyUser)
+	}
+}
+
+// TestSetPasswordValidationRejections verifies POST /v1/set-password rejects
+// malformed JSON, an empty body, and each invalid field in
+// app_id→email→password order with the exact 400 error body, and never calls
+// Service.SetPassword.
+func TestSetPasswordValidationRejections(testInstance *testing.T) {
+	testCases := []struct {
+		name    string
+		body    string
+		wantMsg string
+	}{
+		{name: "malformed JSON", body: `{"app_id":"tasktracker",`, wantMsg: "invalid JSON body"},
+		{name: "empty body", body: "", wantMsg: "invalid JSON body"},
+		{name: "invalid app_id", body: fmt.Sprintf(`{"app_id":"My-App","email":%q,"password":"sekrit-pw"}`, aliceEmail), wantMsg: "invalid app_id"},
+		{name: "invalid email", body: `{"app_id":"tasktracker","email":"not-an-email","password":"sekrit-pw"}`, wantMsg: "invalid email"},
+		{name: "empty password", body: fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":""}`, aliceEmail), wantMsg: "invalid password"},
+		{name: "too-short password", body: fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":"short"}`, aliceEmail), wantMsg: "invalid password"},
+		{name: "too-long password", body: fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":%q}`, aliceEmail, strings.Repeat("a", 129)), wantMsg: "invalid password"},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			fakeService := &fakeProvisioningService{}
+			server := NewServer(ServerConfig{Service: fakeService})
+
+			request := httptest.NewRequest(http.MethodPost, "/v1/set-password", strings.NewReader(testCase.body))
+			recorder := httptest.NewRecorder()
+
+			server.Handler().ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				subTest.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+			}
+			wantBody := `{"error":"` + testCase.wantMsg + `"}` + "\n"
+			if body := recorder.Body.String(); body != wantBody {
+				subTest.Fatalf("body = %q, want %q", body, wantBody)
+			}
+			if len(fakeService.setPasswordCalls) != 0 {
+				subTest.Fatalf("setPasswordCalls = %+v, want none (validation should short-circuit)", fakeService.setPasswordCalls)
+			}
+		})
+	}
+}
+
+// TestSetPasswordNotFoundMapsTo404 verifies that when Service.SetPassword
+// returns an error wrapping ntfycli.ErrNotFound (the user does not exist),
+// the handler responds 404 {"error":"user does not exist"}.
+func TestSetPasswordNotFoundMapsTo404(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{
+		setPasswordErr: fmt.Errorf("ntfy user: %w: no such user", ntfycli.ErrNotFound),
+	}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":"sekrit-pw"}`, aliceEmail))
+	request := httptest.NewRequest(http.MethodPost, "/v1/set-password", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	wantBody := `{"error":"user does not exist"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+}
+
+// TestSetPasswordGenericErrorMapsTo500 verifies a generic (non-ErrNotFound)
+// service error maps to 500 {"error":"internal error"}, never leaks the real
+// error text into the response body, and IS logged via the configured logger.
+func TestSetPasswordGenericErrorMapsTo500(testInstance *testing.T) {
+	const secretErrText = "connection refused to database at 10.0.0.5:9999 with credential xyz"
+
+	fakeService := &fakeProvisioningService{setPasswordErr: errors.New(secretErrText)}
+	var logBuffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
+	server := NewServer(ServerConfig{Service: fakeService, Logger: logger})
+
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":"sekrit-pw"}`, aliceEmail))
+	request := httptest.NewRequest(http.MethodPost, "/v1/set-password", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
+	}
+	wantBody := `{"error":"internal error"}` + "\n"
+	if body := recorder.Body.String(); body != wantBody {
+		testInstance.Fatalf("body = %q, want %q", body, wantBody)
+	}
+	if strings.Contains(recorder.Body.String(), secretErrText) {
+		testInstance.Fatalf("response body leaked the real error text: %s", recorder.Body.String())
+	}
+	if !strings.Contains(logBuffer.String(), secretErrText) {
+		testInstance.Fatalf("log output = %q, want it to contain the real error text %q", logBuffer.String(), secretErrText)
 	}
 }
 

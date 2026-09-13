@@ -141,3 +141,25 @@ func TestValidateNtfyUserID(t *testing.T) {
 		})
 	}
 }
+
+func TestValidatePassword(t *testing.T) {
+	testCases := []struct {
+		name     string
+		password string
+		expected bool
+	}{
+		{name: "empty", password: "", expected: false},
+		{name: "too short 7", password: strings.Repeat("a", 7), expected: false},
+		{name: "at min length 8", password: strings.Repeat("a", 8), expected: true},
+		{name: "at max length 128", password: strings.Repeat("a", 128), expected: true},
+		{name: "over max length 129", password: strings.Repeat("a", 129), expected: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := validatePassword(testCase.password); got != testCase.expected {
+				t.Fatalf("validatePassword(len=%d) = %v, expected %v", len(testCase.password), got, testCase.expected)
+			}
+		})
+	}
+}

@@ -2,9 +2,9 @@
 // notification hub: one global ntfy user per person, derived from an
 // email-hash identity shared by every 4IRL app, with a scoped read-only
 // topic ACL ("{app_id}-{personHash}-*") plus one app-labeled access token
-// granted per app the person is provisioned into. The person never
-// authenticates with the ntfy password; consuming apps store the issued
-// token.
+// granted per app the person is provisioned into. Most consuming apps
+// authenticate via the issued token; a person may separately set an ntfy
+// password (via Service.SetPassword) to log into the ntfy iOS app directly.
 package provisioning
 
 import (
@@ -24,6 +24,7 @@ import (
 // NtfyClient is the subset of the ntfy CLI client the service depends on.
 type NtfyClient interface {
 	AddUser(ctx context.Context, userID string, password string) error
+	ChangePassword(ctx context.Context, userID string, password string) error
 	DeleteUser(ctx context.Context, userID string) error
 	GrantAccess(ctx context.Context, userID string, topicPattern string, permission ntfycli.Permission) error
 	ResetAccess(ctx context.Context, userID string, topicPattern string) error
@@ -663,4 +664,32 @@ func (service *Service) DeprovisionApp(ctx context.Context, request DeprovisionA
 
 	service.dualDeleteApp(ctx, request.AppID)
 	return nil
+}
+
+// SetPasswordRequest identifies the person (by email) whose ntfy password
+// is being changed to Password. AppID is carried for request-body parity
+// with the sibling requests and is echoed back in the response; the service
+// body itself uses only Email and Password (the ntfy password is global per
+// person).
+type SetPasswordRequest struct {
+	AppID    string
+	Email    string
+	Password string
+}
+
+// SetPasswordResult is returned to the caller; UserID is the derived ntfy
+// username whose password was changed.
+type SetPasswordResult struct {
+	UserID string
+}
+
+// SetPassword changes the person's ntfy password via the CLI, deriving
+// their ntfy user id from the email. The user must already exist (a
+// missing user propagates ntfycli.ErrNotFound).
+func (service *Service) SetPassword(ctx context.Context, request SetPasswordRequest) (SetPasswordResult, error) {
+	ntfyUserID := personhash.NtfyUser(request.Email)
+	if changePassErr := service.client.ChangePassword(ctx, ntfyUserID, request.Password); changePassErr != nil {
+		return SetPasswordResult{}, changePassErr
+	}
+	return SetPasswordResult{UserID: ntfyUserID}, nil
 }

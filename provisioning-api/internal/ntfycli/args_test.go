@@ -22,6 +22,11 @@ func TestArgBuilders(t *testing.T) {
 			expected: []string{"user", "del", "alice"},
 		},
 		{
+			name:     "user change-pass",
+			got:      UserChangePassArgs("alice"),
+			expected: []string{"user", "change-pass", "alice"},
+		},
+		{
 			name:     "user list",
 			got:      UserListArgs(),
 			expected: []string{"user", "list"},

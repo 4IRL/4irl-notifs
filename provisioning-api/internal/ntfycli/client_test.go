@@ -75,6 +75,32 @@ func TestAddUserInvokesCLIWithPasswordEnv(t *testing.T) {
 	}
 }
 
+func TestChangePasswordInvokesCLIWithPasswordEnv(t *testing.T) {
+	runner := &fakeRunner{}
+	client := newTestClient(runner)
+
+	if err := client.ChangePassword(context.Background(), "alice", "sekrit-pw"); err != nil {
+		t.Fatalf("ChangePassword returned unexpected error: %v", err)
+	}
+
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 CLI call, got %d", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if got := strings.Join(call.args, " "); got != "user change-pass alice" {
+		t.Fatalf("unexpected args: %q", got)
+	}
+	foundPassword := false
+	for _, envEntry := range call.extraEnv {
+		if envEntry == "NTFY_PASSWORD=sekrit-pw" {
+			foundPassword = true
+		}
+	}
+	if !foundPassword {
+		t.Fatalf("NTFY_PASSWORD env entry missing from %v", call.extraEnv)
+	}
+}
+
 // overlapDetectingRunner records the maximum number of concurrently in-flight
 // Run calls, using atomics only (no internal locking that would mask missing
 // serialization in the client under test).

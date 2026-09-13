@@ -69,6 +69,13 @@ func UserAddArgs(userID string) []string {
 	return []string{"user", "add", userID}
 }
 
+// UserChangePassArgs builds the CLI arguments changing a user's password. The
+// new password is supplied out-of-band via the NTFY_PASSWORD environment
+// variable (never argv, so it cannot leak through the process table).
+func UserChangePassArgs(userID string) []string {
+	return []string{"user", "change-pass", userID}
+}
+
 // UserDeleteArgs builds the CLI arguments deleting a user (and, server-side,
 // the user's ACL entries and tokens).
 func UserDeleteArgs(userID string) []string {

@@ -19,6 +19,7 @@ type fakeNtfyClient struct {
 	invocations []string
 
 	addUserErr              error
+	changePasswordErr       error
 	grantAccessErr          error
 	grantAccessErrByPattern map[string]error
 	resetAccessErr          error
@@ -40,6 +41,11 @@ func (client *fakeNtfyClient) record(format string, values ...any) {
 func (client *fakeNtfyClient) AddUser(_ context.Context, userID string, password string) error {
 	client.record("AddUser(%s,pw=%s)", userID, password)
 	return client.addUserErr
+}
+
+func (client *fakeNtfyClient) ChangePassword(_ context.Context, userID, password string) error {
+	client.record("ChangePassword(%s,pw=%s)", userID, password)
+	return client.changePasswordErr
 }
 
 func (client *fakeNtfyClient) DeleteUser(_ context.Context, userID string) error {
@@ -725,6 +731,82 @@ func TestDeleteUserSkipsDualDeleteForNonPersonUser(t *testing.T) {
 	}
 	if len(personClient.invocations) != 0 {
 		t.Fatalf("non-person user must not trigger a person dual-delete, got: %v", personClient.invocations)
+	}
+}
+
+func TestSetPasswordDelegatesToClient(t *testing.T) {
+	client := &fakeNtfyClient{}
+	service := newTestService(client)
+
+	result, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"})
+	if err != nil {
+		t.Fatalf("SetPassword returned unexpected error: %v", err)
+	}
+	if result.UserID != aliceNtfyUser {
+		t.Fatalf("result.UserID = %q, expected %q", result.UserID, aliceNtfyUser)
+	}
+	if got := strings.Join(client.invocations, " | "); got != fmt.Sprintf("ChangePassword(%s,pw=sekrit-pw)", aliceNtfyUser) {
+		t.Fatalf("invocations = %s, expected ChangePassword(%s,pw=sekrit-pw)", got, aliceNtfyUser)
+	}
+}
+
+func TestSetPasswordPropagatesClientError(t *testing.T) {
+	client := &fakeNtfyClient{changePasswordErr: errors.New("boom")}
+	service := newTestService(client)
+
+	if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err == nil {
+		t.Fatal("expected the ChangePassword error to propagate")
+	}
+}
+
+func TestSetPasswordPropagatesNotFound(t *testing.T) {
+	client := &fakeNtfyClient{changePasswordErr: fmt.Errorf("ntfy user: %w: no such user", ntfycli.ErrNotFound)}
+	service := newTestService(client)
+
+	_, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"})
+	if !errors.Is(err, ntfycli.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound to propagate, got: %v", err)
+	}
+}
+
+// TestSetPasswordIsEmailGlobalAcrossApps locks in the by-design email-global
+// scope of the ntfy password: the credential is a single global-per-person
+// login independent of the calling app. A person is first provisioned under
+// one app ("urls4irl"), then SetPassword is called with a *different but valid*
+// app_id ("tasktracker"). It must still succeed and delegate
+// ChangePassword(u_<hash-of-email>, ...) for the email-derived user — the
+// service derives the ntfy user from Email alone and never scopes the reset to
+// the provisioning app. This documents that a mismatched-but-valid app_id
+// cannot silently change the reset target.
+func TestSetPasswordIsEmailGlobalAcrossApps(t *testing.T) {
+	client := &fakeNtfyClient{addTokenValue: "tk_new_token"}
+	service := newTestService(client)
+
+	// Provision alice under one app so she has an established app grant.
+	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail}); err != nil {
+		t.Fatalf("Provision returned unexpected error: %v", err)
+	}
+
+	// Reset her password via a DIFFERENT but valid app_id. The ntfy user is
+	// email-global, so this must still succeed for the email-derived user.
+	result, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "cross-app-pw"})
+	if err != nil {
+		t.Fatalf("SetPassword returned unexpected error: %v", err)
+	}
+	if result.UserID != aliceNtfyUser {
+		t.Fatalf("result.UserID = %q, expected %q (email-derived, app-independent)", result.UserID, aliceNtfyUser)
+	}
+
+	expectedCall := fmt.Sprintf("ChangePassword(%s,pw=cross-app-pw)", aliceNtfyUser)
+	found := false
+	for _, invocation := range client.invocations {
+		if invocation == expectedCall {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a %s invocation for the email-derived user, got: %s", expectedCall, strings.Join(client.invocations, " | "))
 	}
 }
 

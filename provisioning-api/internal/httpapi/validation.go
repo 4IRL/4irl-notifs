@@ -34,6 +34,13 @@ const reservedWildcardUserID = "*"
 // maxMessageLength is the maximum accepted test-notification message length.
 const maxMessageLength = 4096
 
+// minPasswordLength is the minimum accepted set-password length (byte length),
+// rejecting empty and too-short passwords.
+const minPasswordLength = 8
+
+// maxPasswordLength is the maximum accepted set-password length (byte length).
+const maxPasswordLength = 128
+
 // maxRecipients is the maximum number of recipients accepted in a single
 // test-notification request, bounding the per-request publish fan-out.
 const maxRecipients = 100
@@ -85,4 +92,11 @@ func validateRecipientsCount(recipients []string) bool {
 // shape ("u_" + 16-character person hash) produced by personhash.NtfyUser.
 func validateNtfyUserID(ntfyUserID string) bool {
 	return ntfyUserIDPattern.MatchString(ntfyUserID)
+}
+
+// validatePassword reports whether password is within the accepted length
+// bounds (8-128 bytes). The subscriber's password is used verbatim — no
+// trimming — and byte length (via len) matches maxMessageLength's convention.
+func validatePassword(password string) bool {
+	return len(password) >= minPasswordLength && len(password) <= maxPasswordLength
 }
