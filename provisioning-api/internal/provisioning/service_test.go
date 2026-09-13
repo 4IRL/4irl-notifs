@@ -769,6 +769,47 @@ func TestSetPasswordPropagatesNotFound(t *testing.T) {
 	}
 }
 
+// TestSetPasswordIsEmailGlobalAcrossApps locks in the by-design email-global
+// scope of the ntfy password: the credential is a single global-per-person
+// login independent of the calling app. A person is first provisioned under
+// one app ("urls4irl"), then SetPassword is called with a *different but valid*
+// app_id ("tasktracker"). It must still succeed and delegate
+// ChangePassword(u_<hash-of-email>, ...) for the email-derived user — the
+// service derives the ntfy user from Email alone and never scopes the reset to
+// the provisioning app. This documents that a mismatched-but-valid app_id
+// cannot silently change the reset target.
+func TestSetPasswordIsEmailGlobalAcrossApps(t *testing.T) {
+	client := &fakeNtfyClient{addTokenValue: "tk_new_token"}
+	service := newTestService(client)
+
+	// Provision alice under one app so she has an established app grant.
+	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail}); err != nil {
+		t.Fatalf("Provision returned unexpected error: %v", err)
+	}
+
+	// Reset her password via a DIFFERENT but valid app_id. The ntfy user is
+	// email-global, so this must still succeed for the email-derived user.
+	result, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "cross-app-pw"})
+	if err != nil {
+		t.Fatalf("SetPassword returned unexpected error: %v", err)
+	}
+	if result.UserID != aliceNtfyUser {
+		t.Fatalf("result.UserID = %q, expected %q (email-derived, app-independent)", result.UserID, aliceNtfyUser)
+	}
+
+	expectedCall := fmt.Sprintf("ChangePassword(%s,pw=cross-app-pw)", aliceNtfyUser)
+	found := false
+	for _, invocation := range client.invocations {
+		if invocation == expectedCall {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a %s invocation for the email-derived user, got: %s", expectedCall, strings.Join(client.invocations, " | "))
+	}
+}
+
 func TestDeprovisionDualDeletesPersonRowWhenLastAppRemoved(t *testing.T) {
 	ntfyClient := &fakeNtfyClient{
 		listUsers: []ntfycli.User{
