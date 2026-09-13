@@ -1219,6 +1219,7 @@ func TestSetPasswordValidationRejections(testInstance *testing.T) {
 		{name: "invalid email", body: `{"app_id":"tasktracker","email":"not-an-email","password":"sekrit-pw"}`, wantMsg: "invalid email"},
 		{name: "empty password", body: fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":""}`, aliceEmail), wantMsg: "invalid password"},
 		{name: "too-short password", body: fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":"short"}`, aliceEmail), wantMsg: "invalid password"},
+		{name: "too-long password", body: fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":%q}`, aliceEmail, strings.Repeat("a", 129)), wantMsg: "invalid password"},
 	}
 
 	for _, testCase := range testCases {
