@@ -667,9 +667,10 @@ func (service *Service) DeprovisionApp(ctx context.Context, request DeprovisionA
 }
 
 // SetPasswordRequest identifies the person (by email) whose ntfy password
-// is being changed to Password. AppID rides along for parity/logging (the
-// ntfy password is global per person, so the service body uses only Email
-// and Password).
+// is being changed to Password. AppID is carried for request-body parity
+// with the sibling requests and is echoed back in the response; the service
+// body itself uses only Email and Password (the ntfy password is global per
+// person).
 type SetPasswordRequest struct {
 	AppID    string
 	Email    string
