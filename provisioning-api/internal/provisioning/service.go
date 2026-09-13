@@ -121,33 +121,6 @@ type ProvisionResult struct {
 	Token          string
 }
 
-// SetPasswordRequest identifies the person (by email) whose ntfy password
-// is being changed to Password. AppID rides along for parity/logging (the
-// ntfy password is global per person, so the service body uses only Email
-// and Password).
-type SetPasswordRequest struct {
-	AppID    string
-	Email    string
-	Password string
-}
-
-// SetPasswordResult is returned to the caller; UserID is the derived ntfy
-// username whose password was changed.
-type SetPasswordResult struct {
-	UserID string
-}
-
-// SetPassword changes the person's ntfy password via the CLI, deriving
-// their ntfy user id from the email. The user must already exist (a
-// missing user propagates ntfycli.ErrNotFound).
-func (service *Service) SetPassword(ctx context.Context, request SetPasswordRequest) (SetPasswordResult, error) {
-	ntfyUserID := personhash.NtfyUser(request.Email)
-	if changePassErr := service.client.ChangePassword(ctx, ntfyUserID, request.Password); changePassErr != nil {
-		return SetPasswordResult{}, changePassErr
-	}
-	return SetPasswordResult{UserID: ntfyUserID}, nil
-}
-
 // Provision ensures the person's global ntfy user exists, grants a scoped
 // read-only topic ACL for this app, and issues a fresh app-labeled token
 // (removing stale tokens for the same app so repeated provisioning does not
@@ -691,4 +664,31 @@ func (service *Service) DeprovisionApp(ctx context.Context, request DeprovisionA
 
 	service.dualDeleteApp(ctx, request.AppID)
 	return nil
+}
+
+// SetPasswordRequest identifies the person (by email) whose ntfy password
+// is being changed to Password. AppID rides along for parity/logging (the
+// ntfy password is global per person, so the service body uses only Email
+// and Password).
+type SetPasswordRequest struct {
+	AppID    string
+	Email    string
+	Password string
+}
+
+// SetPasswordResult is returned to the caller; UserID is the derived ntfy
+// username whose password was changed.
+type SetPasswordResult struct {
+	UserID string
+}
+
+// SetPassword changes the person's ntfy password via the CLI, deriving
+// their ntfy user id from the email. The user must already exist (a
+// missing user propagates ntfycli.ErrNotFound).
+func (service *Service) SetPassword(ctx context.Context, request SetPasswordRequest) (SetPasswordResult, error) {
+	ntfyUserID := personhash.NtfyUser(request.Email)
+	if changePassErr := service.client.ChangePassword(ctx, ntfyUserID, request.Password); changePassErr != nil {
+		return SetPasswordResult{}, changePassErr
+	}
+	return SetPasswordResult{UserID: ntfyUserID}, nil
 }
