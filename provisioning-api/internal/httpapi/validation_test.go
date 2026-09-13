@@ -118,28 +118,6 @@ func makeRecipients(count int) []string {
 	return recipients
 }
 
-func TestValidatePassword(t *testing.T) {
-	testCases := []struct {
-		name     string
-		password string
-		expected bool
-	}{
-		{name: "empty", password: "", expected: false},
-		{name: "too short 7", password: strings.Repeat("a", 7), expected: false},
-		{name: "at min length 8", password: strings.Repeat("a", 8), expected: true},
-		{name: "at max length 128", password: strings.Repeat("a", 128), expected: true},
-		{name: "over max length 129", password: strings.Repeat("a", 129), expected: false},
-	}
-
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			if got := validatePassword(testCase.password); got != testCase.expected {
-				t.Fatalf("validatePassword(len=%d) = %v, expected %v", len(testCase.password), got, testCase.expected)
-			}
-		})
-	}
-}
-
 func TestValidateNtfyUserID(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -159,6 +137,28 @@ func TestValidateNtfyUserID(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			if got := validateNtfyUserID(testCase.userID); got != testCase.expected {
 				t.Fatalf("validateNtfyUserID(%q) = %v, expected %v", testCase.userID, got, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestValidatePassword(t *testing.T) {
+	testCases := []struct {
+		name     string
+		password string
+		expected bool
+	}{
+		{name: "empty", password: "", expected: false},
+		{name: "too short 7", password: strings.Repeat("a", 7), expected: false},
+		{name: "at min length 8", password: strings.Repeat("a", 8), expected: true},
+		{name: "at max length 128", password: strings.Repeat("a", 128), expected: true},
+		{name: "over max length 129", password: strings.Repeat("a", 129), expected: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := validatePassword(testCase.password); got != testCase.expected {
+				t.Fatalf("validatePassword(len=%d) = %v, expected %v", len(testCase.password), got, testCase.expected)
 			}
 		})
 	}
