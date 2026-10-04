@@ -67,7 +67,9 @@ function parsePort(key, value) {
   const text = String(value).trim();
   const num = Number(text);
   if (!/^\d+$/.test(text) || num < 1 || num > 65535) {
-    throw new Error(`${key} must be an integer port between 1 and 65535 (got ${JSON.stringify(value)})`);
+    throw new Error(
+      `${key} must be an integer port between 1 and 65535 (got ${JSON.stringify(value)})`,
+    );
   }
   return num;
 }

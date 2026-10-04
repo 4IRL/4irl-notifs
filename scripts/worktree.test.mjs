@@ -118,7 +118,10 @@ describe('planNew', () => {
   it('refuses the repo name and the primary basename', () => {
     const root = primary();
     const git = stubGit();
-    assert.throws(() => planNew({ primaryRoot: root, name: '4irl-notifs', git, projectNames: [] }), /refused slug/);
+    assert.throws(
+      () => planNew({ primaryRoot: root, name: '4irl-notifs', git, projectNames: [] }),
+      /refused slug/,
+    );
     assert.throws(
       () => planNew({ primaryRoot: root, name: path.basename(root), git, projectNames: [] }),
       /refused slug/,
@@ -128,14 +131,24 @@ describe('planNew', () => {
   it('refuses an existing worktree directory', () => {
     const root = primary();
     fs.mkdirSync(path.join(root, '.claude', 'worktrees', 'dup'), { recursive: true });
-    assert.throws(() => planNew({ primaryRoot: root, name: 'dup', git: stubGit(), projectNames: [] }), /already exists/);
+    assert.throws(
+      () => planNew({ primaryRoot: root, name: 'dup', git: stubGit(), projectNames: [] }),
+      /already exists/,
+    );
   });
 
   it('refuses an invalid ref', () => {
     const root = primary();
     const git = stubGit({ fail: (args) => args[0] === 'check-ref-format' });
-    assert.throws(() => planNew({ primaryRoot: root, name: 'ok', branch: 'bad..ref', git, projectNames: [] }), /invalid branch/);
-    assert.throws(() => planNew({ primaryRoot: root, name: 'ok', branch: '-x', git: stubGit(), projectNames: [] }), /invalid branch/);
+    assert.throws(
+      () => planNew({ primaryRoot: root, name: 'ok', branch: 'bad..ref', git, projectNames: [] }),
+      /invalid branch/,
+    );
+    assert.throws(
+      () =>
+        planNew({ primaryRoot: root, name: 'ok', branch: '-x', git: stubGit(), projectNames: [] }),
+      /invalid branch/,
+    );
   });
 
   it('refuses a candidate compose project that already exists', () => {
@@ -165,14 +178,18 @@ describe('planNew', () => {
 
   it('uses mode local when the branch exists locally', () => {
     const root = primary();
-    const git = stubGit({ fail: (args) => args[0] === 'show-ref' && !args.includes('refs/heads/feat-x') });
+    const git = stubGit({
+      fail: (args) => args[0] === 'show-ref' && !args.includes('refs/heads/feat-x'),
+    });
     const plan = planNew({ primaryRoot: root, name: 'feat-x', git, projectNames: [] });
     assert.equal(plan.mode, 'local');
   });
 
   it('uses mode remote when the branch exists only on origin', () => {
     const root = primary();
-    const git = stubGit({ fail: (args) => args[0] === 'show-ref' && !args.includes('refs/remotes/origin/feat-x') });
+    const git = stubGit({
+      fail: (args) => args[0] === 'show-ref' && !args.includes('refs/remotes/origin/feat-x'),
+    });
     const plan = planNew({ primaryRoot: root, name: 'feat-x', git, projectNames: [] });
     assert.equal(plan.mode, 'remote');
   });
@@ -180,7 +197,10 @@ describe('planNew', () => {
   it('errors when the base ref does not exist for a new branch', () => {
     const root = primary();
     const git = stubGit({ fail: (args) => args[0] === 'show-ref' || args[0] === 'rev-parse' });
-    assert.throws(() => planNew({ primaryRoot: root, name: 'nb', git, projectNames: [] }), /base ref/);
+    assert.throws(
+      () => planNew({ primaryRoot: root, name: 'nb', git, projectNames: [] }),
+      /base ref/,
+    );
   });
 });
 
@@ -194,7 +214,12 @@ describe('resolvePorts with an empty env', () => {
       E2E_PORT: '4173',
     });
     try {
-      const ports = await resolvePorts({ slug: 'proof-a', claimed: new Set(), probe: allFree, env: {} });
+      const ports = await resolvePorts({
+        slug: 'proof-a',
+        claimed: new Set(),
+        probe: allFree,
+        env: {},
+      });
       assert.notEqual(ports.NOTIFS_SLOT, 0);
       for (const key of Object.keys(DEFAULT_PORTS)) {
         assert.notEqual(ports[key], DEFAULT_PORTS[key], key);
@@ -231,7 +256,13 @@ describe('readClaimedSlots', () => {
 describe('writeWorktreeEnv', () => {
   it('writes KEY=VALUE lines at mode 0600 without leaving a temp file', () => {
     const dir = tmpDir();
-    const ports = { NOTIFS_SLOT: 3, NTFY_PORT: 8096, API_PORT: 8097, WEB_PORT: 5276, E2E_PORT: 4276 };
+    const ports = {
+      NOTIFS_SLOT: 3,
+      NTFY_PORT: 8096,
+      API_PORT: 8097,
+      WEB_PORT: 5276,
+      E2E_PORT: 4276,
+    };
     writeWorktreeEnv({ dir, slug: 'proof-a', primaryRoot: '/primary', ports });
     const file = path.join(dir, '.worktree.env');
     assert.equal(
@@ -296,17 +327,28 @@ describe('rmComposeProject', () => {
 
   it('skips with a warning when the file is missing', () => {
     const warnings = [];
-    assert.equal(rmComposeProject({ worktreeDir, readFile: reader(null), warn: (m) => warnings.push(m) }), null);
+    assert.equal(
+      rmComposeProject({ worktreeDir, readFile: reader(null), warn: (m) => warnings.push(m) }),
+      null,
+    );
     assert.equal(warnings.length, 1);
   });
 
   it('skips on a mismatched value and on the primary project', () => {
     assert.equal(
-      rmComposeProject({ worktreeDir, readFile: reader('COMPOSE_PROJECT_NAME=4irl-notifs-other\n'), warn: () => {} }),
+      rmComposeProject({
+        worktreeDir,
+        readFile: reader('COMPOSE_PROJECT_NAME=4irl-notifs-other\n'),
+        warn: () => {},
+      }),
       null,
     );
     assert.equal(
-      rmComposeProject({ worktreeDir, readFile: reader('COMPOSE_PROJECT_NAME=4irl-notifs\n'), warn: () => {} }),
+      rmComposeProject({
+        worktreeDir,
+        readFile: reader('COMPOSE_PROJECT_NAME=4irl-notifs\n'),
+        warn: () => {},
+      }),
       null,
     );
   });
@@ -317,7 +359,11 @@ describe('rmComposeProject', () => {
     });
     withAmbient('something-else', () => {
       assert.equal(
-        rmComposeProject({ worktreeDir, readFile: reader('COMPOSE_PROJECT_NAME=4irl-notifs-proof-a\n'), warn: () => {} }),
+        rmComposeProject({
+          worktreeDir,
+          readFile: reader('COMPOSE_PROJECT_NAME=4irl-notifs-proof-a\n'),
+          warn: () => {},
+        }),
         '4irl-notifs-proof-a',
       );
     });
@@ -348,7 +394,14 @@ describe('removeWorktree', () => {
   it('refuses the primary checkout', () => {
     const { primary, git } = layout();
     assert.throws(
-      () => removeWorktree({ worktreeRoot: primary, git, docker: () => {}, runDevStop: () => {}, warn: () => {} }),
+      () =>
+        removeWorktree({
+          worktreeRoot: primary,
+          git,
+          docker: () => {},
+          runDevStop: () => {},
+          warn: () => {},
+        }),
       /primary/,
     );
   });
@@ -358,14 +411,24 @@ describe('removeWorktree', () => {
     const outside = path.join(primary, 'elsewhere');
     fs.mkdirSync(outside);
     assert.throws(
-      () => removeWorktree({ worktreeRoot: outside, git, docker: () => {}, runDevStop: () => {}, warn: () => {} }),
+      () =>
+        removeWorktree({
+          worktreeRoot: outside,
+          git,
+          docker: () => {},
+          runDevStop: () => {},
+          warn: () => {},
+        }),
       /not under/,
     );
   });
 
   it('tears down the project, stops the dev server, then removes non-force', () => {
     const { worktree, git } = layout();
-    fs.writeFileSync(path.join(worktree, '.worktree.env'), 'COMPOSE_PROJECT_NAME=4irl-notifs-proof-a\n');
+    fs.writeFileSync(
+      path.join(worktree, '.worktree.env'),
+      'COMPOSE_PROJECT_NAME=4irl-notifs-proof-a\n',
+    );
     fs.mkdirSync(path.join(worktree, '.dev'));
     fs.writeFileSync(path.join(worktree, '.dev', 'vite-dev.pid'), '123\n');
     const dockerCalls = [];
@@ -387,7 +450,10 @@ describe('removeWorktree', () => {
 
   it('tolerates docker and dev-stop failures with warnings', () => {
     const { worktree, git } = layout();
-    fs.writeFileSync(path.join(worktree, '.worktree.env'), 'COMPOSE_PROJECT_NAME=4irl-notifs-proof-a\n');
+    fs.writeFileSync(
+      path.join(worktree, '.worktree.env'),
+      'COMPOSE_PROJECT_NAME=4irl-notifs-proof-a\n',
+    );
     fs.mkdirSync(path.join(worktree, '.dev'));
     fs.writeFileSync(path.join(worktree, '.dev', 'vite-dev.pid'), '123\n');
     const warnings = [];
@@ -430,10 +496,11 @@ describe('removeWorktree', () => {
         else process.env.COMPOSE_PROJECT_NAME = saved;
       }
       assert.deepEqual(dockerCalls, []);
-      assert.deepEqual(
-        git.calls.find((call) => call.args[0] === 'worktree').args,
-        ['worktree', 'remove', worktree],
-      );
+      assert.deepEqual(git.calls.find((call) => call.args[0] === 'worktree').args, [
+        'worktree',
+        'remove',
+        worktree,
+      ]);
     });
   }
 });
@@ -517,6 +584,30 @@ describe('acquireSlotLock', () => {
     const release = acquireSlotLock({ lockDir, isPidAlive: () => true });
     release();
   });
+
+  it('reclaims a stale lock by rename and leaves no renamed directories', () => {
+    const parent = tmpDir();
+    const lockDir = path.join(parent, 'slot.lock');
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(path.join(lockDir, 'pid'), '999999\n');
+    const release = acquireSlotLock({ lockDir, isPidAlive: () => false });
+    assert.deepEqual(fs.readdirSync(parent), ['slot.lock']);
+    release();
+  });
+
+  it('still acquires when the stale lock vanishes before the rename', () => {
+    const lockDir = path.join(tmpDir(), 'slot.lock');
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(path.join(lockDir, 'pid'), '999999\n');
+    // simulate another process reclaiming it first: the liveness probe removes the lock
+    const isPidAlive = () => {
+      fs.rmSync(lockDir, { recursive: true, force: true });
+      return false;
+    };
+    const release = acquireSlotLock({ lockDir, isPidAlive });
+    assert.ok(fs.existsSync(path.join(lockDir, 'pid')));
+    release();
+  });
 });
 
 describe('newWorktree', () => {
@@ -555,7 +646,11 @@ describe('newWorktree', () => {
   it('passes the right worktree add flags for each mode', async () => {
     for (const [mode, showRefOk, expected] of [
       ['local', 'refs/heads/feat-m', (p) => ['worktree', 'add', p, 'feat-m']],
-      ['remote', 'refs/remotes/origin/feat-m', (p) => ['worktree', 'add', '--track', '-b', 'feat-m', p, 'origin/feat-m']],
+      [
+        'remote',
+        'refs/remotes/origin/feat-m',
+        (p) => ['worktree', 'add', '--track', '-b', 'feat-m', p, 'origin/feat-m'],
+      ],
       ['new', null, (p) => ['worktree', 'add', '--no-track', '-b', 'feat-m', p, 'main']],
     ]) {
       const primaryRoot = fs.realpathSync(tmpDir());
@@ -567,7 +662,9 @@ describe('newWorktree', () => {
         if (args[0] === 'show-ref' && args.at(-1) !== showRefOk) throw new Error('no ref');
         if (args[0] === 'worktree' && args[1] === 'add') {
           adds.push(args);
-          fs.mkdirSync(path.join(primaryRoot, '.claude', 'worktrees', 'feat-m'), { recursive: true });
+          fs.mkdirSync(path.join(primaryRoot, '.claude', 'worktrees', 'feat-m'), {
+            recursive: true,
+          });
         }
         return '';
       };
@@ -585,6 +682,38 @@ describe('newWorktree', () => {
     }
   });
 
+  it('fails on a held slot lock before creating any worktree', async () => {
+    const primaryRoot = fs.realpathSync(tmpDir());
+    const common = path.join(primaryRoot, '.git');
+    const lockDir = path.join(common, 'notifs-worktree-slot.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(path.join(lockDir, 'pid'), `${process.pid}\n`);
+    const calls = [];
+    const git = (cwd, args) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse' && args.includes('--git-common-dir')) return common;
+      if (args[0] === 'show-ref') throw new Error('no ref');
+      return '';
+    };
+    await assert.rejects(
+      newWorktree({
+        primaryRoot,
+        name: 'proof-d',
+        base: 'main',
+        git,
+        projectNames: [],
+        probe: allFree,
+        runSetup: () => {},
+        warn: () => {},
+      }),
+      /slot lock held/,
+    );
+    assert.equal(
+      calls.some((args) => args[0] === 'worktree' && args[1] === 'add'),
+      false,
+    );
+  });
+
   it('reports a port failure and releases the slot lock', async () => {
     const primaryRoot = fs.realpathSync(tmpDir());
     const common = path.join(primaryRoot, '.git');
@@ -592,7 +721,8 @@ describe('newWorktree', () => {
     const git = (cwd, args) => {
       if (args[0] === 'rev-parse' && args.includes('--git-common-dir')) return common;
       if (args[0] === 'show-ref') throw new Error('no ref');
-      if (args[0] === 'worktree' && args[1] === 'add') fs.mkdirSync(args.at(-2), { recursive: true });
+      if (args[0] === 'worktree' && args[1] === 'add')
+        fs.mkdirSync(args.at(-2), { recursive: true });
       return '';
     };
     await assert.rejects(
@@ -618,7 +748,8 @@ describe('newWorktree', () => {
     const git = (cwd, args) => {
       if (args[0] === 'rev-parse' && args.includes('--git-common-dir')) return common;
       if (args[0] === 'show-ref') throw new Error('no ref');
-      if (args[0] === 'worktree' && args[1] === 'add') fs.mkdirSync(args.at(-2), { recursive: true });
+      if (args[0] === 'worktree' && args[1] === 'add')
+        fs.mkdirSync(args.at(-2), { recursive: true });
       return '';
     };
     await assert.rejects(

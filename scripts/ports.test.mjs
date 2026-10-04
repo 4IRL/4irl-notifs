@@ -5,14 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
-import {
-  DEFAULT_PORTS,
-  crc32,
-  loadPorts,
-  probePort,
-  resolvePorts,
-  slotPorts,
-} from './ports.mjs';
+import { DEFAULT_PORTS, crc32, loadPorts, probePort, resolvePorts, slotPorts } from './ports.mjs';
 
 const allFree = async () => true;
 
@@ -22,7 +15,12 @@ function firstCandidate(slug) {
 
 describe('DEFAULT_PORTS', () => {
   it('holds the primary clone ports', () => {
-    assert.deepEqual(DEFAULT_PORTS, { NTFY_PORT: 8090, API_PORT: 8091, WEB_PORT: 5173, E2E_PORT: 4173 });
+    assert.deepEqual(DEFAULT_PORTS, {
+      NTFY_PORT: 8090,
+      API_PORT: 8091,
+      WEB_PORT: 5173,
+      E2E_PORT: 4173,
+    });
   });
 });
 
@@ -38,8 +36,18 @@ describe('slotPorts', () => {
   });
 
   it('slot 1 and slot 99 have the documented values', () => {
-    assert.deepEqual(slotPorts(1), { NTFY_PORT: 8092, API_PORT: 8093, WEB_PORT: 5274, E2E_PORT: 4274 });
-    assert.deepEqual(slotPorts(99), { NTFY_PORT: 8288, API_PORT: 8289, WEB_PORT: 5372, E2E_PORT: 4372 });
+    assert.deepEqual(slotPorts(1), {
+      NTFY_PORT: 8092,
+      API_PORT: 8093,
+      WEB_PORT: 5274,
+      E2E_PORT: 4274,
+    });
+    assert.deepEqual(slotPorts(99), {
+      NTFY_PORT: 8288,
+      API_PORT: 8289,
+      WEB_PORT: 5372,
+      E2E_PORT: 4372,
+    });
   });
 
   it('never repeats a port across slots 1..99 or keys, and never equals a default', () => {
@@ -112,14 +120,24 @@ describe('resolvePorts', () => {
   });
 
   it('lets explicit env keys override per key', async () => {
-    const result = await resolvePorts({ slug: 'proof-a', env: { API_PORT: '19000' }, probe: allFree });
+    const result = await resolvePorts({
+      slug: 'proof-a',
+      env: { API_PORT: '19000' },
+      probe: allFree,
+    });
     assert.equal(result.API_PORT, 19000);
     assert.equal(result.NTFY_PORT, slotPorts(result.NOTIFS_SLOT).NTFY_PORT);
   });
 
   it('rejects an invalid env port', async () => {
-    await assert.rejects(resolvePorts({ slug: 'a', env: { WEB_PORT: 'abc' }, probe: allFree }), /WEB_PORT/);
-    await assert.rejects(resolvePorts({ slug: 'a', env: { WEB_PORT: '70000' }, probe: allFree }), /WEB_PORT/);
+    await assert.rejects(
+      resolvePorts({ slug: 'a', env: { WEB_PORT: 'abc' }, probe: allFree }),
+      /WEB_PORT/,
+    );
+    await assert.rejects(
+      resolvePorts({ slug: 'a', env: { WEB_PORT: '70000' }, probe: allFree }),
+      /WEB_PORT/,
+    );
   });
 
   it('skips the walk when all four keys are explicit', async () => {
@@ -131,7 +149,13 @@ describe('resolvePorts', () => {
         throw new Error('probe must not run');
       },
     });
-    assert.deepEqual(result, { NTFY_PORT: 1001, API_PORT: 1002, WEB_PORT: 1003, E2E_PORT: 1004, NOTIFS_SLOT: 0 });
+    assert.deepEqual(result, {
+      NTFY_PORT: 1001,
+      API_PORT: 1002,
+      WEB_PORT: 1003,
+      E2E_PORT: 1004,
+      NOTIFS_SLOT: 0,
+    });
   });
 });
 

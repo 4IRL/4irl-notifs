@@ -28,7 +28,7 @@ Guidance for Claude Code when working in this repository.
   | UI/e2e tests | `make web-e2e` (`npx playwright test` in `web/`) |
   | JS/unit tests | `make web-test` (`npm test` in `web/`, Vitest) |
   | Build | `make web-build` (`tsc -b` + Vite → `dist/`) |
-  | Lint / format | `make go-lint` / `make go-fmt` (Go); `make web-lint` / `make web-format` (frontend) |
+  | Lint / format | `make go-lint` / `make go-fmt` (Go); `make web-lint` / `make web-format` (frontend); `make scripts-lint` / `make scripts-format` (`scripts/`) |
   | Admin UI dev server | `make dev-web` (foreground) / `make dev-web-bg` + `make dev-web-stop` (detached) |
   | End-to-end smoke test | `make notif-smoke-test` |
   | Help / all lint / all unit tests | `make help` / `make lint` / `make test` |
@@ -99,6 +99,7 @@ shown for reference only.
 | `make lint` | Run all linters (Go + frontend) |
 | `make test` | Run all unit tests (Go, web Vitest, worker Vitest, scripts) |
 | `make scripts-test` (`node --test "scripts/*.test.mjs"`) | Run the `scripts/` unit tests |
+| `make scripts-lint` / `make scripts-format` (`npx prettier` with `web/.prettierrc`) | Check / format `scripts/*.mjs` |
 | `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` | Create an isolated worktree with its own compose project and ports (see [`docs/worktrees.md`](docs/worktrees.md)) |
 | `make worktree-rm` | Remove the current worktree (run inside it; branch kept) |
 | `make worktree-ports` | Print this checkout's resolved ports |

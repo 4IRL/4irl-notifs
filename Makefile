@@ -1,7 +1,7 @@
 .PHONY: help lint test local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-integration-test go-lint go-fmt \
 	web-test web-e2e web-build web-lint web-format dev-pages \
-	worker-test worker-build worker-deploy scripts-test worktree-ports worktree-new worktree-rm
+	worker-test worker-build worker-deploy scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm
 
 .DEFAULT_GOAL := help
 
@@ -37,12 +37,18 @@ SMOKE_EMAIL := smoketest@example.com
 help: ## Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-lint: go-lint web-lint ## Run all linters (Go + frontend)
+lint: go-lint web-lint scripts-lint ## Run all linters (Go + frontend + scripts)
 
 test: go-test web-test worker-test scripts-test ## Run all unit tests (Go, web Vitest, worker Vitest, scripts)
 
 scripts-test: ## Run scripts/ unit tests
 	node --test "scripts/*.test.mjs"
+
+scripts-lint: ## Prettier-check scripts/ (uses the Prettier pinned in web/)
+	cd web && npx prettier --config .prettierrc --check "../scripts/*.mjs"
+
+scripts-format: ## Auto-format scripts/ with the web/ Prettier config
+	cd web && npx prettier --config .prettierrc --write "../scripts/*.mjs"
 
 worktree-ports: ## Print this checkout's resolved ports
 	@node scripts/ports.mjs print

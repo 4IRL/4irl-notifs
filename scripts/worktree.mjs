@@ -35,7 +35,11 @@ const EXCLUDES = ['/.worktree.env', '/.dev/'];
 const NPM_DIRS = ['web', 'person-service'];
 
 function runGit(cwd, args) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
 }
 
 function gitOk(git, cwd, args) {
@@ -126,7 +130,10 @@ export function planNew({
   if (existsSync(wtPath)) throw new Error(`worktree ${wtPath} already exists`);
 
   // The explicit '-' guard stops a branch name from being parsed as a git option.
-  if (branchName.startsWith('-') || !gitOk(git, primaryRoot, ['check-ref-format', '--branch', branchName])) {
+  if (
+    branchName.startsWith('-') ||
+    !gitOk(git, primaryRoot, ['check-ref-format', '--branch', branchName])
+  ) {
     throw new Error(`invalid branch name ${JSON.stringify(branchName)}`);
   }
 
@@ -140,10 +147,21 @@ export function planNew({
   const baseRef = base ?? `origin/${defaultBranch(git, primaryRoot)}`;
   if (gitOk(git, primaryRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`])) {
     mode = 'local';
-  } else if (gitOk(git, primaryRoot, ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${branchName}`])) {
+  } else if (
+    gitOk(git, primaryRoot, [
+      'show-ref',
+      '--verify',
+      '--quiet',
+      `refs/remotes/origin/${branchName}`,
+    ])
+  ) {
     mode = 'remote';
-  } else if (!gitOk(git, primaryRoot, ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`])) {
-    throw new Error(`base ref ${baseRef} not found: run git fetch origin (or pass base=<existing ref>)`);
+  } else if (
+    !gitOk(git, primaryRoot, ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`])
+  ) {
+    throw new Error(
+      `base ref ${baseRef} not found: run git fetch origin (or pass base=<existing ref>)`,
+    );
   }
 
   return { slug, project, branch: branchName, base: baseRef, path: wtPath, mode };
@@ -167,7 +185,15 @@ function createWorktree({ git, primaryRoot, plan }) {
   if (plan.mode === 'local') {
     git(primaryRoot, ['worktree', 'add', plan.path, plan.branch]);
   } else if (plan.mode === 'remote') {
-    git(primaryRoot, ['worktree', 'add', '--track', '-b', plan.branch, plan.path, `origin/${plan.branch}`]);
+    git(primaryRoot, [
+      'worktree',
+      'add',
+      '--track',
+      '-b',
+      plan.branch,
+      plan.path,
+      `origin/${plan.branch}`,
+    ]);
   } else {
     git(primaryRoot, ['worktree', 'add', '--no-track', '-b', plan.branch, plan.path, plan.base]);
   }
@@ -255,14 +281,20 @@ function pidAlive(pid) {
 
 /**
  * Claim the slot lock: exclusive mkdir of `lockDir` holding a pid file. A lock whose pid is dead,
- * or has no readable pid and is older than 5 s, is cleared and retried once; a younger pid-less
+ * or has no readable pid and is older than 5 s, is reclaimed by an atomic rename and retried once; a younger pid-less
  * lock is a racing holder between mkdir and its pid write, so it counts as held. Returns release().
  */
 export function acquireSlotLock({ lockDir, isPidAlive = pidAlive, now = Date.now }) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       mkdirSync(lockDir);
-      writeFileSync(path.join(lockDir, 'pid'), `${process.pid}\n`);
+      try {
+        writeFileSync(path.join(lockDir, 'pid'), `${process.pid}\n`);
+      } catch (writeErr) {
+        // never leave a pid-less lock behind (it would block others for the grace period)
+        rmSync(lockDir, { recursive: true, force: true });
+        throw writeErr;
+      }
       return () => rmSync(lockDir, { recursive: true, force: true });
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
@@ -283,10 +315,20 @@ export function acquireSlotLock({ lockDir, isPidAlive = pidAlive, now = Date.now
         }
         if (fresh) break;
       }
-      rmSync(lockDir, { recursive: true, force: true });
+      // Atomic reclaim: rename the stale dir away (only one racer can win the rename), then retry
+      // the exclusive mkdir. ENOENT means another process already reclaimed it.
+      const aside = `${lockDir}.stale-${process.pid}-${now()}`;
+      try {
+        renameSync(lockDir, aside);
+        rmSync(aside, { recursive: true, force: true });
+      } catch (renameErr) {
+        if (renameErr.code !== 'ENOENT') throw renameErr;
+      }
     }
   }
-  throw new Error(`slot lock held (${lockDir}); if no other worktree-new is running, remove that directory and retry`);
+  throw new Error(
+    `slot lock held (${lockDir}); if no other worktree-new is running, remove that directory and retry`,
+  );
 }
 
 /**
@@ -299,7 +341,9 @@ export function rmComposeProject({ worktreeDir, readFile = readFileSync, warn = 
   const expected = `${PROJECT_PREFIX}${path.basename(worktreeDir)}`;
   let value;
   try {
-    value = parseEnvFile(readFile(path.join(worktreeDir, '.worktree.env'), 'utf8')).COMPOSE_PROJECT_NAME;
+    value = parseEnvFile(
+      readFile(path.join(worktreeDir, '.worktree.env'), 'utf8'),
+    ).COMPOSE_PROJECT_NAME;
   } catch {
     warn(`worktree: no readable .worktree.env in ${worktreeDir}, skipping the docker teardown`);
     return null;
@@ -391,22 +435,30 @@ export async function newWorktree({
   warn = console.warn,
 }) {
   const plan = planNew({ primaryRoot, name, branch, base, git, projectNames, warn });
-  createWorktree({ git, primaryRoot, plan });
-  linkDevVars({ primaryRoot, worktreeDir: plan.path, warn });
 
+  // Lock first: a held lock must fail before any worktree or branch is created.
   const release = acquireSlotLock({ lockDir: path.join(commonDir(git, primaryRoot), LOCK_NAME) });
   let ports;
   try {
-    // env is empty on purpose: ambient unprefixed port variables (make exports the primary's
-    // defaults to every recipe) must never count as explicit overrides.
-    ports = await resolvePorts({ slug: plan.slug, claimed: readClaimedSlots(primaryRoot), probe, env: {} });
-    writeWorktreeEnv({ dir: plan.path, slug: plan.slug, primaryRoot, ports });
-  } catch (err) {
-    throw new Error(
-      `worktree created at ${plan.path} but port/env setup failed: ${err.message}\n` +
-        `  discard it:   make -C ${plan.path} worktree-rm`,
-      { cause: err },
-    );
+    createWorktree({ git, primaryRoot, plan });
+    linkDevVars({ primaryRoot, worktreeDir: plan.path, warn });
+    try {
+      // env is empty on purpose: ambient unprefixed port variables (make exports the primary's
+      // defaults to every recipe) must never count as explicit overrides.
+      ports = await resolvePorts({
+        slug: plan.slug,
+        claimed: readClaimedSlots(primaryRoot),
+        probe,
+        env: {},
+      });
+      writeWorktreeEnv({ dir: plan.path, slug: plan.slug, primaryRoot, ports });
+    } catch (err) {
+      throw new Error(
+        `worktree created at ${plan.path} but port/env setup failed: ${err.message}\n` +
+          `  discard it:   make -C ${plan.path} worktree-rm`,
+        { cause: err },
+      );
+    }
   } finally {
     release();
   }
@@ -440,7 +492,9 @@ async function main(argv) {
     removeWorktree({ worktreeRoot });
     console.log(`worktree: removed ${worktreeRoot} (branch kept)`);
   } else {
-    throw new Error('usage: WT_NAME=<slug> [WT_BRANCH=<b>] [WT_BASE=<ref>] node scripts/worktree.mjs new | rm');
+    throw new Error(
+      'usage: WT_NAME=<slug> [WT_BRANCH=<b>] [WT_BASE=<ref>] node scripts/worktree.mjs new | rm',
+    );
   }
 }
 
