@@ -10,11 +10,12 @@ Guidance for Claude Code when working in this repository.
 
 - **Repo slug:** `4IRL/4irl-notifs`
 - **Default branch:** `main` (synced with `origin/main`)
-- **Plans store (central):** `~/code/plans/4irl-notifs/{open,completed,research}/<topic>/` — plans now live in the central stronghold store (tracked in git for the first time), not this repo (bucket = this repo's slug basename `4irl-notifs`). Reviews/research/mocks co-located per plan under its `<topic>/`; finished topics move `open/`→`completed/` as a unit. See `~/code/CLAUDE.md` "Central Plans Store". (Legacy in-repo `plans/` migrated 07-2026.)
+- **Plans store (central):** `~/code/plans/4irl-notifs/{open,completed,research}/<topic>/` — plans now live in the central stronghold store (tracked in git for the first time), not this repo (bucket = the `Plans bucket` key below, `4irl-notifs`). Reviews/research/mocks co-located per plan under its `<topic>/`; finished topics move `open/`→`completed/` as a unit. See `~/code/CLAUDE.md` "Central Plans Store". (Legacy in-repo `plans/` migrated 07-2026.)
+- **Plans bucket:** `4irl-notifs`
 - **Bot identity:** `gpropersi-claude[bot]` `141576524+gpropersi-claude[bot]@users.noreply.github.com`  <!-- consolidated shared bot; replaced repo-local 4irl-notifs-claude -->
-- **Bot push script:** `.claude/bot/gh-app-push.sh` (uses GIT_ASKPASS so the token never lands in argv/URL; now authenticates as the shared `gpropersi-claude` App — the local `generate-gh-token.sh` delegates to the tracked `~/code/.claude/scripts/generate-gh-token.sh`. The central `~/code/.claude/scripts/gh-app-push.sh` works too and derives the repo from `origin`.)
-- **Bot gh wrapper:** `/Users/ggpropersi/code/.claude/scripts/gh-bot.sh <args>` — the **central, repo-agnostic** wrapper (shared by every sub-repo). Runs any `gh` subcommand as this repo's bot (e.g. `gh-bot.sh pr create ...`, `gh-bot.sh api repos/4IRL/4irl-notifs ...`) with NO `$(...)` on the command line; it auto-resolves this repo's token generator (`git root → .claude/bot/generate-gh-token.sh`), generates + injects the token internally, never printed. Invoke by **absolute path** from inside the repo (a relative `.claude/scripts/...` resolves to the sub-repo, not the central copy). Prefer this over inline `GH_TOKEN=$(...) gh ...`. Allowlisted (scoped) for `pr *`, `issue *`, `api graphql`, `api repos/*`, `label list`; `pr merge` is denied (the bot must not auto-merge to `main` — that triggers the deploy pipeline).
-- **Token generator:** `.claude/bot/generate-gh-token.sh` — a thin **delegate** to the tracked stronghold generator `~/code/.claude/scripts/generate-gh-token.sh` (shared `gpropersi-claude` App; auto-resolves this repo's installation from its owner). The old `.claude/bot/bot.env` + the `4irl-notifs-claude` App/PEM are deleted. Only the shared private key `~/.claude/u4i-app.pem` lives outside git.
+- **Bot push script:** `~/code/.claude/scripts/gh-app-push.sh` (central; uses GIT_ASKPASS so the token never lands in argv/URL, authenticates as the shared `gpropersi-claude` App and derives the repo from `origin`)
+- **Bot gh wrapper:** `~/code/.claude/scripts/gh-bot.sh <args>` — the **central, repo-agnostic** wrapper (shared by every sub-repo). Runs any `gh` subcommand as this repo's bot (e.g. `gh-bot.sh pr create ...`, `gh-bot.sh api repos/4IRL/4irl-notifs ...`) with NO `$(...)` on the command line; it generates + injects the token internally, never printed. Invoke by **absolute path** from inside the repo (a relative `.claude/scripts/...` resolves to the sub-repo, not the central copy). Prefer this over inline `GH_TOKEN=$(...) gh ...`. Allowlisted (scoped) for `pr *`, `issue *`, `api graphql`, `api repos/*`, `label list`; `pr merge` is denied (the bot must not auto-merge to `main` — that triggers the deploy pipeline).
+- **Token generator:** `~/code/.claude/scripts/generate-gh-token.sh` — the central generator (shared `gpropersi-claude` App; auto-resolves this repo's installation from its owner). The repo-local `.claude/bot/generate-gh-token.sh` delegate takes precedence over it (central `gh-app-push.sh` / `gh-bot.sh` resolve it first). Only the shared private key `~/.claude/u4i-app.pem` lives outside git.
 - **Container runtime:** `docker compose --project-directory . -f docker-compose.yml` (local stack: ntfy + provisioning-api)
 - **App URL (Playwright MCP):** `http://127.0.0.1:5173/` (Vite dev server; prod is Cloudflare Pages behind Cloudflare Access)
 - **Test login:** n/a (admin UI is behind Cloudflare Access Google/GitHub OAuth; per-app callers use Cloudflare Access Service Tokens)
@@ -30,6 +31,14 @@ Guidance for Claude Code when working in this repository.
   | Lint / format | `make go-lint` / `make go-fmt` (Go); `make web-lint` / `make web-format` (frontend) |
   | Admin UI dev server | `make dev-web` (foreground) / `make dev-web-bg` + `make dev-web-stop` (detached) |
   | End-to-end smoke test | `make notif-smoke-test` |
+- **Push gate:** (suites a push must pass; first matching row wins per changed path, all matched suites run sequentially)
+  | Paths (space-separated globs)                                      | Command                |
+  | ------------------------------------------------------------------ | ---------------------- |
+  | `provisioning-api/**`                                              | `make go-test`         |
+  | `web/**`                                                           | `make web-test`        |
+  | `person-service/**`                                                | `make worker-test`     |
+  | `docs/** *.md .claude/** .gitignore`                               | na docs and config only |
+  | `**`                                                               | `make go-test && make web-test && make worker-test` |
 - **GitHub project board:** n/a
 - **Issue labels:** resolve at runtime via `gh label list` (do not invent labels)
 - **PR reviewer:** `GPropersi`   <!-- always request as reviewer on every PR -->
