@@ -1,11 +1,15 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { webPorts } from './worktree-ports.ts';
+
+const { apiPort, webPort } = webPorts();
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
   server: {
+    port: webPort,
     // Dev-only: mirrors the production same-origin shape locally. In production
     // the SPA calls relative `/v1/*` and `/people`, served by same-origin
     // Cloudflare Pages Functions (see web/functions/) that proxy to the
@@ -13,13 +17,13 @@ export default defineConfig({
     // proxy reproduces that same-origin behavior for `npm run dev` and has no
     // effect on the production build.
     proxy: {
-      '/v1': 'http://127.0.0.1:8091',
+      '/v1': `http://127.0.0.1:${apiPort}`,
     },
   },
   test: {
     environment: 'jsdom',
     globals: false,
     setupFiles: ['./src/test-setup.ts'],
-    include: ['src/**/*.test.{ts,tsx}', 'functions/**/*.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}', 'functions/**/*.test.ts', 'worktree-ports.test.ts'],
   },
 });

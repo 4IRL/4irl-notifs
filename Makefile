@@ -27,6 +27,7 @@ E2E_PORT := $(or $(call wtenv,E2E_PORT),4173)
 endif
 export COMPOSE_PROJECT_NAME NTFY_PORT API_PORT WEB_PORT E2E_PORT
 
+DEV_DIR := $(CURDIR)/.dev
 COMPOSE := docker compose -p $(COMPOSE_PROJECT_NAME) --project-directory . -f docker-compose.yml
 API_URL := http://127.0.0.1:$(API_PORT)
 NTFY_URL := http://127.0.0.1:$(NTFY_PORT)
@@ -54,23 +55,23 @@ local-logs: ## Follow logs for the local stack
 ## Admin UI dev server
 
 dev-web: ## Run the admin UI dev server in the foreground (proxies /v1 to the local API; see web/vite.config.ts)
-	cd web && npm run dev -- --host 127.0.0.1
+	cd web && npm run dev -- --host 127.0.0.1 --port $(WEB_PORT) --strictPort
 
-dev-web-bg: ## Start the admin UI dev server detached, logging to /tmp/claude/vite-dev.log
-	@mkdir -p /tmp/claude
-	@cd web && nohup npm run dev -- --host 127.0.0.1 > /tmp/claude/vite-dev.log 2>&1 & echo $$! > /tmp/claude/vite-dev.pid
+dev-web-bg: ## Start the admin UI dev server detached, logging to .dev/vite-dev.log
+	@mkdir -p $(DEV_DIR)
+	@cd web && nohup npm run dev -- --host 127.0.0.1 --port $(WEB_PORT) --strictPort > $(DEV_DIR)/vite-dev.log 2>&1 & echo $$! > $(DEV_DIR)/vite-dev.pid
 	@for i in $$(seq 1 30); do \
-		curl -sf http://127.0.0.1:5173/ >/dev/null 2>&1 && break; \
+		curl -sf http://127.0.0.1:$(WEB_PORT)/ >/dev/null 2>&1 && break; \
 		sleep 1; \
 	done
-	@curl -sf http://127.0.0.1:5173/ >/dev/null && echo "dev server up at http://127.0.0.1:5173/ (pid $$(cat /tmp/claude/vite-dev.pid))" || { echo "dev server failed to start — see /tmp/claude/vite-dev.log"; exit 1; }
+	@curl -sf http://127.0.0.1:$(WEB_PORT)/ >/dev/null && echo "dev server up at http://127.0.0.1:$(WEB_PORT)/ (pid $$(cat $(DEV_DIR)/vite-dev.pid))" || { echo "dev server failed to start — see $(DEV_DIR)/vite-dev.log"; exit 1; }
 
 dev-web-stop: ## Stop the detached admin UI dev server started by dev-web-bg
-	@if [ -f /tmp/claude/vite-dev.pid ]; then \
-		PID=$$(cat /tmp/claude/vite-dev.pid); \
-		pkill -P $$PID 2>/dev/null || true; \
-		kill $$PID 2>/dev/null || true; \
-		rm -f /tmp/claude/vite-dev.pid; \
+	@if [ -f $(DEV_DIR)/vite-dev.pid ]; then \
+		PID=$$(cat $(DEV_DIR)/vite-dev.pid); \
+		kill_tree() { for CHILD in $$(pgrep -P $$1); do kill_tree $$CHILD; done; kill $$1 2>/dev/null || true; }; \
+		kill_tree $$PID; \
+		rm -f $(DEV_DIR)/vite-dev.pid; \
 		echo "dev server stopped"; \
 	else echo "no dev server pid file found"; fi
 
