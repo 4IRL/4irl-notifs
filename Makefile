@@ -1,13 +1,44 @@
-.PHONY: local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
+.PHONY: help lint test local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-integration-test go-lint go-fmt \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	worker-test worker-build worker-deploy
 
-COMPOSE := docker compose --project-directory . -f docker-compose.yml
-API_URL := http://127.0.0.1:8091
-NTFY_URL := http://127.0.0.1:8090
+.DEFAULT_GOAL := help
+
+# Per-worktree identity and ports. Precedence: defaults < .worktree.env < environment < `make VAR=...`.
+# Single keys are read from .worktree.env (plain KEY=VALUE) instead of `-include`, so an
+# environment value is never overridden by the file. Must stay above the `:=` lines below.
+wtenv = $(shell sed -n 's/^$(1)=//p' .worktree.env 2>/dev/null | tail -n 1)
+
+ifndef COMPOSE_PROJECT_NAME
+COMPOSE_PROJECT_NAME := $(or $(call wtenv,COMPOSE_PROJECT_NAME),4irl-notifs)
+endif
+ifndef NTFY_PORT
+NTFY_PORT := $(or $(call wtenv,NTFY_PORT),8090)
+endif
+ifndef API_PORT
+API_PORT := $(or $(call wtenv,API_PORT),8091)
+endif
+ifndef WEB_PORT
+WEB_PORT := $(or $(call wtenv,WEB_PORT),5173)
+endif
+ifndef E2E_PORT
+E2E_PORT := $(or $(call wtenv,E2E_PORT),4173)
+endif
+export COMPOSE_PROJECT_NAME NTFY_PORT API_PORT WEB_PORT E2E_PORT
+
+COMPOSE := docker compose -p $(COMPOSE_PROJECT_NAME) --project-directory . -f docker-compose.yml
+API_URL := http://127.0.0.1:$(API_PORT)
+NTFY_URL := http://127.0.0.1:$(NTFY_PORT)
 SMOKE_APP_ID := smoketest
 SMOKE_EMAIL := smoketest@example.com
+
+help: ## Show this help message
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
+
+lint: go-lint web-lint ## Run all linters (Go + frontend)
+
+test: go-test web-test worker-test ## Run all unit tests (Go, web Vitest, worker Vitest)
 
 ## Local stack (ntfy + provisioning-api)
 
@@ -99,7 +130,8 @@ go-integration-test: ## Run Go integration tests (local stack must be up)
 	cd provisioning-api && go test -tags integration ./...
 
 go-lint: ## Check Go formatting and lint
-	cd provisioning-api && gofmt -l . && golangci-lint run
+	@UNFORMATTED="$$(cd provisioning-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }
+	cd provisioning-api && golangci-lint run
 
 go-fmt: ## Apply Go formatting
 	cd provisioning-api && gofmt -w .
