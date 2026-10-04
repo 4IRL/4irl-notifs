@@ -1,7 +1,7 @@
 .PHONY: help lint test local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-integration-test go-lint go-fmt \
 	web-test web-e2e web-build web-lint web-format dev-pages \
-	worker-test worker-build worker-deploy
+	worker-test worker-build worker-deploy scripts-test worktree-ports
 
 .DEFAULT_GOAL := help
 
@@ -39,7 +39,13 @@ help: ## Show this help message
 
 lint: go-lint web-lint ## Run all linters (Go + frontend)
 
-test: go-test web-test worker-test ## Run all unit tests (Go, web Vitest, worker Vitest)
+test: go-test web-test worker-test scripts-test ## Run all unit tests (Go, web Vitest, worker Vitest, scripts)
+
+scripts-test: ## Run scripts/ unit tests
+	node --test "scripts/*.test.mjs"
+
+worktree-ports: ## Print this checkout's resolved ports
+	@node scripts/ports.mjs print
 
 ## Local stack (ntfy + provisioning-api)
 
