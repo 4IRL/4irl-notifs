@@ -99,7 +99,7 @@ shown for reference only.
 | `make lint` | Run all linters (Go + frontend) |
 | `make test` | Run all unit tests (Go, web Vitest, worker Vitest, scripts) |
 | `make scripts-test` (`node --test "scripts/*.test.mjs"`) | Run the `scripts/` unit tests |
-| `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` | Create an isolated worktree with its own compose project and ports |
+| `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` | Create an isolated worktree with its own compose project and ports (see [`docs/worktrees.md`](docs/worktrees.md)) |
 | `make worktree-rm` | Remove the current worktree (run inside it; branch kept) |
 | `make worktree-ports` | Print this checkout's resolved ports |
 

@@ -14,8 +14,13 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
 docker compose --project-directory . -f docker-compose.yml up -d
 ```
 
-ntfy listens on `http://127.0.0.1:8090` (config: `ntfy/server.yml`; auth database on the
-`ntfy-auth` named volume, shared with the provisioning-api container).
+Or `make local-up` / `make local-down`. ntfy listens on `http://127.0.0.1:8090` by default
+(override with `NTFY_PORT`; config: `ntfy/server.yml`; auth database on the `ntfy-auth` named
+volume, shared with the provisioning-api container).
+
+Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own
+compose project and ports; see [`docs/worktrees.md`](docs/worktrees.md). In a worktree, start the
+stack only via `make local-up` / `make local-down`, never raw `docker compose`.
 
 ## Topic namespace & auth model
 
