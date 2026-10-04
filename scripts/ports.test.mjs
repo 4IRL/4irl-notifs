@@ -155,28 +155,26 @@ describe('loadPorts', () => {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'ports-test-'));
   }
 
-  it('returns defaults with source default when there is no file or env', () => {
+  it('returns defaults when there is no file or env', () => {
     const cwd = tmpDir();
-    assert.deepEqual(loadPorts({ cwd, env: {} }), { ports: { ...DEFAULT_PORTS }, source: 'default' });
+    assert.deepEqual(loadPorts({ cwd, env: {} }), { ports: { ...DEFAULT_PORTS } });
   });
 
-  it('reads the file with source file', () => {
+  it('reads the file', () => {
     const cwd = tmpDir();
     fs.writeFileSync(path.join(cwd, '.worktree.env'), '# c\n\nWEB_PORT=5300\nSLUG=x\n');
-    const { ports, source } = loadPorts({ cwd, env: {} });
+    const { ports } = loadPorts({ cwd, env: {} });
     assert.equal(ports.WEB_PORT, 5300);
     assert.equal(ports.API_PORT, 8091);
-    assert.equal(source, 'file');
   });
 
-  it('env beats file with source env', () => {
+  it('env beats file', () => {
     const cwd = tmpDir();
     fs.writeFileSync(path.join(cwd, '.worktree.env'), 'WEB_PORT=5300\nAPI_PORT=8100\n');
-    const { ports, source } = loadPorts({ cwd, env: { WEB_PORT: '5400', NTFY_PORT: '' } });
+    const { ports } = loadPorts({ cwd, env: { WEB_PORT: '5400', NTFY_PORT: '' } });
     assert.equal(ports.WEB_PORT, 5400);
     assert.equal(ports.API_PORT, 8100);
     assert.equal(ports.NTFY_PORT, 8090);
-    assert.equal(source, 'env');
   });
 
   it('rejects an invalid file value', () => {

@@ -70,7 +70,7 @@ export function dnsSlug(value) {
 /** The remote's default branch (origin/HEAD), falling back to main. */
 export function defaultBranch(git, cwd = '.') {
   try {
-    const ref = git(cwd, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).trim();
+    const ref = git(cwd, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
     const name = ref.replace(/^origin\//, '');
     return name || 'main';
   } catch {
@@ -205,14 +205,6 @@ export function linkDevVars({ primaryRoot, worktreeDir, warn = console.warn }) {
     emit(`worktree: ${rel} not found in the primary and no example to copy, skipping`);
   }
   return warnings;
-}
-
-/**
- * Allocate ports for a new worktree. Ambient unprefixed port variables (make exports the
- * primary's defaults to every recipe) must never count as explicit overrides, so env is empty.
- */
-export function allocateWorktreePorts({ slug, claimed, probe = probePort }) {
-  return resolvePorts({ slug, claimed, probe, env: {} });
 }
 
 /** Atomically write <dir>/.worktree.env (plain KEY=VALUE) with mode 0600. */
@@ -405,7 +397,9 @@ export async function newWorktree({
   const release = acquireSlotLock({ lockDir: path.join(commonDir(git, primaryRoot), LOCK_NAME) });
   let ports;
   try {
-    ports = await allocateWorktreePorts({ slug: plan.slug, claimed: readClaimedSlots(primaryRoot), probe });
+    // env is empty on purpose: ambient unprefixed port variables (make exports the primary's
+    // defaults to every recipe) must never count as explicit overrides.
+    ports = await resolvePorts({ slug: plan.slug, claimed: readClaimedSlots(primaryRoot), probe, env: {} });
     writeWorktreeEnv({ dir: plan.path, slug: plan.slug, primaryRoot, ports });
   } catch (err) {
     throw new Error(

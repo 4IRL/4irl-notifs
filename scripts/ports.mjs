@@ -161,11 +161,10 @@ export async function resolvePorts({
 
 /**
  * Resolve ports for a running process: defaults < <cwd>/.worktree.env < env.
- * `cwd` defaults to the repo root. `source` is 'default' | 'file' | 'env' (env wins).
+ * `cwd` defaults to the repo root.
  */
 export function loadPorts({ cwd = REPO_ROOT, env = process.env } = {}) {
   const ports = { ...DEFAULT_PORTS };
-  let source = 'default';
 
   const file = path.join(cwd, '.worktree.env');
   if (fs.existsSync(file)) {
@@ -173,18 +172,14 @@ export function loadPorts({ cwd = REPO_ROOT, env = process.env } = {}) {
     for (const key of PORT_KEYS) {
       if (parsed[key] !== undefined) {
         ports[key] = parsePort(key, parsed[key]);
-        source = 'file';
       }
     }
   }
 
   const overrides = envOverrides(env);
-  if (Object.keys(overrides).length > 0) {
-    Object.assign(ports, overrides);
-    source = 'env';
-  }
+  Object.assign(ports, overrides);
 
-  return { ports, source };
+  return { ports };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

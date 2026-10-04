@@ -4,10 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
-import { DEFAULT_PORTS } from './ports.mjs';
+import { DEFAULT_PORTS, resolvePorts } from './ports.mjs';
 import {
   acquireSlotLock,
-  allocateWorktreePorts,
   defaultBranch,
   dnsSlug,
   ensureExcludes,
@@ -15,6 +14,7 @@ import {
   newWorktree,
   parseWorktreeArgs,
   planNew,
+  readClaimedSlots,
   removeWorktree,
   rmComposeProject,
   writeWorktreeEnv,
@@ -69,7 +69,7 @@ describe('parseWorktreeArgs', () => {
 
 describe('defaultBranch', () => {
   it('strips the origin/ prefix from symbolic-ref', () => {
-    const git = stubGit({ answers: { 'symbolic-ref': 'origin/trunk\n' } });
+    const git = stubGit({ answers: { 'symbolic-ref': 'origin/trunk' } });
     assert.equal(defaultBranch(git, '/x'), 'trunk');
     assert.deepEqual(git.calls[0].args, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
   });
@@ -163,6 +163,20 @@ describe('planNew', () => {
     assert.match(warnings[0], /docker/);
   });
 
+  it('uses mode local when the branch exists locally', () => {
+    const root = primary();
+    const git = stubGit({ fail: (args) => args[0] === 'show-ref' && !args.includes('refs/heads/feat-x') });
+    const plan = planNew({ primaryRoot: root, name: 'feat-x', git, projectNames: [] });
+    assert.equal(plan.mode, 'local');
+  });
+
+  it('uses mode remote when the branch exists only on origin', () => {
+    const root = primary();
+    const git = stubGit({ fail: (args) => args[0] === 'show-ref' && !args.includes('refs/remotes/origin/feat-x') });
+    const plan = planNew({ primaryRoot: root, name: 'feat-x', git, projectNames: [] });
+    assert.equal(plan.mode, 'remote');
+  });
+
   it('errors when the base ref does not exist for a new branch', () => {
     const root = primary();
     const git = stubGit({ fail: (args) => args[0] === 'show-ref' || args[0] === 'rev-parse' });
@@ -170,7 +184,7 @@ describe('planNew', () => {
   });
 });
 
-describe('allocateWorktreePorts', () => {
+describe('resolvePorts with an empty env', () => {
   it('ignores ambient unprefixed port variables', async () => {
     const saved = { ...process.env };
     Object.assign(process.env, {
@@ -180,7 +194,7 @@ describe('allocateWorktreePorts', () => {
       E2E_PORT: '4173',
     });
     try {
-      const ports = await allocateWorktreePorts({ slug: 'proof-a', claimed: new Set(), probe: allFree });
+      const ports = await resolvePorts({ slug: 'proof-a', claimed: new Set(), probe: allFree, env: {} });
       assert.notEqual(ports.NOTIFS_SLOT, 0);
       for (const key of Object.keys(DEFAULT_PORTS)) {
         assert.notEqual(ports[key], DEFAULT_PORTS[key], key);
@@ -191,6 +205,26 @@ describe('allocateWorktreePorts', () => {
         else process.env[key] = saved[key];
       }
     }
+  });
+});
+
+describe('readClaimedSlots', () => {
+  it('collects numeric NOTIFS_SLOT values and skips bad or missing files', () => {
+    const primary = tmpDir();
+    const base = path.join(primary, '.claude', 'worktrees');
+    for (const [dir, content] of [
+      ['a', 'NOTIFS_SLOT=3\n'],
+      ['b', 'NOTIFS_SLOT=abc\n'],
+      ['c', null],
+    ]) {
+      fs.mkdirSync(path.join(base, dir), { recursive: true });
+      if (content !== null) fs.writeFileSync(path.join(base, dir, '.worktree.env'), content);
+    }
+    assert.deepEqual(readClaimedSlots(primary), new Set([3]));
+  });
+
+  it('returns an empty set when the worktrees directory is missing', () => {
+    assert.deepEqual(readClaimedSlots(tmpDir()), new Set());
   });
 });
 
@@ -516,6 +550,65 @@ describe('newWorktree', () => {
     assert.deepEqual(setups, [result.path]);
     assert.equal(fs.existsSync(path.join(common, 'notifs-worktree-slot.lock')), false);
     assert.ok(fs.readFileSync(path.join(common, 'info', 'exclude'), 'utf8').includes('/.dev/'));
+  });
+
+  it('passes the right worktree add flags for each mode', async () => {
+    for (const [mode, showRefOk, expected] of [
+      ['local', 'refs/heads/feat-m', (p) => ['worktree', 'add', p, 'feat-m']],
+      ['remote', 'refs/remotes/origin/feat-m', (p) => ['worktree', 'add', '--track', '-b', 'feat-m', p, 'origin/feat-m']],
+      ['new', null, (p) => ['worktree', 'add', '--no-track', '-b', 'feat-m', p, 'main']],
+    ]) {
+      const primaryRoot = fs.realpathSync(tmpDir());
+      const common = path.join(primaryRoot, '.git');
+      fs.mkdirSync(common);
+      const adds = [];
+      const git = (cwd, args) => {
+        if (args[0] === 'rev-parse' && args.includes('--git-common-dir')) return common;
+        if (args[0] === 'show-ref' && args.at(-1) !== showRefOk) throw new Error('no ref');
+        if (args[0] === 'worktree' && args[1] === 'add') {
+          adds.push(args);
+          fs.mkdirSync(path.join(primaryRoot, '.claude', 'worktrees', 'feat-m'), { recursive: true });
+        }
+        return '';
+      };
+      const result = await newWorktree({
+        primaryRoot,
+        name: 'feat-m',
+        base: 'main',
+        git,
+        projectNames: [],
+        probe: allFree,
+        runSetup: () => {},
+        warn: () => {},
+      });
+      assert.deepEqual(adds, [expected(result.path)], mode);
+    }
+  });
+
+  it('reports a port failure and releases the slot lock', async () => {
+    const primaryRoot = fs.realpathSync(tmpDir());
+    const common = path.join(primaryRoot, '.git');
+    fs.mkdirSync(common);
+    const git = (cwd, args) => {
+      if (args[0] === 'rev-parse' && args.includes('--git-common-dir')) return common;
+      if (args[0] === 'show-ref') throw new Error('no ref');
+      if (args[0] === 'worktree' && args[1] === 'add') fs.mkdirSync(args.at(-2), { recursive: true });
+      return '';
+    };
+    await assert.rejects(
+      newWorktree({
+        primaryRoot,
+        name: 'proof-c',
+        base: 'main',
+        git,
+        projectNames: [],
+        probe: async () => false,
+        runSetup: () => {},
+        warn: () => {},
+      }),
+      /port\/env setup failed/,
+    );
+    assert.equal(fs.existsSync(path.join(common, 'notifs-worktree-slot.lock')), false);
   });
 
   it('reports retry and discard commands when setup fails', async () => {
