@@ -26,7 +26,7 @@ jobs:
       - name: Wait for provisioning-api to be healthy
         run: |
           for i in $(seq 1 60); do
-            STATUS="$(docker inspect -f '{{.State.Health.Status}}' 4irl-notifs-provisioning-api || echo "unknown")"
+            STATUS="$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose --project-directory . -f docker-compose.yml ps -q provisioning-api)" || echo "unknown")"
             if [ "$STATUS" = "healthy" ]; then
               echo "provisioning-api is healthy"
               exit 0

@@ -1,5 +1,3 @@
-name: 4irl-notifs
-
 services:
   # One-shot init: the ntfy server and the provisioning-api both run as the
   # non-root uid 1000 and share ntfy's auth database over the ntfy-auth volume,
@@ -7,7 +5,6 @@ services:
   # and exits; the other services wait for it to complete.
   volume-init:
     image: busybox:1.37.0
-    container_name: 4irl-notifs-volume-init
     command: chown -R 1000:1000 /var/lib/ntfy /var/cache/ntfy
     user: "0:0"
     volumes:
@@ -19,11 +16,14 @@ services:
     restart: unless-stopped
     # LOCKSTEP: keep equal to Dockerfile's ntfy stage (bundled CLI) and docker-compose.prod.yml.
     image: binwiederhier/ntfy:v2.26.0
-    container_name: 4irl-notifs-ntfy
     command: serve
     user: "1000:1000"
+    environment:
+      # Overrides ntfy/server.yml's base-url (shared with prod) so the local
+      # stack advertises the host port this project actually published.
+      NTFY_BASE_URL: http://localhost:${NTFY_PORT:-8090}
     ports:
-      - "127.0.0.1:8090:80"
+      - "127.0.0.1:${NTFY_PORT:-8090}:80"
     depends_on:
       volume-init:
         condition: service_completed_successfully
@@ -47,10 +47,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: 4irl-notifs-provisioning-api:local
-    container_name: 4irl-notifs-provisioning-api
     ports:
-      - "127.0.0.1:8091:8080"
+      - "127.0.0.1:${API_PORT:-8091}:8080"
     depends_on:
       ntfy:
         condition: service_healthy

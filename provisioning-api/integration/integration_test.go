@@ -1,13 +1,18 @@
 //go:build integration
 
 // Package integration exercises the provisioning-api against a live
-// docker-compose stack (ntfy + provisioning-api). Run with the local stack up:
+// docker-compose stack (ntfy + provisioning-api). Prefer make go-integration-test,
+// which resolves the stack's ports and container id and passes them in via
+// NOTIFS_API_URL, NTFY_URL and NOTIFS_API_CONTAINER. Running by hand:
 //
 //	docker compose --project-directory . -f docker-compose.yml up -d --build
 //	go test -tags integration ./integration/...
 //
 // The API base URL and the ntfy publish URL are overridable via NOTIFS_API_URL
-// and NTFY_URL for non-default port mappings.
+// and NTFY_URL for non-default port mappings. The provisioning-api container is
+// taken from NOTIFS_API_CONTAINER, else looked up with docker compose ps -q;
+// outside make in a worktree, export COMPOSE_PROJECT_NAME (from .worktree.env)
+// so that lookup finds the worktree's own stack.
 package integration
 
 import (
@@ -670,32 +675,40 @@ func TestSendTestNotificationEndToEnd(t *testing.T) {
 	}
 }
 
-// provisioningAPIContainer is the fixed container name of the provisioning-api
-// service (per docker-compose.yml). The service bundles the ntfy CLI and shares
-// the ntfy-auth volume with the ntfy server container, so shelling into it lets
-// a test edit the same auth database the API and server use.
-const provisioningAPIContainer = "4irl-notifs-provisioning-api"
+// execRunner is the real commandRunner behind resolveAPIContainer. It lives in
+// this tagged file because container.go is built without the integration tag,
+// and an unexported symbol used only here would be flagged unused by lint.
+func execRunner(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).Output()
+}
 
 // runNtfyCLIInContainer runs an ntfy CLI subcommand (ntfyArgs) inside the
 // provisioning-api container via `docker exec`, failing the test on any non-zero
 // exit. hostEnv entries ("NAME=value") are set on the host `docker` process and
 // forwarded into the container by name via `-e NAME` (so a secret value never
 // lands on the host `docker` argv, mirroring ntfycli's NTFY_PASSWORD convention).
-// Using `docker exec` against the fixed container name (rather than
-// `docker compose exec`) keeps the invocation independent of the test process's
-// working directory, which is provisioning-api/ under `make go-integration-test`.
+// The container is resolved by resolveAPIContainer (NOTIFS_API_CONTAINER from
+// make, else docker compose ps -q), and docker exec against its id keeps the
+// invocation independent of the test process's working directory, which is
+// provisioning-api/ under make go-integration-test. The service bundles the
+// ntfy CLI and shares the ntfy-auth volume with the ntfy server container, so
+// shelling into it edits the same auth database the API and server use.
 //
 // It returns the combined stdout+stderr of the CLI invocation so a caller can
 // assert on the output (e.g. the `token list` listing). Callers that only need
 // the run-or-fail behavior may discard the returned string.
 func runNtfyCLIInContainer(t *testing.T, hostEnv []string, ntfyArgs ...string) string {
 	t.Helper()
+	containerID, resolveErr := resolveAPIContainer(execRunner)
+	if resolveErr != nil {
+		t.Fatalf("resolve provisioning-api container: %v", resolveErr)
+	}
 	dockerArgs := []string{"exec"}
 	for _, entry := range hostEnv {
 		name, _, _ := strings.Cut(entry, "=")
 		dockerArgs = append(dockerArgs, "-e", name)
 	}
-	dockerArgs = append(dockerArgs, provisioningAPIContainer, "ntfy")
+	dockerArgs = append(dockerArgs, containerID, "ntfy")
 	dockerArgs = append(dockerArgs, ntfyArgs...)
 	command := exec.Command("docker", dockerArgs...)
 	command.Env = append(os.Environ(), hostEnv...)
