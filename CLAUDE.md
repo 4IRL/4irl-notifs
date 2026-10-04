@@ -16,8 +16,8 @@ Guidance for Claude Code when working in this repository.
 - **Bot push script:** `~/code/.claude/scripts/gh-app-push.sh` (central; uses GIT_ASKPASS so the token never lands in argv/URL, authenticates as the shared `gpropersi-claude` App and derives the repo from `origin`)
 - **Bot gh wrapper:** `~/code/.claude/scripts/gh-bot.sh <args>` — the **central, repo-agnostic** wrapper (shared by every sub-repo). Runs any `gh` subcommand as this repo's bot (e.g. `gh-bot.sh pr create ...`, `gh-bot.sh api repos/4IRL/4irl-notifs ...`) with NO `$(...)` on the command line; it generates + injects the token internally, never printed. Invoke by **absolute path** from inside the repo (a relative `.claude/scripts/...` resolves to the sub-repo, not the central copy). Prefer this over inline `GH_TOKEN=$(...) gh ...`. Allowlisted (scoped) for `pr *`, `issue *`, `api graphql`, `api repos/*`, `label list`; `pr merge` is denied (the bot must not auto-merge to `main` — that triggers the deploy pipeline).
 - **Token generator:** `~/code/.claude/scripts/generate-gh-token.sh` — the central generator (shared `gpropersi-claude` App; auto-resolves this repo's installation from its owner). The repo-local `.claude/bot/generate-gh-token.sh` delegate takes precedence over it (central `gh-app-push.sh` / `gh-bot.sh` resolve it first). Only the shared private key `~/.claude/u4i-app.pem` lives outside git.
-- **Container runtime:** `docker compose --project-directory . -f docker-compose.yml` (local stack: ntfy + provisioning-api)
-- **App URL (Playwright MCP):** `http://127.0.0.1:5173/` (Vite dev server; prod is Cloudflare Pages behind Cloudflare Access)
+- **Container runtime:** `docker compose -p $(COMPOSE_PROJECT_NAME) --project-directory . -f docker-compose.yml` (local stack: ntfy + provisioning-api; the project name and host ports come from the Makefile, defaulting to `4irl-notifs` / 8090 / 8091 and overridden per worktree by `.worktree.env`; in a worktree start the stack only via `make local-up` / `make local-down`)
+- **App URL (Playwright MCP):** `http://127.0.0.1:5173/` by default (Vite dev server; the port is `WEB_PORT` from `.worktree.env` in a worktree, run `make worktree-ports`; prod is Cloudflare Pages behind Cloudflare Access)
 - **Test login:** n/a (admin UI is behind Cloudflare Access Google/GitHub OAuth; per-app callers use Cloudflare Access Service Tokens)
 - **Commands:** (Makefile-first — always prefer `make <target>`; raw command shown for reference)
   | Purpose | Command |
@@ -31,18 +31,30 @@ Guidance for Claude Code when working in this repository.
   | Lint / format | `make go-lint` / `make go-fmt` (Go); `make web-lint` / `make web-format` (frontend) |
   | Admin UI dev server | `make dev-web` (foreground) / `make dev-web-bg` + `make dev-web-stop` (detached) |
   | End-to-end smoke test | `make notif-smoke-test` |
+  | Help / all lint / all unit tests | `make help` / `make lint` / `make test` |
+  | Script tests | `make scripts-test` (`scripts/*.test.mjs`, node:test) |
+  | New worktree | `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` |
+  | Remove worktree | `make worktree-rm` (run inside the worktree) |
+  | Resolved ports | `make worktree-ports` |
 - **Push gate:** (suites a push must pass; first matching row wins per changed path, all matched suites run sequentially)
   | Paths (space-separated globs)                                      | Command                |
   | ------------------------------------------------------------------ | ---------------------- |
   | `provisioning-api/**`                                              | `make go-test`         |
   | `web/**`                                                           | `make web-test`        |
   | `person-service/**`                                                | `make worker-test`     |
+  | `scripts/**`                                                       | `make scripts-test`    |
   | `docs/** *.md .claude/** .gitignore`                               | na docs and config only |
-  | `**`                                                               | `make go-test && make web-test && make worker-test` |
+  | `**`                                                               | `make test`            |
 - **GitHub project board:** n/a
 - **Issue labels:** resolve at runtime via `gh label list` (do not invent labels)
 - **PR reviewer:** `GPropersi`   <!-- always request as reviewer on every PR -->
 - **Worktree policy:** `full`
+- **Worktree link:** `web/.dev.vars`
+- **Worktree setup:** `n/a` <!-- informational; the owned worktree-new target runs npm ci in web/ and person-service/ itself -->
+- **Worktree teardown:** `n/a`
+- **Worktree ports:** `NTFY_PORT=8090,API_PORT=8091,WEB_PORT=5173,E2E_PORT=4173` <!-- informational: slot-0 / primary defaults; scripts/ports.mjs owns the per-worktree values (8090+2s, 8091+2s, 5273+s, 4273+s) -->
+- **Worktree allowed targets:** `n/a`
+- **Worktree guarded targets:** `n/a`
 
 ## Project Overview
 
@@ -83,6 +95,13 @@ shown for reference only.
 | `make web-lint` / `make web-format` (`npx eslint` / `npx prettier`) | Lint / format the frontend |
 | `make dev-web` / `make dev-web-bg` + `make dev-web-stop` | Admin UI dev server (foreground / detached) |
 | `make notif-smoke-test` | End-to-end provision → publish → deliver smoke test |
+| `make help` | List all targets |
+| `make lint` | Run all linters (Go + frontend) |
+| `make test` | Run all unit tests (Go, web Vitest, worker Vitest, scripts) |
+| `make scripts-test` (`node --test "scripts/*.test.mjs"`) | Run the `scripts/` unit tests |
+| `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` | Create an isolated worktree with its own compose project and ports |
+| `make worktree-rm` | Remove the current worktree (run inside it; branch kept) |
+| `make worktree-ports` | Print this checkout's resolved ports |
 
 ## Testing
 

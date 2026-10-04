@@ -1,7 +1,7 @@
 .PHONY: help lint test local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-integration-test go-lint go-fmt \
 	web-test web-e2e web-build web-lint web-format dev-pages \
-	worker-test worker-build worker-deploy scripts-test worktree-ports
+	worker-test worker-build worker-deploy scripts-test worktree-ports worktree-new worktree-rm
 
 .DEFAULT_GOAL := help
 
@@ -46,6 +46,17 @@ scripts-test: ## Run scripts/ unit tests
 
 worktree-ports: ## Print this checkout's resolved ports
 	@node scripts/ports.mjs print
+
+# The export line above would hand the primary's default ports to the resolver; drop them for this recipe.
+worktree-new: unexport NTFY_PORT := $(NTFY_PORT)
+worktree-new: unexport API_PORT := $(API_PORT)
+worktree-new: unexport WEB_PORT := $(WEB_PORT)
+worktree-new: unexport E2E_PORT := $(E2E_PORT)
+worktree-new: ## Create a worktree: make worktree-new name=<slug> [b=<branch>] [base=<ref>]
+	@WT_NAME='$(subst ','\'',$(name))' WT_BRANCH='$(subst ','\'',$(b))' WT_BASE='$(subst ','\'',$(base))' node scripts/worktree.mjs new
+
+worktree-rm: ## Remove this worktree (run inside it)
+	@node scripts/worktree.mjs rm
 
 ## Local stack (ntfy + provisioning-api)
 
