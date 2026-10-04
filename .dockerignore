@@ -8,3 +8,6 @@ provisioning-api/provisioning-api
 provisioning-api/bin/
 *.md
 .github/
+.claude/
+.worktree.env
+.dev/

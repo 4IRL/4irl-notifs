@@ -49,6 +49,9 @@ jobs:
         working-directory: person-service
         run: npm test
 
+      - name: Run scripts tests
+        run: node --test "scripts/*.test.mjs"
+
   E2E:
     name: End-to-end
     runs-on: ubuntu-latest
