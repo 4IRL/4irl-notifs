@@ -24,6 +24,11 @@ dist/
 # Bot config — account-specific GitHub App IDs (the .example template is tracked)
 .claude/bot/bot.env
 
+# Worktrees: linked checkouts, per-worktree port/project file, repo-local dev run dir
+.claude/worktrees/
+.worktree.env
+/.dev/
+
 # Personal local overrides (sandbox exclusions, per-machine permission tweaks)
 .claude/settings.local.json
 
