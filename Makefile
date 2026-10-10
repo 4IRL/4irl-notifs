@@ -1,5 +1,6 @@
 .PHONY: help lint test local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-integration-test go-lint go-fmt \
+	delivery-test delivery-integration-test delivery-lint delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	worker-test worker-build worker-deploy scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm
 
@@ -25,11 +26,17 @@ endif
 ifndef E2E_PORT
 E2E_PORT := $(or $(call wtenv,E2E_PORT),4173)
 endif
-export COMPOSE_PROJECT_NAME NTFY_PORT API_PORT WEB_PORT E2E_PORT
+ifndef DELIVERY_PORT
+DELIVERY_PORT := $(or $(call wtenv,DELIVERY_PORT),8300)
+endif
+# Derived, not a scripts/ports.mjs key: tracks DELIVERY_PORT per worktree (local-only test port of delivery-postgres).
+DELIVERY_DB_PORT_HOST := $(shell echo $$(($(DELIVERY_PORT) + 10000)))
+export COMPOSE_PROJECT_NAME NTFY_PORT API_PORT WEB_PORT E2E_PORT DELIVERY_PORT DELIVERY_DB_PORT_HOST
 
 DEV_DIR := $(CURDIR)/.dev
 COMPOSE := docker compose -p $(COMPOSE_PROJECT_NAME) --project-directory . -f docker-compose.yml
 API_URL := http://127.0.0.1:$(API_PORT)
+DELIVERY_URL := http://127.0.0.1:$(DELIVERY_PORT)
 NTFY_URL := http://127.0.0.1:$(NTFY_PORT)
 SMOKE_APP_ID := smoketest
 SMOKE_EMAIL := smoketest@example.com
@@ -37,9 +44,9 @@ SMOKE_EMAIL := smoketest@example.com
 help: ## Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-lint: go-lint web-lint scripts-lint ## Run all linters (Go + frontend + scripts)
+lint: go-lint delivery-lint web-lint scripts-lint workflows-lint ## Run all linters (Go + frontend + scripts + workflows)
 
-test: go-test web-test worker-test scripts-test ## Run all unit tests (Go, web Vitest, worker Vitest, scripts)
+test: go-test delivery-test web-test worker-test scripts-test ## Run all unit tests (Go, web Vitest, worker Vitest, scripts)
 
 scripts-test: ## Run scripts/ unit tests
 	node --test "scripts/*.test.mjs"
@@ -58,15 +65,16 @@ worktree-new: unexport NTFY_PORT := $(NTFY_PORT)
 worktree-new: unexport API_PORT := $(API_PORT)
 worktree-new: unexport WEB_PORT := $(WEB_PORT)
 worktree-new: unexport E2E_PORT := $(E2E_PORT)
+worktree-new: unexport DELIVERY_PORT := $(DELIVERY_PORT)
 worktree-new: ## Create a worktree: make worktree-new name=<slug> [b=<branch>] [base=<ref>]
 	@WT_NAME='$(subst ','\'',$(name))' WT_BRANCH='$(subst ','\'',$(b))' WT_BASE='$(subst ','\'',$(base))' node scripts/worktree.mjs new
 
 worktree-rm: ## Remove this worktree (run inside it)
 	@node scripts/worktree.mjs rm
 
-## Local stack (ntfy + provisioning-api)
+## Local stack (ntfy + provisioning-api + delivery-api + Postgres)
 
-local-up: ## Bring up the local ntfy + provisioning-api stack
+local-up: ## Bring up the local ntfy + provisioning-api + delivery-api (+ Postgres, migrate) stack
 	$(COMPOSE) up -d --build
 
 local-down: ## Tear down the local stack
@@ -159,6 +167,30 @@ go-lint: ## Check Go formatting and lint
 
 go-fmt: ## Apply Go formatting
 	cd provisioning-api && gofmt -w .
+
+## Go (delivery-api)
+
+delivery-test: ## Run delivery-api Go unit tests
+	cd delivery-api && go test ./...
+
+# -p 1 runs the integration packages one at a time: they share one database, and
+# pgstore_integration_test.go briefly writes a failure row that /readyz would report.
+delivery-integration-test: ## Run delivery-api integration tests (local stack must be up)
+	@C="$$($(COMPOSE) ps -q delivery-api)"; D="$$($(COMPOSE) ps -q delivery-postgres)"; cd delivery-api && NOTIFS_DELIVERY_CONTAINER="$$C" NOTIFS_DELIVERY_DB_CONTAINER="$$D" NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_DELIVERY_TEST_DSN="postgres://delivery:delivery-local-dev@127.0.0.1:$(DELIVERY_DB_PORT_HOST)/delivery?sslmode=disable" go test -p 1 -tags integration ./...
+
+delivery-lint: ## Check delivery-api Go formatting and lint
+	@UNFORMATTED="$$(cd delivery-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }
+	cd delivery-api && golangci-lint run
+
+delivery-fmt: ## Apply delivery-api Go formatting
+	cd delivery-api && gofmt -w .
+
+## Workflows (GitHub Actions)
+
+# Pinned exactly; `go run` fetches the module on first use, so it stays out of both go.mod files.
+# actionlint also runs shellcheck on each `run:` block when shellcheck is on PATH.
+workflows-lint: ## Lint GitHub Actions workflow YAML with actionlint
+	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 ./.github/workflows/*.yml
 
 ## Web (admin UI)
 

@@ -18,13 +18,24 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: provisioning-api/go.mod
-          cache-dependency-path: provisioning-api/go.sum
+          cache-dependency-path: |
+            provisioning-api/go.sum
+            delivery-api/go.sum
 
       - name: Lint Go with golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.12.2
           working-directory: provisioning-api
+
+      - name: Lint delivery-api with golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12.2
+          working-directory: delivery-api
+
+      - name: Lint workflow YAML with actionlint
+        run: make workflows-lint
 
       - name: Setup node
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0

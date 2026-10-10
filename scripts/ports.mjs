@@ -3,7 +3,8 @@
 // Each worktree gets one slot 1..99 derived from its slug; the primary clone is slot 0
 // (the defaults). ntfy/API are adjacent (8090/8091), so that pair steps by 2 per slot; the
 // web pair is offset by 100 from the defaults so worktree ports stay out of the 5174+/4174+
-// range that other Vite apps auto-increment into.
+// range that other Vite apps auto-increment into. DELIVERY_PORT (delivery-api) is a fifth key
+// with its own disjoint base, 8300 + slot (8301..8399), clear of the ntfy/API range 8090..8289.
 
 import fs from 'node:fs';
 import net from 'node:net';
@@ -15,6 +16,7 @@ export const DEFAULT_PORTS = Object.freeze({
   API_PORT: 8091,
   WEB_PORT: 5173,
   E2E_PORT: 4173,
+  DELIVERY_PORT: 8300,
 });
 
 export const REPO_ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -74,13 +76,14 @@ function parsePort(key, value) {
   return num;
 }
 
-/** The four ports for a slot (0 = primary defaults). */
+/** The five ports for a slot (0 = primary defaults). */
 export function slotPorts(slot) {
   return {
     NTFY_PORT: DEFAULT_PORTS.NTFY_PORT + 2 * slot,
     API_PORT: DEFAULT_PORTS.API_PORT + 2 * slot,
     WEB_PORT: slot === 0 ? DEFAULT_PORTS.WEB_PORT : 5273 + slot,
     E2E_PORT: slot === 0 ? DEFAULT_PORTS.E2E_PORT : 4273 + slot,
+    DELIVERY_PORT: DEFAULT_PORTS.DELIVERY_PORT + slot,
   };
 }
 
@@ -151,7 +154,7 @@ export async function resolvePorts({
     }
     if (found === null) {
       throw new Error(
-        `no free port slot (1-${SLOT_COUNT}) for "${slug}": set NTFY_PORT, API_PORT, WEB_PORT and E2E_PORT explicitly`,
+        `no free port slot (1-${SLOT_COUNT}) for "${slug}": set NTFY_PORT, API_PORT, WEB_PORT, E2E_PORT and DELIVERY_PORT explicitly`,
       );
     }
     base = found.candidatePorts;

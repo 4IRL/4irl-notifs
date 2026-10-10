@@ -20,6 +20,7 @@ describe('DEFAULT_PORTS', () => {
       API_PORT: 8091,
       WEB_PORT: 5173,
       E2E_PORT: 4173,
+      DELIVERY_PORT: 8300,
     });
   });
 });
@@ -41,12 +42,14 @@ describe('slotPorts', () => {
       API_PORT: 8093,
       WEB_PORT: 5274,
       E2E_PORT: 4274,
+      DELIVERY_PORT: 8301,
     });
     assert.deepEqual(slotPorts(99), {
       NTFY_PORT: 8288,
       API_PORT: 8289,
       WEB_PORT: 5372,
       E2E_PORT: 4372,
+      DELIVERY_PORT: 8399,
     });
   });
 
@@ -58,7 +61,7 @@ describe('slotPorts', () => {
         seen.add(port);
       }
     }
-    assert.equal(seen.size, 4 + 99 * 4);
+    assert.equal(seen.size, 5 + 99 * 5);
   });
 });
 
@@ -77,6 +80,7 @@ describe('resolvePorts', () => {
       API_PORT: result.API_PORT,
       WEB_PORT: result.WEB_PORT,
       E2E_PORT: result.E2E_PORT,
+      DELIVERY_PORT: result.DELIVERY_PORT,
     });
   });
 
@@ -100,6 +104,24 @@ describe('resolvePorts', () => {
     assert.equal(result.NOTIFS_SLOT, (first % 99) + 1);
   });
 
+  it('skips a slot when the probe reports its DELIVERY_PORT busy', async () => {
+    const slug = 'proof-a';
+    const first = firstCandidate(slug);
+    const busy = new Set([slotPorts(first).DELIVERY_PORT]);
+    const result = await resolvePorts({ slug, env: {}, probe: async (port) => !busy.has(port) });
+    assert.equal(result.NOTIFS_SLOT, (first % 99) + 1);
+  });
+
+  it('lets an explicit DELIVERY_PORT env override that key only', async () => {
+    const result = await resolvePorts({
+      slug: 'proof-a',
+      env: { DELIVERY_PORT: '19001' },
+      probe: allFree,
+    });
+    assert.equal(result.DELIVERY_PORT, 19001);
+    assert.equal(result.NTFY_PORT, slotPorts(result.NOTIFS_SLOT).NTFY_PORT);
+  });
+
   it('wraps around past slot 99', async () => {
     const slug = 'proof-a';
     const first = firstCandidate(slug);
@@ -115,7 +137,7 @@ describe('resolvePorts', () => {
   it('throws when every slot is unavailable', async () => {
     await assert.rejects(
       resolvePorts({ slug: 'x', env: {}, probe: async () => false }),
-      /no free port slot/,
+      /no free port slot.*DELIVERY_PORT/,
     );
   });
 
@@ -140,8 +162,14 @@ describe('resolvePorts', () => {
     );
   });
 
-  it('skips the walk when all four keys are explicit', async () => {
-    const env = { NTFY_PORT: '1001', API_PORT: '1002', WEB_PORT: '1003', E2E_PORT: '1004' };
+  it('skips the walk when all five keys are explicit', async () => {
+    const env = {
+      NTFY_PORT: '1001',
+      API_PORT: '1002',
+      WEB_PORT: '1003',
+      E2E_PORT: '1004',
+      DELIVERY_PORT: '1005',
+    };
     const result = await resolvePorts({
       slug: 'a',
       env,
@@ -154,6 +182,7 @@ describe('resolvePorts', () => {
       API_PORT: 1002,
       WEB_PORT: 1003,
       E2E_PORT: 1004,
+      DELIVERY_PORT: 1005,
       NOTIFS_SLOT: 0,
     });
   });
@@ -190,6 +219,13 @@ describe('loadPorts', () => {
     const { ports } = loadPorts({ cwd, env: {} });
     assert.equal(ports.WEB_PORT, 5300);
     assert.equal(ports.API_PORT, 8091);
+  });
+
+  it('reads DELIVERY_PORT from the file and defaults it to 8300', () => {
+    const cwd = tmpDir();
+    assert.equal(loadPorts({ cwd, env: {} }).ports.DELIVERY_PORT, 8300);
+    fs.writeFileSync(path.join(cwd, '.worktree.env'), 'DELIVERY_PORT=8394\n');
+    assert.equal(loadPorts({ cwd, env: {} }).ports.DELIVERY_PORT, 8394);
   });
 
   it('env beats file', () => {
