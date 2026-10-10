@@ -8,8 +8,8 @@ The tooling is standalone (no stronghold needed): `make worktree-new` and `make 
 ## Primary clone first
 
 Keep the primary clone (`4irl-notifs/`) set up first. It uses the default compose project
-`4irl-notifs` and the default ports (ntfy 8090, API 8091, Vite 5173, Playwright preview 4173), and it
-holds the one untracked config file that is symlinked into every worktree:
+`4irl-notifs` and the default ports (ntfy 8090, API 8091, Vite 5173, Playwright preview 4173,
+delivery 8300), and it holds the one untracked config file that is symlinked into every worktree:
 
 - `web/.dev.vars` (copy from `web/.dev.vars.example`)
 
@@ -46,22 +46,27 @@ make -C <path> worktree-rm                                            # discard 
 ## How ports are chosen
 
 The primary clone is slot 0 and keeps the defaults: ntfy `8090`, API `8091`, Vite `5173`, Playwright
-preview `4173`.
+preview `4173`, delivery `8300`.
 
 Each worktree gets one slot `s` in `1..99`, and its ports are:
 
-| Key         | Formula (slots 1..99)      | Range       |
-| ----------- | -------------------------- | ----------- |
-| `NTFY_PORT` | `8090 + 2s`                | 8092..8288  |
-| `API_PORT`  | `8091 + 2s`                | 8093..8289  |
-| `WEB_PORT`  | `5273 + s`                 | 5274..5372  |
-| `E2E_PORT`  | `4273 + s`                 | 4274..4372  |
+| Key             | Formula (slots 1..99) | Range      |
+| --------------- | --------------------- | ---------- |
+| `NTFY_PORT`     | `8090 + 2s`           | 8092..8288 |
+| `API_PORT`      | `8091 + 2s`           | 8093..8289 |
+| `WEB_PORT`      | `5273 + s`            | 5274..5372 |
+| `E2E_PORT`      | `4273 + s`            | 4274..4372 |
+| `DELIVERY_PORT` | `8300 + s`            | 8301..8399 |
 
 - The ntfy and API ports are adjacent (8090 and 8091), so a step of 1 per slot would make slot `s`'s
   API port equal slot `s+1`'s ntfy port. A step of 2 cannot overlap by construction.
 - The web pair is offset by 100 from the defaults so worktree ports stay out of the 5173/4173
   defaults and out of the 5174+/4174+ range that other Vite apps (and the primary's own neighbouring
   dev servers) auto-increment into.
+- The delivery range `8300..8399` sits clear of the ntfy/API range (8090..8289) by construction.
+  `delivery-postgres` also publishes a local-only test port on `127.0.0.1` at `DELIVERY_PORT + 10000`
+  (derived by the Makefile as `DELIVERY_DB_PORT_HOST`, not a `.worktree.env` key; 18301..18399 for
+  worktrees, 18300 for the primary), used by the `pgstore` integration test.
 - The start slot comes from `crc32('4irl-notifs:' + slug)`. The repo-name salt keeps this repo's slots
   from lining up with other repos that hash the slug alone (tasktracker).
 - Slot 0 is never handed out, and slots recorded by sibling worktrees (`NOTIFS_SLOT` in their
@@ -91,13 +96,15 @@ NTFY_PORT=<port>
 API_PORT=<port>
 WEB_PORT=<port>
 E2E_PORT=<port>
+DELIVERY_PORT=<port>
 ```
 
 Precedence is defaults < `.worktree.env` < environment < `make VAR=...` on the command line:
 
 - The Makefile applies it with `ifndef` guards (it reads single keys from `.worktree.env`, never
   `-include`s it, so an environment value always beats the file) and exports `COMPOSE_PROJECT_NAME`,
-  `NTFY_PORT`, `API_PORT`, `WEB_PORT` and `E2E_PORT` to compose and child processes.
+  `NTFY_PORT`, `API_PORT`, `WEB_PORT`, `E2E_PORT`, `DELIVERY_PORT` and `DELIVERY_DB_PORT_HOST` to
+  compose and child processes.
 - `web/vite.config.ts` and `web/playwright.config.ts` read `../.worktree.env` through
   `web/worktree-ports.ts` (defaults < file < env, same order), so a bare `npm run dev` or
   `npx playwright test` in a worktree also gets the right ports.
@@ -110,12 +117,20 @@ make worktree-ports
 
 Override per run with the environment or the command line, for example `make dev-web WEB_PORT=6000`.
 
+**Backfilling `DELIVERY_PORT` into a pre-existing worktree.** A worktree created before the delivery
+service has no `DELIVERY_PORT` line in its `.worktree.env`, so it falls back to the primary's default
+`8300` and collides with the primary (or with any other un-backfilled worktree). Append the line by
+hand using that worktree's own `NOTIFS_SLOT`: `DELIVERY_PORT=<8300 + NOTIFS_SLOT>` (for example slot 94
+gives `DELIVERY_PORT=8394`), then confirm with `make worktree-ports`. If the `.worktree.env` has no
+`NOTIFS_SLOT` line, pick an unused value in 8301..8399 (check the sibling worktrees' `.worktree.env`
+files) rather than computing it. Worktrees created afterwards get it automatically.
+
 ## What each worktree isolates
 
 - Compose project `4irl-notifs-<slug>`: its own containers (no `container_name`), named volumes
-  (`ntfy-auth`, `ntfy-cache`) and locally built provisioning-api image. The primary's project
-  `4irl-notifs` and its existing volumes are untouched.
-- Host ports (above): ntfy, API, Vite dev server, Playwright preview.
+  (`ntfy-auth`, `ntfy-cache`, `delivery-pgdata`) and locally built provisioning-api and delivery-api
+  images. The primary's project `4irl-notifs` and its existing volumes are untouched.
+- Host ports (above): ntfy, API, Vite dev server, Playwright preview, delivery.
 - The detached dev server's pid and log live in the worktree's own `.dev/` (`.dev/vite-dev.pid`,
   `.dev/vite-dev.log`), not in a shared `/tmp/claude`.
 - `node_modules` in `web/` and `person-service/` (installed per worktree).

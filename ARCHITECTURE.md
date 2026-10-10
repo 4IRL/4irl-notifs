@@ -15,8 +15,9 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*` + `/people` proxy Functions.             |
 
-Two live environments: **local** (docker-compose: ntfy + provisioning-api) and **production** (the
-VPS + Cloudflare). ntfy + provisioning-api run on the VPS; person-service + admin UI are Cloudflare-native.
+Two live environments: **local** (docker-compose: ntfy + provisioning-api + delivery-api + Postgres) and
+**production** (the VPS + Cloudflare). ntfy + provisioning-api + delivery-api (with its Postgres) run on
+the VPS; person-service + admin UI are Cloudflare-native.
 
 ## System diagram
 
@@ -304,8 +305,8 @@ wake, backfills missed messages via `since=` for up to 24h.
 
 ```mermaid
 graph TD
-  M["merge to main"] --> B["build-prod<br/>provisioning-api image → GHCR"]
-  B --> D1J["deploy-prod<br/>SSH → VPS docker compose up<br/>(ntfy + provisioning-api)"]
+  M["merge to main"] --> B["build-prod<br/>provisioning-api + delivery-api images → GHCR"]
+  B --> D1J["deploy-prod<br/>SSH → VPS docker compose up<br/>(ntfy + provisioning-api + delivery-api + Postgres)"]
   M --> D2["deploy-admin-ui<br/>wrangler pages deploy (notifs-admin)"]
   M --> D3["deploy-person-service<br/>wrangler d1 migrations apply → wrangler deploy Worker"]
 ```

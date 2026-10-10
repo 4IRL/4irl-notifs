@@ -6,6 +6,8 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
 
 - **ntfy** — self-hosted notification server (topics, users, ACLs)
 - **provisioning-api** — barebones Go service for parametric user/topic provisioning across apps
+- **delivery-api** — generic delivery service (Go) backed by its own Postgres (`delivery-postgres`,
+  schema applied by the one-shot `delivery-migrate`); skeleton only for now
 - **web** — admin UI (Cloudflare Pages, behind Cloudflare Access)
 
 ## Local stack
@@ -16,7 +18,9 @@ docker compose --project-directory . -f docker-compose.yml up -d
 
 Or `make local-up` / `make local-down`. ntfy listens on `http://127.0.0.1:8090` by default
 (override with `NTFY_PORT`; config: `ntfy/server.yml`; auth database on the `ntfy-auth` named
-volume, shared with the provisioning-api container).
+volume, shared with the provisioning-api container). The same stack also runs `delivery-postgres`,
+`delivery-migrate` and `delivery-api` (`http://127.0.0.1:8300` by default, override with
+`DELIVERY_PORT`; Postgres data on the `delivery-pgdata` volume).
 
 Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own
 compose project and ports; see [`docs/worktrees.md`](docs/worktrees.md). In a worktree, start the
