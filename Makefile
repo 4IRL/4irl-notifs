@@ -26,11 +26,17 @@ endif
 ifndef E2E_PORT
 E2E_PORT := $(or $(call wtenv,E2E_PORT),4173)
 endif
-export COMPOSE_PROJECT_NAME NTFY_PORT API_PORT WEB_PORT E2E_PORT
+ifndef DELIVERY_PORT
+DELIVERY_PORT := $(or $(call wtenv,DELIVERY_PORT),8300)
+endif
+# Derived, not a scripts/ports.mjs key: tracks DELIVERY_PORT per worktree (local-only test port of delivery-postgres).
+DELIVERY_DB_PORT_HOST := $(shell echo $$(($(DELIVERY_PORT) + 10000)))
+export COMPOSE_PROJECT_NAME NTFY_PORT API_PORT WEB_PORT E2E_PORT DELIVERY_PORT DELIVERY_DB_PORT_HOST
 
 DEV_DIR := $(CURDIR)/.dev
 COMPOSE := docker compose -p $(COMPOSE_PROJECT_NAME) --project-directory . -f docker-compose.yml
 API_URL := http://127.0.0.1:$(API_PORT)
+DELIVERY_URL := http://127.0.0.1:$(DELIVERY_PORT)
 NTFY_URL := http://127.0.0.1:$(NTFY_PORT)
 SMOKE_APP_ID := smoketest
 SMOKE_EMAIL := smoketest@example.com
@@ -59,15 +65,16 @@ worktree-new: unexport NTFY_PORT := $(NTFY_PORT)
 worktree-new: unexport API_PORT := $(API_PORT)
 worktree-new: unexport WEB_PORT := $(WEB_PORT)
 worktree-new: unexport E2E_PORT := $(E2E_PORT)
+worktree-new: unexport DELIVERY_PORT := $(DELIVERY_PORT)
 worktree-new: ## Create a worktree: make worktree-new name=<slug> [b=<branch>] [base=<ref>]
 	@WT_NAME='$(subst ','\'',$(name))' WT_BRANCH='$(subst ','\'',$(b))' WT_BASE='$(subst ','\'',$(base))' node scripts/worktree.mjs new
 
 worktree-rm: ## Remove this worktree (run inside it)
 	@node scripts/worktree.mjs rm
 
-## Local stack (ntfy + provisioning-api)
+## Local stack (ntfy + provisioning-api + delivery-api + Postgres)
 
-local-up: ## Bring up the local ntfy + provisioning-api stack
+local-up: ## Bring up the local ntfy + provisioning-api + delivery-api (+ Postgres, migrate) stack
 	$(COMPOSE) up -d --build
 
 local-down: ## Tear down the local stack

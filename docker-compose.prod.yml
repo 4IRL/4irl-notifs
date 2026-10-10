@@ -113,17 +113,99 @@ services:
       retries: 3
       start_period: 5s
 
+  delivery-postgres:
+    restart: unless-stopped
+    # LOCKSTEP: keep this tag equal to docker-compose.yml.
+    image: postgres:17.11-alpine3.23
+    container_name: 4irl-notifs-delivery-postgres
+    # LOCKSTEP: keep this command equal to docker-compose.yml. Small on purpose: the VPS has
+    # little free RAM, so the default 128 MB shared_buffers is too large a share.
+    command: ["postgres", "-c", "shared_buffers=32MB", "-c", "max_connections=20"]
+    environment:
+      # LOCKSTEP: keep in sync with docker-compose.yml.
+      - POSTGRES_USER=delivery
+      - POSTGRES_DB=delivery
+      - POSTGRES_PASSWORD_FILE=/run/secrets/DELIVERY_DB_PASSWORD
+    secrets:
+      - DELIVERY_DB_PASSWORD
+    volumes:
+      - delivery-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U delivery -d delivery"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  delivery-migrate:
+    restart: "no"
+    image: ghcr.io/4irl/4irl-notifs-delivery-api:latest
+    container_name: 4irl-notifs-delivery-migrate
+    command: ["migrate"]
+    environment:
+      # LOCKSTEP: keep in sync with docker-compose.yml.
+      - DELIVERY_DB_HOST=delivery-postgres
+      - DELIVERY_DB_PORT=5432
+      - DELIVERY_DB_USER=delivery
+      - DELIVERY_DB_NAME=delivery
+      - DELIVERY_DB_PASSWORD_FILE=/run/secrets/DELIVERY_DB_PASSWORD
+    secrets:
+      - DELIVERY_DB_PASSWORD
+    depends_on:
+      delivery-postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  delivery-api:
+    restart: unless-stopped
+    image: ghcr.io/4irl/4irl-notifs-delivery-api:latest
+    container_name: 4irl-notifs-delivery-api
+    ports:
+      # localhost only; no tunnel hostname or Access app until master phase 5
+      - "127.0.0.1:8300:8080"
+    environment:
+      # LOCKSTEP: keep in sync with docker-compose.yml.
+      - DELIVERY_DB_HOST=delivery-postgres
+      - DELIVERY_DB_PORT=5432
+      - DELIVERY_DB_USER=delivery
+      - DELIVERY_DB_NAME=delivery
+      - DELIVERY_DB_PASSWORD_FILE=/run/secrets/DELIVERY_DB_PASSWORD
+    secrets:
+      - DELIVERY_DB_PASSWORD
+    depends_on:
+      delivery-postgres:
+        condition: service_healthy
+      delivery-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # Readiness (not just liveness): healthy means the DB is reachable and the schema is current.
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/readyz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   ntfy-auth:
   ntfy-cache:
+  delivery-pgdata:
 
 # The person-service Access Service-Token credentials, delivered to
 # provisioning-api as tmpfs files at /run/secrets/<NAME>. prod-deploy.yml writes
 # these ./secrets/* files from the GitHub Actions secrets of the same name just
 # before `docker compose up` and `rm -rf ./secrets/` immediately after, so no
 # plaintext secret persists on the host (the same pattern urls4irl uses).
+#
+# DELIVERY_DB_PASSWORD is the exception: it lives in ./secrets-persistent/ (host dir
+# /home/4irl-notifs/secrets-persistent/, 0700, files 0600) and is deliberately NEVER deleted,
+# because delivery-api reads it on every start (not just at Postgres's initdb like the
+# credentials above). prod-deploy.yml writes it from the DELIVERY_DB_PASSWORD GitHub secret.
 secrets:
   PERSON_SERVICE_ACCESS_CLIENT_ID:
     file: ./secrets/PERSON_SERVICE_ACCESS_CLIENT_ID
   PERSON_SERVICE_ACCESS_CLIENT_SECRET:
     file: ./secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET
+  # Persistent (unlike ./secrets/): delivery-api needs the DB password on every restart.
+  DELIVERY_DB_PASSWORD:
+    file: ./secrets-persistent/DELIVERY_DB_PASSWORD

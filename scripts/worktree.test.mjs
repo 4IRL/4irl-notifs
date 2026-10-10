@@ -212,6 +212,7 @@ describe('resolvePorts with an empty env', () => {
       API_PORT: '8091',
       WEB_PORT: '5173',
       E2E_PORT: '4173',
+      DELIVERY_PORT: '8300',
     });
     try {
       const ports = await resolvePorts({
@@ -262,6 +263,7 @@ describe('writeWorktreeEnv', () => {
       API_PORT: 8097,
       WEB_PORT: 5276,
       E2E_PORT: 4276,
+      DELIVERY_PORT: 8303,
     };
     writeWorktreeEnv({ dir, slug: 'proof-a', primaryRoot: '/primary', ports });
     const file = path.join(dir, '.worktree.env');
@@ -277,6 +279,7 @@ describe('writeWorktreeEnv', () => {
         'API_PORT=8097',
         'WEB_PORT=5276',
         'E2E_PORT=4276',
+        'DELIVERY_PORT=8303',
         '',
       ].join('\n'),
     );

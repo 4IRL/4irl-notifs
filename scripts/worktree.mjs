@@ -247,6 +247,7 @@ export function writeWorktreeEnv({ dir, slug, primaryRoot, ports }) {
     API_PORT: ports.API_PORT,
     WEB_PORT: ports.WEB_PORT,
     E2E_PORT: ports.E2E_PORT,
+    DELIVERY_PORT: ports.DELIVERY_PORT,
   });
   writeFileSync(tmp, content, { mode: 0o600 });
   renameSync(tmp, file);
@@ -482,10 +483,11 @@ async function main(argv) {
     const args = parseWorktreeArgs(process.env);
     const primaryRoot = path.dirname(realpathSync(commonDir(runGit, process.cwd())));
     const result = await newWorktree({ primaryRoot, ...args });
-    const { NOTIFS_SLOT, NTFY_PORT, API_PORT, WEB_PORT, E2E_PORT } = result.ports;
+    const { NOTIFS_SLOT, NTFY_PORT, API_PORT, WEB_PORT, E2E_PORT, DELIVERY_PORT } = result.ports;
     console.log(
       `worktree: created ${result.path} on branch ${result.branch} ` +
-        `(slot=${NOTIFS_SLOT} ntfy=${NTFY_PORT} api=${API_PORT} web=${WEB_PORT} e2e=${E2E_PORT})`,
+        `(slot=${NOTIFS_SLOT} ntfy=${NTFY_PORT} api=${API_PORT} web=${WEB_PORT} e2e=${E2E_PORT} ` +
+        `delivery=${DELIVERY_PORT})`,
     );
   } else if (command === 'rm') {
     const worktreeRoot = runGit(process.cwd(), ['rev-parse', '--show-toplevel']);
