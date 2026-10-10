@@ -1,0 +1,32 @@
+[
+  {
+    "email": "alice@example.com",
+    "normalized": "alice@example.com",
+    "hash": "76gzqgp4byjl6dje",
+    "ntfy_user": "u_76gzqgp4byjl6dje"
+  },
+  {
+    "email": "  Alice@Example.COM ",
+    "normalized": "alice@example.com",
+    "hash": "76gzqgp4byjl6dje",
+    "ntfy_user": "u_76gzqgp4byjl6dje"
+  },
+  {
+    "email": "bob@example.com",
+    "normalized": "bob@example.com",
+    "hash": "l74gbpyrsbmwy4mi",
+    "ntfy_user": "u_l74gbpyrsbmwy4mi"
+  },
+  {
+    "email": "Carol.Jones@Mail.Example.ORG",
+    "normalized": "carol.jones@mail.example.org",
+    "hash": "fdq4h3pabnzugehb",
+    "ntfy_user": "u_fdq4h3pabnzugehb"
+  },
+  {
+    "email": "dave+tag@example.org",
+    "normalized": "dave+tag@example.org",
+    "hash": "ufoexmftney2r2dy",
+    "ntfy_user": "u_ufoexmftney2r2dy"
+  }
+]

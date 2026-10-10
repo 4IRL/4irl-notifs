@@ -1,5 +1,6 @@
 .PHONY: help lint test local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-integration-test go-lint go-fmt \
+	delivery-test delivery-lint delivery-fmt \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	worker-test worker-build worker-deploy scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm
 
@@ -37,9 +38,9 @@ SMOKE_EMAIL := smoketest@example.com
 help: ## Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-lint: go-lint web-lint scripts-lint ## Run all linters (Go + frontend + scripts)
+lint: go-lint delivery-lint web-lint scripts-lint ## Run all linters (Go + frontend + scripts)
 
-test: go-test web-test worker-test scripts-test ## Run all unit tests (Go, web Vitest, worker Vitest, scripts)
+test: go-test delivery-test web-test worker-test scripts-test ## Run all unit tests (Go, web Vitest, worker Vitest, scripts)
 
 scripts-test: ## Run scripts/ unit tests
 	node --test "scripts/*.test.mjs"
@@ -159,6 +160,18 @@ go-lint: ## Check Go formatting and lint
 
 go-fmt: ## Apply Go formatting
 	cd provisioning-api && gofmt -w .
+
+## Go (delivery-api)
+
+delivery-test: ## Run delivery-api Go unit tests
+	cd delivery-api && go test ./...
+
+delivery-lint: ## Check delivery-api Go formatting and lint
+	@UNFORMATTED="$$(cd delivery-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }
+	cd delivery-api && golangci-lint run
+
+delivery-fmt: ## Apply delivery-api Go formatting
+	cd delivery-api && gofmt -w .
 
 ## Web (admin UI)
 

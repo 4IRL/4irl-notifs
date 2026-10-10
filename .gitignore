@@ -6,6 +6,8 @@ changelog/
 # Go
 /provisioning-api/bin/
 /provisioning-api/provisioning-api
+/delivery-api/bin/
+/delivery-api/delivery-api
 *.test
 *.out
 
