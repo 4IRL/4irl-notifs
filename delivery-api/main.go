@@ -15,7 +15,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/database"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/readiness"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/secretenv"
+	"github.com/4IRL/4irl-notifs/delivery-api/migrations"
 )
 
 const (
@@ -50,23 +55,74 @@ func main() {
 // "migrate" applies database migrations, and anything else is an error.
 func run(ctx context.Context, logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
-		listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)
-		listener, listenErr := net.Listen("tcp", listenAddress)
-		if listenErr != nil {
-			return fmt.Errorf("listen on %s: %w", listenAddress, listenErr)
-		}
-
-		handler := httpapi.NewServer(httpapi.ServerConfig{Logger: logger}).Handler()
-		logger.Info("delivery-api listening", "address", listener.Addr().String())
-		return serve(ctx, logger, listener, handler, shutdownTimeout)
+		return runServe(ctx, logger)
 	}
 
 	switch args[0] {
 	case "migrate":
-		return errors.New("migrate: not implemented")
+		return runMigrate(ctx, logger)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// runServe loads the (mandatory) database config first, so a missing or
+// invalid credential fails before any port is bound, then serves HTTP until
+// ctx is canceled. The pool is opened and closed here, around serve.
+func runServe(ctx context.Context, logger *slog.Logger) error {
+	dbConfig, configErr := database.ConfigFromEnv(os.Getenv, secretenv.Resolve)
+	if configErr != nil {
+		return fmt.Errorf("load database config: %w", configErr)
+	}
+
+	pool, poolErr := database.NewPool(ctx, dbConfig)
+	if poolErr != nil {
+		return poolErr
+	}
+	defer pool.Close()
+
+	loaded, loadErr := migrate.Load(migrations.FS)
+	if loadErr != nil {
+		return fmt.Errorf("load migrations: %w", loadErr)
+	}
+	checker := readiness.NewChecker(pool, migrate.NewPGStore(pool), migrate.ExpectedVersion(loaded))
+	handler := httpapi.NewServer(httpapi.ServerConfig{Logger: logger, Readiness: checker}).Handler()
+
+	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)
+	listener, listenErr := net.Listen("tcp", listenAddress)
+	if listenErr != nil {
+		return fmt.Errorf("listen on %s: %w", listenAddress, listenErr)
+	}
+
+	logger.Info("delivery-api listening", "address", listener.Addr().String())
+	return serve(ctx, logger, listener, handler, shutdownTimeout)
+}
+
+// runMigrate applies the embedded migrations and returns the error, so the
+// process exit code reflects a failed migration.
+func runMigrate(ctx context.Context, logger *slog.Logger) error {
+	dbConfig, configErr := database.ConfigFromEnv(os.Getenv, secretenv.Resolve)
+	if configErr != nil {
+		return fmt.Errorf("load database config: %w", configErr)
+	}
+
+	pool, poolErr := database.NewPool(ctx, dbConfig)
+	if poolErr != nil {
+		return poolErr
+	}
+	defer pool.Close()
+
+	loaded, loadErr := migrate.Load(migrations.FS)
+	if loadErr != nil {
+		return fmt.Errorf("load migrations: %w", loadErr)
+	}
+
+	applied, runErr := migrate.Run(ctx, migrate.NewPGStore(pool), loaded, logger)
+	if runErr != nil {
+		return runErr
+	}
+	logger.Info("migrations complete", "applied", applied, "schema_version", migrate.ExpectedVersion(loaded))
+	return nil
 }
 
 // serve serves handler on listener until it fails or ctx is canceled. On

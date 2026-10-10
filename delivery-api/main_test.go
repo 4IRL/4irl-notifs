@@ -59,6 +59,58 @@ func TestRunRejectsUnknownCommand(testInstance *testing.T) {
 	}
 }
 
+// TestRunFailsFastWithoutDBPassword verifies both the migrate and serve
+// branches reject a missing DELIVERY_DB_PASSWORD, and that serve does so before
+// binding its listen address.
+func TestRunFailsFastWithoutDBPassword(testInstance *testing.T) {
+	testCases := []struct {
+		name string
+		args []string
+	}{
+		{name: "migrate", args: []string{"migrate"}},
+		{name: "serve", args: []string{}},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			subTest.Setenv("DELIVERY_DB_HOST", "delivery-postgres")
+			subTest.Setenv("DELIVERY_DB_USER", "delivery")
+			subTest.Setenv("DELIVERY_DB_NAME", "delivery")
+			subTest.Setenv("DELIVERY_DB_PASSWORD", "")
+			subTest.Setenv("DELIVERY_DB_PASSWORD_FILE", "")
+
+			// Reserve a free port, then release it, so a Dial after run can only
+			// succeed if run wrongly bound LISTEN_ADDRESS.
+			reserved, reserveErr := net.Listen("tcp", "127.0.0.1:0")
+			if reserveErr != nil {
+				subTest.Fatalf("reserve port: %v", reserveErr)
+			}
+			address := reserved.Addr().String()
+			if closeErr := reserved.Close(); closeErr != nil {
+				subTest.Fatalf("release port: %v", closeErr)
+			}
+			subTest.Setenv("LISTEN_ADDRESS", address)
+
+			ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+			defer cancel()
+			err := run(ctx, newTestLogger(), testCase.args)
+
+			if err == nil {
+				subTest.Fatal("run returned nil, want an error")
+			}
+			if !strings.Contains(err.Error(), "DELIVERY_DB_PASSWORD") {
+				subTest.Fatalf("run error = %q, want it to mention DELIVERY_DB_PASSWORD", err)
+			}
+
+			connection, dialErr := net.Dial("tcp", address)
+			if dialErr == nil {
+				_ = connection.Close()
+				subTest.Fatalf("dial %s succeeded, want connection refused (run must not bind before config)", address)
+			}
+		})
+	}
+}
+
 func TestServeShutsDownOnContextCancel(testInstance *testing.T) {
 	listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
 	if listenErr != nil {
