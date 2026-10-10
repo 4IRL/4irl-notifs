@@ -73,7 +73,7 @@ Components:
   email-keyed; the ntfy user derives from the email). Callable by the admin UI and by
   individual consuming apps, each authenticated via its own Cloudflare Access Service Token.
 - **delivery-api** — generic delivery service (Go + Postgres, with a one-shot `delivery-migrate`
-  container); skeleton only until master phase 2.
+  container); skeleton only for now.
 - **web** — React/Vite admin UI, deployed to Cloudflare Pages behind Cloudflare Access
   (Google/GitHub OAuth).
 

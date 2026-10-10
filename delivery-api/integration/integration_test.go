@@ -19,12 +19,16 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
+	"github.com/4IRL/4irl-notifs/delivery-api/migrations"
 )
 
 const (
@@ -134,18 +138,40 @@ func TestReadyzReportsCurrentSchema(testInstance *testing.T) {
 	if body.Status != "ok" {
 		testInstance.Fatalf("status = %q, want ok", body.Status)
 	}
-	if body.SchemaVersion != 1 || body.ExpectedSchemaVersion != 1 {
-		testInstance.Fatalf("schema_version = %d, expected_schema_version = %d, want both 1",
+	if body.SchemaVersion != body.ExpectedSchemaVersion {
+		testInstance.Fatalf("schema_version = %d, want it to equal expected_schema_version = %d",
 			body.SchemaVersion, body.ExpectedSchemaVersion)
+	}
+	if want := embeddedSchemaVersion(testInstance); body.ExpectedSchemaVersion != want {
+		testInstance.Fatalf("expected_schema_version = %d, want the highest embedded migration version %d",
+			body.ExpectedSchemaVersion, want)
 	}
 }
 
 func TestMigrationsRecorded(testInstance *testing.T) {
 	waitForReady(testInstance)
 
-	if got := psql(testInstance, "select count(*) from schema_migrations where version = 1"); got != "1" {
-		testInstance.Fatalf("schema_migrations rows for version 1 = %q, want 1", got)
+	loaded, loadErr := migrate.Load(migrations.FS)
+	if loadErr != nil {
+		testInstance.Fatalf("load embedded migrations: %v", loadErr)
 	}
+	for _, migration := range loaded {
+		query := fmt.Sprintf("select count(*) from schema_migrations where version = %d", migration.Version)
+		if got := psql(testInstance, query); got != "1" {
+			testInstance.Fatalf("schema_migrations rows for version %d = %q, want 1", migration.Version, got)
+		}
+	}
+}
+
+// embeddedSchemaVersion returns the highest version among the embedded
+// migrations, which is the schema version the binary expects.
+func embeddedSchemaVersion(testInstance *testing.T) int {
+	testInstance.Helper()
+	loaded, loadErr := migrate.Load(migrations.FS)
+	if loadErr != nil {
+		testInstance.Fatalf("load embedded migrations: %v", loadErr)
+	}
+	return migrate.ExpectedVersion(loaded)
 }
 
 func TestMigrateIsIdempotent(testInstance *testing.T) {

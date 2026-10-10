@@ -35,6 +35,35 @@ func TestHealthzReturnsOK(testInstance *testing.T) {
 	}
 }
 
+// TestRoutesRejectUnsupportedRequests pins the mux behavior for the wrong
+// method on a known path and for an unknown path.
+func TestRoutesRejectUnsupportedRequests(testInstance *testing.T) {
+	testCases := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+	}{
+		{name: "POST healthz", method: http.MethodPost, path: "/healthz", wantStatus: http.StatusMethodNotAllowed},
+		{name: "POST readyz", method: http.MethodPost, path: "/readyz", wantStatus: http.StatusMethodNotAllowed},
+		{name: "GET unknown path", method: http.MethodGet, path: "/nope", wantStatus: http.StatusNotFound},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			server := NewServer(ServerConfig{})
+
+			request := httptest.NewRequest(testCase.method, testCase.path, nil)
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, request)
+
+			if recorder.Code != testCase.wantStatus {
+				subTest.Fatalf("status = %d, want %d", recorder.Code, testCase.wantStatus)
+			}
+		})
+	}
+}
+
 // fakeReadinessChecker returns a scripted Readiness and error.
 type fakeReadinessChecker struct {
 	readiness Readiness

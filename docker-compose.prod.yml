@@ -131,7 +131,7 @@ services:
     volumes:
       - delivery-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U delivery -d delivery"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U delivery -d delivery"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -162,7 +162,7 @@ services:
     image: ghcr.io/4irl/4irl-notifs-delivery-api:latest
     container_name: 4irl-notifs-delivery-api
     ports:
-      # localhost only; no tunnel hostname or Access app until master phase 5
+      # localhost only; no tunnel hostname or Access app yet
       - "127.0.0.1:8300:8080"
     environment:
       # LOCKSTEP: keep in sync with docker-compose.yml.

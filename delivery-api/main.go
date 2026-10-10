@@ -21,6 +21,7 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/readiness"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/secretenv"
 	"github.com/4IRL/4irl-notifs/delivery-api/migrations"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -66,25 +67,37 @@ func run(ctx context.Context, logger *slog.Logger, args []string) error {
 	}
 }
 
-// runServe loads the (mandatory) database config first, so a missing or
-// invalid credential fails before any port is bound, then serves HTTP until
-// ctx is canceled. The pool is opened and closed here, around serve.
-func runServe(ctx context.Context, logger *slog.Logger) error {
+// openDatabase loads the database config, opens the pool and loads the embedded
+// migrations. The caller owns closing the returned pool.
+func openDatabase(ctx context.Context) (*pgxpool.Pool, []migrate.Migration, error) {
 	dbConfig, configErr := database.ConfigFromEnv(os.Getenv, secretenv.Resolve)
 	if configErr != nil {
-		return fmt.Errorf("load database config: %w", configErr)
+		return nil, nil, fmt.Errorf("load database config: %w", configErr)
 	}
 
 	pool, poolErr := database.NewPool(ctx, dbConfig)
 	if poolErr != nil {
-		return poolErr
+		return nil, nil, poolErr
 	}
-	defer pool.Close()
 
 	loaded, loadErr := migrate.Load(migrations.FS)
 	if loadErr != nil {
-		return fmt.Errorf("load migrations: %w", loadErr)
+		pool.Close()
+		return nil, nil, fmt.Errorf("load migrations: %w", loadErr)
 	}
+	return pool, loaded, nil
+}
+
+// runServe loads the (mandatory) database config first, so a missing or
+// invalid credential fails before any port is bound, then serves HTTP until
+// ctx is canceled. The pool is opened and closed here, around serve.
+func runServe(ctx context.Context, logger *slog.Logger) error {
+	pool, loaded, openErr := openDatabase(ctx)
+	if openErr != nil {
+		return openErr
+	}
+	defer pool.Close()
+
 	checker := readiness.NewChecker(pool, migrate.NewPGStore(pool), migrate.ExpectedVersion(loaded))
 	handler := httpapi.NewServer(httpapi.ServerConfig{Logger: logger, Readiness: checker}).Handler()
 
@@ -101,21 +114,11 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 // runMigrate applies the embedded migrations and returns the error, so the
 // process exit code reflects a failed migration.
 func runMigrate(ctx context.Context, logger *slog.Logger) error {
-	dbConfig, configErr := database.ConfigFromEnv(os.Getenv, secretenv.Resolve)
-	if configErr != nil {
-		return fmt.Errorf("load database config: %w", configErr)
-	}
-
-	pool, poolErr := database.NewPool(ctx, dbConfig)
-	if poolErr != nil {
-		return poolErr
+	pool, loaded, openErr := openDatabase(ctx)
+	if openErr != nil {
+		return openErr
 	}
 	defer pool.Close()
-
-	loaded, loadErr := migrate.Load(migrations.FS)
-	if loadErr != nil {
-		return fmt.Errorf("load migrations: %w", loadErr)
-	}
 
 	applied, runErr := migrate.Run(ctx, migrate.NewPGStore(pool), loaded, logger)
 	if runErr != nil {
@@ -166,12 +169,12 @@ func serve(
 			_ = httpServer.Close()
 		}
 		return shutdownErr
-	case err := <-serveErr:
+	case serveResultErr := <-serveErr:
 		// Serve stopped on its own, independent of ctx, so there is nothing
 		// to shut down.
-		if errors.Is(err, http.ErrServerClosed) {
+		if errors.Is(serveResultErr, http.ErrServerClosed) {
 			return nil
 		}
-		return err
+		return serveResultErr
 	}
 }

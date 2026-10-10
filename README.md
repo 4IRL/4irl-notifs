@@ -22,6 +22,17 @@ volume, shared with the provisioning-api container). The same stack also runs `d
 `delivery-migrate` and `delivery-api` (`http://127.0.0.1:8300` by default, override with
 `DELIVERY_PORT`; Postgres data on the `delivery-pgdata` volume).
 
+delivery-api runtime configuration (environment):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DELIVERY_DB_HOST` | required | Postgres host |
+| `DELIVERY_DB_PORT` | `5432` | Postgres port |
+| `DELIVERY_DB_USER` | required | Postgres user |
+| `DELIVERY_DB_NAME` | required | Postgres database name |
+| `DELIVERY_DB_PASSWORD` or `DELIVERY_DB_PASSWORD_FILE` | one required | Postgres password, inline or read from a file |
+| `LISTEN_ADDRESS` | `:8080` | HTTP listen address |
+
 Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own
 compose project and ports; see [`docs/worktrees.md`](docs/worktrees.md). In a worktree, start the
 stack only via `make local-up` / `make local-down`, never raw `docker compose`.

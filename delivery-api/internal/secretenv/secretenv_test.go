@@ -15,7 +15,6 @@ func TestResolve(t *testing.T) {
 		// set as the <key>_FILE env var.
 		fileContents *string
 		want         string
-		wantErr      bool
 	}{
 		{
 			name: "neither set returns empty",
@@ -59,10 +58,7 @@ func TestResolve(t *testing.T) {
 			}
 
 			got, err := Resolve(key)
-			if testCase.wantErr && err == nil {
-				t.Fatalf("Resolve(%q) = %q, want error", key, got)
-			}
-			if !testCase.wantErr && err != nil {
+			if err != nil {
 				t.Fatalf("Resolve(%q) unexpected error: %v", key, err)
 			}
 			if got != testCase.want {

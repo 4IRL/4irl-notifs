@@ -84,14 +84,14 @@ services:
       - POSTGRES_USER=delivery
       - POSTGRES_DB=delivery
       - POSTGRES_PASSWORD=delivery-local-dev # dev-only credential; prod uses a file secret
-    # local-only: lets step 6's pgstore_integration_test.go open a real pgx connection; prod stays
-    # container-network-only (no ports: here).
+    # local-only: lets delivery-api/internal/migrate/pgstore_integration_test.go open a real pgx
+    # connection; prod stays container-network-only (no ports: here).
     ports:
       - "127.0.0.1:${DELIVERY_DB_PORT_HOST:-18300}:5432"
     volumes:
       - delivery-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U delivery -d delivery"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U delivery -d delivery"]
       interval: 5s
       timeout: 5s
       retries: 10

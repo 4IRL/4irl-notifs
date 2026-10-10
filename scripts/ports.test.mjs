@@ -137,7 +137,7 @@ describe('resolvePorts', () => {
   it('throws when every slot is unavailable', async () => {
     await assert.rejects(
       resolvePorts({ slug: 'x', env: {}, probe: async () => false }),
-      /no free port slot/,
+      /no free port slot.*DELIVERY_PORT/,
     );
   });
 

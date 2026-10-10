@@ -22,9 +22,9 @@ func NewPool(ctx context.Context, config Config) (*pgxpool.Pool, error) {
 	}
 	poolConfig.ConnConfig.ConnectTimeout = connectTimeout
 
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("create database pool: %w", err)
+	pool, newPoolErr := pgxpool.NewWithConfig(ctx, poolConfig)
+	if newPoolErr != nil {
+		return nil, fmt.Errorf("create database pool: %w", newPoolErr)
 	}
 	return pool, nil
 }
