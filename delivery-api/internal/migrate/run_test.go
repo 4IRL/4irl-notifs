@@ -255,38 +255,20 @@ func TestRunDoesNotRecordFailureWhenContextCanceled(testInstance *testing.T) {
 	}
 }
 
-func TestRunTruncatesRecordedFailureToFiveHundredRunes(testInstance *testing.T) {
-	testCases := []struct {
-		name        string
-		message     string
-		wantRunes   int
-		wantMessage string
-	}{
-		{name: "ascii over limit", message: strings.Repeat("x", 600), wantRunes: 500},
-		{name: "multibyte over limit", message: strings.Repeat("é", 600), wantRunes: 500},
-		{name: "exactly at limit", message: strings.Repeat("y", 500), wantRunes: 500},
-		{name: "under limit is untouched", message: "short", wantRunes: 5, wantMessage: "short"},
+func TestRunPassesFullFailureMessageToStore(testInstance *testing.T) {
+	longMessage := strings.Repeat("x", 600)
+	store := &fakeStore{
+		appliedVersions: map[int]bool{},
+		applyErrByVer:   map[int]error{1: errors.New(longMessage)},
 	}
 
-	for _, testCase := range testCases {
-		testInstance.Run(testCase.name, func(subTest *testing.T) {
-			store := &fakeStore{
-				appliedVersions: map[int]bool{},
-				applyErrByVer:   map[int]error{1: errors.New(testCase.message)},
-			}
+	_, _ = Run(context.Background(), store, threeMigrations(), discardLogger())
 
-			_, _ = Run(context.Background(), store, threeMigrations(), discardLogger())
-
-			if len(store.failures) != 1 {
-				subTest.Fatalf("failures = %+v, want exactly one", store.failures)
-			}
-			recorded := store.failures[0].message
-			if gotRunes := len([]rune(recorded)); gotRunes != testCase.wantRunes {
-				subTest.Fatalf("recorded message has %d runes, want %d", gotRunes, testCase.wantRunes)
-			}
-			if testCase.wantMessage != "" && recorded != testCase.wantMessage {
-				subTest.Fatalf("recorded message = %q, want %q", recorded, testCase.wantMessage)
-			}
-		})
+	if len(store.failures) != 1 {
+		testInstance.Fatalf("failures = %+v, want exactly one", store.failures)
+	}
+	if recorded := store.failures[0].message; recorded != longMessage {
+		testInstance.Fatalf("recorded message has %d runes, want the full %d (the store truncates)",
+			len([]rune(recorded)), len([]rune(longMessage)))
 	}
 }

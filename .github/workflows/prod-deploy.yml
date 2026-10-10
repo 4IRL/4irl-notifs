@@ -34,10 +34,7 @@ on:
       # deploy shell just before `docker compose up` rather than written to a secrets file.
       NTFY_UPSTREAM_ACCESS_TOKEN:
         required: false
-      # delivery-api Postgres password. Required: an empty value makes Postgres initdb fail, so the
-      # deploy script below aborts before touching the running stack when it is empty. Must be
-      # shell- and URL-safe (generate with `openssl rand -hex 32`) because it is interpolated
-      # into the single-quoted ssh script.
+      # Required: 32+ lowercase hex (`openssl rand -hex 32`), validated on the runner first.
       DELIVERY_DB_PASSWORD:
         required: true
 
@@ -47,6 +44,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate DELIVERY_DB_PASSWORD secret
+        env:
+          DELIVERY_DB_PASSWORD: ${{ secrets.DELIVERY_DB_PASSWORD }}
+        run: |
+          if ! [[ "${DELIVERY_DB_PASSWORD}" =~ ^[0-9a-f]{32,}$ ]]; then
+            echo "DELIVERY_DB_PASSWORD secret must be 32+ lowercase hex characters (openssl rand -hex 32); nothing was copied or changed on the VPS"
+            exit 1
+          fi
+
       - name: Install SSH key
         run: |
           mkdir -p ~/.ssh
@@ -103,19 +109,10 @@ jobs:
       # not written to disk). Non-secret hostnames (NTFY_BASE_URL, PERSON_SERVICE_URL) stay
       # baked into the compose file's defaults.
       #
-      # The delivery-api DB password is the deliberate exception to the delete-after-up rule:
-      # it is written to ./secrets-persistent/ (dir 0700, file 0644) and NEVER deleted, because
-      # delivery-api and delivery-migrate read it on every start (not only at Postgres initdb
-      # like the secrets above). The `rm -rf ./secrets/` below does not touch that directory.
-      # The secret is validated (non-empty hex, 32+ chars) at the very top of the script, before
-      # anything is written: an invalid value aborts leaving the running stack and any existing
-      # persistent password file untouched, and writes no ./secrets/* or docker login material.
-      #
-      # Why the file is 0644, not 0600: the deploy user on the VPS (site-ops, uid 1001) owns the
-      # file, but delivery-api / delivery-migrate run as uid 1000 (notifs) and must be able to
-      # read the bind-mounted secret; a 0600 file owned by uid 1001 would be unreadable to them
-      # (Postgres is fine either way: its entrypoint reads the file as root). The 0700 directory
-      # is the real access boundary, exactly like ./secrets/ (0700 dir, default-umask files).
+      # The delivery DB password is the exception: it lives in ./secrets-persistent/ and is never
+      # deleted, because delivery-api and delivery-migrate read it on every start. The file is
+      # 0644, not 0600: the deploy user (uid 1001) owns it but those containers run as uid 1000
+      # and must read the bind mount; the 0700 directory is the real access boundary.
       #
       # `up -d` WITHOUT --force-recreate is deliberate: compose diffs image digest + compose
       # definition and recreates ONLY the services that changed. A typical API-only deploy
@@ -130,7 +127,6 @@ jobs:
           ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
           cd /home/4irl-notifs;
           DELIVERY_DB_PASSWORD_VALUE="${{ secrets.DELIVERY_DB_PASSWORD }}";
-          printf "%s" "${DELIVERY_DB_PASSWORD_VALUE}" | grep -Eqx "[0-9a-f]{32,}" || { echo "DELIVERY_DB_PASSWORD secret is missing, empty, or not hex (openssl rand -hex 32); aborting before touching the stack"; exit 1; };
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
 
           mkdir -p ./secrets/;
@@ -156,11 +152,7 @@ jobs:
           rm -f ~/.docker/config.json
           ';
 
-      # Verify the stack after any updates. Retries up to 30 x 5s (the wait mechanism, replacing
-      # a fixed sleep) until ALL hold: ntfy, provisioning-api and delivery-postgres are running,
-      # the one-shot delivery-migrate job exited 0, and delivery-api answers /readyz on
-      # 127.0.0.1:8300 (DB reachable and schema current). On final failure it names the failed
-      # checks and dumps the delivery logs.
+      # Retries up to 30 x 5s until all services run, delivery-migrate exited 0 and /readyz passes.
       - name: Verify Docker Compose Stack
         run: >
           ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '

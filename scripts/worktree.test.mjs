@@ -10,6 +10,7 @@ import {
   defaultBranch,
   dnsSlug,
   ensureExcludes,
+  formatCreatedSummary,
   linkDevVars,
   newWorktree,
   parseWorktreeArgs,
@@ -49,6 +50,25 @@ describe('dnsSlug', () => {
 
   it('throws when nothing is left', () => {
     assert.throws(() => dnsSlug('///'), /empty/);
+  });
+});
+
+describe('formatCreatedSummary', () => {
+  it('lists the slot and every port, including delivery', () => {
+    const ports = {
+      NOTIFS_SLOT: 3,
+      NTFY_PORT: 8096,
+      API_PORT: 8097,
+      WEB_PORT: 5276,
+      E2E_PORT: 4276,
+      DELIVERY_PORT: 8303,
+    };
+
+    assert.equal(
+      formatCreatedSummary({ path: '/repo/.claude/worktrees/proof', branch: 'feat/proof', ports }),
+      'worktree: created /repo/.claude/worktrees/proof on branch feat/proof ' +
+        '(slot=3 ntfy=8096 api=8097 web=5276 e2e=4276 delivery=8303)',
+    );
   });
 });
 

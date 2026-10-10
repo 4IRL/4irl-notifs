@@ -7,10 +7,6 @@ import (
 	"time"
 )
 
-// maxRecordedFailureRunes caps the failure message stored in
-// schema_migration_failures.
-const maxRecordedFailureRunes = 500
-
 // cleanupTimeout bounds cleanup that must outlive a canceled context (lock
 // release, transaction rollback).
 const cleanupTimeout = 5 * time.Second
@@ -32,8 +28,8 @@ type Store interface {
 
 // Run applies, in order, every migration in migrations not yet applied and
 // returns how many it applied. It holds the store's lock for the whole run.
-// On the first apply failure it stops, records the failure (truncated to 500
-// runes) so readiness can surface it, and returns the apply error; a failure
+// On the first apply failure it stops, records the failure so readiness
+// can surface it, and returns the apply error; a failure
 // to record is logged but never replaces the apply error.
 func Run(
 	ctx context.Context,
@@ -72,12 +68,7 @@ func Run(
 			// A canceled ctx (SIGTERM mid-migration) is an interruption, not a
 			// defect in the migration, so it must not surface as a failure.
 			if ctx.Err() == nil {
-				recordErr := store.RecordFailure(
-					ctx,
-					migration.Version,
-					truncateRunes(applyErr.Error(), maxRecordedFailureRunes),
-				)
-				if recordErr != nil {
+				if recordErr := store.RecordFailure(ctx, migration.Version, applyErr.Error()); recordErr != nil {
 					logger.Error("record migration failure", "version", migration.Version, "error", recordErr)
 				}
 			}
@@ -87,13 +78,4 @@ func Run(
 		appliedCount++
 	}
 	return appliedCount, nil
-}
-
-// truncateRunes returns text cut to at most limit runes.
-func truncateRunes(text string, limit int) string {
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
-	}
-	return string(runes[:limit])
 }

@@ -477,18 +477,23 @@ export async function newWorktree({
   return { path: plan.path, branch: plan.branch, ports };
 }
 
+/** The one-line summary printed after `worktree new`. */
+export function formatCreatedSummary({ path: worktreePath, branch, ports }) {
+  const { NOTIFS_SLOT, NTFY_PORT, API_PORT, WEB_PORT, E2E_PORT, DELIVERY_PORT } = ports;
+  return (
+    `worktree: created ${worktreePath} on branch ${branch} ` +
+    `(slot=${NOTIFS_SLOT} ntfy=${NTFY_PORT} api=${API_PORT} web=${WEB_PORT} e2e=${E2E_PORT} ` +
+    `delivery=${DELIVERY_PORT})`
+  );
+}
+
 async function main(argv) {
   const [command] = argv;
   if (command === 'new') {
     const args = parseWorktreeArgs(process.env);
     const primaryRoot = path.dirname(realpathSync(commonDir(runGit, process.cwd())));
     const result = await newWorktree({ primaryRoot, ...args });
-    const { NOTIFS_SLOT, NTFY_PORT, API_PORT, WEB_PORT, E2E_PORT, DELIVERY_PORT } = result.ports;
-    console.log(
-      `worktree: created ${result.path} on branch ${result.branch} ` +
-        `(slot=${NOTIFS_SLOT} ntfy=${NTFY_PORT} api=${API_PORT} web=${WEB_PORT} e2e=${E2E_PORT} ` +
-        `delivery=${DELIVERY_PORT})`,
-    );
+    console.log(formatCreatedSummary(result));
   } else if (command === 'rm') {
     const worktreeRoot = runGit(process.cwd(), ['rev-parse', '--show-toplevel']);
     removeWorktree({ worktreeRoot });

@@ -34,6 +34,9 @@ jobs:
           version: v2.12.2
           working-directory: delivery-api
 
+      - name: Lint workflow YAML with actionlint
+        run: make workflows-lint
+
       - name: Setup node
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
         with:

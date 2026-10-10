@@ -1,13 +1,5 @@
-// Package secretenv resolves a secret value from either a file indirection or
-// a plain environment variable, following the common Docker "_FILE" convention
-// (the same one urls4irl's Postgres/Redis secrets use).
-//
-// For a secret named KEY, Resolve prefers KEY_FILE: when it is set, the file it
-// points at is read and its contents (with surrounding whitespace trimmed) are
-// returned. This lets Docker Compose deliver the secret as a tmpfs file mounted
-// at /run/secrets/KEY — so the value never enters the container's environment
-// (absent from `docker inspect` Env) — while KEY alone still works for local
-// development and tests.
+// Package secretenv resolves a secret from KEY_FILE (a Docker secret file, which keeps the
+// value out of the container env) or, failing that, from the plain KEY env var.
 package secretenv
 
 import (

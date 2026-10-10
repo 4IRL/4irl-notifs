@@ -197,12 +197,8 @@ volumes:
 # before `docker compose up` and `rm -rf ./secrets/` immediately after, so no
 # plaintext secret persists on the host (the same pattern urls4irl uses).
 #
-# DELIVERY_DB_PASSWORD is the exception: it lives in ./secrets-persistent/ (host dir
-# /home/4irl-notifs/secrets-persistent/, 0700, file 0644) and is deliberately NEVER deleted,
-# because delivery-api reads it on every start (not just at Postgres's initdb like the
-# credentials above). prod-deploy.yml writes it from the DELIVERY_DB_PASSWORD GitHub secret.
-# The file is 0644 (the 0700 dir is the access boundary) because the deploy user (site-ops,
-# uid 1001) owns it while delivery-api / delivery-migrate run as uid 1000 and must read it.
+# DELIVERY_DB_PASSWORD is the exception: it persists in ./secrets-persistent/ (never deleted);
+# see prod-deploy.yml for why, including the 0644 file mode.
 secrets:
   PERSON_SERVICE_ACCESS_CLIENT_ID:
     file: ./secrets/PERSON_SERVICE_ACCESS_CLIENT_ID

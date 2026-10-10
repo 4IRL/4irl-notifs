@@ -1,13 +1,6 @@
-# delivery-api image (build context is the repo root: `docker build -f delivery-api/Dockerfile .`,
-# so the root .dockerignore applies).
-#
+# Build context is the repo root (`docker build -f delivery-api/Dockerfile .`).
 # LOCKSTEP: keep the golang and alpine tags equal to the root Dockerfile.
-#
-# Two stages:
-#   1. build — compiles the statically-linked delivery-api Go binary from delivery-api/. Its
-#      migrations are embedded in the binary (go:embed), so the same image runs both the
-#      `migrate` subcommand (delivery-migrate) and the server (delivery-api).
-#   2. final — a minimal, non-root Alpine image.
+# Migrations are embedded, so this one image runs both `migrate` and the server.
 
 FROM golang:1.26.0-alpine3.23 AS build
 WORKDIR /src

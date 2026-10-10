@@ -315,6 +315,13 @@ graph TD
 - **VPS deploy** (`prod-deploy.yml`): SSH via `cloudflared access ssh` (own SSH key + deploy service
   token), SCPs compose + ntfy config, `docker compose up -d`. Dual-write creds delivered as Docker
   Compose secrets (`PERSON_SERVICE_ACCESS_CLIENT_*`), never a plaintext `.env`.
+- **`DELIVERY_DB_PASSWORD` (required repo secret)**: the delivery-api Postgres password, 32+ lowercase
+  hex characters (`openssl rand -hex 32`); the deploy fails before touching the VPS if it is missing or
+  malformed, so set it before the first merge. Unlike the secrets above it is written to
+  `secrets-persistent/` on every deploy and never deleted (delivery-api reads it on every start).
+  Postgres fixes the password into the `delivery-pgdata` volume at initdb, so **rotating** the GitHub
+  secret first needs `ALTER ROLE delivery PASSWORD '<new value>'` run inside `delivery-postgres`;
+  otherwise migrate/api fail auth on the next deploy and it goes red.
 - **person-service D1 schema** is applied by CI: `worker-deploy.yml` runs `wrangler d1 migrations apply
   person-service --remote` **before** `wrangler deploy`, so a new Worker code path never hits a table its
   migration hasn't created (idempotent — applied migrations are skipped). Adding a table = add a

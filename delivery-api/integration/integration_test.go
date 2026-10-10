@@ -2,19 +2,10 @@
 
 package integration
 
-// These tests exercise delivery-api against a live docker-compose stack
-// (delivery-postgres + delivery-migrate + delivery-api). Prefer make
-// delivery-integration-test, which resolves the stack's URL and container ids
-// and passes them in via NOTIFS_DELIVERY_URL, NOTIFS_DELIVERY_CONTAINER and
-// NOTIFS_DELIVERY_DB_CONTAINER. Running by hand:
-//
-//	docker compose --project-directory . -f docker-compose.yml up -d --build
-//	go test -p 1 -tags integration ./...
-//
-// The base URL is overridable via NOTIFS_DELIVERY_URL for non-default port
-// mappings; the containers are taken from their env vars, else looked up with
-// docker compose ps -q (outside make in a worktree, export COMPOSE_PROJECT_NAME
-// from .worktree.env so that lookup finds the worktree's own stack).
+// Runs against the live compose stack; use make delivery-integration-test, which passes the
+// URL and container ids via NOTIFS_DELIVERY_URL, NOTIFS_DELIVERY_CONTAINER and
+// NOTIFS_DELIVERY_DB_CONTAINER. Outside make in a worktree, export COMPOSE_PROJECT_NAME from
+// .worktree.env so the docker compose ps -q fallback finds the worktree's own stack.
 
 import (
 	"context"
