@@ -18,11 +18,13 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: provisioning-api/go.mod
-          cache-dependency-path: provisioning-api/go.sum
+          cache-dependency-path: |
+            provisioning-api/go.sum
+            delivery-api/go.sum
 
       - name: Verify Go formatting with gofmt
         run: |
-          UNFORMATTED="$(gofmt -l provisioning-api)"
+          UNFORMATTED="$(gofmt -l provisioning-api delivery-api)"
           if [ -n "$UNFORMATTED" ]; then
             echo "Files need gofmt:"
             echo "$UNFORMATTED"

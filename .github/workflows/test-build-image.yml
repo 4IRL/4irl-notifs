@@ -52,3 +52,58 @@ jobs:
       - name: Clean up smoke test container
         if: always()
         run: docker rm -f provisioning-api-smoke
+
+  BuildDeliveryImage:
+    name: Build delivery-api image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build delivery-api image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./delivery-api/Dockerfile
+          load: true
+          tags: 4irl-notifs-delivery-api:ci-test
+          cache-from: type=gha,scope=delivery-api
+          cache-to: type=gha,scope=delivery-api,mode=max
+
+      - name: Smoke test image
+        run: |
+          # The pool connects lazily, so /healthz serves without a reachable database.
+          docker run -d --name delivery-api-smoke -p 127.0.0.1:8081:8080 \
+            -e DELIVERY_DB_HOST=unreachable \
+            -e DELIVERY_DB_USER=delivery \
+            -e DELIVERY_DB_NAME=delivery \
+            -e DELIVERY_DB_PASSWORD=smoke \
+            4irl-notifs-delivery-api:ci-test
+
+          for i in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:8081/healthz | grep -q ok; then
+              echo "delivery-api-smoke is up"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "delivery-api-smoke did not become healthy in time"
+              docker logs delivery-api-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Verify migrate fails fast without database config
+        run: |
+          if docker run --rm 4irl-notifs-delivery-api:ci-test migrate; then
+            echo "migrate unexpectedly succeeded without DB env"
+            exit 1
+          fi
+          echo "migrate failed fast as expected"
+
+      - name: Clean up smoke test container
+        if: always()
+        run: docker rm -f delivery-api-smoke

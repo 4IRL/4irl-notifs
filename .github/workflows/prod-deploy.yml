@@ -34,6 +34,12 @@ on:
       # deploy shell just before `docker compose up` rather than written to a secrets file.
       NTFY_UPSTREAM_ACCESS_TOKEN:
         required: false
+      # delivery-api Postgres password. Required: an empty value makes Postgres initdb fail, so the
+      # deploy script below aborts before touching the running stack when it is empty. Must be
+      # shell- and URL-safe (generate with `openssl rand -hex 32`) because it is interpolated
+      # into the single-quoted ssh script.
+      DELIVERY_DB_PASSWORD:
+        required: true
 
 jobs:
   ProdDeploy:
@@ -97,6 +103,20 @@ jobs:
       # not written to disk). Non-secret hostnames (NTFY_BASE_URL, PERSON_SERVICE_URL) stay
       # baked into the compose file's defaults.
       #
+      # The delivery-api DB password is the deliberate exception to the delete-after-up rule:
+      # it is written to ./secrets-persistent/ (dir 0700, file 0644) and NEVER deleted, because
+      # delivery-api and delivery-migrate read it on every start (not only at Postgres initdb
+      # like the secrets above). The `rm -rf ./secrets/` below does not touch that directory.
+      # The secret is validated (non-empty hex, 32+ chars) at the very top of the script, before
+      # anything is written: an invalid value aborts leaving the running stack and any existing
+      # persistent password file untouched, and writes no ./secrets/* or docker login material.
+      #
+      # Why the file is 0644, not 0600: the deploy user on the VPS (site-ops, uid 1001) owns the
+      # file, but delivery-api / delivery-migrate run as uid 1000 (notifs) and must be able to
+      # read the bind-mounted secret; a 0600 file owned by uid 1001 would be unreadable to them
+      # (Postgres is fine either way: its entrypoint reads the file as root). The 0700 directory
+      # is the real access boundary, exactly like ./secrets/ (0700 dir, default-umask files).
+      #
       # `up -d` WITHOUT --force-recreate is deliberate: compose diffs image digest + compose
       # definition and recreates ONLY the services that changed. A typical API-only deploy
       # (new provisioning-api :latest) therefore recreates just provisioning-api and leaves
@@ -109,12 +129,20 @@ jobs:
         run: |
           ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
           cd /home/4irl-notifs;
+          DELIVERY_DB_PASSWORD_VALUE="${{ secrets.DELIVERY_DB_PASSWORD }}";
+          printf "%s" "${DELIVERY_DB_PASSWORD_VALUE}" | grep -Eqx "[0-9a-f]{32,}" || { echo "DELIVERY_DB_PASSWORD secret is missing, empty, or not hex (openssl rand -hex 32); aborting before touching the stack"; exit 1; };
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
 
           mkdir -p ./secrets/;
           chmod 700 ./secrets/;
           echo "${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_ID }}" > ./secrets/PERSON_SERVICE_ACCESS_CLIENT_ID;
           echo "${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_SECRET }}" > ./secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET;
+
+          mkdir -p ./secrets-persistent/;
+          chmod 700 ./secrets-persistent/;
+          printf "%s" "${DELIVERY_DB_PASSWORD_VALUE}" > ./secrets-persistent/DELIVERY_DB_PASSWORD;
+          chmod 644 ./secrets-persistent/DELIVERY_DB_PASSWORD;
+          [ -s ./secrets-persistent/DELIVERY_DB_PASSWORD ] || { echo "DELIVERY_DB_PASSWORD file is empty after write; aborting"; exit 1; };
 
           docker compose -f docker-compose.prod.yml pull;
           export NTFY_UPSTREAM_ACCESS_TOKEN="${{ secrets.NTFY_UPSTREAM_ACCESS_TOKEN }}";
@@ -127,23 +155,35 @@ jobs:
           echo "Cleaning up docker login files..."
           rm -f ~/.docker/config.json
           ';
-          sleep 30;
 
-      # Verify the two services are up and running after any updates
+      # Verify the stack after any updates. Retries up to 30 x 5s (the wait mechanism, replacing
+      # a fixed sleep) until ALL hold: ntfy, provisioning-api and delivery-postgres are running,
+      # the one-shot delivery-migrate job exited 0, and delivery-api answers /readyz on
+      # 127.0.0.1:8300 (DB reachable and schema current). On final failure it names the failed
+      # checks and dumps the delivery logs.
       - name: Verify Docker Compose Stack
         run: >
           ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
           cd /home/4irl-notifs;
-          hasNtfy=$(docker compose -f docker-compose.prod.yml ps --services --filter "status=running" | grep -x ntfy);
-          hasProvisioningApi=$(docker compose -f docker-compose.prod.yml ps --services --filter "status=running" | grep -x provisioning-api);
-
-          if [ -n "${hasNtfy}" ] && [ -n "${hasProvisioningApi}" ]; then
-            echo "After 30 seconds, all of the services are up!";
-            exit 0;
-          else
-            echo "After 30 seconds, one or more of the services is not up: ";
-            [ "ntfy" != "${hasNtfy}" ] && echo "ntfy not operational";
-            [ "provisioning-api" != "${hasProvisioningApi}" ] && echo "provisioning-api not operational";
-            exit 1;
-          fi;
+          failed="";
+          for attempt in $(seq 1 30); do
+            failed="";
+            running=$(docker compose -f docker-compose.prod.yml ps --services --filter "status=running");
+            echo "${running}" | grep -qx ntfy || failed="${failed} ntfy-not-running";
+            echo "${running}" | grep -qx provisioning-api || failed="${failed} provisioning-api-not-running";
+            echo "${running}" | grep -qx delivery-postgres || failed="${failed} delivery-postgres-not-running";
+            migrateState=$(docker inspect -f "{{.State.Status}}:{{.State.ExitCode}}" 4irl-notifs-delivery-migrate 2>/dev/null);
+            [ "${migrateState}" = "exited:0" ] || failed="${failed} delivery-migrate-not-exited-0(${migrateState:-missing})";
+            curl -fsS http://127.0.0.1:8300/readyz > /dev/null 2>&1 || failed="${failed} delivery-api-readyz-failing";
+            if [ -z "${failed}" ]; then
+              echo "All services are up (attempt ${attempt})!";
+              exit 0;
+            fi;
+            echo "Attempt ${attempt}/30 not ready:${failed}";
+            sleep 5;
+          done;
+          echo "After 150 seconds, the stack is not healthy:${failed}";
+          docker compose -f docker-compose.prod.yml ps -a;
+          docker compose -f docker-compose.prod.yml logs --tail 100 delivery-migrate delivery-api delivery-postgres;
+          exit 1;
           '

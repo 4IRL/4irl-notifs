@@ -1,6 +1,6 @@
 .PHONY: help lint test local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-integration-test go-lint go-fmt \
-	delivery-test delivery-integration-test delivery-lint delivery-fmt \
+	delivery-test delivery-integration-test delivery-lint delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	worker-test worker-build worker-deploy scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm
 
@@ -44,7 +44,7 @@ SMOKE_EMAIL := smoketest@example.com
 help: ## Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-lint: go-lint delivery-lint web-lint scripts-lint ## Run all linters (Go + frontend + scripts)
+lint: go-lint delivery-lint web-lint scripts-lint workflows-lint ## Run all linters (Go + frontend + scripts + workflows)
 
 test: go-test delivery-test web-test worker-test scripts-test ## Run all unit tests (Go, web Vitest, worker Vitest, scripts)
 
@@ -184,6 +184,13 @@ delivery-lint: ## Check delivery-api Go formatting and lint
 
 delivery-fmt: ## Apply delivery-api Go formatting
 	cd delivery-api && gofmt -w .
+
+## Workflows (GitHub Actions)
+
+# Pinned exactly; `go run` fetches the module on first use, so it stays out of both go.mod files.
+# actionlint also runs shellcheck on each `run:` block when shellcheck is on PATH.
+workflows-lint: ## Lint GitHub Actions workflow YAML with actionlint
+	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 ./.github/workflows/*.yml
 
 ## Web (admin UI)
 
