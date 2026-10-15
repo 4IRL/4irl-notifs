@@ -529,7 +529,7 @@ func TestProvisionAppPublisherEndToEnd(t *testing.T) {
 		t.Fatalf("unmarshaling provision response: %v", unmarshalErr)
 	}
 
-	subscriberTopic := appID + "-" + personHash + "-alerts"
+	subscriberTopic := appID + "-" + personHash + "-all"
 	publishStatusCode, messageID := publishMessage(t, subscriberTopic, provisionedApp.Token)
 	if publishStatusCode != http.StatusOK {
 		t.Fatalf("publisher publish to %s status = %d, expected 200", subscriberTopic, publishStatusCode)

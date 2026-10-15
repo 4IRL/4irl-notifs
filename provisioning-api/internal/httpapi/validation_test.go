@@ -97,6 +97,8 @@ func TestValidateTitleLength(t *testing.T) {
 		{name: "typical title", title: "Chore Reaper test", expected: true},
 		{name: "at max length 256", title: strings.Repeat("a", 256), expected: true},
 		{name: "over max length 257", title: strings.Repeat("a", 257), expected: false},
+		{name: "multi-byte at max 256 bytes", title: strings.Repeat("é", 128), expected: true},
+		{name: "multi-byte over max 258 bytes", title: strings.Repeat("é", 129), expected: false},
 	}
 
 	for _, testCase := range testCases {
@@ -120,6 +122,10 @@ func TestValidateTitleCharacters(t *testing.T) {
 		{name: "carriage return", title: "a\rb", expected: false},
 		{name: "tab", title: "tab\tx", expected: false},
 		{name: "invalid UTF-8", title: "a\xffb", expected: false},
+		{name: "NUL", title: "a\x00b", expected: false},
+		{name: "DEL", title: "a\x7fb", expected: false},
+		{name: "C1 control NEL", title: "a\u0085b", expected: false},
+		{name: "emoji", title: "Reminder \U0001F514", expected: true},
 	}
 
 	for _, testCase := range testCases {
