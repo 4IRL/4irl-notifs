@@ -26,7 +26,8 @@ stack only via `make local-up` / `make local-down`, never raw `docker compose`.
 
 - **`auth-default-access: deny-all`** — every topic grant is explicit; anonymous publish and
   subscribe are rejected.
-- **Topics are `{app_id}-{person_hash}-all`** (e.g. `urls4irl-76gzqgp4byjl6dje-all`). Topics need no
+- **Per-person topics are `{app_id}-{person_hash}-all`** (the standard channel, e.g.
+  `urls4irl-76gzqgp4byjl6dje-all`), plus a shared `{app_id}-broadcast` topic per app. Topics need no
   pre-creation — they materialize on first publish/subscribe.
 - **One global ntfy user per person** (not one per app). The app's publisher writes `{app_id}-*`;
   each subscriber reads only its own `{app_id}-{person_hash}-*`. See

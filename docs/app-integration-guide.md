@@ -310,8 +310,9 @@ downtime, backfill with `since=`:
 a live stream alone to guarantee delivery across reconnects.
 
 **Notification types & user preferences.** Model each notif type as a `Title` / `Tags` on the
-single `{app_id}-{person_hash}-all` channel. Enforce user preferences at **publish time** — simply don't emit a
-type the user disabled — so a broad subscriber token can't be used to receive muted types.
+single `{app_id}-{person_hash}-all` channel. Enforce user preferences at **publish time** — simply
+don't emit a type the user disabled — so a broad subscriber token can't be used to receive muted
+types.
 
 ---
 

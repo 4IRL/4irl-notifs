@@ -220,7 +220,8 @@ write-only publisher token, publishes the message to each recipient's `{app_id}-
 topic, then revokes the token in an always-run cleanup; per-recipient failures are reported inside a 200
 response. `channel` defaults to `all`; `title` defaults to `<app_id> test` (the admin UI sends
 `<display name> test`) and is ≤256 bytes with no control characters. `ntfypublish` sends the title as
-a `Title` header (RFC 2047-encoded when non-ASCII). `POST /v1/set-password {app_id, email, password}` → `{user_id, app_id, updated}` sets a person's
+a `Title` header (RFC 2047-encoded when non-ASCII).
+`POST /v1/set-password {app_id, email, password}` → `{user_id, app_id, updated}` sets a person's
 ntfy password (via `ntfy user change-pass`) so they can log into the ntfy iOS app directly with
 `u_<person_hash>` + that password; the user must already be provisioned (missing user → `404
 {"error":"user does not exist"}`), the password is validated at 8–128 chars (`400 {"error":"invalid
