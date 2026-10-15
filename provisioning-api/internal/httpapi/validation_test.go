@@ -47,6 +47,7 @@ func TestValidateChannel(t *testing.T) {
 	}{
 		{name: "simple lowercase", channel: "alerts", expected: true},
 		{name: "another valid", channel: "digest", expected: true},
+		{name: "standard all channel", channel: "all", expected: true},
 		{name: "alnum with underscore", channel: "a_b2", expected: true},
 		{name: "single char", channel: "a", expected: true},
 		{name: "max length 32", channel: strings.Repeat("a", 32), expected: true},
@@ -82,6 +83,49 @@ func TestValidateMessage(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			if got := validateMessage(testCase.message); got != testCase.expected {
 				t.Fatalf("validateMessage(len=%d) = %v, expected %v", len(testCase.message), got, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestValidateTitleLength(t *testing.T) {
+	testCases := []struct {
+		name     string
+		title    string
+		expected bool
+	}{
+		{name: "typical title", title: "Chore Reaper test", expected: true},
+		{name: "at max length 256", title: strings.Repeat("a", 256), expected: true},
+		{name: "over max length 257", title: strings.Repeat("a", 257), expected: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := validateTitleLength(testCase.title); got != testCase.expected {
+				t.Fatalf("validateTitleLength(len=%d) = %v, expected %v", len(testCase.title), got, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestValidateTitleCharacters(t *testing.T) {
+	testCases := []struct {
+		name     string
+		title    string
+		expected bool
+	}{
+		{name: "typical title", title: "Chore Reaper test", expected: true},
+		{name: "non-ASCII letters", title: "Café test", expected: true},
+		{name: "newline", title: "a\nb", expected: false},
+		{name: "carriage return", title: "a\rb", expected: false},
+		{name: "tab", title: "tab\tx", expected: false},
+		{name: "invalid UTF-8", title: "a\xffb", expected: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := validateTitleCharacters(testCase.title); got != testCase.expected {
+				t.Fatalf("validateTitleCharacters(%q) = %v, expected %v", testCase.title, got, testCase.expected)
 			}
 		})
 	}

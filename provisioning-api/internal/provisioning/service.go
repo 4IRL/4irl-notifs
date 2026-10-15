@@ -306,6 +306,9 @@ type TestNotifyRequest struct {
 	Recipients []string
 	Channel    string
 	Message    string
+	// Title is the ntfy notification title; the httpapi layer guarantees it is
+	// non-empty.
+	Title string
 }
 
 // RecipientResult is the per-recipient outcome of a TestNotify dispatch. OK
@@ -399,7 +402,7 @@ func (service *Service) TestNotify(ctx context.Context, request TestNotifyReques
 		topic := ntfycli.PersonChannelTopic(request.AppID, personHash, request.Channel)
 		result.Topic = topic
 
-		messageID, publishErr := service.publisher.Publish(ctx, ntfypublish.Message{Topic: topic, Token: token, Body: request.Message})
+		messageID, publishErr := service.publisher.Publish(ctx, ntfypublish.Message{Topic: topic, Token: token, Body: request.Message, Title: request.Title})
 		if publishErr != nil {
 			// Log the real error server-side, but return only a generic message
 			// to the client so ntfy's raw HTTP body snippet never reaches the

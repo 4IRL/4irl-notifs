@@ -87,7 +87,8 @@ type testNotifyResponse struct {
 // about, as served by GET {topic}/json?poll=1&since=all (newline-delimited
 // JSON, one message per line).
 type ntfyMessage struct {
-	ID string `json:"id"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
 // userListResponse mirrors the /v1/users body.
@@ -245,6 +246,16 @@ func publishMessage(t *testing.T, topic string, token string) (int, string) {
 // messages returned.
 func topicContainsMessageID(t *testing.T, topic string, token string, messageID string) bool {
 	t.Helper()
+	_, found := cachedMessage(t, topic, token, messageID)
+	return found
+}
+
+// cachedMessage polls a topic's cache with a bearer token and returns the
+// cached message whose id is messageID, plus true. When no such message is
+// cached it returns the zero ntfyMessage and false; callers must t.Fatalf on
+// false before reading any field of the returned message.
+func cachedMessage(t *testing.T, topic string, token string, messageID string) (ntfyMessage, bool) {
+	t.Helper()
 	request, buildErr := http.NewRequest(http.MethodGet, ntfyURL()+"/"+topic+"/json?poll=1&since=all", nil)
 	if buildErr != nil {
 		t.Fatalf("building read request: %v", buildErr)
@@ -270,10 +281,10 @@ func topicContainsMessageID(t *testing.T, topic string, token string, messageID 
 			t.Fatalf("unmarshaling cache line %q: %v", line, unmarshalErr)
 		}
 		if message.ID == messageID {
-			return true
+			return message, true
 		}
 	}
-	return false
+	return ntfyMessage{}, false
 }
 
 // deleteUser removes a user via the API; used for cleanup.
@@ -609,8 +620,9 @@ func TestSendTestNotificationEndToEnd(t *testing.T) {
 	status, testNotifyBody := postJSONBody(t, "/v1/test-notify", map[string]any{
 		"app_id":     appID,
 		"recipients": []string{personHash, unprovisionedHash},
-		"channel":    "alerts",
+		"channel":    "all",
 		"message":    message,
+		"title":      "Café test",
 	})
 	if status != http.StatusOK {
 		t.Fatalf("test-notify status = %d, body = %s", status, testNotifyBody)
@@ -624,9 +636,9 @@ func TestSendTestNotificationEndToEnd(t *testing.T) {
 	}
 
 	// Recipient 0 (a real subscriber): delivered with a non-empty message id on
-	// the concrete {app_id}-{hash}-alerts topic, resolved to the subscriber user.
+	// the concrete {app_id}-{hash}-all topic, resolved to the subscriber user.
 	first := testNotify.Results[0]
-	wantTopic := ntfycli.PersonChannelTopic(appID, personHash, "alerts")
+	wantTopic := ntfycli.PersonChannelTopic(appID, personHash, "all")
 	if !first.OK {
 		t.Fatalf("recipient[0].ok = false, error = %q; expected delivered", first.Error)
 	}
@@ -642,8 +654,43 @@ func TestSendTestNotificationEndToEnd(t *testing.T) {
 
 	// The published message must actually be deliverable on the subscriber's
 	// real topic — read it back with the subscriber's own read token.
-	if !topicContainsMessageID(t, wantTopic, provisionedUser.Token, first.MessageID) {
+	cached, ok := cachedMessage(t, wantTopic, provisionedUser.Token, first.MessageID)
+	if !ok {
 		t.Fatalf("subscriber token could not read test-notify message %s back on %s", first.MessageID, wantTopic)
+	}
+	// A non-ASCII title is sent RFC 2047-encoded; this is the real-ntfy check
+	// that it comes back decoded.
+	if cached.Title != "Café test" {
+		t.Fatalf("cached title = %q, expected %q (ntfy must decode the RFC 2047 Title header)", cached.Title, "Café test")
+	}
+
+	// A second post to the same subscriber and topic that omits title falls back
+	// to "<app_id> test".
+	status, defaultTitleBody := postJSONBody(t, "/v1/test-notify", map[string]any{
+		"app_id":     appID,
+		"recipients": []string{personHash},
+		"message":    message,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("default-title test-notify status = %d, body = %s", status, defaultTitleBody)
+	}
+	var defaultTitleNotify testNotifyResponse
+	if unmarshalErr := json.Unmarshal(defaultTitleBody, &defaultTitleNotify); unmarshalErr != nil {
+		t.Fatalf("unmarshaling default-title test-notify response: %v", unmarshalErr)
+	}
+	if len(defaultTitleNotify.Results) != 1 || !defaultTitleNotify.Results[0].OK {
+		t.Fatalf("default-title test-notify results = %+v, expected one delivered result", defaultTitleNotify.Results)
+	}
+	defaultTitleResult := defaultTitleNotify.Results[0]
+	if defaultTitleResult.Topic != wantTopic {
+		t.Fatalf("default-title topic = %q, expected %q (channel must default to all)", defaultTitleResult.Topic, wantTopic)
+	}
+	defaultCached, defaultOK := cachedMessage(t, wantTopic, provisionedUser.Token, defaultTitleResult.MessageID)
+	if !defaultOK {
+		t.Fatalf("subscriber token could not read default-title message %s back on %s", defaultTitleResult.MessageID, wantTopic)
+	}
+	if defaultCached.Title != appID+" test" {
+		t.Fatalf("default cached title = %q, expected %q", defaultCached.Title, appID+" test")
 	}
 
 	// Recipient 1 (valid hash, never provisioned): documents observed ntfy
@@ -651,7 +698,7 @@ func TestSendTestNotificationEndToEnd(t *testing.T) {
 	// unused topic, so ntfy 2xxes the publish and reports ok:true — "delivered"
 	// means "accepted by ntfy", not that a device is subscribed to receive it.
 	second := testNotify.Results[1]
-	wantSecondTopic := ntfycli.PersonChannelTopic(appID, unprovisionedHash, "alerts")
+	wantSecondTopic := ntfycli.PersonChannelTopic(appID, unprovisionedHash, "all")
 	if second.Topic != wantSecondTopic {
 		t.Fatalf("recipient[1].topic = %q, expected %q", second.Topic, wantSecondTopic)
 	}

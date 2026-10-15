@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"regexp"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/validation"
 )
@@ -33,6 +35,10 @@ const reservedWildcardUserID = "*"
 
 // maxMessageLength is the maximum accepted test-notification message length.
 const maxMessageLength = 4096
+
+// maxTitleLength is the maximum accepted test-notification title length
+// (bytes).
+const maxTitleLength = 256
 
 // minPasswordLength is the minimum accepted set-password length (byte length),
 // rejecting empty and too-short passwords.
@@ -79,6 +85,28 @@ func validateChannel(channel string) bool {
 // length. An empty message is valid; the handler applies the default first.
 func validateMessage(message string) bool {
 	return len(message) <= maxMessageLength
+}
+
+// validateTitleLength reports whether title is within the maximum accepted
+// length (byte length, via len). The handler applies the default first.
+func validateTitleLength(title string) bool {
+	return len(title) <= maxTitleLength
+}
+
+// validateTitleCharacters reports whether title is valid UTF-8 and contains no
+// control characters. Rejecting every unicode.IsControl rune (CR, LF, tab,
+// NUL, ...) prevents header injection, since the title is sent as an HTTP
+// header; invalid UTF-8 is rejected fail-closed rather than silently replaced.
+func validateTitleCharacters(title string) bool {
+	if !utf8.ValidString(title) {
+		return false
+	}
+	for _, character := range title {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
 }
 
 // validateRecipientsCount reports whether recipients is within the maximum

@@ -973,7 +973,7 @@ func TestDeprovisionAppServiceErrorMapsTo500(testInstance *testing.T) {
 // calls Service.TestNotify, and serializes the per-recipient results — with a
 // mixed ok:true / ok:false pair — as the exact JSON response body.
 func TestTestNotifyHappyPath(testInstance *testing.T) {
-	topic := "myapp-" + aliceHash + "-alerts"
+	topic := "myapp-" + aliceHash + "-all"
 	fakeService := &fakeProvisioningService{
 		testNotifyResult: provisioning.TestNotifyResult{
 			Results: []provisioning.RecipientResult{
@@ -1002,8 +1002,9 @@ func TestTestNotifyHappyPath(testInstance *testing.T) {
 	wantCall := provisioning.TestNotifyRequest{
 		AppID:      "myapp",
 		Recipients: []string{aliceHash, aliceEmail},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "Test notification from 4IRL admin",
+		Title:      "myapp test",
 	}
 	if len(fakeService.testNotifyCalls) != 1 || !reflect.DeepEqual(fakeService.testNotifyCalls[0], wantCall) {
 		testInstance.Fatalf("testNotifyCalls = %+v, want [%+v]", fakeService.testNotifyCalls, wantCall)
@@ -1025,7 +1026,7 @@ func TestTestNotifyWhitespaceMessageDefaultsApplied(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
 	server := NewServer(ServerConfig{Service: fakeService})
 
-	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"channel":"   ","message":"   "}`, aliceHash))
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"channel":"   ","message":"   ","title":"   "}`, aliceHash))
 	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
 	recorder := httptest.NewRecorder()
 
@@ -1037,11 +1038,61 @@ func TestTestNotifyWhitespaceMessageDefaultsApplied(testInstance *testing.T) {
 	wantCall := provisioning.TestNotifyRequest{
 		AppID:      "myapp",
 		Recipients: []string{aliceHash},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "Test notification from 4IRL admin",
+		Title:      "myapp test",
 	}
 	if len(fakeService.testNotifyCalls) != 1 || !reflect.DeepEqual(fakeService.testNotifyCalls[0], wantCall) {
 		testInstance.Fatalf("testNotifyCalls = %+v, want [%+v]", fakeService.testNotifyCalls, wantCall)
+	}
+}
+
+// TestTestNotifyForwardsTrimmedTitle verifies a supplied title is trimmed and
+// forwarded to the service instead of the "<app_id> test" default.
+func TestTestNotifyForwardsTrimmedTitle(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"title":"  Chore Reaper test  "}`, aliceHash))
+	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	wantCall := provisioning.TestNotifyRequest{
+		AppID:      "myapp",
+		Recipients: []string{aliceHash},
+		Channel:    "all",
+		Message:    "Test notification from 4IRL admin",
+		Title:      "Chore Reaper test",
+	}
+	if len(fakeService.testNotifyCalls) != 1 || !reflect.DeepEqual(fakeService.testNotifyCalls[0], wantCall) {
+		testInstance.Fatalf("testNotifyCalls = %+v, want [%+v]", fakeService.testNotifyCalls, wantCall)
+	}
+}
+
+// TestTestNotifyAcceptsMaxLengthTitleAfterTrim verifies the length cap applies
+// to the trimmed title: a title of exactly maxTitleLength bytes padded with
+// whitespace is accepted and forwarded unpadded.
+func TestTestNotifyAcceptsMaxLengthTitleAfterTrim(testInstance *testing.T) {
+	fakeService := &fakeProvisioningService{}
+	server := NewServer(ServerConfig{Service: fakeService})
+
+	maxLengthTitle := strings.Repeat("a", maxTitleLength)
+	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"title":%q}`, aliceHash, "  "+maxLengthTitle+"  "))
+	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		testInstance.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if len(fakeService.testNotifyCalls) != 1 || fakeService.testNotifyCalls[0].Title != maxLengthTitle {
+		testInstance.Fatalf("testNotifyCalls = %+v, want one call with the unpadded %d-byte title", fakeService.testNotifyCalls, maxTitleLength)
 	}
 }
 
@@ -1075,6 +1126,7 @@ func TestTestNotifyMalformedJSONRejected(testInstance *testing.T) {
 // error body and the service never called.
 func TestTestNotifyRequestValidationFailures(testInstance *testing.T) {
 	tooLongMessage := strings.Repeat("a", maxMessageLength+1)
+	tooLongTitle := strings.Repeat("a", maxTitleLength+1)
 	tooManyRecipients := `{"app_id":"myapp","recipients":[` + strings.TrimSuffix(strings.Repeat(`"r",`, maxRecipients+1), ",") + `]}`
 
 	testCases := []struct {
@@ -1085,6 +1137,8 @@ func TestTestNotifyRequestValidationFailures(testInstance *testing.T) {
 		{name: "invalid app_id", body: fmt.Sprintf(`{"app_id":"My-App","recipients":[%q]}`, aliceHash), wantMsg: "invalid app_id"},
 		{name: "invalid channel", body: fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"channel":"Bad-Channel"}`, aliceHash), wantMsg: "invalid channel"},
 		{name: "message too long", body: fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"message":%q}`, aliceHash, tooLongMessage), wantMsg: "message too long"},
+		{name: "title too long", body: fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"title":%q}`, aliceHash, tooLongTitle), wantMsg: "title too long"},
+		{name: "title control char", body: fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"title":"a\nb"}`, aliceHash), wantMsg: "invalid title"},
 		{name: "empty recipients", body: `{"app_id":"myapp","recipients":[]}`, wantMsg: "recipients required"},
 		{name: "too many recipients", body: tooManyRecipients, wantMsg: "too many recipients"},
 	}

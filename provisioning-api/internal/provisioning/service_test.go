@@ -1236,6 +1236,39 @@ func TestTestNotifyMintsPublishesPerRecipientThenRevokes(t *testing.T) {
 	}
 }
 
+func TestTestNotifyForwardsTitleAndBodyToPublisher(t *testing.T) {
+	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
+	publisher := &fakePublisher{
+		configuredValue:  true,
+		recordTo:         &client.invocations,
+		defaultMessageID: "msg_title",
+	}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "tasktracker",
+		Recipients: []string{aliceHash},
+		Channel:    "all",
+		Message:    "hi",
+		Title:      "Chore Reaper test",
+	}); err != nil {
+		t.Fatalf("TestNotify returned unexpected error: %v", err)
+	}
+
+	if len(publisher.messages) != 1 {
+		t.Fatalf("publisher received %d messages, expected 1: %#v", len(publisher.messages), publisher.messages)
+	}
+	expectedMessage := ntfypublish.Message{
+		Topic: "tasktracker-" + aliceHash + "-all",
+		Token: "tk_ephemeral",
+		Body:  "hi",
+		Title: "Chore Reaper test",
+	}
+	if !reflect.DeepEqual(publisher.messages[0], expectedMessage) {
+		t.Fatalf("messages[0] = %#v, expected %#v", publisher.messages[0], expectedMessage)
+	}
+}
+
 func TestTestNotifyResolvesEmailRecipientToPersonHash(t *testing.T) {
 	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
 	publisher := &fakePublisher{

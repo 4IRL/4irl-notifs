@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -407,8 +408,9 @@ func (server *Server) handleDeprovisionApp(responseWriter http.ResponseWriter, r
 }
 
 // defaultTestChannel is the channel a test notification is published on when
-// the request omits (or whitespace-blanks) the channel field.
-const defaultTestChannel = "alerts"
+// the request omits (or whitespace-blanks) the channel field. "all" is the
+// single standard per-app channel that subscribers listen on.
+const defaultTestChannel = "all"
 
 // defaultTestMessage is the message body used when the request omits (or
 // whitespace-blanks) the message field.
@@ -423,6 +425,7 @@ type testNotifyRequestBody struct {
 	Recipients []string `json:"recipients"`
 	Channel    string   `json:"channel"`
 	Message    string   `json:"message"`
+	Title      string   `json:"title"`
 }
 
 // testNotifyResultBody is the JSON representation of one per-recipient result.
@@ -459,6 +462,7 @@ func (server *Server) handleTestNotify(responseWriter http.ResponseWriter, reque
 	// through as blank.
 	requestBody.Channel = strings.TrimSpace(requestBody.Channel)
 	requestBody.Message = strings.TrimSpace(requestBody.Message)
+	requestBody.Title = strings.TrimSpace(requestBody.Title)
 	if requestBody.Channel == "" {
 		requestBody.Channel = defaultTestChannel
 	}
@@ -470,8 +474,21 @@ func (server *Server) handleTestNotify(responseWriter http.ResponseWriter, reque
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
 		return
 	}
+	// The title default is derived from the app_id, so it must come after
+	// app_id validation: an invalid app_id never reaches the title.
+	if requestBody.Title == "" {
+		requestBody.Title = fmt.Sprintf("%s test", requestBody.AppID)
+	}
 	if !validateChannel(requestBody.Channel) {
 		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid channel"})
+		return
+	}
+	if !validateTitleLength(requestBody.Title) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "title too long"})
+		return
+	}
+	if !validateTitleCharacters(requestBody.Title) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid title"})
 		return
 	}
 	if !validateMessage(requestBody.Message) {
@@ -492,6 +509,7 @@ func (server *Server) handleTestNotify(responseWriter http.ResponseWriter, reque
 		Recipients: requestBody.Recipients,
 		Channel:    requestBody.Channel,
 		Message:    requestBody.Message,
+		Title:      requestBody.Title,
 	})
 	if testNotifyErr != nil {
 		server.writeServiceError(responseWriter, request, testNotifyErr)
