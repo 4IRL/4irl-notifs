@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { JSX } from 'react';
 
 import { ApiError } from '../api/client';
@@ -9,7 +9,7 @@ import type {
   UserSummary,
 } from '../api/client';
 import { strings } from '../strings';
-import { isValidChannel } from '../validation';
+import { isValidChannel, isValidTitle } from '../validation';
 import './SendTestNotification.css';
 
 interface SendTestNotificationProps {
@@ -64,20 +64,15 @@ export function SendTestNotification({
   // CHANNEL_MISMATCH_DEBOUNCE_MS so the aria-live region does not announce on
   // every keystroke.
   const [debouncedChannel, setDebouncedChannel] = useState<string>(channel);
-  const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True once a paste-then-submit has shown the mismatch warning, so the submit
   // button reads "Send anyway" until the channel or app changes again.
   const [pendingMismatchConfirm, setPendingMismatchConfirm] = useState(false);
 
   useEffect(() => {
-    debounceTimeoutRef.current = setTimeout(() => {
+    const timeoutId = setTimeout(() => {
       setDebouncedChannel(channel);
     }, CHANNEL_MISMATCH_DEBOUNCE_MS);
-    return () => {
-      if (debounceTimeoutRef.current !== null) {
-        clearTimeout(debounceTimeoutRef.current);
-      }
-    };
+    return () => clearTimeout(timeoutId);
   }, [channel]);
 
   // Derived at render time: fall back to the first sorted option whenever the
@@ -86,9 +81,15 @@ export function SendTestNotification({
   // effect and is what the <select> displays.
   const effectiveTargetApp = appOptions.includes(targetApp) ? targetApp : (appOptions[0] ?? '');
 
-  const testTitle = strings.sendTestTitle({
-    appName: displayNameByAppId.get(effectiveTargetApp) ?? effectiveTargetApp,
-  });
+  // Prefer the registry display name; fall back to the app_id when it is
+  // missing, blank, or would make a title the server rejects (too long, control
+  // characters) so the admin never sends a test that is guaranteed to 400.
+  const displayName = displayNameByAppId.get(effectiveTargetApp);
+  const displayTitle = strings.sendTestTitle({ appName: displayName ?? '' });
+  const testTitle =
+    displayName !== undefined && displayName.trim() !== '' && isValidTitle(displayTitle)
+      ? displayTitle
+      : strings.sendTestTitle({ appName: effectiveTargetApp });
   // The single source of truth for whether the channel-mismatch warning shows;
   // its render guard and its aria-describedby entry both read it.
   const showChannelWarning =
@@ -136,11 +137,8 @@ export function SendTestNotification({
     setResults(null);
     setError(null);
     // Switching apps does not change `channel`, so the debounce effect would not
-    // re-run: cancel any timer left from typing under the previous app and snap
-    // the warning to the current channel now.
-    if (debounceTimeoutRef.current !== null) {
-      clearTimeout(debounceTimeoutRef.current);
-    }
+    // re-run: snap the warning to the current channel now (a timer still pending
+    // from typing under the previous app only sets this same value later).
     setDebouncedChannel(channel);
     setPendingMismatchConfirm(false);
   }
@@ -176,9 +174,6 @@ export function SendTestNotification({
     if (channel !== strings.sendTestDefaultChannel && debouncedChannel !== channel) {
       setPendingMismatchConfirm(true);
       setDebouncedChannel(channel);
-      if (debounceTimeoutRef.current !== null) {
-        clearTimeout(debounceTimeoutRef.current);
-      }
       return;
     }
 

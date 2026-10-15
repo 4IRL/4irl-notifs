@@ -206,6 +206,33 @@ describe('SendTestNotification', () => {
     expect(call.title).toBe('URLs 4 IRL test');
   });
 
+  it.each([
+    ['empty', ''],
+    ['whitespace-only', '   '],
+    ['over 256 bytes', 'é'.repeat(129)],
+    ['containing a control character', 'Bad\nName'],
+  ])('falls back to the app_id title when the display name is %s', async (_label, displayName) => {
+    const person = userEvent.setup();
+    const { onSendTest } = renderSection({
+      displayNameByAppId: new Map([['urls4irl', displayName]]),
+    });
+
+    expect(
+      screen.getByText(strings.sendTestFieldHint({ title: 'urls4irl test' })),
+    ).toBeInTheDocument();
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+
+    await waitFor(() => {
+      expect(onSendTest).toHaveBeenCalledTimes(1);
+    });
+    const call = (onSendTest as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.title).toBe('urls4irl test');
+  });
+
   it('shows the channel/title hint wired to the channel input', () => {
     renderSection();
 
@@ -306,15 +333,24 @@ describe('SendTestNotification', () => {
     const person = setupWithFakeTimers();
     renderSection();
 
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
     const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
     await person.clear(channelInput);
     await person.type(channelInput, 'alerts');
+    // Enter the "Send anyway" confirm state before switching apps.
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+    expect(screen.getByRole('button', { name: strings.sendTestConfirmSend })).toBeInTheDocument();
 
     await person.selectOptions(screen.getByLabelText(strings.sendTestTargetAppLabel), 'zapp');
 
     expect(
       screen.getByText(strings.sendTestChannelWarning({ channel: 'alerts' })),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: strings.sendTestConfirmSend }),
+    ).not.toBeInTheDocument();
   });
 
   it('shows a one-time inline confirmation when submit outruns the debounce', async () => {
@@ -371,6 +407,73 @@ describe('SendTestNotification', () => {
       screen.queryByRole('button', { name: strings.sendTestConfirmSend }),
     ).not.toBeInTheDocument();
     expect(await screen.findByRole('button', { name: strings.sendTestAction })).toBeInTheDocument();
+  });
+
+  it('clears the pending confirmation when the channel is edited again', async () => {
+    const person = setupWithFakeTimers();
+    const { onSendTest } = renderSection();
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    await person.clear(channelInput);
+    await person.type(channelInput, 'alerts');
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+    expect(screen.getByRole('button', { name: strings.sendTestConfirmSend })).toBeInTheDocument();
+
+    await person.type(channelInput, 's');
+
+    expect(
+      screen.queryByRole('button', { name: strings.sendTestConfirmSend }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: strings.sendTestAction })).toBeInTheDocument();
+    expect(onSendTest).not.toHaveBeenCalled();
+  });
+
+  it('clears the pending confirmation when the target app changes', async () => {
+    const person = setupWithFakeTimers();
+    const { onSendTest } = renderSection();
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    await person.clear(channelInput);
+    await person.type(channelInput, 'alerts');
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+    expect(screen.getByRole('button', { name: strings.sendTestConfirmSend })).toBeInTheDocument();
+
+    await person.selectOptions(screen.getByLabelText(strings.sendTestTargetAppLabel), 'zapp');
+
+    expect(
+      screen.queryByRole('button', { name: strings.sendTestConfirmSend }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: strings.sendTestAction })).toBeInTheDocument();
+    expect(onSendTest).not.toHaveBeenCalled();
+  });
+
+  it('sends a non-"all" channel with no confirmation once the debounce has caught up', async () => {
+    const person = setupWithFakeTimers();
+    const { onSendTest } = renderSection();
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    await person.clear(channelInput);
+    await person.type(channelInput, 'alerts');
+    act(() => {
+      vi.advanceTimersByTime(CHANNEL_MISMATCH_DEBOUNCE_MS);
+    });
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+
+    expect(onSendTest).toHaveBeenCalledTimes(1);
+    const call = (onSendTest as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.channel).toBe('alerts');
+    expect(
+      screen.queryByRole('button', { name: strings.sendTestConfirmSend }),
+    ).not.toBeInTheDocument();
   });
 
   it('sends immediately with no confirmation when the channel is "all"', async () => {

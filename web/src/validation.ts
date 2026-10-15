@@ -7,6 +7,11 @@ const APP_ID_PATTERN = /^[a-z0-9][a-z0-9_]{0,62}$/;
 const CHANNEL_PATTERN = /^[a-z0-9][a-z0-9_]{0,31}$/;
 const RESERVED_EVERYONE = 'everyone';
 const MAX_EMAIL_LENGTH = 254;
+// Mirrors the server's maxTitleLength (internal/httpapi/validation.go): a byte limit, not a rune limit.
+const MAX_TITLE_BYTES = 256;
+// Unicode category Cc is exactly what Go's unicode.IsControl rejects (C0, DEL, C1).
+const CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
+const TEXT_ENCODER = new TextEncoder();
 
 /** Reports whether appId is a well-formed, non-reserved app identifier. */
 export function isValidAppId(appId: string): boolean {
@@ -25,6 +30,19 @@ export function isValidAppId(appId: string): boolean {
  */
 export function isValidChannel(channel: string): boolean {
   return CHANNEL_PATTERN.test(channel);
+}
+
+/**
+ * Reports whether title would be accepted as a test-notification title,
+ * mirroring the server-side rules (internal/httpapi/validation.go
+ * `validateTitleLength` / `validateTitleCharacters`): at most 256 UTF-8 bytes
+ * and no control characters (C0, DEL, C1). A UX pre-check only — the server
+ * remains the source of truth.
+ */
+export function isValidTitle(title: string): boolean {
+  return (
+    TEXT_ENCODER.encode(title).length <= MAX_TITLE_BYTES && !CONTROL_CHARACTER_PATTERN.test(title)
+  );
 }
 
 /**

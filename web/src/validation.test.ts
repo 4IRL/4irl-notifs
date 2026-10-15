@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isValidAppId, isValidChannel, isValidEmail } from './validation';
+import { isValidAppId, isValidChannel, isValidEmail, isValidTitle } from './validation';
 
 describe('isValidAppId', () => {
   it.each([
@@ -30,6 +30,24 @@ describe('isValidEmail', () => {
     [`${'a'.repeat(250)}@example.com`, false], // >254 chars
   ])('isValidEmail(%j) === %s', (value, expected) => {
     expect(isValidEmail(value)).toBe(expected);
+  });
+});
+
+describe('isValidTitle', () => {
+  it.each([
+    ['URLs 4 IRL test', true],
+    ['Chore Reaper 🧹 test', true], // emoji
+    ['a'.repeat(256), true], // exactly the byte limit
+    ['é'.repeat(128), true], // 256 bytes, 128 runes
+    ['a'.repeat(257), false],
+    ['é'.repeat(129), false], // 258 bytes: the limit is bytes, not runes
+    ['a\nb', false], // LF
+    ['a\tb', false], // tab
+    ['a\x00b', false], // NUL
+    ['a\x7fb', false], // DEL
+    ['a\u0085b', false], // C1 control (NEL)
+  ])('isValidTitle(%j) === %s', (value, expected) => {
+    expect(isValidTitle(value)).toBe(expected);
   });
 });
 
