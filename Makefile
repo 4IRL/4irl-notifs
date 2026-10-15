@@ -122,9 +122,10 @@ notif-smoke-test: ## Provision an app publisher and a test user, publish as the 
 		curl -s -X DELETE $(API_URL)/v1/users/$(SMOKE_APP_ID)-publisher >/dev/null; \
 		exit 1; \
 	fi; \
-	SMOKE_TOPIC="$(SMOKE_APP_ID)-$$HASH-alerts"; \
+	SMOKE_TOPIC="$(SMOKE_APP_ID)-$$HASH-all"; \
 	echo "Publishing test notification to $$SMOKE_TOPIC as publisher..."; \
 	MSG_ID=$$(curl -s -H "Authorization: Bearer $$PUB_TOKEN" \
+		-H "Title: 4IRL smoke test" \
 		-d "notif-smoke-test $$(date +%s)" \
 		$(NTFY_URL)/$$SMOKE_TOPIC | jq -r '.id'); \
 	if [ -z "$$MSG_ID" ] || [ "$$MSG_ID" = "null" ]; then \
@@ -136,7 +137,7 @@ notif-smoke-test: ## Provision an app publisher and a test user, publish as the 
 	echo "Polling ntfy cache for delivery..."; \
 	sleep 1; \
 	FOUND=$$(curl -s -H "Authorization: Bearer $$TOKEN" \
-		"$(NTFY_URL)/$$SMOKE_TOPIC/json?poll=1&since=all" | jq -r "select(.id == \"$$MSG_ID\") | .id"); \
+		"$(NTFY_URL)/$$SMOKE_TOPIC/json?poll=1&since=all" | jq -r "select(.id == \"$$MSG_ID\" and .title == \"4IRL smoke test\") | .id"); \
 	curl -s -X DELETE $(API_URL)/v1/users/$$NTFY_USER >/dev/null; \
 	curl -s -X DELETE $(API_URL)/v1/users/$(SMOKE_APP_ID)-publisher >/dev/null; \
 	if [ "$$FOUND" = "$$MSG_ID" ]; then \
