@@ -143,14 +143,31 @@ func TestPublishSetsOptionalHeaders(t *testing.T) {
 }
 
 func TestEncodeHeaderValueRoundTripsThroughRFC2047Decoding(t *testing.T) {
-	const originalTitle = "Café test"
-
-	decodedTitle, decodeErr := new(mime.WordDecoder).DecodeHeader(encodeHeaderValue(originalTitle))
-	if decodeErr != nil {
-		t.Fatalf("DecodeHeader returned unexpected error: %v", decodeErr)
+	testCases := []struct {
+		name          string
+		originalTitle string
+	}{
+		{name: "accented", originalTitle: "Café test"},
+		{name: "emoji", originalTitle: "Chore Reaper 🧹 test ☕"},
+		// 125 x 2-byte runes (250 bytes) forces encode-word folding.
+		{name: "long non-ASCII near the 256-byte limit", originalTitle: strings.Repeat("é", 125)},
 	}
-	if decodedTitle != originalTitle {
-		t.Fatalf("decoded title = %q, expected %q", decodedTitle, originalTitle)
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			encodedTitle := encodeHeaderValue(testCase.originalTitle)
+			if strings.ContainsAny(encodedTitle, "\r\n") {
+				t.Fatalf("encoded title contains CR/LF: %q", encodedTitle)
+			}
+
+			decodedTitle, decodeErr := new(mime.WordDecoder).DecodeHeader(encodedTitle)
+			if decodeErr != nil {
+				t.Fatalf("DecodeHeader returned unexpected error: %v", decodeErr)
+			}
+			if decodedTitle != testCase.originalTitle {
+				t.Fatalf("decoded title = %q, expected %q", decodedTitle, testCase.originalTitle)
+			}
+		})
 	}
 }
 

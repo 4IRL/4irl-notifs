@@ -617,12 +617,14 @@ func TestSendTestNotificationEndToEnd(t *testing.T) {
 	const unprovisionedHash = "aaaaaaaaaaaaaaaa"
 
 	const message = "integration test-notify message"
+	// Accented + emoji, so the RFC 2047 round trip covers multi-byte runes.
+	const nonASCIITitle = "Café ☕ test"
 	status, testNotifyBody := postJSONBody(t, "/v1/test-notify", map[string]any{
 		"app_id":     appID,
 		"recipients": []string{personHash, unprovisionedHash},
 		"channel":    "all",
 		"message":    message,
-		"title":      "Café test",
+		"title":      nonASCIITitle,
 	})
 	if status != http.StatusOK {
 		t.Fatalf("test-notify status = %d, body = %s", status, testNotifyBody)
@@ -660,8 +662,8 @@ func TestSendTestNotificationEndToEnd(t *testing.T) {
 	}
 	// A non-ASCII title is sent RFC 2047-encoded; this is the real-ntfy check
 	// that it comes back decoded.
-	if cached.Title != "Café test" {
-		t.Fatalf("cached title = %q, expected %q (ntfy must decode the RFC 2047 Title header)", cached.Title, "Café test")
+	if cached.Title != nonASCIITitle {
+		t.Fatalf("cached title = %q, expected %q (ntfy must decode the RFC 2047 Title header)", cached.Title, nonASCIITitle)
 	}
 
 	// A second post to the same subscriber and topic that omits title falls back

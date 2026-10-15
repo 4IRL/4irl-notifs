@@ -8,8 +8,9 @@
 #     "u_{personHash}" where personHash = base32(sha256(normalize(email)))[:16].
 #   - Topic namespace convention: "{app_id}-{personHash}-{channel}"
 #     (e.g. "urls4irl-76gzqgp4byjl6dje-all"). Granularity is deliberately COARSE:
-#     one topic namespace per person per app; channels are just topic-name suffixes,
-#     with ntfy tags/priority/title carrying any finer distinction.
+#     one topic namespace per person per app; channels are just topic-name suffixes.
+#     The standard channel is "all" (one per app); ntfy tags/priority/title carry any
+#     finer distinction.
 #   - Role split (least privilege, no app-wide grants on end-users):
 #       publisher          "{app_id}-publisher"  write-only ("wo") on "{app_id}-*"
 #                          (minted via POST /v1/provision-app; the app backend
