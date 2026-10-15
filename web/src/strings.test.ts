@@ -38,7 +38,7 @@ describe('strings module', () => {
     expect(strings.sendTestTargetAppLabel).toBe('Target app');
     expect(strings.sendTestChannelLabel).toBe('Channel');
     expect(strings.sendTestMessageLabel).toBe('Message');
-    expect(strings.sendTestDefaultChannel).toBe('alerts');
+    expect(strings.sendTestDefaultChannel).toBe('all');
     expect(strings.sendTestDefaultMessage).toBe('Test notification from 4IRL admin');
     expect(strings.sendTestAction).toBe('Send test notification');
     expect(strings.sendTestSending).toBe('Sending…');
@@ -54,6 +54,14 @@ describe('strings module', () => {
     expect(strings.sendTestInvalidChannel).toBe(
       'Channel must be lowercase letters, numbers, or underscores.',
     );
+    expect(strings.sendTestConfirmSend).toBe('Send anyway');
+    expect(strings.sendTestTitle({ appName: 'Chore Reaper' })).toBe('Chore Reaper test');
+    expect(strings.sendTestFieldHint({ title: 'Chore Reaper test' })).toBe(
+      'Subscribers listen on all. Arrives titled “Chore Reaper test”.',
+    );
+    expect(strings.sendTestChannelWarning({ channel: 'alerts' })).toBe(
+      'This test will publish to "alerts" — no subscriber listens there.',
+    );
     expect(strings.sendTestSelectedCount({ count: 2 })).toBe('2 selected');
     expect(strings.sendTestSelectAria({ who: 'alice@example.com' })).toBe(
       'Select alice@example.com',
@@ -62,8 +70,8 @@ describe('strings module', () => {
       'Sent to 2 of 3 users · 1 failed',
     );
     expect(
-      strings.sendTestResultDetail({ messageId: 'VkT2p9wQ', topic: 'urls4irl-hash-alerts' }),
-    ).toBe('id VkT2p9wQ · urls4irl-hash-alerts');
+      strings.sendTestResultDetail({ messageId: 'VkT2p9wQ', topic: 'urls4irl-hash-all' }),
+    ).toBe('id VkT2p9wQ · urls4irl-hash-all');
   });
 
   it('exposes the people section heading, status copy, and column headers', () => {

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,7 +9,21 @@ import { SendTestNotification } from './SendTestNotification';
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
+
+// Switches to vitest fake timers and returns a userEvent whose internal delays
+// advance them. @testing-library/dom only drains its async wrapper under fake
+// timers when it sees a `jest` global with advanceTimersByTime; without that
+// shim every `await person.*` hangs waiting on a real setTimeout(0).
+function setupWithFakeTimers() {
+  vi.useFakeTimers();
+  vi.stubGlobal('jest', {
+    advanceTimersByTime: (milliseconds: number) => vi.advanceTimersByTime(milliseconds),
+  });
+  return userEvent.setup({ advanceTimers: (milliseconds) => vi.advanceTimersByTime(milliseconds) });
+}
 
 const aliceHash = '76gzqgp4byjl6dje';
 const bobHash = '4x2k9m7pqrs1twvz';
@@ -42,6 +56,7 @@ function renderSection(
   overrides: {
     users?: UserSummary[];
     loading?: boolean;
+    displayNameByAppId?: Map<string, string>;
     onSendTest?: (params: TestNotifyParams) => Promise<TestNotifyResult>;
   } = {},
 ) {
@@ -51,6 +66,7 @@ function renderSection(
       users={overrides.users ?? defaultUsers}
       loading={overrides.loading ?? false}
       emailByPersonHash={emailByPersonHash}
+      displayNameByAppId={overrides.displayNameByAppId ?? new Map()}
       onSendTest={onSendTest}
     />,
   );
@@ -162,8 +178,215 @@ describe('SendTestNotification', () => {
     expect(call.appId).toBe('urls4irl');
     expect(call.channel).toBe(strings.sendTestDefaultChannel);
     expect(call.message).toBe(strings.sendTestDefaultMessage);
+    expect(call.title).toBe('urls4irl test');
     expect(call.recipients).toEqual(expect.arrayContaining([aliceHash, bobHash]));
     expect(call.recipients).toHaveLength(2);
+  });
+
+  it('sends the registry display name as the title', async () => {
+    const person = userEvent.setup();
+    const { onSendTest } = renderSection({
+      displayNameByAppId: new Map([['urls4irl', 'URLs 4 IRL']]),
+    });
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+
+    await waitFor(() => {
+      expect(onSendTest).toHaveBeenCalledTimes(1);
+    });
+    const call = (onSendTest as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.title).toBe('URLs 4 IRL test');
+  });
+
+  it('shows the channel/title hint wired to the channel input', () => {
+    renderSection();
+
+    const hint = screen.getByText(strings.sendTestFieldHint({ title: 'urls4irl test' }));
+    expect(hint).toBeInTheDocument();
+    expect(hint).toHaveAttribute('id', 'send-test-channel-hint');
+    expect(screen.getByLabelText(strings.sendTestChannelLabel)).toHaveAttribute(
+      'aria-describedby',
+      'send-test-channel-hint',
+    );
+  });
+
+  it('hint follows the selected app', async () => {
+    const person = userEvent.setup();
+    renderSection();
+
+    await person.selectOptions(screen.getByLabelText(strings.sendTestTargetAppLabel), 'zapp');
+
+    expect(screen.getByText(strings.sendTestFieldHint({ title: 'zapp test' }))).toBeInTheDocument();
+    expect(
+      screen.queryByText(strings.sendTestFieldHint({ title: 'urls4irl test' })),
+    ).not.toBeInTheDocument();
+  });
+
+  it('hides the hint when no app is selected', async () => {
+    const person = setupWithFakeTimers();
+    renderSection({ users: [] });
+
+    expect(document.getElementById('send-test-channel-hint')).toBeNull();
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    expect(channelInput).not.toHaveAttribute('aria-describedby');
+
+    // With no app selected the warning must stay hidden even once the debounced
+    // channel diverges from "all".
+    await person.clear(channelInput);
+    await person.type(channelInput, 'alerts');
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(document.getElementById('send-test-channel-warning')).toBeNull();
+  });
+
+  it('shows a channel-mismatch warning after the debounce elapses when the channel is not "all"', async () => {
+    const person = setupWithFakeTimers();
+    renderSection();
+
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    await person.clear(channelInput);
+    await person.type(channelInput, 'alerts');
+
+    expect(
+      screen.queryByText(strings.sendTestChannelWarning({ channel: 'alerts' })),
+    ).not.toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+
+    expect(
+      screen.getByText(strings.sendTestChannelWarning({ channel: 'alerts' })),
+    ).toBeInTheDocument();
+    expect(channelInput.getAttribute('aria-describedby')).toBe(
+      'send-test-channel-hint send-test-channel-warning',
+    );
+  });
+
+  it('hides the channel-mismatch warning when the channel is "all"', async () => {
+    const person = setupWithFakeTimers();
+    renderSection();
+
+    expect(screen.queryByText(/This test will publish to/)).not.toBeInTheDocument();
+
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    await person.clear(channelInput);
+    await person.type(channelInput, 'digest');
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(screen.getByText(/This test will publish to/)).toBeInTheDocument();
+
+    await person.clear(channelInput);
+    await person.type(channelInput, 'all');
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(screen.queryByText(/This test will publish to/)).not.toBeInTheDocument();
+  });
+
+  it('resets the pending channel debounce when the target app changes', async () => {
+    const person = setupWithFakeTimers();
+    renderSection();
+
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    await person.clear(channelInput);
+    await person.type(channelInput, 'alerts');
+
+    await person.selectOptions(screen.getByLabelText(strings.sendTestTargetAppLabel), 'zapp');
+
+    expect(
+      screen.getByText(strings.sendTestChannelWarning({ channel: 'alerts' })),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a one-time inline confirmation when submit outruns the debounce', async () => {
+    const person = setupWithFakeTimers();
+    const { onSendTest } = renderSection();
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    await person.clear(channelInput);
+    await person.type(channelInput, 'alerts');
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+
+    expect(onSendTest).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(strings.sendTestChannelWarning({ channel: 'alerts' })),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: strings.sendTestConfirmSend })).toBeInTheDocument();
+  });
+
+  it('sends on the second submit once the confirmation is showing', async () => {
+    const person = setupWithFakeTimers();
+    const { onSendTest } = renderSection();
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    await person.clear(channelInput);
+    await person.type(channelInput, 'alerts');
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+    await person.click(screen.getByRole('button', { name: strings.sendTestConfirmSend }));
+
+    expect(onSendTest).toHaveBeenCalledTimes(1);
+    const call = (onSendTest as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.channel).toBe('alerts');
+  });
+
+  it('returns the button to its normal label once the confirmed send is dispatched', async () => {
+    const person = setupWithFakeTimers();
+    renderSection();
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    await person.clear(channelInput);
+    await person.type(channelInput, 'alerts');
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+    await person.click(screen.getByRole('button', { name: strings.sendTestConfirmSend }));
+
+    expect(
+      screen.queryByRole('button', { name: strings.sendTestConfirmSend }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: strings.sendTestAction })).toBeInTheDocument();
+  });
+
+  it('sends immediately with no confirmation when the channel is "all"', async () => {
+    const person = setupWithFakeTimers();
+    const { onSendTest } = renderSection();
+
+    await person.click(
+      screen.getByRole('checkbox', { name: strings.sendTestSelectAria({ who: aliceEmail }) }),
+    );
+    await person.click(screen.getByRole('button', { name: strings.sendTestAction }));
+
+    expect(onSendTest).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole('button', { name: strings.sendTestConfirmSend }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not show the channel-mismatch warning for a syntactically invalid channel', async () => {
+    const person = setupWithFakeTimers();
+    renderSection();
+
+    const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
+    await person.clear(channelInput);
+    await person.type(channelInput, 'Bad Channel');
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+
+    expect(screen.queryByText(/This test will publish to/)).not.toBeInTheDocument();
   });
 
   it('blocks send and shows a role=alert error when the channel is invalid', async () => {
@@ -237,7 +460,7 @@ describe('SendTestNotification', () => {
         {
           recipient: aliceHash,
           userId: `u_${aliceHash}`,
-          topic: `urls4irl-${aliceHash}-alerts`,
+          topic: `urls4irl-${aliceHash}-all`,
           ok: true,
           messageId: 'VkT2p9wQ',
           error: '',
@@ -245,7 +468,7 @@ describe('SendTestNotification', () => {
         {
           recipient: bobHash,
           userId: `u_${bobHash}`,
-          topic: `urls4irl-${bobHash}-alerts`,
+          topic: `urls4irl-${bobHash}-all`,
           ok: false,
           messageId: '',
           error: 'ntfy publish failed (503)',
@@ -278,7 +501,7 @@ describe('SendTestNotification', () => {
         {
           recipient: aliceHash,
           userId: `u_${aliceHash}`,
-          topic: `urls4irl-${aliceHash}-alerts`,
+          topic: `urls4irl-${aliceHash}-all`,
           ok: true,
           messageId: 'VkT2p9wQ',
           error: '',
@@ -303,7 +526,7 @@ describe('SendTestNotification', () => {
         {
           recipient: aliceHash,
           userId: `u_${aliceHash}`,
-          topic: `urls4irl-${aliceHash}-alerts`,
+          topic: `urls4irl-${aliceHash}-all`,
           ok: true,
           messageId: 'VkT2p9wQ',
           error: '',
@@ -346,6 +569,7 @@ describe('SendTestNotification', () => {
         ]}
         loading={false}
         emailByPersonHash={emailByPersonHash}
+        displayNameByAppId={new Map()}
         onSendTest={vi.fn().mockResolvedValue({ results: [] })}
       />,
     );
@@ -369,6 +593,7 @@ describe('SendTestNotification', () => {
         users={defaultUsers}
         loading={false}
         emailByPersonHash={emailByPersonHash}
+        displayNameByAppId={new Map()}
         onSendTest={vi.fn().mockResolvedValue({ results: [] })}
       />,
     );
@@ -423,7 +648,7 @@ describe('SendTestNotification', () => {
         {
           recipient: carolHash,
           userId: `u_${carolHash}`,
-          topic: `urls4irl-${carolHash}-alerts`,
+          topic: `urls4irl-${carolHash}-all`,
           ok: true,
           messageId: 'VkT2p9wQ',
           error: '',

@@ -135,6 +135,10 @@ function App({ client, personClient, appsEnabled = false }: AppProps) {
   // back to displaying the raw userId in that case.
   const emailByPersonHash = new Map(people.map((person) => [person.personHash, person.email]));
 
+  // app_id -> registry display name, for the test-notification title. Empty
+  // without a registry (no personClient), so the title falls back to the app_id.
+  const displayNameByAppId = new Map(apps.map((app) => [app.appId, app.displayName]));
+
   // Live subscriber count per app, keyed over every app_id in play (registered
   // AND merely in-use), so both the Apps table and the Unprovisioned-apps
   // section can read it. Only "u_"-prefixed users (real subscribers) count;
@@ -305,6 +309,7 @@ function App({ client, personClient, appsEnabled = false }: AppProps) {
           users={users}
           loading={loading}
           emailByPersonHash={emailByPersonHash}
+          displayNameByAppId={displayNameByAppId}
           onSendTest={handleTestNotify}
         />
         <UsersTable

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 
 import { ApiError } from '../api/client';
@@ -17,8 +17,13 @@ interface SendTestNotificationProps {
   loading: boolean;
   /** personHash (ntfy userId minus its "u_" prefix) -> email, for display only. */
   emailByPersonHash: Map<string, string>;
+  /** app_id -> registry display name, for the notification title; falls back to the app_id. */
+  displayNameByAppId: Map<string, string>;
   onSendTest: (params: TestNotifyParams) => Promise<TestNotifyResult>;
 }
+
+/** How long the channel must be idle before the mismatch warning follows it. */
+const CHANNEL_MISMATCH_DEBOUNCE_MS = 400;
 
 /**
  * Self-contained "Send test notification" section: pick a target app, select
@@ -31,6 +36,7 @@ export function SendTestNotification({
   users,
   loading,
   emailByPersonHash,
+  displayNameByAppId,
   onSendTest,
 }: SendTestNotificationProps): JSX.Element {
   // Subscribers only (publisher identities don't start with "u_"); one option
@@ -50,12 +56,45 @@ export function SendTestNotification({
   const [isSending, setIsSending] = useState(false);
   const [results, setResults] = useState<TestNotifyRecipientResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The channel value the mismatch warning reads. It trails `channel` by
+  // CHANNEL_MISMATCH_DEBOUNCE_MS so the aria-live region does not announce on
+  // every keystroke.
+  const [debouncedChannel, setDebouncedChannel] = useState<string>(channel);
+  const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True once a paste-then-submit has shown the mismatch warning, so the submit
+  // button reads "Send anyway" until the channel or app changes again.
+  const [pendingMismatchConfirm, setPendingMismatchConfirm] = useState(false);
+
+  useEffect(() => {
+    debounceTimeoutRef.current = setTimeout(() => {
+      setDebouncedChannel(channel);
+    }, CHANNEL_MISMATCH_DEBOUNCE_MS);
+    return () => {
+      if (debounceTimeoutRef.current !== null) {
+        clearTimeout(debounceTimeoutRef.current);
+      }
+    };
+  }, [channel]);
 
   // Derived at render time: fall back to the first sorted option whenever the
   // admin hasn't chosen a still-valid app (initial empty state, or the chosen
   // app disappearing after a deprovision). This replaces the old default-app
   // effect and is what the <select> displays.
   const effectiveTargetApp = appOptions.includes(targetApp) ? targetApp : (appOptions[0] ?? '');
+
+  const testTitle = strings.sendTestTitle({
+    appName: displayNameByAppId.get(effectiveTargetApp) ?? effectiveTargetApp,
+  });
+  // The single source of truth for whether the channel-mismatch warning shows;
+  // its render guard and its aria-describedby entry both read it.
+  const showChannelWarning =
+    effectiveTargetApp !== '' && isValidChannel(debouncedChannel) && debouncedChannel !== 'all';
+  const describedByIds = [
+    effectiveTargetApp !== '' ? 'send-test-channel-hint' : null,
+    showChannelWarning ? 'send-test-channel-warning' : null,
+  ]
+    .filter((id): id is string => id !== null)
+    .join(' ');
 
   const scopedUsers = users.filter(
     (user) => user.userId.startsWith('u_') && user.apps.includes(effectiveTargetApp),
@@ -90,6 +129,21 @@ export function SendTestNotification({
     setSelected(new Set());
     setResults(null);
     setError(null);
+    // Switching apps does not change `channel`, so the debounce effect would not
+    // re-run: cancel any timer left from typing under the previous app and snap
+    // the warning to the current channel now.
+    if (debounceTimeoutRef.current !== null) {
+      clearTimeout(debounceTimeoutRef.current);
+    }
+    setDebouncedChannel(channel);
+    setPendingMismatchConfirm(false);
+  }
+
+  // Every channel edit clears a prior mismatch confirmation, so a new mismatched
+  // value always needs its own fresh confirmation.
+  function handleChannelChange(event: React.ChangeEvent<HTMLInputElement>) {
+    setChannel(event.target.value);
+    setPendingMismatchConfirm(false);
   }
 
   // Validate-on-submit, promise-chain shape mirroring ProvisionForm.handleSubmit:
@@ -110,10 +164,23 @@ export function SendTestNotification({
       return;
     }
 
+    // Paste-then-submit: when the debounced warning has not caught up to the live
+    // (already validated) non-"all" channel, flush it so the warning is visible
+    // and ask for one confirming click instead of sending silently.
+    if (channel !== 'all' && debouncedChannel !== channel) {
+      setPendingMismatchConfirm(true);
+      setDebouncedChannel(channel);
+      if (debounceTimeoutRef.current !== null) {
+        clearTimeout(debounceTimeoutRef.current);
+      }
+      return;
+    }
+
     setError(null);
+    setPendingMismatchConfirm(false);
     setIsSending(true);
     const recipients = Array.from(effectivelySelected).map((userId) => userId.slice(2));
-    onSendTest({ appId: effectiveTargetApp, recipients, channel, message })
+    onSendTest({ appId: effectiveTargetApp, recipients, channel, message, title: testTitle })
       .then((result) => {
         setResults(result.results);
       })
@@ -153,8 +220,9 @@ export function SendTestNotification({
               className="send-test__control"
               type="text"
               value={channel}
-              onChange={(event) => setChannel(event.target.value)}
+              onChange={handleChannelChange}
               disabled={isSending}
+              aria-describedby={describedByIds === '' ? undefined : describedByIds}
             />
           </div>
           <div className="send-test__field send-test__field--message">
@@ -168,6 +236,24 @@ export function SendTestNotification({
               disabled={isSending}
             />
           </div>
+        </div>
+
+        {/* One polite live region wraps the baseline hint and the conditional
+            channel-mismatch warning, so either changing announces coherently. */}
+        <div className="send-test__field-hint-group" aria-live="polite">
+          {effectiveTargetApp !== '' && (
+            <p id="send-test-channel-hint" className="send-test__field-hint">
+              {strings.sendTestFieldHint({ title: testTitle })}
+            </p>
+          )}
+          {showChannelWarning && (
+            <p
+              id="send-test-channel-warning"
+              className="send-test__field-hint send-test__field-hint--warning"
+            >
+              {strings.sendTestChannelWarning({ channel: debouncedChannel })}
+            </p>
+          )}
         </div>
 
         {/* Single error surface for both the invalid-channel client gate and an
@@ -245,7 +331,11 @@ export function SendTestNotification({
                 className="send-test__submit"
                 disabled={isSending || effectivelySelected.size === 0}
               >
-                {isSending ? strings.sendTestSending : strings.sendTestAction}
+                {isSending
+                  ? strings.sendTestSending
+                  : pendingMismatchConfirm
+                    ? strings.sendTestConfirmSend
+                    : strings.sendTestAction}
               </button>
             </div>
 

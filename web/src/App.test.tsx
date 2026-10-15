@@ -548,7 +548,7 @@ describe('App', () => {
         {
           recipient: '76gzqgp4byjl6dje',
           userId: 'u_76gzqgp4byjl6dje',
-          topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+          topic: 'urls4irl-76gzqgp4byjl6dje-all',
           ok: true,
           messageId: 'VkT2p9wQ',
           error: '',
@@ -597,10 +597,67 @@ describe('App', () => {
         recipients: ['76gzqgp4byjl6dje'],
         channel: strings.sendTestDefaultChannel,
         message: strings.sendTestDefaultMessage,
+        title: 'urls4irl test',
       }),
     );
 
     const results = await sendTest.findByRole('status');
     expect(within(results).getByText(strings.sendTestDelivered)).toBeInTheDocument();
+  });
+
+  it('sends the registry display name as the test notification title', async () => {
+    const testNotify = vi.fn().mockResolvedValue({ results: [] });
+    const client = buildFakeClient({
+      listUsers: vi.fn().mockResolvedValue([
+        {
+          userId: 'u_76gzqgp4byjl6dje',
+          apps: ['urls4irl'],
+          topicPatterns: ['urls4irl-76gzqgp4byjl6dje-*'],
+        },
+      ]),
+      testNotify,
+    });
+    const personClient = buildFakePersonClient({
+      listApps: vi.fn().mockResolvedValue([
+        {
+          appId: 'urls4irl',
+          displayName: 'URLs 4 IRL',
+          description: null,
+          createdAt: '2026-07-25T10:00:00Z',
+        },
+      ]),
+    });
+    render(<App client={client} personClient={personClient} appsEnabled />);
+
+    const section = (await screen.findByRole('heading', { name: strings.sendTestHeading })).closest(
+      'section',
+    );
+    if (section === null) {
+      throw new Error('send-test section not found');
+    }
+    const sendTest = within(section);
+
+    // The registry loads asynchronously; wait for the hint to pick up the
+    // display name before submitting so the title is the registry-backed one.
+    expect(
+      await sendTest.findByText(strings.sendTestFieldHint({ title: 'URLs 4 IRL test' })),
+    ).toBeInTheDocument();
+
+    await userEvent.click(
+      await sendTest.findByRole('checkbox', {
+        name: strings.sendTestSelectAria({ who: 'u_76gzqgp4byjl6dje' }),
+      }),
+    );
+    await userEvent.click(sendTest.getByRole('button', { name: strings.sendTestAction }));
+
+    await waitFor(() =>
+      expect(testNotify).toHaveBeenCalledWith({
+        appId: 'urls4irl',
+        recipients: ['76gzqgp4byjl6dje'],
+        channel: strings.sendTestDefaultChannel,
+        message: strings.sendTestDefaultMessage,
+        title: 'URLs 4 IRL test',
+      }),
+    );
   });
 });

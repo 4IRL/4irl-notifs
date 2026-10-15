@@ -65,6 +65,7 @@ export interface TestNotifyParams {
   recipients: string[];
   channel: string;
   message: string;
+  title: string;
 }
 
 /** The per-recipient outcome of a test-notify dispatch. */
@@ -247,11 +248,12 @@ export function createApiClient({
       recipients,
       channel,
       message,
+      title,
     }: TestNotifyParams): Promise<TestNotifyResult> {
       const wire = (await request({
         path: '/v1/test-notify',
         method: 'POST',
-        body: { app_id: appId, recipients, channel, message },
+        body: { app_id: appId, recipients, channel, message, title },
       })) as TestNotifyResponseWire;
       return {
         results: wire.results.map((result) => ({

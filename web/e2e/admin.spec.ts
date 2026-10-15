@@ -327,9 +327,15 @@ test.describe('admin UI critical flows', () => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
     });
     await page.route('**/apps', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"apps":[]}' });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: '{"apps":[{"app_id":"urls4irl","display_name":"URLs 4 IRL","description":null,"created_at":"2026-01-01T00:00:00Z"}]}',
+      });
     });
+    let testNotifyBody: unknown = null;
     await page.route('**/v1/test-notify', async (route) => {
+      testNotifyBody = route.request().postDataJSON();
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -338,7 +344,7 @@ test.describe('admin UI critical flows', () => {
             {
               recipient: '76gzqgp4byjl6dje',
               user_id: 'u_76gzqgp4byjl6dje',
-              topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+              topic: 'urls4irl-76gzqgp4byjl6dje-all',
               ok: true,
               message_id: 'abc',
               error: '',
@@ -359,9 +365,16 @@ test.describe('admin UI critical flows', () => {
     // targetApp defaults to the only sorted option (urls4irl) once users load.
     await expect(sendTestSection.getByLabel('Target app')).toHaveValue('urls4irl');
 
+    // The hint carries the registry display name once /apps has loaded; waiting
+    // on it also guarantees the title sent below is the registry-backed one.
+    await expect(
+      sendTestSection.getByText('Subscribers listen on all. Arrives titled “URLs 4 IRL test”.'),
+    ).toBeVisible();
+
     await sendTestSection.getByRole('checkbox', { name: 'Select u_76gzqgp4byjl6dje' }).check();
     await sendTestSection.getByRole('button', { name: 'Send test notification' }).click();
 
     await expect(sendTestSection.getByText('Delivered')).toBeVisible();
+    expect(testNotifyBody).toMatchObject({ channel: 'all', title: 'URLs 4 IRL test' });
   });
 });

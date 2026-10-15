@@ -37,6 +37,7 @@ describe('isValidChannel', () => {
   it.each([
     ['alerts', true],
     ['digest', true],
+    ['all', true],
     ['a_b2', true],
     ['', false], // empty
     ['Alerts', false], // uppercase rejected
