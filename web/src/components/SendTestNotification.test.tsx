@@ -5,7 +5,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client';
 import type { TestNotifyParams, TestNotifyResult, UserSummary } from '../api/client';
 import { strings } from '../strings';
-import { SendTestNotification } from './SendTestNotification';
+import {
+  CHANNEL_HINT_ID,
+  CHANNEL_MISMATCH_DEBOUNCE_MS,
+  CHANNEL_WARNING_ID,
+  SendTestNotification,
+} from './SendTestNotification';
 
 afterEach(() => {
   cleanup();
@@ -206,10 +211,10 @@ describe('SendTestNotification', () => {
 
     const hint = screen.getByText(strings.sendTestFieldHint({ title: 'urls4irl test' }));
     expect(hint).toBeInTheDocument();
-    expect(hint).toHaveAttribute('id', 'send-test-channel-hint');
+    expect(hint).toHaveAttribute('id', CHANNEL_HINT_ID);
     expect(screen.getByLabelText(strings.sendTestChannelLabel)).toHaveAttribute(
       'aria-describedby',
-      'send-test-channel-hint',
+      CHANNEL_HINT_ID,
     );
   });
 
@@ -227,9 +232,9 @@ describe('SendTestNotification', () => {
 
   it('hides the hint when no app is selected', async () => {
     const person = setupWithFakeTimers();
-    renderSection({ users: [] });
+    const { onSendTest } = renderSection({ users: [] });
 
-    expect(document.getElementById('send-test-channel-hint')).toBeNull();
+    expect(document.getElementById(CHANNEL_HINT_ID)).toBeNull();
     const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
     expect(channelInput).not.toHaveAttribute('aria-describedby');
 
@@ -238,9 +243,14 @@ describe('SendTestNotification', () => {
     await person.clear(channelInput);
     await person.type(channelInput, 'alerts');
     act(() => {
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(CHANNEL_MISMATCH_DEBOUNCE_MS);
     });
-    expect(document.getElementById('send-test-channel-warning')).toBeNull();
+    expect(document.getElementById(CHANNEL_WARNING_ID)).toBeNull();
+
+    // No app means no recipients to select, so the send button is not even
+    // rendered and onSendTest can never be dispatched.
+    expect(screen.queryByRole('button', { name: strings.sendTestAction })).not.toBeInTheDocument();
+    expect(onSendTest).not.toHaveBeenCalled();
   });
 
   it('shows a channel-mismatch warning after the debounce elapses when the channel is not "all"', async () => {
@@ -256,14 +266,14 @@ describe('SendTestNotification', () => {
     ).not.toBeInTheDocument();
 
     act(() => {
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(CHANNEL_MISMATCH_DEBOUNCE_MS);
     });
 
     expect(
       screen.getByText(strings.sendTestChannelWarning({ channel: 'alerts' })),
     ).toBeInTheDocument();
     expect(channelInput.getAttribute('aria-describedby')).toBe(
-      'send-test-channel-hint send-test-channel-warning',
+      `${CHANNEL_HINT_ID} ${CHANNEL_WARNING_ID}`,
     );
   });
 
@@ -271,22 +281,25 @@ describe('SendTestNotification', () => {
     const person = setupWithFakeTimers();
     renderSection();
 
-    expect(screen.queryByText(/This test will publish to/)).not.toBeInTheDocument();
+    const digestWarning = strings.sendTestChannelWarning({ channel: 'digest' });
+    const allWarning = strings.sendTestChannelWarning({ channel: 'all' });
+    expect(screen.queryByText(digestWarning)).not.toBeInTheDocument();
 
     const channelInput = screen.getByLabelText(strings.sendTestChannelLabel);
     await person.clear(channelInput);
     await person.type(channelInput, 'digest');
     act(() => {
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(CHANNEL_MISMATCH_DEBOUNCE_MS);
     });
-    expect(screen.getByText(/This test will publish to/)).toBeInTheDocument();
+    expect(screen.getByText(digestWarning)).toBeInTheDocument();
 
     await person.clear(channelInput);
     await person.type(channelInput, 'all');
     act(() => {
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(CHANNEL_MISMATCH_DEBOUNCE_MS);
     });
-    expect(screen.queryByText(/This test will publish to/)).not.toBeInTheDocument();
+    expect(screen.queryByText(digestWarning)).not.toBeInTheDocument();
+    expect(screen.queryByText(allWarning)).not.toBeInTheDocument();
   });
 
   it('resets the pending channel debounce when the target app changes', async () => {
@@ -383,10 +396,12 @@ describe('SendTestNotification', () => {
     await person.clear(channelInput);
     await person.type(channelInput, 'Bad Channel');
     act(() => {
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(CHANNEL_MISMATCH_DEBOUNCE_MS);
     });
 
-    expect(screen.queryByText(/This test will publish to/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(strings.sendTestChannelWarning({ channel: 'Bad Channel' })),
+    ).not.toBeInTheDocument();
   });
 
   it('blocks send and shows a role=alert error when the channel is invalid', async () => {

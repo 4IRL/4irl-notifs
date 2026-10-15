@@ -23,7 +23,11 @@ interface SendTestNotificationProps {
 }
 
 /** How long the channel must be idle before the mismatch warning follows it. */
-const CHANNEL_MISMATCH_DEBOUNCE_MS = 400;
+export const CHANNEL_MISMATCH_DEBOUNCE_MS = 400;
+
+/** DOM ids for the baseline hint and the channel-mismatch warning (also the aria-describedby targets). */
+export const CHANNEL_HINT_ID = 'send-test-channel-hint';
+export const CHANNEL_WARNING_ID = 'send-test-channel-warning';
 
 /**
  * Self-contained "Send test notification" section: pick a target app, select
@@ -88,10 +92,12 @@ export function SendTestNotification({
   // The single source of truth for whether the channel-mismatch warning shows;
   // its render guard and its aria-describedby entry both read it.
   const showChannelWarning =
-    effectiveTargetApp !== '' && isValidChannel(debouncedChannel) && debouncedChannel !== 'all';
+    effectiveTargetApp !== '' &&
+    isValidChannel(debouncedChannel) &&
+    debouncedChannel !== strings.sendTestDefaultChannel;
   const describedByIds = [
-    effectiveTargetApp !== '' ? 'send-test-channel-hint' : null,
-    showChannelWarning ? 'send-test-channel-warning' : null,
+    effectiveTargetApp !== '' ? CHANNEL_HINT_ID : null,
+    showChannelWarning ? CHANNEL_WARNING_ID : null,
   ]
     .filter((id): id is string => id !== null)
     .join(' ');
@@ -167,7 +173,7 @@ export function SendTestNotification({
     // Paste-then-submit: when the debounced warning has not caught up to the live
     // (already validated) non-"all" channel, flush it so the warning is visible
     // and ask for one confirming click instead of sending silently.
-    if (channel !== 'all' && debouncedChannel !== channel) {
+    if (channel !== strings.sendTestDefaultChannel && debouncedChannel !== channel) {
       setPendingMismatchConfirm(true);
       setDebouncedChannel(channel);
       if (debounceTimeoutRef.current !== null) {
@@ -242,13 +248,13 @@ export function SendTestNotification({
             channel-mismatch warning, so either changing announces coherently. */}
         <div className="send-test__field-hint-group" aria-live="polite">
           {effectiveTargetApp !== '' && (
-            <p id="send-test-channel-hint" className="send-test__field-hint">
+            <p id={CHANNEL_HINT_ID} className="send-test__field-hint">
               {strings.sendTestFieldHint({ title: testTitle })}
             </p>
           )}
           {showChannelWarning && (
             <p
-              id="send-test-channel-warning"
+              id={CHANNEL_WARNING_ID}
               className="send-test__field-hint send-test__field-hint--warning"
             >
               {strings.sendTestChannelWarning({ channel: debouncedChannel })}

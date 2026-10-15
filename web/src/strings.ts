@@ -102,7 +102,7 @@ export const strings = {
   sendTestFieldHint: ({ title }: FieldHintParams): string =>
     `Subscribers listen on all. Arrives titled “${title}”.`,
   sendTestChannelWarning: ({ channel }: ChannelWarningParams): string =>
-    `This test will publish to "${channel}" — no subscriber listens there.`,
+    `This test will publish to “${channel}” — no subscriber listens there.`,
   sendTestSelectedCount: ({ count }: SelectedCountParams): string => `${count} selected`,
   sendTestSelectAria: ({ who }: SelectAriaParams): string => `Select ${who}`,
   sendTestResultsSummary: ({ sent, total, failed }: ResultsSummaryParams): string =>

@@ -60,7 +60,7 @@ describe('strings module', () => {
       'Subscribers listen on all. Arrives titled “Chore Reaper test”.',
     );
     expect(strings.sendTestChannelWarning({ channel: 'alerts' })).toBe(
-      'This test will publish to "alerts" — no subscriber listens there.',
+      'This test will publish to “alerts” — no subscriber listens there.',
     );
     expect(strings.sendTestSelectedCount({ count: 2 })).toBe('2 selected');
     expect(strings.sendTestSelectAria({ who: 'alice@example.com' })).toBe(
