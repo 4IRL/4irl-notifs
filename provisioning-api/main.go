@@ -28,6 +28,10 @@ const (
 	readHeaderTimeout    = 10 * time.Second
 )
 
+// Compile-time guard: the real ntfy publisher must keep satisfying the
+// service's NotificationPublisher interface.
+var _ provisioning.NotificationPublisher = (*ntfypublish.Client)(nil)
+
 // envOrDefault returns the environment value for key, or fallback when unset.
 func envOrDefault(key string, fallback string) string {
 	if value := os.Getenv(key); value != "" {

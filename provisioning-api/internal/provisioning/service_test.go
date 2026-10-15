@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfypublish"
 )
 
 // fakeNtfyClient records invocations and plays back scripted behavior for the
@@ -1141,6 +1142,8 @@ func TestPersonHashPattern(t *testing.T) {
 type fakePublisher struct {
 	recordTo    *[]string
 	invocations []string
+	// messages holds every ntfypublish.Message received, in call order.
+	messages []ntfypublish.Message
 
 	configuredValue  bool
 	messageIDByTopic map[string]string
@@ -1161,12 +1164,13 @@ func (publisher *fakePublisher) Configured() bool {
 	return publisher.configuredValue
 }
 
-func (publisher *fakePublisher) Publish(_ context.Context, topic string, token string, _ string) (string, error) {
-	publisher.record("Publish(%s,%s)", topic, token)
-	if err, scripted := publisher.errByTopic[topic]; scripted {
+func (publisher *fakePublisher) Publish(_ context.Context, message ntfypublish.Message) (string, error) {
+	publisher.record("Publish(%s,%s)", message.Topic, message.Token)
+	publisher.messages = append(publisher.messages, message)
+	if err, scripted := publisher.errByTopic[message.Topic]; scripted {
 		return "", err
 	}
-	if messageID, scripted := publisher.messageIDByTopic[topic]; scripted {
+	if messageID, scripted := publisher.messageIDByTopic[message.Topic]; scripted {
 		return messageID, nil
 	}
 	return publisher.defaultMessageID, nil
