@@ -22,7 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
+	"strings"
 )
 
 const (
@@ -38,6 +38,8 @@ const (
 
 	nonceSize = 12
 	tagSize   = 16
+
+	hexKeyLength = 2 * KeySize
 )
 
 var (
@@ -51,8 +53,6 @@ var (
 	// the sealed bytes are wrong. The cause is deliberately not distinguished.
 	ErrDecrypt = errors.New("sealed value could not be decrypted")
 )
-
-var hexKeyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Sealer seals and opens values under one master key. It is safe for
 // concurrent use.
@@ -110,11 +110,8 @@ func (sealer *Sealer) Open(sealed, aad []byte) ([]byte, error) {
 // ParseHexKey decodes a master key given as exactly 64 lowercase hex
 // characters. The error never contains the value.
 func ParseHexKey(value string) ([]byte, error) {
-	if !hexKeyPattern.MatchString(value) {
-		return nil, fmt.Errorf("%s must be 64 lowercase hex characters", EnvMasterKey)
-	}
 	key, decodeErr := hex.DecodeString(value)
-	if decodeErr != nil {
+	if len(value) != hexKeyLength || strings.ToLower(value) != value || decodeErr != nil {
 		return nil, fmt.Errorf("%s must be 64 lowercase hex characters", EnvMasterKey)
 	}
 	return key, nil
