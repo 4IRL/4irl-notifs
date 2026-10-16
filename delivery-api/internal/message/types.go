@@ -55,6 +55,20 @@ const (
 	DeadReasonUnsupportedType = "unsupported_type"
 )
 
+// Attempt outcomes, stored in delivery_attempts.outcome.
+const (
+	// OutcomeSuccess is a 2xx response from the sink.
+	OutcomeSuccess = "success"
+	// OutcomeRetryable is a failure worth retrying (408, 429, 5xx, timeout, connection error).
+	OutcomeRetryable = "retryable"
+	// OutcomeTerminal is a failure that will not improve on retry (other 3xx and 4xx).
+	OutcomeTerminal = "terminal"
+	// OutcomeGone is a 410 from the sink.
+	OutcomeGone = "gone"
+	// OutcomeBlocked is an attempt the SSRF guard or the https-only rule refused.
+	OutcomeBlocked = "blocked"
+)
+
 // MaxPayloadBytes is the largest accepted raw payload.
 const MaxPayloadBytes = 128 << 10
 
@@ -143,6 +157,44 @@ type StoredMessage struct {
 	Envelope   Envelope
 	CreatedAt  time.Time
 	Deliveries []Delivery
+}
+
+// Claim is a due delivery a worker has leased, with its parent message. The
+// message carries no deliveries list.
+type Claim struct {
+	Delivery Delivery
+	Message  StoredMessage
+}
+
+// AttemptRecord is one delivery attempt as the worker observed it. Error and
+// ResponseSnippet are untrusted remote text: the store sanitizes and truncates
+// them (Error to 500 runes, ResponseSnippet to 1024 bytes) before persisting.
+type AttemptRecord struct {
+	DeliveryID      int64
+	Outcome         string
+	StatusCode      *int
+	LatencyMS       int
+	Error           *string
+	ResponseSnippet *string
+	StartedAt       time.Time
+}
+
+// AttemptResult is an attempt plus the delivery transition it causes.
+// NextState is one of the State* constants. DeadReason must be set if and only
+// if NextState is StateDead. NextAttemptAt is required when NextState is
+// StatePending and ignored otherwise.
+type AttemptResult struct {
+	Record        AttemptRecord
+	NextState     string
+	DeadReason    *string
+	NextAttemptAt time.Time
+}
+
+// Attempt is a persisted delivery-log row.
+type Attempt struct {
+	ID            int64
+	AttemptNumber int
+	AttemptRecord
 }
 
 // DeriveStatus returns the message-level status: StatusPending when any delivery
