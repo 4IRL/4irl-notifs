@@ -1,7 +1,9 @@
 // Package registry holds the operator-managed delivery registry: destinations
 // (ntfy, Discord, webhook) and routes (app pattern and channel pattern mapped
-// to a set of destinations). This file and its siblings are pure domain logic:
-// types, validation, secret masking and route matching, with no I/O.
+// to a set of destinations). types.go, validate.go, mask.go and match.go are
+// pure domain logic (types, validation, secret masking and route matching)
+// with no I/O. pgstore.go holds the Postgres store and service.go the
+// orchestration (sealing, logging).
 package registry
 
 import (
