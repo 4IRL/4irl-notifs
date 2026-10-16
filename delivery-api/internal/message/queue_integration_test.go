@@ -648,6 +648,67 @@ func TestDeleteExpired(testInstance *testing.T) {
 	}
 }
 
+func TestDeleteExpiredInBatchesDrainsEverythingAcrossBatches(testInstance *testing.T) {
+	ctx, store, registryStore, pool := newMessageStore(testInstance)
+	cutoff := time.Now().UTC().Add(-time.Hour)
+	old := cutoff.Add(-24 * time.Hour)
+
+	const expiredMessages = 5
+	expiredIDs := make([]string, 0, expiredMessages)
+	for index := range expiredMessages {
+		stored, ids := seedQueue(ctx, testInstance, store, registryStore, pool,
+			fmt.Sprintf("batch-old-%d", index), fmt.Sprintf("b%d_a", index), fmt.Sprintf("b%d_b", index))
+		for _, deliveryID := range ids {
+			if _, recordErr := store.RecordAttempt(ctx, successResult(deliveryID)); recordErr != nil {
+				testInstance.Fatalf("RecordAttempt: %v", recordErr)
+			}
+		}
+		expiredIDs = append(expiredIDs, stored.ID)
+	}
+	pendingOld, _ := seedQueue(ctx, testInstance, store, registryStore, pool, "batch-old-pending", "bp_wait")
+	fresh, freshIDs := seedQueue(ctx, testInstance, store, registryStore, pool, "batch-fresh", "bf_done")
+	if _, recordErr := store.RecordAttempt(ctx, successResult(freshIDs["bf_done"])); recordErr != nil {
+		testInstance.Fatalf("RecordAttempt: %v", recordErr)
+	}
+	for _, messageID := range append(expiredIDs, pendingOld.ID) {
+		if _, execErr := pool.Exec(ctx, `UPDATE messages SET created_at = $2 WHERE id = $1::text::uuid`, messageID, old); execErr != nil {
+			testInstance.Fatalf("backdate message: %v", execErr)
+		}
+	}
+
+	// Batch size 2 over 5 expired messages takes three statements (2, 2, 1): the loop must continue past full
+	// batches and stop on the short one.
+	deleted, deleteErr := store.DeleteExpiredInBatches(ctx, cutoff, 2)
+	if deleteErr != nil {
+		testInstance.Fatalf("DeleteExpiredInBatches: %v", deleteErr)
+	}
+	if deleted != expiredMessages {
+		testInstance.Errorf("deleted = %d, want %d", deleted, expiredMessages)
+	}
+	for _, messageID := range expiredIDs {
+		if _, getErr := store.GetMessage(ctx, messageID); !errors.Is(getErr, message.ErrMessageNotFound) {
+			testInstance.Errorf("expired message %s: GetMessage = %v, want ErrMessageNotFound", messageID, getErr)
+		}
+	}
+	for name, messageID := range map[string]string{"old with a pending delivery": pendingOld.ID, "fresh": fresh.ID} {
+		if _, getErr := store.GetMessage(ctx, messageID); getErr != nil {
+			testInstance.Errorf("%s message was deleted: %v", name, getErr)
+		}
+	}
+	if again, againErr := store.DeleteExpiredInBatches(ctx, cutoff, 5); againErr != nil || again != 0 {
+		testInstance.Errorf("second pass deleted %d, err %v; want 0", again, againErr)
+	}
+
+	if _, invalidErr := store.DeleteExpiredInBatches(ctx, cutoff, 0); invalidErr == nil {
+		testInstance.Error("a zero batch size succeeded, want an error")
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, canceledErr := store.DeleteExpiredInBatches(canceled, cutoff, 2); !errors.Is(canceledErr, context.Canceled) {
+		testInstance.Errorf("canceled context: err = %v, want context.Canceled", canceledErr)
+	}
+}
+
 func TestListDeliveriesOrdersFiltersAndLimits(testInstance *testing.T) {
 	ctx, store, registryStore, pool := newMessageStore(testInstance)
 	_, ids := seedQueue(ctx, testInstance, store, registryStore, pool, "listing",

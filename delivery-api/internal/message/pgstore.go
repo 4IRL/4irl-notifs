@@ -23,6 +23,14 @@ const rollbackTimeout = 5 * time.Second
 // deleted between the conflict and the re-select.
 const maxInsertAttempts = 2
 
+// DeleteExpiredBatchSize is how many messages one DeleteExpired statement removes. Each message cascades to
+// its deliveries and attempts, so the batch is kept small enough that a statement stays short.
+const DeleteExpiredBatchSize = 500
+
+// DeleteExpiredMaxBatches is how many batches one DeleteExpired call runs before it stops and leaves the rest
+// for the next sweep, so a huge backlog cannot keep a single call (and its database load) running unbounded.
+const DeleteExpiredMaxBatches = 200
+
 // Attempt text caps, matching the delivery_attempts CHECK constraints: the error
 // is capped in runes (char_length) and the response snippet in bytes
 // (octet_length).
@@ -417,14 +425,43 @@ WHERE id = $1 RETURNING `+deliveryColumns, current.ID, now))
 // cascade, and the replayed delivery is then deleted with its message. The
 // window is one statement long and the operator is replaying a delivery that is
 // already about to age out, so it is not worth a lock protocol.
+//
+// It deletes in batches of DeleteExpiredBatchSize, one short statement each, so a
+// large backlog never holds one long transaction or lock, and it stops after
+// DeleteExpiredMaxBatches batches (the next sweep continues). On an error it
+// returns the count deleted so far together with the error.
 func (store *PGStore) DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error) {
-	tag, execErr := store.pool.Exec(ctx,
-		`DELETE FROM messages m WHERE m.created_at < $1
-AND NOT EXISTS (SELECT 1 FROM message_deliveries d WHERE d.message_id = m.id AND d.state = 'pending')`, cutoff)
-	if execErr != nil {
-		return 0, wrapDBError("delete expired messages", execErr)
+	return store.DeleteExpiredInBatches(ctx, cutoff, DeleteExpiredBatchSize)
+}
+
+// DeleteExpiredInBatches is DeleteExpired with an explicit batch size, which
+// must be positive; it is exported only so tests can use a small batch size. It
+// stops early, with the context's error, once ctx is done, and stops after
+// DeleteExpiredMaxBatches batches with the total so far and a nil error.
+func (store *PGStore) DeleteExpiredInBatches(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	if batchSize < 1 {
+		return 0, errors.New("delete expired messages: batch size must be positive")
 	}
-	return tag.RowsAffected(), nil
+	var total int64
+	for range DeleteExpiredMaxBatches {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return total, fmt.Errorf("delete expired messages: %w", ctxErr)
+		}
+		tag, execErr := store.pool.Exec(ctx,
+			`DELETE FROM messages WHERE id IN (
+  SELECT m.id FROM messages m WHERE m.created_at < $1
+  AND NOT EXISTS (SELECT 1 FROM message_deliveries d WHERE d.message_id = m.id AND d.state = 'pending')
+  ORDER BY m.created_at, m.id LIMIT $2)`, cutoff, batchSize)
+		if execErr != nil {
+			return total, wrapDBError("delete expired messages", execErr)
+		}
+		deleted := tag.RowsAffected()
+		total += deleted
+		if deleted < int64(batchSize) {
+			return total, nil
+		}
+	}
+	return total, nil
 }
 
 // lockDelivery selects a delivery FOR UPDATE, or ErrDeliveryNotFound.
