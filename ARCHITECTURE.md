@@ -29,6 +29,10 @@ the VPS; person-service + admin UI are Cloudflare-native.
 - `/v1/admin/routes` (`POST`, `GET`) and `/v1/admin/routes/{id}` (`GET`, `PATCH`, `DELETE`) — the routes
   that map to destinations.
 
+The `/v1/admin` API has no authentication of its own, which is why delivery-api is bound to
+`localhost:8300` only. Do not expose it through a tunnel or public hostname until a path-scoped
+Cloudflare Access application gates `/v1/admin/*`.
+
 ## System diagram
 
 ```mermaid
