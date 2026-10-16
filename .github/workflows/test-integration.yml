@@ -18,14 +18,16 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: provisioning-api/go.mod
-          cache-dependency-path: provisioning-api/go.sum
+          cache-dependency-path: |
+            provisioning-api/go.sum
+            delivery-api/go.sum
 
       - name: Start local stack
         run: docker compose --project-directory . -f docker-compose.yml up -d --build
 
       - name: Wait for provisioning-api to be healthy
         run: |
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             STATUS="$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose --project-directory . -f docker-compose.yml ps -q provisioning-api)" || echo "unknown")"
             if [ "$STATUS" = "healthy" ]; then
               echo "provisioning-api is healthy"
@@ -36,9 +38,39 @@ jobs:
           echo "provisioning-api did not become healthy in time"
           exit 1
 
+      - name: Wait for delivery-api to be healthy
+        run: |
+          for _ in $(seq 1 60); do
+            STATUS="$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose --project-directory . -f docker-compose.yml ps -q delivery-api)" || echo "unknown")"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "delivery-api is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "delivery-api did not become healthy in time"
+          exit 1
+
+      - name: Verify delivery-migrate exited cleanly
+        run: |
+          EXIT_CODE="$(docker inspect -f '{{.State.ExitCode}}' "$(docker compose --project-directory . -f docker-compose.yml ps -aq delivery-migrate)")"
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "delivery-migrate exited with code $EXIT_CODE"
+            exit 1
+          fi
+          echo "delivery-migrate exited 0"
+
       - name: Run Go integration tests
         working-directory: provisioning-api
         run: go test -tags integration ./...
+
+      - name: Run delivery-api integration tests
+        working-directory: delivery-api
+        env:
+          NOTIFS_DELIVERY_URL: http://127.0.0.1:8300
+          NOTIFS_DELIVERY_TEST_DSN: postgres://delivery:delivery-local-dev@127.0.0.1:18300/delivery?sslmode=disable
+        # -p 1: the packages share one database, and the pgstore test writes a transient failure row that /readyz would report
+        run: go test -p 1 -tags integration ./...
 
       - name: Dump container state on failure
         if: failure()

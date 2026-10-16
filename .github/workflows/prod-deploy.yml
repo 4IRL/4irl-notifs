@@ -34,6 +34,9 @@ on:
       # deploy shell just before `docker compose up` rather than written to a secrets file.
       NTFY_UPSTREAM_ACCESS_TOKEN:
         required: false
+      # Required: 32+ lowercase hex (`openssl rand -hex 32`), validated on the runner first.
+      DELIVERY_DB_PASSWORD:
+        required: true
 
 jobs:
   ProdDeploy:
@@ -41,6 +44,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate DELIVERY_DB_PASSWORD secret
+        env:
+          DELIVERY_DB_PASSWORD: ${{ secrets.DELIVERY_DB_PASSWORD }}
+        run: |
+          if ! [[ "${DELIVERY_DB_PASSWORD}" =~ ^[0-9a-f]{32,}$ ]]; then
+            echo "DELIVERY_DB_PASSWORD secret must be 32+ lowercase hex characters (openssl rand -hex 32); nothing was copied or changed on the VPS"
+            exit 1
+          fi
+
       - name: Install SSH key
         run: |
           mkdir -p ~/.ssh
@@ -97,6 +109,11 @@ jobs:
       # not written to disk). Non-secret hostnames (NTFY_BASE_URL, PERSON_SERVICE_URL) stay
       # baked into the compose file's defaults.
       #
+      # The delivery DB password is the exception: it lives in ./secrets-persistent/ and is never
+      # deleted, because delivery-api and delivery-migrate read it on every start. The file is
+      # 0644, not 0600: the deploy user (uid 1001) owns it but those containers run as uid 1000
+      # and must read the bind mount; the 0700 directory is the real access boundary.
+      #
       # `up -d` WITHOUT --force-recreate is deliberate: compose diffs image digest + compose
       # definition and recreates ONLY the services that changed. A typical API-only deploy
       # (new provisioning-api :latest) therefore recreates just provisioning-api and leaves
@@ -109,12 +126,19 @@ jobs:
         run: |
           ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
           cd /home/4irl-notifs;
+          DELIVERY_DB_PASSWORD_VALUE="${{ secrets.DELIVERY_DB_PASSWORD }}";
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
 
           mkdir -p ./secrets/;
           chmod 700 ./secrets/;
           echo "${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_ID }}" > ./secrets/PERSON_SERVICE_ACCESS_CLIENT_ID;
           echo "${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_SECRET }}" > ./secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET;
+
+          mkdir -p ./secrets-persistent/;
+          chmod 700 ./secrets-persistent/;
+          printf "%s" "${DELIVERY_DB_PASSWORD_VALUE}" > ./secrets-persistent/DELIVERY_DB_PASSWORD;
+          chmod 644 ./secrets-persistent/DELIVERY_DB_PASSWORD;
+          [ -s ./secrets-persistent/DELIVERY_DB_PASSWORD ] || { echo "DELIVERY_DB_PASSWORD file is empty after write; aborting"; exit 1; };
 
           docker compose -f docker-compose.prod.yml pull;
           export NTFY_UPSTREAM_ACCESS_TOKEN="${{ secrets.NTFY_UPSTREAM_ACCESS_TOKEN }}";
@@ -127,23 +151,31 @@ jobs:
           echo "Cleaning up docker login files..."
           rm -f ~/.docker/config.json
           ';
-          sleep 30;
 
-      # Verify the two services are up and running after any updates
+      # Retries up to 30 x 5s until all services run, delivery-migrate exited 0 and /readyz passes.
       - name: Verify Docker Compose Stack
         run: >
           ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
           cd /home/4irl-notifs;
-          hasNtfy=$(docker compose -f docker-compose.prod.yml ps --services --filter "status=running" | grep -x ntfy);
-          hasProvisioningApi=$(docker compose -f docker-compose.prod.yml ps --services --filter "status=running" | grep -x provisioning-api);
-
-          if [ -n "${hasNtfy}" ] && [ -n "${hasProvisioningApi}" ]; then
-            echo "After 30 seconds, all of the services are up!";
-            exit 0;
-          else
-            echo "After 30 seconds, one or more of the services is not up: ";
-            [ "ntfy" != "${hasNtfy}" ] && echo "ntfy not operational";
-            [ "provisioning-api" != "${hasProvisioningApi}" ] && echo "provisioning-api not operational";
-            exit 1;
-          fi;
+          failed="";
+          for attempt in $(seq 1 30); do
+            failed="";
+            running=$(docker compose -f docker-compose.prod.yml ps --services --filter "status=running");
+            echo "${running}" | grep -qx ntfy || failed="${failed} ntfy-not-running";
+            echo "${running}" | grep -qx provisioning-api || failed="${failed} provisioning-api-not-running";
+            echo "${running}" | grep -qx delivery-postgres || failed="${failed} delivery-postgres-not-running";
+            migrateState=$(docker inspect -f "{{.State.Status}}:{{.State.ExitCode}}" 4irl-notifs-delivery-migrate 2>/dev/null);
+            [ "${migrateState}" = "exited:0" ] || failed="${failed} delivery-migrate-not-exited-0(${migrateState:-missing})";
+            curl -fsS http://127.0.0.1:8300/readyz > /dev/null 2>&1 || failed="${failed} delivery-api-readyz-failing";
+            if [ -z "${failed}" ]; then
+              echo "All services are up (attempt ${attempt})!";
+              exit 0;
+            fi;
+            echo "Attempt ${attempt}/30 not ready:${failed}";
+            sleep 5;
+          done;
+          echo "After 150 seconds, the stack is not healthy:${failed}";
+          docker compose -f docker-compose.prod.yml ps -a;
+          docker compose -f docker-compose.prod.yml logs --tail 100 delivery-migrate delivery-api delivery-postgres;
+          exit 1;
           '

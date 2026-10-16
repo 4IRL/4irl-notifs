@@ -6,6 +6,8 @@ changelog/
 **/dist
 provisioning-api/provisioning-api
 provisioning-api/bin/
+delivery-api/delivery-api
+delivery-api/bin/
 *.md
 .github/
 .claude/
