@@ -102,7 +102,7 @@ func (sealer *Sealer) Open(sealed, aad []byte) ([]byte, error) {
 	nonce := sealed[1 : 1+nonceSize]
 	plaintext, openErr := sealer.aead.Open(nil, nonce, sealed[1+nonceSize:], aad)
 	if openErr != nil {
-		return nil, fmt.Errorf("%w", ErrDecrypt)
+		return nil, ErrDecrypt
 	}
 	return plaintext, nil
 }
