@@ -345,6 +345,8 @@ graph TD
   Like the DB password it is written to `secrets-persistent/` on every deploy and never deleted, but only
   delivery-api receives it (as `DELIVERY_MASTER_KEY_FILE`; `delivery-migrate` never needs it). **Back it up
   offline**: losing or changing it orphans every stored destination secret, and there is no rotation path.
+  Recovery after a key loss: a destination's sealed blob can no longer be opened, so remove the routes that
+  reference it, then delete and recreate the affected destinations.
 - **person-service D1 schema** is applied by CI: `worker-deploy.yml` runs `wrangler d1 migrations apply
   person-service --remote` **before** `wrangler deploy`, so a new Worker code path never hits a table its
   migration hasn't created (idempotent — applied migrations are skipped). Adding a table = add a
