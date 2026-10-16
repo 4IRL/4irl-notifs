@@ -71,7 +71,7 @@ func IsolatedPool(ctx context.Context, testInstance *testing.T) *pgxpool.Pool {
 	isolatedConfig.ConnConfig.RuntimeParams["search_path"] = schemaName
 	isolatedPool, isolatedErr := pgxpool.NewWithConfig(ctx, isolatedConfig)
 	if isolatedErr != nil {
-		dropSchema(adminPool, quotedSchema)
+		dropSchema(testInstance, adminPool, quotedSchema)
 		testInstance.Fatalf("open isolated pool: %v", isolatedErr)
 	}
 
@@ -79,7 +79,7 @@ func IsolatedPool(ctx context.Context, testInstance *testing.T) *pgxpool.Pool {
 	// isolated pool closes, then the schema is dropped on the admin pool.
 	testInstance.Cleanup(func() {
 		isolatedPool.Close()
-		dropSchema(adminPool, quotedSchema)
+		dropSchema(testInstance, adminPool, quotedSchema)
 	})
 
 	loaded, loadErr := migrate.Load(migrations.FS)
@@ -94,9 +94,12 @@ func IsolatedPool(ctx context.Context, testInstance *testing.T) *pgxpool.Pool {
 }
 
 // dropSchema drops the schema on a fresh context so it still runs after the
-// test's own context has expired.
-func dropSchema(adminPool *pgxpool.Pool, quotedSchema string) {
+// test's own context has expired. A failed drop is logged, not fatal, so it
+// cannot mask the test's own result.
+func dropSchema(testInstance *testing.T, adminPool *pgxpool.Pool, quotedSchema string) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupBudget)
 	defer cancel()
-	_, _ = adminPool.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+quotedSchema+" CASCADE")
+	if _, dropErr := adminPool.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+quotedSchema+" CASCADE"); dropErr != nil {
+		testInstance.Logf("drop schema %s: %v", quotedSchema, dropErr)
+	}
 }
