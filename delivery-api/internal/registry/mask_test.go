@@ -33,6 +33,11 @@ func TestMaskSecrets(t *testing.T) {
 			want:  map[string]string{"access_token": "****", "signing_secret": "****"},
 		},
 		{
+			name:  "previous signing secret fully masked",
+			input: map[string]string{"signing_secret": "supersecretsupersecretsupersecret!", "signing_secret_previous": "previoussecretprevioussecretprev!"},
+			want:  map[string]string{"signing_secret": "****", "signing_secret_previous": "****"},
+		},
+		{
 			name:  "mixed",
 			input: map[string]string{"url": "https://example.com/hook", "signing_secret": "x"},
 			want:  map[string]string{"url": "https://example.com/****", "signing_secret": "****"},

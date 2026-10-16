@@ -238,6 +238,8 @@ func TestValidateDestinationFieldsDiscord(t *testing.T) {
 
 func TestValidateDestinationFieldsWebhook(t *testing.T) {
 	signingSecret := strings.Repeat("s", 32)
+	previousSecret := strings.Repeat("p", 32)
+	const togetherMessage = "secrets.signing_secret_previous and config.previous_secret_expires_at must be set together"
 	tests := []struct {
 		name    string
 		config  map[string]string
@@ -265,6 +267,21 @@ func TestValidateDestinationFieldsWebhook(t *testing.T) {
 		{"signing secret control char", nil, map[string]string{"url": "https://example.com/hook", "signing_secret": strings.Repeat("s", 31) + "\n"}, "invalid secrets.signing_secret"},
 		{"unknown config key", map[string]string{"topic": "t"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret}, "unknown field config.topic"},
 		{"unknown secrets key", nil, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "foo": "x"}, "unknown field secrets.foo"},
+		{"previous secret with expiry", map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": previousSecret}, ""},
+		{"previous secret with offset expiry", map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00+02:00"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": previousSecret}, ""},
+		{"previous secret without expiry", nil, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": previousSecret}, togetherMessage},
+		{"expiry without previous secret", map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret}, togetherMessage},
+		{"unparseable expiry without previous secret", map[string]string{"previous_secret_expires_at": "soon"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret}, togetherMessage},
+		{"previous secret too short", map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": strings.Repeat("p", 31)}, "invalid secrets.signing_secret_previous"},
+		{"previous secret too long", map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": strings.Repeat("p", 257)}, "invalid secrets.signing_secret_previous"},
+		{"previous secret control char", map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": strings.Repeat("p", 31) + "\n"}, "invalid secrets.signing_secret_previous"},
+		{"previous secret empty", map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": ""}, "invalid secrets.signing_secret_previous"},
+		{"expiry not RFC 3339", map[string]string{"previous_secret_expires_at": "2026-10-20"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": previousSecret}, "invalid config.previous_secret_expires_at"},
+		{"expiry empty", map[string]string{"previous_secret_expires_at": ""}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": previousSecret}, "invalid config.previous_secret_expires_at"},
+		{"unknown config key beside expiry", map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z", "topic": "t"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": previousSecret}, "unknown field config.topic"},
+		{"previous secret max length", map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": strings.Repeat("p", 256)}, ""},
+		{"invalid previous secret without expiry", nil, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": strings.Repeat("p", 31)}, "invalid secrets.signing_secret_previous"},
+		{"expiry with fractional seconds", map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00.5Z"}, map[string]string{"url": "https://example.com/hook", "signing_secret": signingSecret, "signing_secret_previous": previousSecret}, ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

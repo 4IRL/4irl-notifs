@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -508,20 +509,34 @@ func TestUpdateDestinationMergesSecretsPerKey(t *testing.T) {
 
 func TestUpdateDestinationRevalidatesMergedResult(t *testing.T) {
 	tests := map[string]struct {
-		name  string
-		patch DestinationPatch
+		name        string
+		patch       DestinationPatch
+		wantMessage string
 	}{
 		"bad url": {
-			name:  "hook",
-			patch: DestinationPatch{Secrets: map[string]string{"url": "http://insecure.example.com/x"}},
+			name:        "hook",
+			patch:       DestinationPatch{Secrets: map[string]string{"url": "http://insecure.example.com/x"}},
+			wantMessage: "invalid secrets.url",
 		},
 		"key of another type": {
-			name:  "hook",
-			patch: DestinationPatch{Secrets: map[string]string{"access_token": testNtfyToken}},
+			name:        "hook",
+			patch:       DestinationPatch{Secrets: map[string]string{"access_token": testNtfyToken}},
+			wantMessage: "unknown field secrets.access_token",
 		},
 		"config on a type without config": {
-			name:  "hook",
-			patch: DestinationPatch{Config: map[string]string{"topic": "alerts"}},
+			name:        "hook",
+			patch:       DestinationPatch{Config: map[string]string{"topic": "alerts"}},
+			wantMessage: "unknown field config.topic",
+		},
+		"previous secret without expiry": {
+			name:        "hook",
+			patch:       DestinationPatch{Secrets: map[string]string{"signing_secret_previous": strings.Repeat("p", 48)}},
+			wantMessage: "secrets.signing_secret_previous and config.previous_secret_expires_at must be set together",
+		},
+		"expiry without previous secret": {
+			name:        "hook",
+			patch:       DestinationPatch{Config: map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z"}},
+			wantMessage: "secrets.signing_secret_previous and config.previous_secret_expires_at must be set together",
 		},
 	}
 	for label, test := range tests {
@@ -533,6 +548,9 @@ func TestUpdateDestinationRevalidatesMergedResult(t *testing.T) {
 			var validationErr *ValidationError
 			if !errors.As(err, &validationErr) {
 				t.Fatalf("want ValidationError, got %v", err)
+			}
+			if test.wantMessage != "" && validationErr.Message != test.wantMessage {
+				t.Fatalf("message = %q, want %q", validationErr.Message, test.wantMessage)
 			}
 			after := fixture.store.destinations["hook"]
 			if !bytes.Equal(before.SealedSecrets, after.SealedSecrets) || before.Enabled != after.Enabled {
@@ -643,6 +661,94 @@ func TestUpdateDestinationDisable(t *testing.T) {
 	}
 	if view.Enabled || fixture.store.destinations["ops"].Enabled {
 		t.Fatal("destination still enabled")
+	}
+}
+
+func TestUpdateDestinationRotationFieldsSetTogether(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createWebhook(t, "hook")
+	previous := strings.Repeat("p", 48)
+	expiry := "2026-10-20T12:00:00Z"
+
+	view, err := fixture.service.UpdateDestination(context.Background(), "hook", DestinationPatch{
+		Config:  map[string]string{"previous_secret_expires_at": expiry},
+		Secrets: map[string]string{"signing_secret_previous": previous},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got := fixture.openSecrets(t, "hook")
+	if got["signing_secret_previous"] != previous || got["signing_secret"] != testSigningSecret || got["url"] != testWebhookURL {
+		t.Fatalf("opened secrets = %v", got)
+	}
+	if view.Config["previous_secret_expires_at"] != expiry || view.Secrets["signing_secret_previous"] != "****" {
+		t.Fatalf("unexpected view: %+v", view)
+	}
+	if stored := fixture.store.destinations["hook"].Config["previous_secret_expires_at"]; stored != expiry {
+		t.Fatalf("stored expiry = %q, want %q", stored, expiry)
+	}
+}
+
+func TestUpdateDestinationConfigReplaceDroppingExpiryIsRejected(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createWebhook(t, "hook")
+	if _, err := fixture.service.UpdateDestination(context.Background(), "hook", DestinationPatch{
+		Config:  map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z"},
+		Secrets: map[string]string{"signing_secret_previous": strings.Repeat("p", 48)},
+	}); err != nil {
+		t.Fatalf("set rotation pair: %v", err)
+	}
+	before := fixture.store.destinations["hook"]
+
+	_, err := fixture.service.UpdateDestination(context.Background(), "hook", DestinationPatch{
+		Config: map[string]string{},
+	})
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("want ValidationError, got %v", err)
+	}
+	wantMessage := "secrets.signing_secret_previous and config.previous_secret_expires_at must be set together"
+	if validationErr.Message != wantMessage {
+		t.Fatalf("message = %q, want %q", validationErr.Message, wantMessage)
+	}
+	after := fixture.store.destinations["hook"]
+	if !maps.Equal(before.Config, after.Config) || !bytes.Equal(before.SealedSecrets, after.SealedSecrets) || before.Enabled != after.Enabled {
+		t.Fatal("a rejected patch changed the stored row")
+	}
+}
+
+func TestDisableDestination(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createDiscord(t, "ops")
+	stored := fixture.store.destinations["ops"]
+	stored.SealedSecrets = bytes.Repeat([]byte{0xAB}, 64) // unopenable: proves no open or reseal happens
+	fixture.store.destinations["ops"] = stored
+
+	if err := fixture.service.DisableDestination(context.Background(), "ops", "webhook returned 410 Gone"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	after := fixture.store.destinations["ops"]
+	if after.Enabled {
+		t.Fatal("destination still enabled")
+	}
+	if after.DisabledReason == nil || *after.DisabledReason != "webhook returned 410 Gone" {
+		t.Fatalf("disabled reason = %v", after.DisabledReason)
+	}
+	if !bytes.Equal(after.SealedSecrets, stored.SealedSecrets) {
+		t.Fatal("disabling changed the sealed bytes")
+	}
+}
+
+func TestDisableDestinationMissing(t *testing.T) {
+	fixture := newServiceFixture(t)
+
+	err := fixture.service.DisableDestination(context.Background(), "missing", "gone")
+
+	// Identity comparison is deliberate: the contract is that the sentinel is returned unchanged (not wrapped).
+	if err != ErrDestinationNotFound {
+		t.Fatalf("want ErrDestinationNotFound returned unchanged, got %v", err)
 	}
 }
 

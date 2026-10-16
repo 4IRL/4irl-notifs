@@ -157,6 +157,20 @@ func (service *Service) UpdateDestination(
 	return service.destinationView(ctx, stored), nil
 }
 
+// DisableDestination disables the named destination and records reason as its
+// disabled reason. It is for the delivery path (a webhook answering 410 Gone),
+// not the admin API: it neither opens nor reseals the secrets. A missing
+// destination returns ErrDestinationNotFound unchanged.
+func (service *Service) DisableDestination(ctx context.Context, name, reason string) error {
+	_, storeErr := service.store.UpdateDestination(ctx, name,
+		func(current StoredDestination) (StoredDestination, error) {
+			current.Enabled = false
+			current.DisabledReason = &reason
+			return current, nil
+		})
+	return storeErr
+}
+
 // DeleteDestination removes the named destination and reports whether it
 // existed. A destination a route still references returns ErrDestinationInUse.
 func (service *Service) DeleteDestination(ctx context.Context, name string) (bool, error) {
