@@ -566,6 +566,29 @@ func TestUpdateDestinationConfigOnlyKeepsSealedBytes(t *testing.T) {
 	}
 }
 
+func TestUpdateDestinationEmptySecretsPatchKeepsSealedBytes(t *testing.T) {
+	fixture := newServiceFixture(t)
+	if _, err := fixture.service.CreateDestination(context.Background(), DestinationInput{
+		Name: "phone", Type: TypeNtfy, Config: map[string]string{"topic": "alerts"},
+		Secrets: map[string]string{"access_token": testNtfyToken},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	before := fixture.store.destinations["phone"].SealedSecrets
+	view, err := fixture.service.UpdateDestination(context.Background(), "phone", DestinationPatch{
+		Secrets: map[string]string{},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if view.Secrets["access_token"] != "****" {
+		t.Fatalf("unexpected view: %+v", view)
+	}
+	if !bytes.Equal(before, fixture.store.destinations["phone"].SealedSecrets) {
+		t.Fatal("an empty secrets patch resealed the secrets")
+	}
+}
+
 func TestUpdateDestinationEnabledOnlyNeverTouchesSecrets(t *testing.T) {
 	fixture := newServiceFixture(t)
 	fixture.createDiscord(t, "ops")
