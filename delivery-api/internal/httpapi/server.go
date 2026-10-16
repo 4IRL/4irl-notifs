@@ -1,6 +1,7 @@
 // Package httpapi exposes the delivery service over HTTP: the liveness and
-// readiness probes and the operator registry endpoints under /v1/admin. The
-// message delivery endpoints are added by later phases.
+// readiness probes, the operator registry endpoints under /v1/admin, the app
+// message endpoints (submit and status under /v1/messages) and the operator
+// delivery log and replay endpoints under /v1/admin/deliveries.
 package httpapi
 
 import (
@@ -64,6 +65,10 @@ type ServerConfig struct {
 	// service exists: a typed-nil pointer stored here is a non-nil interface
 	// and would bypass that guard.
 	Registry Registry
+	// Messages backs the /v1/messages and /v1/admin/deliveries endpoints. When
+	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
+	// caveat as Registry applies.
+	Messages Messages
 }
 
 // Server wraps an *http.ServeMux exposing the delivery HTTP API.
@@ -71,6 +76,7 @@ type Server struct {
 	logger    *slog.Logger
 	readiness ReadinessChecker
 	registry  Registry
+	messages  Messages
 	mux       *http.ServeMux
 }
 
@@ -107,6 +113,7 @@ func NewServer(config ServerConfig) *Server {
 		logger:    logger,
 		readiness: config.Readiness,
 		registry:  config.Registry,
+		messages:  config.Messages,
 		mux:       http.NewServeMux(),
 	}
 	server.routes()
@@ -133,6 +140,13 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /v1/admin/routes/{id}", server.requireRegistry(server.handleGetRoute))
 	server.mux.HandleFunc("PATCH /v1/admin/routes/{id}", server.requireRegistry(server.handleUpdateRoute))
 	server.mux.HandleFunc("DELETE /v1/admin/routes/{id}", server.requireRegistry(server.handleDeleteRoute))
+
+	server.mux.HandleFunc("POST /v1/messages", server.requireMessages(server.handleCreateMessage))
+	server.mux.HandleFunc("GET /v1/messages/{id}", server.requireMessages(server.handleGetMessage))
+	server.mux.HandleFunc("GET /v1/messages", server.requireMessages(server.handleGetMessageByKey))
+	server.mux.HandleFunc("GET /v1/admin/deliveries", server.requireMessages(server.handleListDeliveries))
+	server.mux.HandleFunc("GET /v1/admin/deliveries/{id}/attempts", server.requireMessages(server.handleListAttempts))
+	server.mux.HandleFunc("POST /v1/admin/deliveries/{id}/replay", server.requireMessages(server.handleReplayDelivery))
 }
 
 // handleHealthz responds 200 with a plain-text "ok" body for liveness checks.

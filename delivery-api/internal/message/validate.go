@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -34,6 +35,13 @@ const (
 	maxDisplayURLBytes   = 2048
 
 	httpsScheme = "https"
+
+	// Postgres numeric (and so jsonb) holds at most numericMaxIntegerDigits digits
+	// before the decimal point and numericMaxScale after it; maxExponentDigits
+	// bounds the exponent text parsed (a larger one is over both limits anyway).
+	numericMaxIntegerDigits = 131072
+	numericMaxScale         = 16383
+	maxExponentDigits       = 7
 
 	// unicodeEscapeLength is the byte length of a JSON \uXXXX escape.
 	unicodeEscapeLength = 6
@@ -135,10 +143,90 @@ func ValidatePayload(payload json.RawMessage) error {
 	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
 		return &ValidationError{Message: "invalid payload"}
 	}
-	if !utf8.Valid(trimmed) || !unicodeEscapesStorable(trimmed) {
+	if !utf8.Valid(trimmed) || !unicodeEscapesStorable(trimmed) || !numberLiteralsStorable(trimmed) {
 		return &ValidationError{Message: "invalid payload"}
 	}
 	return nil
+}
+
+// numberLiteralsStorable reports whether every number literal in a
+// syntactically valid JSON document fits Postgres numeric, which jsonb uses: at
+// most numericMaxIntegerDigits digits before the decimal point and
+// numericMaxScale after it. A literal such as 1e999999 is valid JSON, so
+// json.Valid accepts it, but the insert would fail with "value overflows
+// numeric format". The check is an upper bound (it never accepts a literal
+// Postgres would refuse). Strings are skipped, including escaped quotes, so
+// number-looking text inside a string is never inspected.
+func numberLiteralsStorable(document []byte) bool {
+	for index := 0; index < len(document); index++ {
+		switch char := document[index]; {
+		case char == '"':
+			index = endOfJSONString(document, index)
+		case char == '-' || (char >= '0' && char <= '9'):
+			end := index
+			for end < len(document) && isNumberLiteralByte(document[end]) {
+				end++
+			}
+			if !numberLiteralStorable(document[index:end]) {
+				return false
+			}
+			index = end - 1
+		}
+	}
+	return true
+}
+
+// endOfJSONString returns the index of the closing quote of the string that
+// opens at start. The document is known to be valid JSON, so the string is
+// terminated; an unterminated one ends at the last byte.
+func endOfJSONString(document []byte, start int) int {
+	for index := start + 1; index < len(document); index++ {
+		switch document[index] {
+		case '\\':
+			index++
+		case '"':
+			return index
+		}
+	}
+	return len(document) - 1
+}
+
+// isNumberLiteralByte reports whether char can appear inside a JSON number.
+func isNumberLiteralByte(char byte) bool {
+	return (char >= '0' && char <= '9') || char == '-' || char == '+' || char == '.' || char == 'e' || char == 'E'
+}
+
+// numberLiteralStorable checks one JSON number literal against the numeric
+// limits: integer digits <= numericMaxIntegerDigits and scale <= numericMaxScale
+// once the exponent is applied.
+func numberLiteralStorable(literal []byte) bool {
+	mantissa, exponentText, hasExponent := strings.Cut(strings.ToLower(string(literal)), "e")
+	exponent := 0
+	if hasExponent {
+		negative := strings.HasPrefix(exponentText, "-")
+		digits := strings.TrimLeft(strings.TrimLeft(exponentText, "+-"), "0")
+		if len(digits) > maxExponentDigits {
+			return false
+		}
+		if digits != "" {
+			parsed, parseErr := strconv.Atoi(digits)
+			if parseErr != nil {
+				return false
+			}
+			exponent = parsed
+		}
+		if negative {
+			exponent = -exponent
+		}
+	}
+	integerPart, fractionPart, _ := strings.Cut(strings.TrimPrefix(mantissa, "-"), ".")
+	integerDigits := len(strings.TrimLeft(integerPart, "0"))
+	scale := len(fractionPart)
+	if exponent > 0 {
+		integerDigits += exponent
+	}
+	scale -= exponent
+	return integerDigits <= numericMaxIntegerDigits && scale <= numericMaxScale
 }
 
 // unicodeEscapesStorable reports whether every \uXXXX escape in a syntactically

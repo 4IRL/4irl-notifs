@@ -200,6 +200,55 @@ func TestValidatePayload(testInstance *testing.T) {
 	}
 }
 
+// TestValidatePayloadNumericLiterals pins the jsonb numeric limits (at most 131072
+// digits before the decimal point and 16383 after it): a literal beyond either
+// would pass json.Valid and then fail the insert with "value overflows numeric
+// format", so it must be rejected up front. The boundaries were probed against
+// Postgres 17 (see the integration test of the same name).
+func TestValidatePayloadNumericLiterals(testInstance *testing.T) {
+	object := func(literal string) json.RawMessage {
+		return json.RawMessage(`{"a":` + literal + `}`)
+	}
+	testCases := []struct {
+		name        string
+		payload     json.RawMessage
+		wantMessage string
+	}{
+		{name: "ordinary float", payload: object(`3.14159`)},
+		{name: "negative exponent float", payload: object(`-1.5e-7`)},
+		{name: "double max magnitude", payload: object(`1.7976931348623157e308`)},
+		{name: "double min magnitude", payload: object(`5e-324`)},
+		{name: "plus sign exponent", payload: object(`1E+10`)},
+		{name: "zero with exponent", payload: object(`0e5`)},
+		{name: "largest storable exponent", payload: object(`1e131071`)},
+		{name: "exponent one over", payload: object(`1e131072`), wantMessage: "invalid payload"},
+		{name: "huge exponent", payload: object(`1e999999`), wantMessage: "invalid payload"},
+		{name: "huge negative exponent", payload: object(`-1e-999999`), wantMessage: "invalid payload"},
+		{name: "exponent digit count overflows int", payload: object(`1e99999999999999999999`), wantMessage: "invalid payload"},
+		{name: "exponent with leading zeros", payload: object(`1e0000000000000000000005`)},
+		{name: "mantissa pushes digits over", payload: object(`12e131071`), wantMessage: "invalid payload"},
+		{name: "mantissa within the digit limit", payload: object(`12e131070`)},
+		{name: "smallest storable exponent", payload: object(`1e-16383`)},
+		{name: "negative exponent one over", payload: object(`1e-16384`), wantMessage: "invalid payload"},
+		{name: "fraction digits at the limit", payload: object(`0.` + strings.Repeat("0", 16382) + `1`)},
+		{name: "fraction digits one over", payload: object(`0.` + strings.Repeat("0", 16383) + `1`), wantMessage: "invalid payload"},
+		{name: "fraction plus exponent over the scale", payload: object(`0.12e-16382`), wantMessage: "invalid payload"},
+		{name: "positive exponent offsets the fraction", payload: object(`0.` + strings.Repeat("1", 20000) + `e20000`)},
+		{name: "huge integer within the limit", payload: object(strings.Repeat("9", 100000))},
+		{name: "huge number in an array", payload: json.RawMessage(`{"a":[1,2,1e999999]}`), wantMessage: "invalid payload"},
+		{name: "huge number in a nested object", payload: json.RawMessage(`{"a":{"b":{"c":1e999999}}}`), wantMessage: "invalid payload"},
+		{name: "huge number after a string with digits", payload: json.RawMessage(`{"a":"1e5","b":1e999999}`), wantMessage: "invalid payload"},
+		{name: "number-looking text inside a string", payload: json.RawMessage(`{"a":"1e999999"}`)},
+		{name: "number-looking text after an escaped quote", payload: json.RawMessage(`{"a":"\"1e999999"}`)},
+		{name: "number-looking key", payload: json.RawMessage(`{"1e999999":1}`)},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			wantValidationMessage(subTest, ValidatePayload(testCase.payload), testCase.wantMessage)
+		})
+	}
+}
+
 func TestValidateDisplay(testInstance *testing.T) {
 	testCases := []struct {
 		name        string

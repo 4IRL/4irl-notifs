@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
@@ -14,6 +15,9 @@ import (
 // destination secrets and are operator-only, so 64 KiB is far above any
 // legitimate payload.
 const maxAdminBodyBytes = 64 << 10
+
+// bodyReadTimeout bounds how long a client may take to send a request body.
+const bodyReadTimeout = 30 * time.Second
 
 // Error messages returned in the {"error": "..."} body of admin responses.
 const (
@@ -120,7 +124,7 @@ func (server *Server) requireRegistry(handler http.HandlerFunc) http.HandlerFunc
 // handleCreateDestination serves POST /v1/admin/destinations (201).
 func (server *Server) handleCreateDestination(responseWriter http.ResponseWriter, request *http.Request) {
 	var body createDestinationRequestBody
-	if !decodeJSON(responseWriter, request, &body) {
+	if !decodeJSON(responseWriter, request, &body, maxAdminBodyBytes) {
 		return
 	}
 
@@ -174,7 +178,7 @@ func (server *Server) handleUpdateDestination(responseWriter http.ResponseWriter
 	}
 
 	var body patchDestinationRequestBody
-	if !decodeJSON(responseWriter, request, &body) {
+	if !decodeJSON(responseWriter, request, &body, maxAdminBodyBytes) {
 		return
 	}
 
@@ -207,7 +211,7 @@ func (server *Server) handleDeleteDestination(responseWriter http.ResponseWriter
 // handleCreateRoute serves POST /v1/admin/routes (201).
 func (server *Server) handleCreateRoute(responseWriter http.ResponseWriter, request *http.Request) {
 	var body createRouteRequestBody
-	if !decodeJSON(responseWriter, request, &body) {
+	if !decodeJSON(responseWriter, request, &body, maxAdminBodyBytes) {
 		return
 	}
 
@@ -260,7 +264,7 @@ func (server *Server) handleUpdateRoute(responseWriter http.ResponseWriter, requ
 	}
 
 	var body patchRouteRequestBody
-	if !decodeJSON(responseWriter, request, &body) {
+	if !decodeJSON(responseWriter, request, &body, maxAdminBodyBytes) {
 		return
 	}
 
@@ -318,12 +322,22 @@ func parseRouteID(responseWriter http.ResponseWriter, request *http.Request) (in
 }
 
 // decodeJSON reads exactly one JSON value from the request body into dst. The
-// body is capped at maxAdminBodyBytes, unknown fields are rejected, and any
-// data after the first value is rejected. On failure it writes 413 for an
-// oversized body or 400 "invalid JSON body" (never echoing the body or the
-// decoder error, which can quote secret values) and returns false.
-func decodeJSON(responseWriter http.ResponseWriter, request *http.Request, dst any) bool {
-	limitedBody := http.MaxBytesReader(responseWriter, request.Body, maxAdminBodyBytes)
+// body is capped at maxBytes, unknown fields are rejected, and any data after
+// the first value is rejected. On failure it writes 413 for an oversized body
+// or 400 "invalid JSON body" (never echoing the body or the decoder error,
+// which can quote secret values) and returns false. The client has
+// bodyReadTimeout to send the body: the server has no global read timeout, so
+// without a per-request deadline a slow client could hold a connection open
+// indefinitely. The deadline is cleared again once the decode finishes, so it
+// never cuts short the work that follows (for example a message wait).
+func decodeJSON(responseWriter http.ResponseWriter, request *http.Request, dst any, maxBytes int64) bool {
+	// Best effort: ResponseController reports an error where the writer cannot
+	// set a deadline (for example an httptest recorder), which is safe to ignore.
+	responseController := http.NewResponseController(responseWriter)
+	_ = responseController.SetReadDeadline(time.Now().Add(bodyReadTimeout))
+	defer func() { _ = responseController.SetReadDeadline(time.Time{}) }()
+
+	limitedBody := http.MaxBytesReader(responseWriter, request.Body, maxBytes)
 	decoder := json.NewDecoder(limitedBody)
 	decoder.DisallowUnknownFields()
 
