@@ -47,6 +47,9 @@ func TestRoutesRejectUnsupportedRequests(testInstance *testing.T) {
 		{name: "POST healthz", method: http.MethodPost, path: "/healthz", wantStatus: http.StatusMethodNotAllowed},
 		{name: "POST readyz", method: http.MethodPost, path: "/readyz", wantStatus: http.StatusMethodNotAllowed},
 		{name: "GET unknown path", method: http.MethodGet, path: "/nope", wantStatus: http.StatusNotFound},
+		{name: "PUT admin destination", method: http.MethodPut, path: "/v1/admin/destinations/x", wantStatus: http.StatusMethodNotAllowed},
+		{name: "GET unknown admin path", method: http.MethodGet, path: "/v1/admin/nope", wantStatus: http.StatusNotFound},
+		{name: "GET destinations outside admin", method: http.MethodGet, path: "/v1/destinations", wantStatus: http.StatusNotFound},
 	}
 
 	for _, testCase := range testCases {
