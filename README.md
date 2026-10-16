@@ -7,7 +7,9 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
 - **ntfy** — self-hosted notification server (topics, users, ACLs)
 - **provisioning-api** — barebones Go service for parametric user/topic provisioning across apps
 - **delivery-api** — generic delivery service (Go) backed by its own Postgres (`delivery-postgres`,
-  schema applied by the one-shot `delivery-migrate`); skeleton only for now
+  schema applied by the one-shot `delivery-migrate`); serves `/healthz`, `/readyz` and the operator
+  `/v1/admin` registry API (destinations and routes, AES-256-GCM sealed secrets, masked reads); see
+  [`ARCHITECTURE.md`](ARCHITECTURE.md#delivery-api-endpoints)
 - **web** — admin UI (Cloudflare Pages, behind Cloudflare Access)
 
 ## Local stack
@@ -31,6 +33,7 @@ delivery-api runtime configuration (environment):
 | `DELIVERY_DB_USER` | required | Postgres user |
 | `DELIVERY_DB_NAME` | required | Postgres database name |
 | `DELIVERY_DB_PASSWORD` or `DELIVERY_DB_PASSWORD_FILE` | one required | Postgres password, inline or read from a file |
+| `DELIVERY_MASTER_KEY` or `DELIVERY_MASTER_KEY_FILE` | one required (serve only; `migrate` ignores it) | Master key sealing destination secrets at rest: exactly 64 lowercase hex characters, inline or read from a file |
 | `LISTEN_ADDRESS` | `:8080` | HTTP listen address |
 
 Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own

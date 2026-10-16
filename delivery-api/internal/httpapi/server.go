@@ -1,6 +1,6 @@
-// Package httpapi exposes the delivery service over HTTP. For now it serves
-// only the liveness and readiness probes; the delivery endpoints are added by
-// later phases.
+// Package httpapi exposes the delivery service over HTTP: the liveness and
+// readiness probes and the operator registry endpoints under /v1/admin. The
+// message delivery endpoints are added by later phases.
 package httpapi
 
 import (
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
 
 // Readiness status values reported in the /readyz body.
@@ -36,18 +37,40 @@ type ReadinessChecker interface {
 	Readiness(ctx context.Context) (Readiness, error)
 }
 
+// Registry is the destination and route management surface the /v1/admin
+// endpoints call. *registry.Service satisfies it. Resolve is deliberately not
+// part of it: resolution is for the delivery path, not the admin API.
+type Registry interface {
+	CreateDestination(ctx context.Context, input registry.DestinationInput) (registry.DestinationView, error)
+	ListDestinations(ctx context.Context) ([]registry.DestinationView, error)
+	GetDestination(ctx context.Context, name string) (registry.DestinationView, error)
+	UpdateDestination(ctx context.Context, name string, patch registry.DestinationPatch) (registry.DestinationView, error)
+	DeleteDestination(ctx context.Context, name string) (bool, error)
+	CreateRoute(ctx context.Context, input registry.RouteInput) (registry.RouteView, error)
+	ListRoutes(ctx context.Context) ([]registry.RouteView, error)
+	GetRoute(ctx context.Context, id int64) (registry.RouteView, error)
+	UpdateRoute(ctx context.Context, id int64, patch registry.RoutePatch) (registry.RouteView, error)
+	DeleteRoute(ctx context.Context, id int64) (bool, error)
+}
+
 // ServerConfig configures a Server. Logger defaults to slog.Default() when nil.
 type ServerConfig struct {
 	// Logger receives internal-error diagnostics; defaults to slog.Default().
 	Logger *slog.Logger
 	// Readiness backs GET /readyz. When nil, /readyz always reports unavailable.
 	Readiness ReadinessChecker
+	// Registry backs the /v1/admin endpoints. When nil, every admin route
+	// answers 503 (fail closed). Callers must leave this an untyped nil when no
+	// service exists: a typed-nil pointer stored here is a non-nil interface
+	// and would bypass that guard.
+	Registry Registry
 }
 
 // Server wraps an *http.ServeMux exposing the delivery HTTP API.
 type Server struct {
 	logger    *slog.Logger
 	readiness ReadinessChecker
+	registry  Registry
 	mux       *http.ServeMux
 }
 
@@ -83,6 +106,7 @@ func NewServer(config ServerConfig) *Server {
 	server := &Server{
 		logger:    logger,
 		readiness: config.Readiness,
+		registry:  config.Registry,
 		mux:       http.NewServeMux(),
 	}
 	server.routes()
@@ -98,6 +122,17 @@ func (server *Server) Handler() http.Handler {
 func (server *Server) routes() {
 	server.mux.HandleFunc("GET /healthz", server.handleHealthz)
 	server.mux.HandleFunc("GET /readyz", server.handleReadyz)
+
+	server.mux.HandleFunc("POST /v1/admin/destinations", server.requireRegistry(server.handleCreateDestination))
+	server.mux.HandleFunc("GET /v1/admin/destinations", server.requireRegistry(server.handleListDestinations))
+	server.mux.HandleFunc("GET /v1/admin/destinations/{name}", server.requireRegistry(server.handleGetDestination))
+	server.mux.HandleFunc("PATCH /v1/admin/destinations/{name}", server.requireRegistry(server.handleUpdateDestination))
+	server.mux.HandleFunc("DELETE /v1/admin/destinations/{name}", server.requireRegistry(server.handleDeleteDestination))
+	server.mux.HandleFunc("POST /v1/admin/routes", server.requireRegistry(server.handleCreateRoute))
+	server.mux.HandleFunc("GET /v1/admin/routes", server.requireRegistry(server.handleListRoutes))
+	server.mux.HandleFunc("GET /v1/admin/routes/{id}", server.requireRegistry(server.handleGetRoute))
+	server.mux.HandleFunc("PATCH /v1/admin/routes/{id}", server.requireRegistry(server.handleUpdateRoute))
+	server.mux.HandleFunc("DELETE /v1/admin/routes/{id}", server.requireRegistry(server.handleDeleteRoute))
 }
 
 // handleHealthz responds 200 with a plain-text "ok" body for liveness checks.

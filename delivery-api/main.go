@@ -19,6 +19,8 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/readiness"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/secretenv"
 	"github.com/4IRL/4irl-notifs/delivery-api/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -88,9 +90,9 @@ func openDatabase(ctx context.Context) (*pgxpool.Pool, []migrate.Migration, erro
 	return pool, loaded, nil
 }
 
-// runServe loads the (mandatory) database config first, so a missing or
-// invalid credential fails before any port is bound, then serves HTTP until
-// ctx is canceled. The pool is opened and closed here, around serve.
+// runServe loads the (mandatory) database config and master key first, so a
+// missing or invalid credential fails before any port is bound, then serves
+// HTTP until ctx is canceled. The pool is opened and closed here, around serve.
 func runServe(ctx context.Context, logger *slog.Logger) error {
 	pool, loaded, openErr := openDatabase(ctx)
 	if openErr != nil {
@@ -98,8 +100,21 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer pool.Close()
 
+	// The master key is resolved before net.Listen so a missing or malformed
+	// key fails the process before any port is bound.
+	sealer, sealErr := seal.FromEnv(secretenv.Resolve)
+	if sealErr != nil {
+		return sealErr
+	}
+
 	checker := readiness.NewChecker(pool, migrate.NewPGStore(pool), migrate.ExpectedVersion(loaded))
-	handler := httpapi.NewServer(httpapi.ServerConfig{Logger: logger, Readiness: checker}).Handler()
+	// See ServerConfig.Registry for why it is set only here.
+	registryService := registry.NewService(registry.NewPGStore(pool), sealer, logger)
+	handler := httpapi.NewServer(httpapi.ServerConfig{
+		Logger:    logger,
+		Readiness: checker,
+		Registry:  registryService,
+	}).Handler()
 
 	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)
 	listener, listenErr := net.Listen("tcp", listenAddress)

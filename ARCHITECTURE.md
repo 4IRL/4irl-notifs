@@ -12,13 +12,27 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `localhost:8300` only    | Generic delivery service skeleton: `/healthz` + `/readyz`. No public hostname yet. |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `localhost:8300` only    | Generic delivery service: `/healthz`, `/readyz` and the operator `/v1/admin` registry API. No public hostname yet. |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*` + `/people` proxy Functions.             |
 
 Two live environments: **local** (docker-compose: ntfy + provisioning-api + delivery-api + Postgres) and
 **production** (the VPS + Cloudflare). ntfy + provisioning-api + delivery-api (with its Postgres) run on
 the VPS; person-service + admin UI are Cloudflare-native.
+
+### delivery-api endpoints
+
+- `GET /healthz`, `GET /readyz` — liveness and readiness (database reachable, migrations current).
+- `/v1/admin/destinations` (`POST`, `GET`) and `/v1/admin/destinations/{name}` (`GET`, `PATCH`, `DELETE`) —
+  the destination registry. Destination secrets are sealed with AES-256-GCM before they are stored and
+  are masked on every read. `PATCH` `secrets` only sets or replaces keys; clearing an optional secret such
+  as the ntfy `access_token` requires deleting and recreating the destination.
+- `/v1/admin/routes` (`POST`, `GET`) and `/v1/admin/routes/{id}` (`GET`, `PATCH`, `DELETE`) — the routes
+  that map to destinations.
+
+The `/v1/admin` API has no authentication of its own, which is why delivery-api is bound to
+`localhost:8300` only. Do not expose it through a tunnel or public hostname until a path-scoped
+Cloudflare Access application gates `/v1/admin/*`.
 
 ## System diagram
 
@@ -326,6 +340,14 @@ graph TD
   Postgres fixes the password into the `delivery-pgdata` volume at initdb, so **rotating** the GitHub
   secret first needs `ALTER ROLE delivery PASSWORD '<new value>'` run inside `delivery-postgres`;
   otherwise migrate/api fail auth on the next deploy and it goes red.
+- **`DELIVERY_MASTER_KEY` (required repo secret)**: the delivery-api master key that seals destination
+  credentials at rest (AES-256-GCM), exactly 64 lowercase hex characters (`openssl rand -hex 32`); the
+  deploy fails before touching the VPS if it is missing or malformed, so set it before the first merge.
+  Like the DB password it is written to `secrets-persistent/` on every deploy and never deleted, but only
+  delivery-api receives it (as `DELIVERY_MASTER_KEY_FILE`; `delivery-migrate` never needs it). **Back it up
+  offline**: losing or changing it orphans every stored destination secret, and there is no rotation path.
+  Recovery after a key loss: a destination's sealed blob can no longer be opened, so remove the routes that
+  reference it, then delete and recreate the affected destinations.
 - **person-service D1 schema** is applied by CI: `worker-deploy.yml` runs `wrangler d1 migrations apply
   person-service --remote` **before** `wrangler deploy`, so a new Worker code path never hits a table its
   migration hasn't created (idempotent — applied migrations are skipped). Adding a table = add a

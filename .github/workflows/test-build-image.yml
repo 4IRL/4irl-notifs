@@ -81,6 +81,7 @@ jobs:
             -e DELIVERY_DB_USER=delivery \
             -e DELIVERY_DB_NAME=delivery \
             -e DELIVERY_DB_PASSWORD=smoke \
+            -e DELIVERY_MASTER_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
             4irl-notifs-delivery-api:ci-test
 
           for i in $(seq 1 60); do

@@ -130,6 +130,7 @@ services:
       - DELIVERY_DB_USER=delivery
       - DELIVERY_DB_NAME=delivery
       - DELIVERY_DB_PASSWORD=delivery-local-dev # dev-only credential; prod uses a file secret
+      - DELIVERY_MASTER_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef # dev-only, obviously-fake key; prod uses a persistent file secret
     depends_on:
       delivery-postgres:
         condition: service_healthy

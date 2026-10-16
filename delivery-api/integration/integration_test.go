@@ -198,7 +198,13 @@ func TestFailedMigrationIsReported(testInstance *testing.T) {
 	testInstance.Cleanup(func() { psql(testInstance, cleanup) })
 
 	// Simulates a newer image's migrate failing while this binary keeps serving.
-	psql(testInstance, "insert into schema_migration_failures (version, error) values (2, 'integration-probe')")
+	// The probe version is derived (not hardcoded) so it stays strictly above the
+	// applied schema version as new migrations land.
+	probeInsert := fmt.Sprintf(
+		"insert into schema_migration_failures (version, error) values (%d, 'integration-probe')",
+		embeddedSchemaVersion(testInstance)+1,
+	)
+	psql(testInstance, probeInsert)
 	assertFailureProbe(testInstance)
 
 	// A stale failure (version not above the applied schema version) is
@@ -207,15 +213,18 @@ func TestFailedMigrationIsReported(testInstance *testing.T) {
 	assertFailureProbe(testInstance)
 }
 
-// assertFailureProbe checks /readyz still serves 200 and reports the version 2
-// integration-probe failure as the last migration failure.
+// assertFailureProbe checks /readyz still serves 200 and reports the
+// integration-probe failure (one version above the embedded schema version) as
+// the last migration failure.
 func assertFailureProbe(testInstance *testing.T) {
 	testInstance.Helper()
+	want := embeddedSchemaVersion(testInstance) + 1
 	body := fetchReadyz(testInstance)
 	if body.LastMigrationFailure == nil {
-		testInstance.Fatalf("last_migration_failure = null, want version 2 integration-probe")
+		testInstance.Fatalf("last_migration_failure = null, want version %d integration-probe", want)
 	}
-	if body.LastMigrationFailure.Version != 2 || body.LastMigrationFailure.Error != "integration-probe" {
-		testInstance.Fatalf("last_migration_failure = %+v, want version 2 / integration-probe", *body.LastMigrationFailure)
+	if body.LastMigrationFailure.Version != want || body.LastMigrationFailure.Error != "integration-probe" {
+		testInstance.Fatalf("last_migration_failure = %+v, want version %d / integration-probe",
+			*body.LastMigrationFailure, want)
 	}
 }
