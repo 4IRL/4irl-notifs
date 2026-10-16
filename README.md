@@ -7,7 +7,9 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
 - **ntfy** — self-hosted notification server (topics, users, ACLs)
 - **provisioning-api** — barebones Go service for parametric user/topic provisioning across apps
 - **delivery-api** — generic delivery service (Go) backed by its own Postgres (`delivery-postgres`,
-  schema applied by the one-shot `delivery-migrate`); skeleton only for now
+  schema applied by the one-shot `delivery-migrate`); serves `/healthz`, `/readyz` and the operator
+  `/v1/admin` registry API (destinations and routes, AES-256-GCM sealed secrets, masked reads); see
+  [`ARCHITECTURE.md`](ARCHITECTURE.md#delivery-api-endpoints)
 - **web** — admin UI (Cloudflare Pages, behind Cloudflare Access)
 
 ## Local stack
