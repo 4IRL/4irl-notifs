@@ -33,6 +33,8 @@ type fakeStore struct {
 	deleteErr    error
 	// returnUnordered makes GetDestinationsByID ignore the name-order contract.
 	returnUnordered bool
+	// failures maps a recorded call name to the error that call returns.
+	failures map[string]error
 }
 
 func newFakeStore() *fakeStore {
@@ -68,11 +70,17 @@ func (store *fakeStore) sortedDestinations() []StoredDestination {
 
 func (store *fakeStore) ListDestinations(context.Context) ([]StoredDestination, error) {
 	store.record("ListDestinations")
+	if failure := store.failures["ListDestinations"]; failure != nil {
+		return nil, failure
+	}
 	return store.sortedDestinations(), nil
 }
 
 func (store *fakeStore) GetDestination(_ context.Context, name string) (StoredDestination, error) {
 	store.record("GetDestination")
+	if failure := store.failures["GetDestination"]; failure != nil {
+		return StoredDestination{}, failure
+	}
 	destination, found := store.destinations[name]
 	if !found {
 		return StoredDestination{}, ErrDestinationNotFound
@@ -82,6 +90,9 @@ func (store *fakeStore) GetDestination(_ context.Context, name string) (StoredDe
 
 func (store *fakeStore) GetDestinationsByID(_ context.Context, ids []int64) ([]StoredDestination, error) {
 	store.record("GetDestinationsByID")
+	if failure := store.failures["GetDestinationsByID"]; failure != nil {
+		return nil, failure
+	}
 	destinations := []StoredDestination{}
 	for _, destination := range store.sortedDestinations() {
 		if slices.Contains(ids, destination.ID) {
@@ -162,11 +173,17 @@ func (store *fakeStore) sortedRoutes(enabledOnly bool) []StoredRoute {
 
 func (store *fakeStore) ListRoutes(context.Context) ([]StoredRoute, error) {
 	store.record("ListRoutes")
+	if failure := store.failures["ListRoutes"]; failure != nil {
+		return nil, failure
+	}
 	return store.sortedRoutes(false), nil
 }
 
 func (store *fakeStore) GetRoute(_ context.Context, id int64) (StoredRoute, error) {
 	store.record("GetRoute")
+	if failure := store.failures["GetRoute"]; failure != nil {
+		return StoredRoute{}, failure
+	}
 	route, found := store.routes[id]
 	if !found {
 		return StoredRoute{}, ErrRouteNotFound
@@ -204,6 +221,9 @@ func (store *fakeStore) DeleteRoute(_ context.Context, id int64) (bool, error) {
 
 func (store *fakeStore) ListEnabledRoutes(context.Context) ([]StoredRoute, error) {
 	store.record("ListEnabledRoutes")
+	if failure := store.failures["ListEnabledRoutes"]; failure != nil {
+		return nil, failure
+	}
 	return store.sortedRoutes(true), nil
 }
 
@@ -1010,6 +1030,62 @@ func TestResolveSkipsUnneededStoreCalls(t *testing.T) {
 	}
 	if strings.Join(fixture.store.calls, ",") != "ListEnabledRoutes" {
 		t.Fatalf("no-match resolve calls = %v", fixture.store.calls)
+	}
+}
+
+func TestServicePropagatesStoreErrorsUnchanged(t *testing.T) {
+	storeFailure := errors.New("store unavailable")
+	testCases := []struct {
+		name   string
+		failAt string
+		call   func(fixture serviceFixture) error
+	}{
+		{name: "ListDestinations", failAt: "ListDestinations", call: func(fixture serviceFixture) error {
+			_, err := fixture.service.ListDestinations(context.Background())
+			return err
+		}},
+		{name: "ListRoutes", failAt: "ListRoutes", call: func(fixture serviceFixture) error {
+			_, err := fixture.service.ListRoutes(context.Background())
+			return err
+		}},
+		{name: "GetRoute", failAt: "GetRoute", call: func(fixture serviceFixture) error {
+			_, err := fixture.service.GetRoute(context.Background(), 1)
+			return err
+		}},
+		{name: "GetDestination", failAt: "GetDestination", call: func(fixture serviceFixture) error {
+			_, err := fixture.service.GetDestination(context.Background(), "ops")
+			return err
+		}},
+		{name: "Resolve ListEnabledRoutes", failAt: "ListEnabledRoutes", call: func(fixture serviceFixture) error {
+			_, err := fixture.service.Resolve(context.Background(), "urls4irl", "", "c")
+			return err
+		}},
+		{name: "Resolve GetDestinationsByID", failAt: "GetDestinationsByID", call: func(fixture serviceFixture) error {
+			_, err := fixture.service.Resolve(context.Background(), "urls4irl", "", "c")
+			return err
+		}},
+		{name: "Resolve named GetDestination", failAt: "GetDestination", call: func(fixture serviceFixture) error {
+			_, err := fixture.service.Resolve(context.Background(), "urls4irl", "ops", "c")
+			return err
+		}},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(subTest *testing.T) {
+			fixture := newServiceFixture(subTest)
+			fixture.createDiscord(subTest, "ops")
+			fixture.createRoute(subTest, "urls4irl", "*", "ops")
+			fixture.store.failures = map[string]error{testCase.failAt: storeFailure}
+
+			err := testCase.call(fixture)
+
+			if err != storeFailure {
+				subTest.Fatalf("error = %v, want the store error returned unchanged", err)
+			}
+			if errors.Is(err, ErrUnknownDestination) {
+				subTest.Fatalf("error = %v, must not be mapped to ErrUnknownDestination", err)
+			}
+		})
 	}
 }
 
