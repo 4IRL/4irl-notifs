@@ -90,11 +90,11 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 
 ### Service tokens
 
-| Token                               | Presented by                                  | Authorized on                               |
-| ----------------------------------- | --------------------------------------------- | ------------------------------------------- |
-| `notifs-admin-proxy → backends`     | Pages Function (`CF-Access-Client-Id/Secret`) | `notifs-api` + `notifs-people` Service Auth |
-| VPS dual-write token                | provisioning-api (Go)                         | `notifs-people` Service Auth                |
-| *(future)* per-consuming-app tokens | urls4irl / tasktracker backends               | `notifs-api` Service Auth                   |
+| Token                           | Presented by                                          | Authorized on                               |
+| ------------------------------- | ----------------------------------------------------- | ------------------------------------------- |
+| `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`)         | `notifs-api` + `notifs-people` Service Auth |
+| VPS dual-write token            | provisioning-api (Go)                                 | `notifs-people` Service Auth                |
+| per-consuming-app tokens        | tasktracker backend (live); urls4irl backend (future) | `notifs-api` Service Auth                   |
 
 ### Admin-UI request flow (the important one)
 
@@ -172,8 +172,9 @@ Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABL
   `u_<person_hash>` + a **self-chosen password** the app sets for them via `POST /v1/set-password`. The
   ntfy access token is therefore Android/programmatic-only; iOS relies on the password path. (Same ntfy
   user either way — the password and the token are two auth methods onto the one `u_<person_hash>` identity.)
-- **Topics:** `{app_id}-{person_hash}-{channel}` (app picks `{channel}`). Publisher writes any
-  `{app_id}-*`; subscriber reads its own `{app_id}-{person_hash}-*`.
+- **Topics:** `{app_id}-{person_hash}-{channel}`, with the standard channel `all` (one per app; others
+  only by explicit need). Publisher writes any `{app_id}-*`; subscriber reads its own
+  `{app_id}-{person_hash}-*`.
 - **Broadcast topic:** `{app_id}-broadcast` — one shared per-app topic for site-wide / maintenance
   announcements. Every subscriber is granted **read** on it at `Provision` (always-on per app — no
   per-user opt-out); the publisher writes it via its existing write-only `{app_id}-*` grant (no new
@@ -202,7 +203,7 @@ graph LR
     P -->|publisher + subscriber tokens| APP1
   end
   subgraph Runtime
-    APP2["app backend"] -->|"publish {app}-{hash}-{ch}<br/>(publisher token)"| NTFY2["ntfy"]
+    APP2["app backend"] -->|"publish {app}-{hash}-all<br/>(publisher token)"| NTFY2["ntfy"]
     NTFY2 -->|"subscribe (subscriber token)"| USER["user client"]
   end
 ```
@@ -216,10 +217,13 @@ responses are JSON; errors `{ "error": … }`. Notes: `DELETE /v1/users/{id}` is
 the ntfy user is already gone; it also dual-deletes the person row). `POST /v1/provision-app` takes an
 optional `rotate` (default false = additive mint; true = revoke existing publisher tokens then mint one).
 `POST /v1/deprovision-app {app_id}` fully removes an app (publisher identity + every subscriber grant +
-registry row). `POST /v1/test-notify {app_id, recipients, channel?, message?}` mints an ephemeral
+registry row). `POST /v1/test-notify {app_id, recipients, channel?, message?, title?}` mints an ephemeral
 write-only publisher token, publishes the message to each recipient's `{app_id}-{person_hash}-{channel}`
 topic, then revokes the token in an always-run cleanup; per-recipient failures are reported inside a 200
-response. `POST /v1/set-password {app_id, email, password}` → `{user_id, app_id, updated}` sets a person's
+response. `channel` defaults to `all`; `title` defaults to `<app_id> test` (the admin UI sends
+`<display name> test`) and is ≤256 bytes with no control characters. `ntfypublish` sends the title as
+a `Title` header (RFC 2047-encoded when non-ASCII).
+`POST /v1/set-password {app_id, email, password}` → `{user_id, app_id, updated}` sets a person's
 ntfy password (via `ntfy user change-pass`) so they can log into the ntfy iOS app directly with
 `u_<person_hash>` + that password; the user must already be provisioned (missing user → `404
 {"error":"user does not exist"}`), the password is validated at 8–128 chars (`400 {"error":"invalid

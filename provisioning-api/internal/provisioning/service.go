@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfypublish"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/validation"
 )
@@ -49,11 +50,11 @@ type PersonServiceClient interface {
 
 // NotificationPublisher is the subset of the outbound ntfy HTTP publisher
 // (internal/ntfypublish) that TestNotify depends on: a Configured() gate and a
-// Publish that POSTs a message to a concrete topic with a bearer token,
-// returning the ntfy message id.
+// Publish that POSTs an ntfy message (topic, bearer token, body and optional
+// title/tags/click) and returns the ntfy message id.
 type NotificationPublisher interface {
 	Configured() bool
-	Publish(ctx context.Context, topic string, token string, message string) (string, error)
+	Publish(ctx context.Context, message ntfypublish.Message) (string, error)
 }
 
 // ServiceConfig configures a Service.
@@ -305,6 +306,9 @@ type TestNotifyRequest struct {
 	Recipients []string
 	Channel    string
 	Message    string
+	// Title is the ntfy notification title; the httpapi layer guarantees it is
+	// non-empty.
+	Title string
 }
 
 // RecipientResult is the per-recipient outcome of a TestNotify dispatch. OK
@@ -398,7 +402,7 @@ func (service *Service) TestNotify(ctx context.Context, request TestNotifyReques
 		topic := ntfycli.PersonChannelTopic(request.AppID, personHash, request.Channel)
 		result.Topic = topic
 
-		messageID, publishErr := service.publisher.Publish(ctx, topic, token, request.Message)
+		messageID, publishErr := service.publisher.Publish(ctx, ntfypublish.Message{Topic: topic, Token: token, Body: request.Message, Title: request.Title})
 		if publishErr != nil {
 			// Log the real error server-side, but return only a generic message
 			// to the client so ntfy's raw HTTP body snippet never reaches the

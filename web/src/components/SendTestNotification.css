@@ -20,7 +20,25 @@
   flex-wrap: wrap;
   align-items: flex-end;
   gap: var(--space-3);
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-2);
+}
+
+/* Full-width hint/warning group under the picker row (outside the channel field
+   so the row's align-items: flex-end is unaffected). Both paragraphs share the
+   base class; the warning adds the callout treatment below. */
+.send-test__field-hint {
+  color: var(--text);
+  font-size: 0.8125rem;
+  margin: 0 0 var(--space-4);
+  max-width: 70ch;
+}
+
+.send-test__field-hint--warning {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
 }
 
 .send-test__field {

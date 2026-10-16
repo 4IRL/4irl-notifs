@@ -41,11 +41,12 @@ stack only via `make local-up` / `make local-down`, never raw `docker compose`.
 
 - **`auth-default-access: deny-all`** — every topic grant is explicit; anonymous publish and
   subscribe are rejected.
-- **Topics are namespaced `{app_id}-{channel}`** (e.g. `urls4irl-alerts`). Topics need no
+- **Per-person topics are `{app_id}-{person_hash}-all`** (the standard channel, e.g.
+  `urls4irl-76gzqgp4byjl6dje-all`), plus a shared `{app_id}-broadcast` topic per app. Topics need no
   pre-creation — they materialize on first publish/subscribe.
-- **One global ntfy user per person** (not one per app). Provisioning a user into an app grants
-  the native wildcard ACL `{app_id}-*` (read-write), so one credential spans every channel of
-  every app that user belongs to — and nothing else.
+- **One global ntfy user per person** (not one per app). The app's publisher writes `{app_id}-*`;
+  each subscriber reads only its own `{app_id}-{person_hash}-*`. See
+  [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full model.
 - Users authenticate with per-user access tokens (`ntfy token`), created and revoked by the
   provisioning-api via the documented ntfy CLI against the shared auth database.
 

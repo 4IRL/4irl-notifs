@@ -179,7 +179,7 @@ describe('api client', () => {
             {
               recipient: '76gzqgp4byjl6dje',
               user_id: 'u_76gzqgp4byjl6dje',
-              topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+              topic: 'urls4irl-76gzqgp4byjl6dje-all',
               ok: true,
               message_id: 'VkT2p9wQ',
               error: '',
@@ -187,7 +187,7 @@ describe('api client', () => {
             {
               recipient: 'alice@example.com',
               user_id: 'u_76gzqgp4byjl6dje',
-              topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+              topic: 'urls4irl-76gzqgp4byjl6dje-all',
               ok: false,
               message_id: '',
               error: 'ntfy publish failed (503)',
@@ -201,8 +201,9 @@ describe('api client', () => {
     const result = await client.testNotify({
       appId: 'urls4irl',
       recipients: ['76gzqgp4byjl6dje', 'alice@example.com'],
-      channel: 'alerts',
+      channel: 'all',
       message: 'Test notification from 4IRL admin',
+      title: 'Chore Reaper test',
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -212,15 +213,16 @@ describe('api client', () => {
     expect(JSON.parse(calledInit.body as string)).toEqual({
       app_id: 'urls4irl',
       recipients: ['76gzqgp4byjl6dje', 'alice@example.com'],
-      channel: 'alerts',
+      channel: 'all',
       message: 'Test notification from 4IRL admin',
+      title: 'Chore Reaper test',
     });
     expect(result).toEqual({
       results: [
         {
           recipient: '76gzqgp4byjl6dje',
           userId: 'u_76gzqgp4byjl6dje',
-          topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+          topic: 'urls4irl-76gzqgp4byjl6dje-all',
           ok: true,
           messageId: 'VkT2p9wQ',
           error: '',
@@ -228,7 +230,7 @@ describe('api client', () => {
         {
           recipient: 'alice@example.com',
           userId: 'u_76gzqgp4byjl6dje',
-          topic: 'urls4irl-76gzqgp4byjl6dje-alerts',
+          topic: 'urls4irl-76gzqgp4byjl6dje-all',
           ok: false,
           messageId: '',
           error: 'ntfy publish failed (503)',
@@ -247,6 +249,7 @@ describe('api client', () => {
         recipients: ['76gzqgp4byjl6dje'],
         channel: 'BAD',
         message: 'hi',
+        title: 'urls4irl test',
       }),
     ).rejects.toMatchObject({
       name: 'ApiError',

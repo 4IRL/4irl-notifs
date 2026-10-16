@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfypublish"
 )
 
 // fakeNtfyClient records invocations and plays back scripted behavior for the
@@ -1141,6 +1142,8 @@ func TestPersonHashPattern(t *testing.T) {
 type fakePublisher struct {
 	recordTo    *[]string
 	invocations []string
+	// messages holds every ntfypublish.Message received, in call order.
+	messages []ntfypublish.Message
 
 	configuredValue  bool
 	messageIDByTopic map[string]string
@@ -1161,12 +1164,13 @@ func (publisher *fakePublisher) Configured() bool {
 	return publisher.configuredValue
 }
 
-func (publisher *fakePublisher) Publish(_ context.Context, topic string, token string, _ string) (string, error) {
-	publisher.record("Publish(%s,%s)", topic, token)
-	if err, scripted := publisher.errByTopic[topic]; scripted {
+func (publisher *fakePublisher) Publish(_ context.Context, message ntfypublish.Message) (string, error) {
+	publisher.record("Publish(%s,%s)", message.Topic, message.Token)
+	publisher.messages = append(publisher.messages, message)
+	if err, scripted := publisher.errByTopic[message.Topic]; scripted {
 		return "", err
 	}
-	if messageID, scripted := publisher.messageIDByTopic[topic]; scripted {
+	if messageID, scripted := publisher.messageIDByTopic[message.Topic]; scripted {
 		return messageID, nil
 	}
 	return publisher.defaultMessageID, nil
@@ -1193,8 +1197,8 @@ func TestTestNotifyMintsPublishesPerRecipientThenRevokes(t *testing.T) {
 		configuredValue: true,
 		recordTo:        &client.invocations,
 		messageIDByTopic: map[string]string{
-			"urls4irl-" + aliceHash + "-alerts": "msg_one",
-			"urls4irl-" + hashTwo + "-alerts":   "msg_two",
+			"urls4irl-" + aliceHash + "-all": "msg_one",
+			"urls4irl-" + hashTwo + "-all":   "msg_two",
 		},
 	}
 	service := newTestServiceWithPublisher(client, publisher)
@@ -1202,7 +1206,7 @@ func TestTestNotifyMintsPublishesPerRecipientThenRevokes(t *testing.T) {
 	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceHash, hashTwo},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	})
 	if err != nil {
@@ -1215,8 +1219,8 @@ func TestTestNotifyMintsPublishesPerRecipientThenRevokes(t *testing.T) {
 		"AddUser(urls4irl-publisher,pw=generated-pw)",
 		"GrantAccess(urls4irl-publisher,urls4irl-*,wo)",
 		"AddToken(urls4irl-publisher,test-notify)",
-		"Publish(urls4irl-" + aliceHash + "-alerts,tk_ephemeral)",
-		"Publish(urls4irl-" + hashTwo + "-alerts,tk_ephemeral)",
+		"Publish(urls4irl-" + aliceHash + "-all,tk_ephemeral)",
+		"Publish(urls4irl-" + hashTwo + "-all,tk_ephemeral)",
 		"RemoveToken(urls4irl-publisher,tk_ephemeral)",
 	}, " | ")
 	if got := strings.Join(client.invocations, " | "); got != expectedInvocations {
@@ -1224,11 +1228,44 @@ func TestTestNotifyMintsPublishesPerRecipientThenRevokes(t *testing.T) {
 	}
 
 	expectedResults := []RecipientResult{
-		{Recipient: aliceHash, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-alerts", OK: true, MessageID: "msg_one", Error: ""},
-		{Recipient: hashTwo, UserID: "u_" + hashTwo, Topic: "urls4irl-" + hashTwo + "-alerts", OK: true, MessageID: "msg_two", Error: ""},
+		{Recipient: aliceHash, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-all", OK: true, MessageID: "msg_one", Error: ""},
+		{Recipient: hashTwo, UserID: "u_" + hashTwo, Topic: "urls4irl-" + hashTwo + "-all", OK: true, MessageID: "msg_two", Error: ""},
 	}
 	if !reflect.DeepEqual(result.Results, expectedResults) {
 		t.Fatalf("results = %#v, expected %#v", result.Results, expectedResults)
+	}
+}
+
+func TestTestNotifyForwardsTitleAndBodyToPublisher(t *testing.T) {
+	client := &fakeNtfyClient{addTokenValue: "tk_ephemeral"}
+	publisher := &fakePublisher{
+		configuredValue:  true,
+		recordTo:         &client.invocations,
+		defaultMessageID: "msg_title",
+	}
+	service := newTestServiceWithPublisher(client, publisher)
+
+	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
+		AppID:      "tasktracker",
+		Recipients: []string{aliceHash},
+		Channel:    "all",
+		Message:    "hi",
+		Title:      "Chore Reaper test",
+	}); err != nil {
+		t.Fatalf("TestNotify returned unexpected error: %v", err)
+	}
+
+	if len(publisher.messages) != 1 {
+		t.Fatalf("publisher received %d messages, expected 1: %#v", len(publisher.messages), publisher.messages)
+	}
+	expectedMessage := ntfypublish.Message{
+		Topic: "tasktracker-" + aliceHash + "-all",
+		Token: "tk_ephemeral",
+		Body:  "hi",
+		Title: "Chore Reaper test",
+	}
+	if !reflect.DeepEqual(publisher.messages[0], expectedMessage) {
+		t.Fatalf("messages[0] = %#v, expected %#v", publisher.messages[0], expectedMessage)
 	}
 }
 
@@ -1244,7 +1281,7 @@ func TestTestNotifyResolvesEmailRecipientToPersonHash(t *testing.T) {
 	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceEmail},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	})
 	if err != nil {
@@ -1253,11 +1290,11 @@ func TestTestNotifyResolvesEmailRecipientToPersonHash(t *testing.T) {
 
 	// An email recipient resolves to the golden person-hash and publishes to the
 	// same concrete topic a bare hash would.
-	if !strings.Contains(strings.Join(client.invocations, " | "), "Publish(urls4irl-"+aliceHash+"-alerts,tk_ephemeral)") {
+	if !strings.Contains(strings.Join(client.invocations, " | "), "Publish(urls4irl-"+aliceHash+"-all,tk_ephemeral)") {
 		t.Fatalf("email recipient must resolve to the golden person-hash topic: %v", client.invocations)
 	}
 	expectedResults := []RecipientResult{
-		{Recipient: aliceEmail, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-alerts", OK: true, MessageID: "msg_email", Error: ""},
+		{Recipient: aliceEmail, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-all", OK: true, MessageID: "msg_email", Error: ""},
 	}
 	if !reflect.DeepEqual(result.Results, expectedResults) {
 		t.Fatalf("results = %#v, expected %#v", result.Results, expectedResults)
@@ -1272,7 +1309,7 @@ func TestTestNotifyReturnsErrorWhenTokenMintFails(t *testing.T) {
 	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceHash},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	}); err == nil {
 		t.Fatal("expected the AddToken mint error to propagate")
@@ -1295,7 +1332,7 @@ func TestTestNotifyPropagatesAddUserError(t *testing.T) {
 	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceHash},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	}); err == nil {
 		t.Fatal("expected AddUser error to propagate")
@@ -1314,7 +1351,7 @@ func TestTestNotifyPropagatesGrantAccessError(t *testing.T) {
 	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceHash},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	}); err == nil {
 		t.Fatal("expected GrantAccess error to propagate")
@@ -1336,7 +1373,7 @@ func TestTestNotifyToleratesExistingPublisherUser(t *testing.T) {
 	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceHash},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	})
 	if err != nil {
@@ -1360,10 +1397,10 @@ func TestTestNotifyOneRecipientPublishFailureDoesNotFailBatch(t *testing.T) {
 		configuredValue: true,
 		recordTo:        &client.invocations,
 		messageIDByTopic: map[string]string{
-			"urls4irl-" + aliceHash + "-alerts": "msg_one",
+			"urls4irl-" + aliceHash + "-all": "msg_one",
 		},
 		errByTopic: map[string]error{
-			"urls4irl-" + hashTwo + "-alerts": rawPublishErr,
+			"urls4irl-" + hashTwo + "-all": rawPublishErr,
 		},
 	}
 	service := NewService(ServiceConfig{
@@ -1376,7 +1413,7 @@ func TestTestNotifyOneRecipientPublishFailureDoesNotFailBatch(t *testing.T) {
 	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceHash, hashTwo},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	})
 	if err != nil {
@@ -1386,8 +1423,8 @@ func TestTestNotifyOneRecipientPublishFailureDoesNotFailBatch(t *testing.T) {
 	// The client-facing per-recipient error is the generic sanitized string, never
 	// the raw ntfy error text (which can carry a snippet of the upstream HTTP body).
 	expectedResults := []RecipientResult{
-		{Recipient: aliceHash, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-alerts", OK: true, MessageID: "msg_one", Error: ""},
-		{Recipient: hashTwo, UserID: "u_" + hashTwo, Topic: "urls4irl-" + hashTwo + "-alerts", OK: false, MessageID: "", Error: publishFailedMessage},
+		{Recipient: aliceHash, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-all", OK: true, MessageID: "msg_one", Error: ""},
+		{Recipient: hashTwo, UserID: "u_" + hashTwo, Topic: "urls4irl-" + hashTwo + "-all", OK: false, MessageID: "", Error: publishFailedMessage},
 	}
 	if !reflect.DeepEqual(result.Results, expectedResults) {
 		t.Fatalf("results = %#v, expected %#v", result.Results, expectedResults)
@@ -1409,7 +1446,7 @@ func TestTestNotifyOneRecipientPublishFailureDoesNotFailBatch(t *testing.T) {
 	if !strings.Contains(logOutput, "raw upstream body snippet") {
 		t.Fatalf("expected the raw ntfy error to be logged server-side, got: %s", logOutput)
 	}
-	if !strings.Contains(logOutput, "urls4irl-"+hashTwo+"-alerts") {
+	if !strings.Contains(logOutput, "urls4irl-"+hashTwo+"-all") {
 		t.Fatalf("expected the failing topic to be logged server-side, got: %s", logOutput)
 	}
 	// The token is minted once and revoked once regardless of per-recipient failures.
@@ -1430,7 +1467,7 @@ func TestTestNotifyInvalidRecipientSkipsPublish(t *testing.T) {
 	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{"bogus", aliceHash},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	})
 	if err != nil {
@@ -1439,7 +1476,7 @@ func TestTestNotifyInvalidRecipientSkipsPublish(t *testing.T) {
 
 	expectedResults := []RecipientResult{
 		{Recipient: "bogus", UserID: "", Topic: "", OK: false, MessageID: "", Error: "invalid recipient"},
-		{Recipient: aliceHash, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-alerts", OK: true, MessageID: "msg_one", Error: ""},
+		{Recipient: aliceHash, UserID: "u_" + aliceHash, Topic: "urls4irl-" + aliceHash + "-all", OK: true, MessageID: "msg_one", Error: ""},
 	}
 	if !reflect.DeepEqual(result.Results, expectedResults) {
 		t.Fatalf("results = %#v, expected %#v", result.Results, expectedResults)
@@ -1459,7 +1496,7 @@ func TestTestNotifyReturnsErrorWhenPublisherUnconfigured(t *testing.T) {
 	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceHash},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	}); err == nil {
 		t.Fatal("expected an error when the publisher is unconfigured")
@@ -1474,7 +1511,7 @@ func TestTestNotifyReturnsErrorWhenPublisherUnconfigured(t *testing.T) {
 	if _, err := serviceNil.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceHash},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	}); err == nil {
 		t.Fatal("expected an error when no publisher is configured (nil)")
@@ -1496,7 +1533,7 @@ func TestTestNotifyPropagatesGeneratePasswordError(t *testing.T) {
 	if _, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceHash},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	}); err == nil {
 		t.Fatal("expected the GeneratePassword error to propagate")
@@ -1523,7 +1560,7 @@ func TestTestNotifyLogsWarnWhenTokenRevokeFails(t *testing.T) {
 	result, err := service.TestNotify(context.Background(), TestNotifyRequest{
 		AppID:      "urls4irl",
 		Recipients: []string{aliceHash},
-		Channel:    "alerts",
+		Channel:    "all",
 		Message:    "hello",
 	})
 	if err != nil {

@@ -31,6 +31,21 @@ interface ResultDetailParams {
   topic: string;
 }
 
+/** Parameters for the send-test notification title. */
+interface TestTitleParams {
+  appName: string;
+}
+
+/** Parameters for the send-test channel/title hint line. */
+interface FieldHintParams {
+  title: string;
+}
+
+/** Parameters for the send-test channel-mismatch warning line. */
+interface ChannelWarningParams {
+  channel: string;
+}
+
 export const strings = {
   appTitle: '4IRL Notifications Admin',
   headerBadge: 'ntfy hub',
@@ -68,9 +83,10 @@ export const strings = {
   sendTestTargetAppLabel: 'Target app',
   sendTestChannelLabel: 'Channel',
   sendTestMessageLabel: 'Message',
-  sendTestDefaultChannel: 'alerts',
+  sendTestDefaultChannel: 'all',
   sendTestDefaultMessage: 'Test notification from 4IRL admin',
   sendTestAction: 'Send test notification',
+  sendTestConfirmSend: 'Send anyway',
   sendTestSending: 'Sending…',
   sendTestLoading: 'Loading users…',
   sendTestSelectHint: 'Select one or more users to send a test.',
@@ -82,6 +98,11 @@ export const strings = {
   sendTestColumnTopic: 'Topic',
   sendTestSelectColumnAria: 'Select',
   sendTestInvalidChannel: 'Channel must be lowercase letters, numbers, or underscores.',
+  sendTestTitle: ({ appName }: TestTitleParams): string => `${appName} test`,
+  sendTestFieldHint: ({ title }: FieldHintParams): string =>
+    `Subscribers listen on all. Arrives titled “${title}”.`,
+  sendTestChannelWarning: ({ channel }: ChannelWarningParams): string =>
+    `This test will publish to “${channel}” — no subscriber listens there.`,
   sendTestSelectedCount: ({ count }: SelectedCountParams): string => `${count} selected`,
   sendTestSelectAria: ({ who }: SelectAriaParams): string => `Select ${who}`,
   sendTestResultsSummary: ({ sent, total, failed }: ResultsSummaryParams): string =>

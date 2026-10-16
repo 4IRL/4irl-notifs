@@ -31,15 +31,15 @@ raw email in a topic. You do **not** compute the hash yourself; the API returns 
 | **Publisher token**  | `POST /v1/provision-app` (once per app) | write-only on `{app_id}-*`              | your app's **backend** secret store                   | **publish** notifications |
 | **Subscriber token** | `POST /v1/provision` (once per user)    | read-only on `{app_id}-{person_hash}-*` | the user's **client** (or your backend, if you relay) | **receive** notifications |
 
-**Topic naming** (you choose `{channel}`):
+**Topic naming** (one channel per app: `all`):
 
 ```
-{app_id}-{person_hash}-{channel}     ← one user's messages for one channel
+{app_id}-{person_hash}-all           ← one channel per app; use this one
 {app_id}-{person_hash}-*             ← everything for one user (their subscriber token can read this)
 {app_id}-*                           ← everything for your app (your publisher token can write this)
 ```
 
-Example: `urls4irl-v4sf4e5teivpe3zi-alerts`.
+Example: `urls4irl-v4sf4e5teivpe3zi-all`.
 
 > **Tokens are shown once.** Every mint endpoint reveals the token exactly once — capture and store
 > it at that moment. There is no "fetch my token again" endpoint. If lost, mint a new one.
@@ -130,10 +130,10 @@ Response:
 
 ### Step 3 — Publish a notification (ntfy)
 
-Publish to the user's channel with your **publisher token**:
+Publish to the user's `all` channel with your **publisher token**:
 
 ```
-POST https://notifs.4irl.app/urls4irl-v4sf4e5teivpe3zi-alerts
+POST https://notifs.4irl.app/urls4irl-v4sf4e5teivpe3zi-all
 Authorization: Bearer tk_<publisher-token>
 Title: New shared URL
 Priority: default
@@ -141,9 +141,12 @@ Priority: default
 Alice added a link to your UTub.
 ```
 
-The topic is `{app_id}-{person_hash}-{channel}`; you pick `{channel}` per notification type
-(`alerts`, `digest`, …). Your publisher token can write any `urls4irl-*` topic, so no per-user
-publish credential is needed. (This is the standard ntfy publish API — see ntfy docs for `Title`,
+The topic is `{app_id}-{person_hash}-all`. **Always publish to `-all`**: the ntfy iOS/Android apps
+have no wildcard subscribe, so every extra channel is another manual subscription for the user.
+Distinguish notification types with the `Title`, `Tags` and `Priority` headers instead, and **always
+set `Title`**, or ntfy shows the raw topic as the notification title. Use a second channel only by
+explicit need. Your publisher token can write any `urls4irl-*` topic, so no per-user publish
+credential is needed. (This is the standard ntfy publish API — see ntfy docs for `Title`,
 `Priority`, `Tags`, `Click`, attachments, etc.)
 
 ### Step 4 — Receive notifications (ntfy, on the user's side)
@@ -151,7 +154,7 @@ publish credential is needed. (This is the standard ntfy publish API — see ntf
 The user's client subscribes with the **subscriber token** (read-only on their `*` topics):
 
 ```
-GET https://notifs.4irl.app/urls4irl-v4sf4e5teivpe3zi-alerts/json
+GET https://notifs.4irl.app/urls4irl-v4sf4e5teivpe3zi-all/json
 Authorization: Bearer tk_<subscriber-token>
 ```
 
@@ -298,17 +301,18 @@ scale, but mind two limits:
   per-visitor rate limit. Ask the operator to raise/exempt your publisher before a bulk job.
 - Each **iOS-bound** message also costs one upstream poll to ntfy.sh (rate-limited) — the operator sets
   `upstream-access-token`.
-- **Coalesce** many-per-user notifications into a single **digest** message (`{app}-{hash}-digest`)
-  instead of N separate ones — fewer requests and better UX.
+- **Coalesce** many-per-user notifications into a single **digest** message (published on
+  `{app}-{hash}-all` with a digest `Title`) instead of N separate ones — fewer requests and better UX.
 
 **Missed-message catch-up.** The server retains messages for **24h**. When a client reconnects after
 downtime, backfill with `since=`:
 `GET https://notifs.4irl.app/{topic}/json?since=<id|duration|timestamp>` (up to 24h back). Don't rely on
 a live stream alone to guarantee delivery across reconnects.
 
-**Notification types & user preferences.** Model each notif type as a `{channel}` in
-`{app_id}-{person_hash}-{channel}`. Enforce user preferences at **publish time** — simply don't emit a
-type the user disabled — so a broad subscriber token can't be used to receive muted types.
+**Notification types & user preferences.** Model each notif type as a `Title` / `Tags` on the
+single `{app_id}-{person_hash}-all` channel. Enforce user preferences at **publish time** — simply
+don't emit a type the user disabled — so a broad subscriber token can't be used to receive muted
+types.
 
 ---
 
@@ -370,8 +374,8 @@ Notes:
 - [ ] Called `POST /v1/provision-app` once; stored the **publisher token**.
 - [ ] On user opt-in: call `POST /v1/provision`; store **`person_hash`** (+ subscriber token or
       deliver it to the client). Do this once per user, not per login.
-- [ ] Publish to `{app_id}-{person_hash}-{channel}` with the publisher token.
-- [ ] User's client subscribes to `{app_id}-{person_hash}-{channel}` with the subscriber token.
+- [ ] Publish to `{app_id}-{person_hash}-all` with the publisher token, and set a `Title`.
+- [ ] User's client subscribes to `{app_id}-{person_hash}-all` with the subscriber token.
 - [ ] (Optional) Site-wide announcements: publish to `{app_id}-broadcast` with the publisher token;
       clients subscribe to `{app_id}-broadcast` (read grant added automatically at provision, returned as `broadcast_topic`).
 - [ ] On opt-out / account deletion: call `POST /v1/deprovision`.
