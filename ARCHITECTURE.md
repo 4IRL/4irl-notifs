@@ -25,7 +25,8 @@ the VPS; person-service + admin UI are Cloudflare-native.
 - `GET /healthz`, `GET /readyz` — liveness and readiness (database reachable, migrations current).
 - `/v1/admin/destinations` (`POST`, `GET`) and `/v1/admin/destinations/{name}` (`GET`, `PATCH`, `DELETE`) —
   the destination registry. Destination secrets are sealed with AES-256-GCM before they are stored and
-  are masked on every read.
+  are masked on every read. `PATCH` `secrets` only sets or replaces keys; clearing an optional secret such
+  as the ntfy `access_token` requires deleting and recreating the destination.
 - `/v1/admin/routes` (`POST`, `GET`) and `/v1/admin/routes/{id}` (`GET`, `PATCH`, `DELETE`) — the routes
   that map to destinations.
 
