@@ -431,8 +431,7 @@ func (service *Service) destinationView(ctx context.Context, stored StoredDestin
 // routeView builds the public view of a stored route, never with nil
 // destinations.
 func routeView(stored StoredRoute) RouteView {
-	destinations := []string{}
-	destinations = append(destinations, stored.DestinationNames...)
+	destinations := append([]string{}, stored.DestinationNames...)
 	return RouteView{
 		ID:             stored.ID,
 		AppPattern:     stored.AppPattern,
