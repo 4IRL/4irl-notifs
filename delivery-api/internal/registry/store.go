@@ -13,7 +13,8 @@ type Store interface {
 	// GetDestination returns the named destination or ErrDestinationNotFound.
 	GetDestination(ctx context.Context, name string) (StoredDestination, error)
 	// GetDestinationsByID returns the destinations with the given ids, ordered by
-	// name. Ids that match no row are omitted.
+	// name. Ids that match no row are omitted. Service.Resolve re-sorts by name
+	// anyway so ordering does not depend on the Store implementation.
 	GetDestinationsByID(ctx context.Context, ids []int64) ([]StoredDestination, error)
 	// UpdateDestination runs mutate on the locked row and persists the row it
 	// returns. A mutate error rolls back and is returned unchanged.
