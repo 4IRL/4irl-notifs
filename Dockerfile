@@ -12,6 +12,8 @@
 # can shell out to `ntfy` and edit the shared auth.db over a mounted volume
 # WITHOUT any Docker-socket access. A docker-exec-into-the-ntfy-container
 # approach was considered and explicitly rejected for that reason.
+#
+# LOCKSTEP: keep the golang and alpine tags equal to delivery-api/Dockerfile.
 
 FROM golang:1.26.0-alpine3.23 AS build
 WORKDIR /src

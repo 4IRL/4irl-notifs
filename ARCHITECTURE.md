@@ -12,11 +12,13 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `localhost:8300` only    | Generic delivery service skeleton: `/healthz` + `/readyz`. No public hostname yet. |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*` + `/people` proxy Functions.             |
 
-Two live environments: **local** (docker-compose: ntfy + provisioning-api) and **production** (the
-VPS + Cloudflare). ntfy + provisioning-api run on the VPS; person-service + admin UI are Cloudflare-native.
+Two live environments: **local** (docker-compose: ntfy + provisioning-api + delivery-api + Postgres) and
+**production** (the VPS + Cloudflare). ntfy + provisioning-api + delivery-api (with its Postgres) run on
+the VPS; person-service + admin UI are Cloudflare-native.
 
 ## System diagram
 
@@ -304,8 +306,8 @@ wake, backfills missed messages via `since=` for up to 24h.
 
 ```mermaid
 graph TD
-  M["merge to main"] --> B["build-prod<br/>provisioning-api image → GHCR"]
-  B --> D1J["deploy-prod<br/>SSH → VPS docker compose up<br/>(ntfy + provisioning-api)"]
+  M["merge to main"] --> B["build-prod<br/>provisioning-api + delivery-api images → GHCR"]
+  B --> D1J["deploy-prod<br/>SSH → VPS docker compose up<br/>(ntfy + provisioning-api + delivery-api + Postgres)"]
   M --> D2["deploy-admin-ui<br/>wrangler pages deploy (notifs-admin)"]
   M --> D3["deploy-person-service<br/>wrangler d1 migrations apply → wrangler deploy Worker"]
 ```
@@ -313,6 +315,13 @@ graph TD
 - **VPS deploy** (`prod-deploy.yml`): SSH via `cloudflared access ssh` (own SSH key + deploy service
   token), SCPs compose + ntfy config, `docker compose up -d`. Dual-write creds delivered as Docker
   Compose secrets (`PERSON_SERVICE_ACCESS_CLIENT_*`), never a plaintext `.env`.
+- **`DELIVERY_DB_PASSWORD` (required repo secret)**: the delivery-api Postgres password, 32+ lowercase
+  hex characters (`openssl rand -hex 32`); the deploy fails before touching the VPS if it is missing or
+  malformed, so set it before the first merge. Unlike the secrets above it is written to
+  `secrets-persistent/` on every deploy and never deleted (delivery-api reads it on every start).
+  Postgres fixes the password into the `delivery-pgdata` volume at initdb, so **rotating** the GitHub
+  secret first needs `ALTER ROLE delivery PASSWORD '<new value>'` run inside `delivery-postgres`;
+  otherwise migrate/api fail auth on the next deploy and it goes red.
 - **person-service D1 schema** is applied by CI: `worker-deploy.yml` runs `wrangler d1 migrations apply
   person-service --remote` **before** `wrangler deploy`, so a new Worker code path never hits a table its
   migration hasn't created (idempotent — applied migrations are skipped). Adding a table = add a

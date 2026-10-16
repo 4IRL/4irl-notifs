@@ -1,6 +1,9 @@
 package personhash
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 )
@@ -125,5 +128,55 @@ func TestNtfyUser(t *testing.T) {
 				t.Fatalf("NtfyUser(%q) = %q, expected %q", testCase.email, ntfyUser, testCase.expected)
 			}
 		})
+	}
+}
+
+// sharedVector is one entry of the repo-root testdata/personhash-vectors.json
+// fixture. Every Go copy of this package (provisioning-api, delivery-api)
+// asserts the same fixture, so a drifted copy fails its own test suite.
+type sharedVector struct {
+	Email      string `json:"email"`
+	Normalized string `json:"normalized"`
+	Hash       string `json:"hash"`
+	NtfyUser   string `json:"ntfy_user"`
+}
+
+// TestSharedGoldenVectors checks Normalize, Hash and NtfyUser against the
+// shared fixture. go:embed cannot cross a module root, so the file is read
+// from the repo root by relative path.
+func TestSharedGoldenVectors(t *testing.T) {
+	fixturePath := filepath.Join("..", "..", "..", "testdata", "personhash-vectors.json")
+	fixtureBytes, readErr := os.ReadFile(fixturePath)
+	if readErr != nil {
+		t.Fatalf("read shared vectors fixture: %v", readErr)
+	}
+
+	var vectors []sharedVector
+	if unmarshalErr := json.Unmarshal(fixtureBytes, &vectors); unmarshalErr != nil {
+		t.Fatalf("decode shared vectors fixture: %v", unmarshalErr)
+	}
+	if len(vectors) == 0 {
+		t.Fatal("shared vectors fixture is empty")
+	}
+
+	foundGoldenEmail := false
+	for _, vector := range vectors {
+		if vector.Email == "alice@example.com" {
+			foundGoldenEmail = true
+		}
+		t.Run(vector.Email, func(t *testing.T) {
+			if normalized := Normalize(vector.Email); normalized != vector.Normalized {
+				t.Fatalf("Normalize(%q) = %q, expected %q", vector.Email, normalized, vector.Normalized)
+			}
+			if hashed := Hash(vector.Email); hashed != vector.Hash {
+				t.Fatalf("Hash(%q) = %q, expected %q", vector.Email, hashed, vector.Hash)
+			}
+			if ntfyUser := NtfyUser(vector.Email); ntfyUser != vector.NtfyUser {
+				t.Fatalf("NtfyUser(%q) = %q, expected %q", vector.Email, ntfyUser, vector.NtfyUser)
+			}
+		})
+	}
+	if !foundGoldenEmail {
+		t.Fatal("shared vectors fixture is missing the alice@example.com golden entry")
 	}
 }

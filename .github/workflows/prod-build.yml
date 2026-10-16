@@ -8,14 +8,23 @@ permissions:
 on:
   workflow_call:
 
-env:
-  # Name of docker image
-  IMAGE_NAME: 4irl-notifs-provisioning-api
-
 jobs:
   ProdBuild:
-    name: Build multi-platform provisioning-api image
+    name: Build multi-platform ${{ matrix.service }} image
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: provisioning-api
+            image: 4irl-notifs-provisioning-api
+            dockerfile: ./Dockerfile
+          - service: delivery-api
+            image: 4irl-notifs-delivery-api
+            dockerfile: ./delivery-api/Dockerfile
+    env:
+      # Name of docker image for this matrix leg
+      IMAGE_NAME: ${{ matrix.image }}
 
     steps:
       - name: Checkout
@@ -58,7 +67,7 @@ jobs:
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
-          file: ./Dockerfile
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

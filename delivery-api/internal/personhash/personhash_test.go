@@ -1,0 +1,182 @@
+package personhash
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"regexp"
+	"testing"
+)
+
+// hashPattern is the required shape of a person hash: 16 characters of the
+// lowercased RFC 4648 base32 alphabet.
+var hashPattern = regexp.MustCompile(`^[a-z2-7]{16}$`)
+
+func TestNormalize(t *testing.T) {
+	testCases := []struct {
+		name     string
+		email    string
+		expected string
+	}{
+		{name: "already normalized", email: "alice@example.com", expected: "alice@example.com"},
+		{name: "uppercase folded", email: "Alice@Example.COM", expected: "alice@example.com"},
+		{name: "surrounding whitespace trimmed", email: "  alice@example.com\t", expected: "alice@example.com"},
+		{name: "mixed case and whitespace", email: " Bob.Smith@Mail.Example.ORG ", expected: "bob.smith@mail.example.org"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if normalized := Normalize(testCase.email); normalized != testCase.expected {
+				t.Fatalf("Normalize(%q) = %q, expected %q", testCase.email, normalized, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestHash(t *testing.T) {
+	testCases := []struct {
+		name     string
+		email    string
+		expected string
+	}{
+		{
+			// Golden vector: lowercase(base32(sha256("alice@example.com")))[:16].
+			name:     "golden vector",
+			email:    "alice@example.com",
+			expected: "76gzqgp4byjl6dje",
+		},
+		{
+			// Normalization happens before hashing, so case/whitespace
+			// variants of the same address collapse to the same hash.
+			name:     "case and whitespace variant of the golden vector",
+			email:    "  Alice@Example.COM ",
+			expected: "76gzqgp4byjl6dje",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if hashed := Hash(testCase.email); hashed != testCase.expected {
+				t.Fatalf("Hash(%q) = %q, expected %q", testCase.email, hashed, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestHashShapeAndDistinctness(t *testing.T) {
+	emails := []string{
+		"alice@example.com",
+		"bob@example.com",
+		"alice@example.org",
+		"a@b",
+	}
+
+	seenHashes := make(map[string]string, len(emails))
+	for _, email := range emails {
+		hashed := Hash(email)
+		if !hashPattern.MatchString(hashed) {
+			t.Fatalf("Hash(%q) = %q, does not match %s", email, hashed, hashPattern)
+		}
+		if priorEmail, seen := seenHashes[hashed]; seen {
+			t.Fatalf("Hash collision between %q and %q: %q", priorEmail, email, hashed)
+		}
+		seenHashes[hashed] = email
+	}
+}
+
+func TestNtfyUserFromHash(t *testing.T) {
+	testCases := []struct {
+		name     string
+		hash     string
+		expected string
+	}{
+		{name: "golden vector hash", hash: "76gzqgp4byjl6dje", expected: "u_76gzqgp4byjl6dje"},
+		{name: "arbitrary hash", hash: "aaaaaaaaaaaaaaaa", expected: "u_aaaaaaaaaaaaaaaa"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if ntfyUser := NtfyUserFromHash(testCase.hash); ntfyUser != testCase.expected {
+				t.Fatalf("NtfyUserFromHash(%q) = %q, expected %q", testCase.hash, ntfyUser, testCase.expected)
+			}
+		})
+	}
+}
+
+// NtfyUser must be consistent with NtfyUserFromHash: prefixing the hash of an
+// email yields the same username as hashing then prefixing separately.
+func TestNtfyUserMatchesNtfyUserFromHash(t *testing.T) {
+	const email = "alice@example.com"
+	if got, want := NtfyUser(email), NtfyUserFromHash(Hash(email)); got != want {
+		t.Fatalf("NtfyUser(%q) = %q, expected %q (NtfyUserFromHash(Hash(email)))", email, got, want)
+	}
+}
+
+func TestNtfyUser(t *testing.T) {
+	testCases := []struct {
+		name     string
+		email    string
+		expected string
+	}{
+		{name: "golden vector", email: "alice@example.com", expected: "u_76gzqgp4byjl6dje"},
+		{name: "normalized variant matches", email: "ALICE@EXAMPLE.COM", expected: "u_76gzqgp4byjl6dje"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if ntfyUser := NtfyUser(testCase.email); ntfyUser != testCase.expected {
+				t.Fatalf("NtfyUser(%q) = %q, expected %q", testCase.email, ntfyUser, testCase.expected)
+			}
+		})
+	}
+}
+
+// sharedVector is one entry of the repo-root testdata/personhash-vectors.json
+// fixture. Every Go copy of this package (provisioning-api, delivery-api)
+// asserts the same fixture, so a drifted copy fails its own test suite.
+type sharedVector struct {
+	Email      string `json:"email"`
+	Normalized string `json:"normalized"`
+	Hash       string `json:"hash"`
+	NtfyUser   string `json:"ntfy_user"`
+}
+
+// TestSharedGoldenVectors checks Normalize, Hash and NtfyUser against the
+// shared fixture. go:embed cannot cross a module root, so the file is read
+// from the repo root by relative path.
+func TestSharedGoldenVectors(t *testing.T) {
+	fixturePath := filepath.Join("..", "..", "..", "testdata", "personhash-vectors.json")
+	fixtureBytes, readErr := os.ReadFile(fixturePath)
+	if readErr != nil {
+		t.Fatalf("read shared vectors fixture: %v", readErr)
+	}
+
+	var vectors []sharedVector
+	if unmarshalErr := json.Unmarshal(fixtureBytes, &vectors); unmarshalErr != nil {
+		t.Fatalf("decode shared vectors fixture: %v", unmarshalErr)
+	}
+	if len(vectors) == 0 {
+		t.Fatal("shared vectors fixture is empty")
+	}
+
+	foundGoldenEmail := false
+	for _, vector := range vectors {
+		if vector.Email == "alice@example.com" {
+			foundGoldenEmail = true
+		}
+		t.Run(vector.Email, func(t *testing.T) {
+			if normalized := Normalize(vector.Email); normalized != vector.Normalized {
+				t.Fatalf("Normalize(%q) = %q, expected %q", vector.Email, normalized, vector.Normalized)
+			}
+			if hashed := Hash(vector.Email); hashed != vector.Hash {
+				t.Fatalf("Hash(%q) = %q, expected %q", vector.Email, hashed, vector.Hash)
+			}
+			if ntfyUser := NtfyUser(vector.Email); ntfyUser != vector.NtfyUser {
+				t.Fatalf("NtfyUser(%q) = %q, expected %q", vector.Email, ntfyUser, vector.NtfyUser)
+			}
+		})
+	}
+	if !foundGoldenEmail {
+		t.Fatal("shared vectors fixture is missing the alice@example.com golden entry")
+	}
+}
