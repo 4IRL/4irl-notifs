@@ -18,6 +18,7 @@ const maxAdminBodyBytes = 64 << 10
 // Error messages returned in the {"error": "..."} body of admin responses.
 const (
 	errMsgInvalidJSONBody     = "invalid JSON body"
+	errMsgBodyTooLarge        = "request body too large"
 	errMsgInvalidRouteID      = "invalid route id"
 	errMsgRegistryUnavailable = "registry unavailable"
 	errMsgDestinationNotFound = "destination does not exist"
@@ -331,15 +332,20 @@ func parseRouteID(responseWriter http.ResponseWriter, request *http.Request) (in
 
 // decodeJSON reads exactly one JSON value from the request body into dst. The
 // body is capped at maxAdminBodyBytes, unknown fields are rejected, and any
-// data after the first value is rejected. On failure it writes 400 "invalid
-// JSON body" (never echoing the body or the decoder error, which can quote
-// secret values) and returns false.
+// data after the first value is rejected. On failure it writes 413 for an
+// oversized body or 400 "invalid JSON body" (never echoing the body or the
+// decoder error, which can quote secret values) and returns false.
 func decodeJSON(responseWriter http.ResponseWriter, request *http.Request, dst any) bool {
 	limitedBody := http.MaxBytesReader(responseWriter, request.Body, maxAdminBodyBytes)
 	decoder := json.NewDecoder(limitedBody)
 	decoder.DisallowUnknownFields()
 
 	if err := decoder.Decode(dst); err != nil {
+		var tooLargeErr *http.MaxBytesError
+		if errors.As(err, &tooLargeErr) {
+			writeError(responseWriter, http.StatusRequestEntityTooLarge, errMsgBodyTooLarge)
+			return false
+		}
 		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidJSONBody)
 		return false
 	}

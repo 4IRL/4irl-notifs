@@ -436,8 +436,7 @@ func TestAdminRequestsReachRegistryWithDecodedFields(testInstance *testing.T) {
 }
 
 // TestAdminRejectsBadBodies verifies every body-carrying route rejects invalid
-// JSON, a trailing value, an unknown field, an oversized body and an empty body
-// with 400 "invalid JSON body", before the registry is called.
+// JSON, a trailing value, an unknown field and an empty body with 400 "invalid JSON body", before the registry is called.
 func TestAdminRejectsBadBodies(testInstance *testing.T) {
 	bodyRoutes := []adminRoute{
 		{name: "create destination", method: http.MethodPost, path: "/v1/admin/destinations", body: validCreateDestinationBody},
@@ -445,7 +444,6 @@ func TestAdminRejectsBadBodies(testInstance *testing.T) {
 		{name: "create route", method: http.MethodPost, path: "/v1/admin/routes", body: validCreateRouteBody},
 		{name: "patch route", method: http.MethodPatch, path: "/v1/admin/routes/7", body: validPatchRouteBody},
 	}
-	oversized := `{"config":{"k":"` + strings.Repeat("a", maxAdminBodyBytes) + `"}}`
 	badBodies := []struct {
 		name string
 		body func(valid string) string
@@ -456,7 +454,6 @@ func TestAdminRejectsBadBodies(testInstance *testing.T) {
 		{name: "trailing closing brace", body: func(valid string) string { return valid + `}` }},
 		{name: "trailing garbage", body: func(valid string) string { return valid + ` garbage` }},
 		{name: "unknown field", body: func(string) string { return `{"bogus":1}` }},
-		{name: "oversized body", body: func(string) string { return oversized }},
 	}
 
 	for _, route := range bodyRoutes {
@@ -472,6 +469,31 @@ func TestAdminRejectsBadBodies(testInstance *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestAdminRejectsOversizedBodiesWith413 verifies every body-carrying route
+// answers a body over maxAdminBodyBytes with 413, before the registry is called.
+func TestAdminRejectsOversizedBodiesWith413(testInstance *testing.T) {
+	bodyRoutes := []adminRoute{
+		{name: "create destination", method: http.MethodPost, path: "/v1/admin/destinations"},
+		{name: "patch destination", method: http.MethodPatch, path: "/v1/admin/destinations/ops_ntfy"},
+		{name: "create route", method: http.MethodPost, path: "/v1/admin/routes"},
+		{name: "patch route", method: http.MethodPatch, path: "/v1/admin/routes/7"},
+	}
+	oversized := `{"config":{"k":"` + strings.Repeat("a", maxAdminBodyBytes) + `"}}`
+
+	for _, route := range bodyRoutes {
+		testInstance.Run(route.name, func(subTest *testing.T) {
+			fake := &fakeRegistry{}
+
+			recorder := serveAdmin(fake, nil, route.method, route.path, oversized)
+
+			assertResponse(subTest, recorder, http.StatusRequestEntityTooLarge, `{"error":"request body too large"}`+"\n")
+			if fake.totalCalls() != 0 {
+				subTest.Fatalf("registry was called %d times for a rejected body", fake.totalCalls())
+			}
+		})
 	}
 }
 
