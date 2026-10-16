@@ -326,6 +326,12 @@ graph TD
   Postgres fixes the password into the `delivery-pgdata` volume at initdb, so **rotating** the GitHub
   secret first needs `ALTER ROLE delivery PASSWORD '<new value>'` run inside `delivery-postgres`;
   otherwise migrate/api fail auth on the next deploy and it goes red.
+- **`DELIVERY_MASTER_KEY` (required repo secret)**: the delivery-api master key that seals destination
+  credentials at rest (AES-256-GCM), exactly 64 lowercase hex characters (`openssl rand -hex 32`); the
+  deploy fails before touching the VPS if it is missing or malformed, so set it before the first merge.
+  Like the DB password it is written to `secrets-persistent/` on every deploy and never deleted, but only
+  delivery-api receives it (as `DELIVERY_MASTER_KEY_FILE`; `delivery-migrate` never needs it). **Back it up
+  offline**: losing or changing it orphans every stored destination secret, and there is no rotation path.
 - **person-service D1 schema** is applied by CI: `worker-deploy.yml` runs `wrangler d1 migrations apply
   person-service --remote` **before** `wrangler deploy`, so a new Worker code path never hits a table its
   migration hasn't created (idempotent — applied migrations are skipped). Adding a table = add a

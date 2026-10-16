@@ -171,8 +171,10 @@ services:
       - DELIVERY_DB_USER=delivery
       - DELIVERY_DB_NAME=delivery
       - DELIVERY_DB_PASSWORD_FILE=/run/secrets/DELIVERY_DB_PASSWORD
+      - DELIVERY_MASTER_KEY_FILE=/run/secrets/DELIVERY_MASTER_KEY
     secrets:
       - DELIVERY_DB_PASSWORD
+      - DELIVERY_MASTER_KEY
     depends_on:
       delivery-postgres:
         condition: service_healthy
@@ -197,7 +199,7 @@ volumes:
 # before `docker compose up` and `rm -rf ./secrets/` immediately after, so no
 # plaintext secret persists on the host (the same pattern urls4irl uses).
 #
-# DELIVERY_DB_PASSWORD is the exception: it persists in ./secrets-persistent/ (never deleted);
+# DELIVERY_DB_PASSWORD and DELIVERY_MASTER_KEY are the exceptions: they persist in ./secrets-persistent/ (never deleted);
 # see prod-deploy.yml for why, including the 0644 file mode.
 secrets:
   PERSON_SERVICE_ACCESS_CLIENT_ID:
@@ -207,3 +209,7 @@ secrets:
   # Persistent (unlike ./secrets/): delivery-api needs the DB password on every restart.
   DELIVERY_DB_PASSWORD:
     file: ./secrets-persistent/DELIVERY_DB_PASSWORD
+  # Persistent for the same reason, and more so: the master key is needed on every restart to
+  # decrypt the stored destination secrets, and losing it orphans all of them.
+  DELIVERY_MASTER_KEY:
+    file: ./secrets-persistent/DELIVERY_MASTER_KEY

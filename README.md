@@ -31,6 +31,7 @@ delivery-api runtime configuration (environment):
 | `DELIVERY_DB_USER` | required | Postgres user |
 | `DELIVERY_DB_NAME` | required | Postgres database name |
 | `DELIVERY_DB_PASSWORD` or `DELIVERY_DB_PASSWORD_FILE` | one required | Postgres password, inline or read from a file |
+| `DELIVERY_MASTER_KEY` or `DELIVERY_MASTER_KEY_FILE` | one required (serve only; `migrate` ignores it) | Master key sealing destination secrets at rest: exactly 64 lowercase hex characters, inline or read from a file |
 | `LISTEN_ADDRESS` | `:8080` | HTTP listen address |
 
 Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own

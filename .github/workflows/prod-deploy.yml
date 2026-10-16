@@ -37,6 +37,10 @@ on:
       # Required: 32+ lowercase hex (`openssl rand -hex 32`), validated on the runner first.
       DELIVERY_DB_PASSWORD:
         required: true
+      # Required: exactly 64 lowercase hex (`openssl rand -hex 32`), validated on the runner first.
+      # Back it up offline: losing it orphans every stored destination secret.
+      DELIVERY_MASTER_KEY:
+        required: true
 
 jobs:
   ProdDeploy:
@@ -50,6 +54,15 @@ jobs:
         run: |
           if ! [[ "${DELIVERY_DB_PASSWORD}" =~ ^[0-9a-f]{32,}$ ]]; then
             echo "DELIVERY_DB_PASSWORD secret must be 32+ lowercase hex characters (openssl rand -hex 32); nothing was copied or changed on the VPS"
+            exit 1
+          fi
+
+      - name: Validate DELIVERY_MASTER_KEY secret
+        env:
+          DELIVERY_MASTER_KEY: ${{ secrets.DELIVERY_MASTER_KEY }}
+        run: |
+          if ! [[ "${DELIVERY_MASTER_KEY}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "DELIVERY_MASTER_KEY secret must be exactly 64 lowercase hex characters (openssl rand -hex 32); nothing was copied or changed on the VPS"
             exit 1
           fi
 
@@ -109,8 +122,9 @@ jobs:
       # not written to disk). Non-secret hostnames (NTFY_BASE_URL, PERSON_SERVICE_URL) stay
       # baked into the compose file's defaults.
       #
-      # The delivery DB password is the exception: it lives in ./secrets-persistent/ and is never
-      # deleted, because delivery-api and delivery-migrate read it on every start. The file is
+      # The delivery DB password and master key are the exceptions: they live in
+      # ./secrets-persistent/ and are never deleted, because delivery-api (and, for the password,
+      # delivery-migrate) read them on every start. The file is
       # 0644, not 0600: the deploy user (uid 1001) owns it but those containers run as uid 1000
       # and must read the bind mount; the 0700 directory is the real access boundary.
       #
@@ -127,6 +141,7 @@ jobs:
           ssh -T -q -o StrictHostKeyChecking=no ${{ secrets.PROD_SSH_HOST }} '
           cd /home/4irl-notifs;
           DELIVERY_DB_PASSWORD_VALUE="${{ secrets.DELIVERY_DB_PASSWORD }}";
+          DELIVERY_MASTER_KEY_VALUE="${{ secrets.DELIVERY_MASTER_KEY }}";
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
 
           mkdir -p ./secrets/;
@@ -139,6 +154,9 @@ jobs:
           printf "%s" "${DELIVERY_DB_PASSWORD_VALUE}" > ./secrets-persistent/DELIVERY_DB_PASSWORD;
           chmod 644 ./secrets-persistent/DELIVERY_DB_PASSWORD;
           [ -s ./secrets-persistent/DELIVERY_DB_PASSWORD ] || { echo "DELIVERY_DB_PASSWORD file is empty after write; aborting"; exit 1; };
+          printf "%s" "${DELIVERY_MASTER_KEY_VALUE}" > ./secrets-persistent/DELIVERY_MASTER_KEY;
+          chmod 644 ./secrets-persistent/DELIVERY_MASTER_KEY;
+          [ -s ./secrets-persistent/DELIVERY_MASTER_KEY ] || { echo "DELIVERY_MASTER_KEY file is empty after write; aborting"; exit 1; };
 
           docker compose -f docker-compose.prod.yml pull;
           export NTFY_UPSTREAM_ACCESS_TOKEN="${{ secrets.NTFY_UPSTREAM_ACCESS_TOKEN }}";

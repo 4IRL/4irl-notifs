@@ -79,16 +79,7 @@ func TestRunFailsFastWithoutDBPassword(testInstance *testing.T) {
 			subTest.Setenv("DELIVERY_DB_PASSWORD", "")
 			subTest.Setenv("DELIVERY_DB_PASSWORD_FILE", "")
 
-			// Reserve a free port, then release it, so a Dial after run can only
-			// succeed if run wrongly bound LISTEN_ADDRESS.
-			reserved, reserveErr := net.Listen("tcp", "127.0.0.1:0")
-			if reserveErr != nil {
-				subTest.Fatalf("reserve port: %v", reserveErr)
-			}
-			address := reserved.Addr().String()
-			if closeErr := reserved.Close(); closeErr != nil {
-				subTest.Fatalf("release port: %v", closeErr)
-			}
+			address := reserveFreeAddress(subTest)
 			subTest.Setenv("LISTEN_ADDRESS", address)
 
 			ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
@@ -108,6 +99,111 @@ func TestRunFailsFastWithoutDBPassword(testInstance *testing.T) {
 				subTest.Fatalf("dial %s succeeded, want connection refused (run must not bind before config)", address)
 			}
 		})
+	}
+}
+
+// setDatabaseEnv sets a complete DELIVERY_DB_* config pointing at a loopback
+// port nothing listens on, so a connection attempt is refused immediately
+// without any DNS lookup. The pool connects lazily, so no database is needed to
+// get past openDatabase.
+func setDatabaseEnv(testInstance *testing.T) {
+	testInstance.Helper()
+	databaseHost, databasePort, splitErr := net.SplitHostPort(reserveFreeAddress(testInstance))
+	if splitErr != nil {
+		testInstance.Fatalf("split reserved address: %v", splitErr)
+	}
+	testInstance.Setenv("DELIVERY_DB_HOST", databaseHost)
+	testInstance.Setenv("DELIVERY_DB_PORT", databasePort)
+	testInstance.Setenv("DELIVERY_DB_USER", "delivery")
+	testInstance.Setenv("DELIVERY_DB_NAME", "delivery")
+	testInstance.Setenv("DELIVERY_DB_PASSWORD", "test-password")
+	testInstance.Setenv("DELIVERY_DB_PASSWORD_FILE", "")
+}
+
+// reserveFreeAddress returns a loopback address that was free a moment ago and
+// is released again, so a Dial after run can only succeed if run wrongly bound
+// it.
+func reserveFreeAddress(testInstance *testing.T) string {
+	testInstance.Helper()
+	reserved, reserveErr := net.Listen("tcp", "127.0.0.1:0")
+	if reserveErr != nil {
+		testInstance.Fatalf("reserve port: %v", reserveErr)
+	}
+	address := reserved.Addr().String()
+	if closeErr := reserved.Close(); closeErr != nil {
+		testInstance.Fatalf("release port: %v", closeErr)
+	}
+	return address
+}
+
+// TestRunServeFailsFastWithoutMasterKey verifies serve rejects a missing or
+// malformed DELIVERY_MASTER_KEY before binding its listen address, and that an
+// invalid value never appears in the error.
+func TestRunServeFailsFastWithoutMasterKey(testInstance *testing.T) {
+	const invalidKey = "not-a-valid-key-zzzz"
+
+	testCases := []struct {
+		name        string
+		keyValue    string
+		wantMessage string
+	}{
+		{name: "missing", keyValue: "", wantMessage: "DELIVERY_MASTER_KEY is required"},
+		{name: "invalid", keyValue: invalidKey, wantMessage: "must be 64 lowercase hex characters"},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			setDatabaseEnv(subTest)
+			subTest.Setenv("DELIVERY_MASTER_KEY", testCase.keyValue)
+			subTest.Setenv("DELIVERY_MASTER_KEY_FILE", "")
+			address := reserveFreeAddress(subTest)
+			subTest.Setenv("LISTEN_ADDRESS", address)
+
+			ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+			defer cancel()
+			err := run(ctx, newTestLogger(), nil)
+
+			if err == nil {
+				subTest.Fatal("run returned nil, want an error")
+			}
+			if !strings.Contains(err.Error(), testCase.wantMessage) {
+				subTest.Fatalf("run error = %q, want it to contain %q", err, testCase.wantMessage)
+			}
+			if strings.Contains(err.Error(), invalidKey) {
+				subTest.Fatalf("run error = %q, must not contain the key value", err)
+			}
+
+			connection, dialErr := net.Dial("tcp", address)
+			if dialErr == nil {
+				_ = connection.Close()
+				subTest.Fatalf("dial %s succeeded, want connection refused (run must not bind before the key check)", address)
+			}
+		})
+	}
+}
+
+// TestRunMigrateDoesNotNeedMasterKey verifies the migrate subcommand never
+// consults DELIVERY_MASTER_KEY: with the key unset it still fails, but only on
+// database connectivity.
+func TestRunMigrateDoesNotNeedMasterKey(testInstance *testing.T) {
+	setDatabaseEnv(testInstance)
+	testInstance.Setenv("DELIVERY_MASTER_KEY", "")
+	testInstance.Setenv("DELIVERY_MASTER_KEY_FILE", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+	defer cancel()
+	err := run(ctx, newTestLogger(), []string{"migrate"})
+
+	if err == nil {
+		testInstance.Fatal("run(migrate) returned nil against an unreachable database, want an error")
+	}
+	// The error must come from the database step (the first thing migrate.Run
+	// does), proving migrate got past config loading without the key.
+	if !strings.Contains(err.Error(), "acquire migration lock") {
+		testInstance.Fatalf("run(migrate) error = %q, want a database connectivity error (acquire migration lock)", err)
+	}
+	if strings.Contains(err.Error(), "DELIVERY_MASTER_KEY") {
+		testInstance.Fatalf("run(migrate) error = %q, must not mention DELIVERY_MASTER_KEY", err)
 	}
 }
 
