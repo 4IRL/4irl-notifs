@@ -17,16 +17,16 @@ const maxAdminBodyBytes = 64 << 10
 
 // Error messages returned in the {"error": "..."} body of admin responses.
 const (
-	errMsgInvalidJSONBody      = "invalid JSON body"
-	errMsgInvalidRouteID       = "invalid route id"
-	errMsgRegistryUnavailable  = "registry unavailable"
-	errMsgDestinationNotFound  = "destination does not exist"
-	errMsgRouteNotFound        = "route does not exist"
-	errMsgDestinationExists    = "destination already exists"
-	errMsgRouteExists          = "route already exists"
-	errMsgDestinationInUse     = "destination is used by a route"
-	errMsgUnknownDestination   = "unknown destination"
-	errMsgInternalServiceError = "internal error"
+	errMsgInvalidJSONBody     = "invalid JSON body"
+	errMsgInvalidRouteID      = "invalid route id"
+	errMsgRegistryUnavailable = "registry unavailable"
+	errMsgDestinationNotFound = "destination does not exist"
+	errMsgRouteNotFound       = "route does not exist"
+	errMsgDestinationExists   = "destination already exists"
+	errMsgRouteExists         = "route already exists"
+	errMsgDestinationInUse    = "destination is used by a route"
+	errMsgUnknownDestination  = "unknown destination"
+	errMsgInternalError       = "internal error"
 )
 
 // errorResponseBody is the JSON body of every admin error response.
@@ -379,6 +379,6 @@ func (server *Server) writeServiceError(responseWriter http.ResponseWriter, requ
 		writeError(responseWriter, http.StatusBadRequest, errMsgUnknownDestination)
 	default:
 		server.logger.Error("registry service error", "error", err, "path", request.URL.Path)
-		writeError(responseWriter, http.StatusInternalServerError, errMsgInternalServiceError)
+		writeError(responseWriter, http.StatusInternalServerError, errMsgInternalError)
 	}
 }
