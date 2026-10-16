@@ -167,7 +167,12 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	background := startBackground(ctx,
 		worker.Run,
 		func(backgroundCtx context.Context) {
-			dispatch.RunSweeper(backgroundCtx, messageStore, retention, dispatch.DefaultSweepInterval, time.Now, logger)
+			dispatch.RunSweeper(backgroundCtx, dispatch.SweeperConfig{
+				Expirer:   messageStore,
+				Retention: retention,
+				Interval:  dispatch.DefaultSweepInterval,
+				Logger:    logger,
+			})
 		},
 	)
 

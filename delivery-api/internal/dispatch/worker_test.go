@@ -142,7 +142,11 @@ type resolveResult struct {
 	err          error
 }
 
-type disableCall struct{ name, reason string }
+type disableCall struct {
+	name          string
+	destinationID int64
+	reason        string
+}
 
 type resolveArguments struct{ appID, destinationName, channel string }
 
@@ -173,10 +177,12 @@ func (resolver *fakeResolver) Resolve(
 	return []registry.ResolvedDestination{destination}, nil
 }
 
-func (resolver *fakeResolver) DisableDestination(ctx context.Context, name, reason string) error {
+func (resolver *fakeResolver) DisableDestination(
+	ctx context.Context, name string, destinationID int64, reason string,
+) error {
 	resolver.mutex.Lock()
 	defer resolver.mutex.Unlock()
-	resolver.disabled = append(resolver.disabled, disableCall{name: name, reason: reason})
+	resolver.disabled = append(resolver.disabled, disableCall{name: name, destinationID: destinationID, reason: reason})
 	resolver.disableCtxErrs = append(resolver.disableCtxErrs, ctx.Err())
 	return resolver.disableErr
 }
@@ -492,6 +498,36 @@ func TestWorkerGoneDisablesDestinationOnceAndRecordsDeadGone(t *testing.T) {
 	calls := harnessInstance.resolver.disableCalls()
 	if len(calls) != 1 || calls[0].name != testDestination || calls[0].reason != "webhook returned 410 Gone" {
 		t.Errorf("DisableDestination calls = %+v, want one for %q with the 410 reason", calls, testDestination)
+	}
+	// The disable is conditional on the ID this attempt resolved (7 is the ID the fake resolver hands out), so a
+	// destination re-created under the same name cannot be disabled by the old endpoint's 410.
+	if len(calls) == 1 && calls[0].destinationID != 7 {
+		t.Errorf("DisableDestination destination id = %d, want the resolved id 7", calls[0].destinationID)
+	}
+}
+
+func TestWorkerGoneForAReplacedDestinationIsRecordedWithoutAnErrorLog(t *testing.T) {
+	harnessInstance := newHarness(t, nil)
+	// The registry answers not-found when the ID no longer matches the name: the destination was deleted and
+	// re-created between resolve and disable.
+	harnessInstance.resolver.disableErr = fmt.Errorf("wrapped: %w", registry.ErrDestinationNotFound)
+	harnessInstance.sink.deliver = func(context.Context, registry.ResolvedDestination, sink.Request) sink.Outcome {
+		return sink.Outcome{StatusCode: 410}
+	}
+	harnessInstance.queue.add(newClaim(15, testDestination))
+	harnessInstance.start()
+
+	result := harnessInstance.waitForRecords(t, 1)[0]
+	harnessInstance.stop(t)
+	if result.NextState != message.StateDead || *result.DeadReason != message.DeadReasonGone {
+		t.Errorf("result = %+v, want dead/gone", result)
+	}
+	logged := harnessInstance.logs.String()
+	if strings.Contains(logged, "disable destination after 410 failed") || strings.Contains(logged, "level=ERROR") {
+		t.Errorf("a replaced destination is not a disable failure:\n%s", logged)
+	}
+	if !strings.Contains(logged, "not disabled") {
+		t.Errorf("the skipped disable was not logged:\n%s", logged)
 	}
 }
 

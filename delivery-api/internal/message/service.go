@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -125,12 +126,12 @@ func (service *Service) Submit(ctx context.Context, envelope Envelope) (StoredMe
 		return StoredMessage{}, false, validateErr
 	}
 
-	existing, found, findErr := service.store.FindMessageByKey(ctx, envelope.AppID, envelope.IdempotencyKey)
-	if findErr != nil {
-		return StoredMessage{}, false, findErr
-	}
-	if found {
+	existing, findErr := service.store.GetMessageByKey(ctx, envelope.AppID, envelope.IdempotencyKey)
+	if findErr == nil {
 		return existing, true, nil
+	}
+	if !errors.Is(findErr, ErrMessageNotFound) {
+		return StoredMessage{}, false, findErr
 	}
 
 	targets, resolveErr := service.resolveTargets(ctx, envelope)

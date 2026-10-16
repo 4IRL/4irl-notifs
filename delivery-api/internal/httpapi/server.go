@@ -197,6 +197,13 @@ func (server *Server) handleReadyz(responseWriter http.ResponseWriter, request *
 	writeJSON(responseWriter, statusCode, body)
 }
 
+// setSensitiveHeaders marks a response as carrying data that must never be
+// cached or content-sniffed by a browser.
+func setSensitiveHeaders(responseWriter http.ResponseWriter) {
+	responseWriter.Header().Set("Cache-Control", "no-store")
+	responseWriter.Header().Set("X-Content-Type-Options", "nosniff")
+}
+
 // writeJSON encodes body as JSON with the given status code and
 // application/json Content-Type.
 func writeJSON(responseWriter http.ResponseWriter, statusCode int, body any) {

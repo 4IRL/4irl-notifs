@@ -442,7 +442,7 @@ func TestGetMessageMisses(testInstance *testing.T) {
 	}
 }
 
-func TestFindMessageByKeyReportsPresenceWithoutError(testInstance *testing.T) {
+func TestGetMessageByKeyReportsPresenceAndAbsence(testInstance *testing.T) {
 	ctx, store, registryStore, _ := newMessageStore(testInstance)
 	target := seedTarget(ctx, testInstance, registryStore, "pager")
 	inserted, _, err := store.InsertMessage(ctx, sampleEnvelope("present"), []message.DeliveryTarget{target})
@@ -450,19 +450,19 @@ func TestFindMessageByKeyReportsPresenceWithoutError(testInstance *testing.T) {
 		testInstance.Fatalf("InsertMessage: %v", err)
 	}
 
-	found, ok, err := store.FindMessageByKey(ctx, "u4i", "present")
-	if err != nil || !ok {
-		testInstance.Fatalf("existing key: found=%v err=%v, want found with no error", ok, err)
+	found, err := store.GetMessageByKey(ctx, "u4i", "present")
+	if err != nil {
+		testInstance.Fatalf("existing key: err=%v, want found with no error", err)
 	}
 	if found.ID != inserted.ID || len(found.Deliveries) != 1 {
 		testInstance.Errorf("found = %+v, want id %q with 1 delivery", found, inserted.ID)
 	}
 
-	missing, ok, err := store.FindMessageByKey(ctx, "u4i", "absent")
-	if err != nil {
-		testInstance.Fatalf("absent key returned error %v, want nil (not ErrMessageNotFound)", err)
+	missing, err := store.GetMessageByKey(ctx, "u4i", "absent")
+	if !errors.Is(err, message.ErrMessageNotFound) {
+		testInstance.Fatalf("absent key error = %v, want ErrMessageNotFound", err)
 	}
-	if ok || missing.ID != "" {
-		testInstance.Errorf("absent key: found=%v id=%q, want not found", ok, missing.ID)
+	if missing.ID != "" {
+		testInstance.Errorf("absent key: id=%q, want empty", missing.ID)
 	}
 }

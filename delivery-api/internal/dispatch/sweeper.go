@@ -48,22 +48,34 @@ func RetentionFromEnv(getenv func(string) string) (time.Duration, error) {
 	return time.Duration(days) * hoursPerDay * time.Hour, nil
 }
 
-// RunSweeper deletes expired messages immediately and then every interval until
-// ctx is done. A sweep removes messages created more than retention before now
-// that have no pending delivery. It logs the deleted count at Info when it is
-// above 0 and a failure at Error; a failed sweep never stops the loop. It
-// returns at once, after logging an error, when retention or interval is not
-// positive or expirer is nil.
-func RunSweeper(
-	ctx context.Context, expirer Expirer, retention, interval time.Duration,
-	now func() time.Time, logger *slog.Logger,
-) {
+// SweeperConfig configures RunSweeper. Expirer, Retention and Interval are
+// required; Now is time.Now and Logger is slog.Default() when left zero.
+type SweeperConfig struct {
+	Expirer   Expirer
+	Retention time.Duration
+	Interval  time.Duration
+
+	// Now supplies the sweep time, so tests can run on a fake clock.
+	Now    func() time.Time
+	Logger *slog.Logger
+}
+
+// RunSweeper deletes expired messages immediately and then every
+// config.Interval until ctx is done. A sweep removes messages created more
+// than config.Retention before now that have no pending delivery. It logs the
+// deleted count at Info when it is above 0 and a failure at Error; a failed
+// sweep never stops the loop. It returns at once, after logging an error, when
+// Retention or Interval is not positive or Expirer is nil.
+func RunSweeper(ctx context.Context, config SweeperConfig) {
+	logger := config.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
+	now := config.Now
 	if now == nil {
 		now = time.Now
 	}
+	expirer, retention, interval := config.Expirer, config.Retention, config.Interval
 	if expirer == nil || retention <= 0 || interval <= 0 {
 		logger.Error("retention sweeper not started: invalid configuration")
 		return

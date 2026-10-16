@@ -170,8 +170,7 @@ func (server *Server) requireMessages(handler http.HandlerFunc) http.HandlerFunc
 	return func(responseWriter http.ResponseWriter, request *http.Request) {
 		// Message status and delivery logs are per-app data: never cache them or let a
 		// browser sniff them.
-		responseWriter.Header().Set("Cache-Control", "no-store")
-		responseWriter.Header().Set("X-Content-Type-Options", "nosniff")
+		setSensitiveHeaders(responseWriter)
 		if server.messages == nil {
 			writeError(responseWriter, http.StatusServiceUnavailable, errMsgMessagesUnavailable)
 			return

@@ -105,7 +105,10 @@ type Queue interface {
 // *registry.Service.
 type Resolver interface {
 	Resolve(ctx context.Context, appID, destinationName, channel string) ([]registry.ResolvedDestination, error)
-	DisableDestination(ctx context.Context, name, reason string) error
+	// DisableDestination disables the named destination only while its ID is
+	// still destinationID; otherwise it returns registry.ErrDestinationNotFound
+	// and changes nothing.
+	DisableDestination(ctx context.Context, name string, destinationID int64, reason string) error
 }
 
 // WorkerConfig configures a Worker. Queue, Resolver and Sinks are required;
@@ -343,20 +346,28 @@ func (worker *Worker) process(ctx context.Context, claim message.Claim) {
 	// starve the record.
 	worker.record(ctx, claim, result)
 	if result.Record.Outcome == message.OutcomeGone {
-		worker.disableDestination(ctx, claim)
+		worker.disableDestination(ctx, claim, destination.ID)
 	}
 }
 
 // disableDestination disables the claim's destination after a 410 Gone, on its
 // own short context so it neither depends on the exhausted attempt context nor
-// eats into the record's time. A failure is logged and otherwise ignored: the
+// eats into the record's time. It disables only the destination whose ID the
+// attempt resolved (destinationID): one deleted and re-created under the same
+// name meanwhile is left alone. A failure is logged and otherwise ignored: the
 // outcome has already been recorded.
-func (worker *Worker) disableDestination(ctx context.Context, claim message.Claim) {
+func (worker *Worker) disableDestination(ctx context.Context, claim message.Claim, destinationID int64) {
 	disableCtx, cancelDisable := context.WithTimeout(context.WithoutCancel(ctx), disableTimeout)
 	defer cancelDisable()
-	if disableErr := worker.config.Resolver.DisableDestination(
-		disableCtx, claim.Delivery.DestinationName, disableReason,
-	); disableErr != nil {
+	disableErr := worker.config.Resolver.DisableDestination(
+		disableCtx, claim.Delivery.DestinationName, destinationID, disableReason)
+	if errors.Is(disableErr, registry.ErrDestinationNotFound) {
+		worker.config.Logger.Warn("destination was deleted or replaced after the 410; not disabled",
+			"message_id", claim.Delivery.MessageID, "delivery_id", claim.Delivery.ID,
+			"destination", claim.Delivery.DestinationName)
+		return
+	}
+	if disableErr != nil {
 		worker.config.Logger.Error("disable destination after 410 failed",
 			"message_id", claim.Delivery.MessageID, "delivery_id", claim.Delivery.ID,
 			"destination", claim.Delivery.DestinationName, "error", disableErr)

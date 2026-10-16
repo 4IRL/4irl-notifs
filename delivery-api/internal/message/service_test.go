@@ -21,10 +21,6 @@ type fakeServiceStore struct {
 
 	mutex sync.Mutex
 
-	findResult  StoredMessage
-	findFound   bool
-	findErr     error
-	findCalls   int
 	insertCalls []insertCall
 	insertErr   error
 	// insertDuplicate makes InsertMessage report a lost insert race.
@@ -35,9 +31,12 @@ type fakeServiceStore struct {
 	getErr     error
 	getCalls   int
 
-	getByKeyResult StoredMessage
-	getByKeyErr    error
-	getByKeyCalls  int
+	// getByKeyPresent makes GetMessageByKey return getByKeyResult; otherwise it
+	// reports ErrMessageNotFound, as the real store does for an unknown key.
+	getByKeyPresent bool
+	getByKeyResult  StoredMessage
+	getByKeyErr     error
+	getByKeyCalls   int
 
 	listResult []Delivery
 	listErr    error
@@ -66,13 +65,6 @@ type replayCall struct {
 	now        time.Time
 }
 
-func (fake *fakeServiceStore) FindMessageByKey(context.Context, string, string) (StoredMessage, bool, error) {
-	fake.mutex.Lock()
-	defer fake.mutex.Unlock()
-	fake.findCalls++
-	return fake.findResult, fake.findFound, fake.findErr
-}
-
 func (fake *fakeServiceStore) InsertMessage(_ context.Context, envelope Envelope, targets []DeliveryTarget) (StoredMessage, bool, error) {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
@@ -98,7 +90,13 @@ func (fake *fakeServiceStore) GetMessageByKey(context.Context, string, string) (
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
 	fake.getByKeyCalls++
-	return fake.getByKeyResult, fake.getByKeyErr
+	if fake.getByKeyErr != nil {
+		return StoredMessage{}, fake.getByKeyErr
+	}
+	if !fake.getByKeyPresent {
+		return StoredMessage{}, ErrMessageNotFound
+	}
+	return fake.getByKeyResult, nil
 }
 
 func (fake *fakeServiceStore) ListDeliveries(_ context.Context, state string, limit int) ([]Delivery, error) {
@@ -223,9 +221,9 @@ func TestSubmitInvalidEnvelopeNeverTouchesStoreOrResolver(testInstance *testing.
 
 	_, _, err := fixture.service.Submit(context.Background(), envelope)
 	wantValidationMessage(testInstance, err, "invalid channel")
-	if fixture.store.findCalls != 0 || len(fixture.store.insertCalls) != 0 || len(fixture.resolver.calls) != 0 {
+	if fixture.store.getByKeyCalls != 0 || len(fixture.store.insertCalls) != 0 || len(fixture.resolver.calls) != 0 {
 		testInstance.Fatalf("store find/insert = %d/%d, resolver = %d; want no calls",
-			fixture.store.findCalls, len(fixture.store.insertCalls), len(fixture.resolver.calls))
+			fixture.store.getByKeyCalls, len(fixture.store.insertCalls), len(fixture.resolver.calls))
 	}
 	if fixture.wakes.calls() != 0 {
 		testInstance.Fatalf("Wake calls = %d, want 0", fixture.wakes.calls())
@@ -235,8 +233,8 @@ func TestSubmitInvalidEnvelopeNeverTouchesStoreOrResolver(testInstance *testing.
 func TestSubmitDuplicateReturnsOriginalWithoutResolveInsertOrWake(testInstance *testing.T) {
 	fixture := newServiceFixture()
 	original := StoredMessage{ID: "22222222-2222-2222-2222-222222222222", Envelope: validEnvelope()}
-	fixture.store.findResult = original
-	fixture.store.findFound = true
+	fixture.store.getByKeyResult = original
+	fixture.store.getByKeyPresent = true
 	// The duplicate must be served even though resolution would now fail.
 	fixture.resolver.err = registry.ErrDestinationDisabled
 
@@ -336,7 +334,7 @@ func TestSubmitCopiesSupportedTypes(testInstance *testing.T) {
 func TestSubmitPropagatesStoreErrors(testInstance *testing.T) {
 	storeErr := errors.New("boom")
 	findFixture := newServiceFixture()
-	findFixture.store.findErr = storeErr
+	findFixture.store.getByKeyErr = storeErr
 	if _, _, err := findFixture.service.Submit(context.Background(), validEnvelope()); !errors.Is(err, storeErr) {
 		testInstance.Fatalf("find error = %v, want %v", err, storeErr)
 	}
@@ -423,6 +421,7 @@ func TestGetByKeyRejectsMalformedInputsBeforeTheStore(testInstance *testing.T) {
 func TestGetByKeyReachesTheStoreWhenValid(testInstance *testing.T) {
 	fixture := newServiceFixture()
 	fixture.store.getByKeyResult = messageFor()
+	fixture.store.getByKeyPresent = true
 	stored, err := fixture.service.GetByKey(context.Background(), "urls4irl", "key-1")
 	if err != nil || stored.Envelope.AppID != "urls4irl" || fixture.store.getByKeyCalls != 1 {
 		testInstance.Fatalf("GetByKey = (%+v, %v), calls %d", stored, err, fixture.store.getByKeyCalls)

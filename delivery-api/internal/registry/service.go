@@ -157,13 +157,22 @@ func (service *Service) UpdateDestination(
 	return service.destinationView(ctx, stored), nil
 }
 
-// DisableDestination disables the named destination and records reason as its
-// disabled reason. It is for the delivery path (a webhook answering 410 Gone),
-// not the admin API: it neither opens nor reseals the secrets. A missing
-// destination returns ErrDestinationNotFound unchanged.
-func (service *Service) DisableDestination(ctx context.Context, name, reason string) error {
+// DisableDestination disables the named destination, but only while its ID is
+// still destinationID, and records reason as its disabled reason. It is for the
+// delivery path (a webhook answering 410 Gone), not the admin API: it neither
+// opens nor reseals the secrets. The ID check keeps a destination deleted and
+// re-created under the same name since the caller resolved it from being
+// disabled by the old endpoint's answer. A missing destination, or one whose ID
+// no longer matches, returns ErrDestinationNotFound unchanged and writes
+// nothing.
+func (service *Service) DisableDestination(
+	ctx context.Context, name string, destinationID int64, reason string,
+) error {
 	_, storeErr := service.store.UpdateDestination(ctx, name,
 		func(current StoredDestination) (StoredDestination, error) {
+			if current.ID != destinationID {
+				return StoredDestination{}, ErrDestinationNotFound
+			}
 			current.Enabled = false
 			current.DisabledReason = &reason
 			return current, nil

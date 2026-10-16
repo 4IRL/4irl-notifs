@@ -725,7 +725,7 @@ func TestDisableDestination(t *testing.T) {
 	stored.SealedSecrets = bytes.Repeat([]byte{0xAB}, 64) // unopenable: proves no open or reseal happens
 	fixture.store.destinations["ops"] = stored
 
-	if err := fixture.service.DisableDestination(context.Background(), "ops", "webhook returned 410 Gone"); err != nil {
+	if err := fixture.service.DisableDestination(context.Background(), "ops", stored.ID, "webhook returned 410 Gone"); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 
@@ -744,11 +744,38 @@ func TestDisableDestination(t *testing.T) {
 func TestDisableDestinationMissing(t *testing.T) {
 	fixture := newServiceFixture(t)
 
-	err := fixture.service.DisableDestination(context.Background(), "missing", "gone")
+	err := fixture.service.DisableDestination(context.Background(), "missing", 1, "gone")
 
 	// Identity comparison is deliberate: the contract is that the sentinel is returned unchanged (not wrapped).
 	if err != ErrDestinationNotFound {
 		t.Fatalf("want ErrDestinationNotFound returned unchanged, got %v", err)
+	}
+}
+
+// A 410 from the old endpoint must not disable a destination that was deleted and re-created under the same name
+// while the attempt was in flight.
+func TestDisableDestinationLeavesAReplacedDestinationAlone(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createDiscord(t, "ops")
+	resolvedID := fixture.store.destinations["ops"].ID
+	if _, err := fixture.service.DeleteDestination(context.Background(), "ops"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	fixture.createDiscord(t, "ops")
+	replacement := fixture.store.destinations["ops"]
+	if replacement.ID == resolvedID {
+		t.Fatalf("test setup: the re-created destination kept id %d", resolvedID)
+	}
+
+	err := fixture.service.DisableDestination(context.Background(), "ops", resolvedID, "webhook returned 410 Gone")
+
+	// Identity comparison is deliberate: the contract is that the sentinel is returned unchanged (not wrapped).
+	if err != ErrDestinationNotFound {
+		t.Fatalf("want ErrDestinationNotFound returned unchanged, got %v", err)
+	}
+	after := fixture.store.destinations["ops"]
+	if !after.Enabled || after.DisabledReason != nil {
+		t.Fatalf("the replacement was disabled: enabled=%v reason=%v", after.Enabled, after.DisabledReason)
 	}
 }
 

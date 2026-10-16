@@ -35,10 +35,15 @@ the VPS; person-service + admin UI are Cloudflare-native.
   The in-process worker delivers each queued message to its webhook destination with retries; the
   operator delivery log and replay live under `/v1/admin/deliveries`. The full contract and integration
   guide come in a later phase.
+- Retention sweeper: an in-process sweeper deletes messages older than `DELIVERY_RETENTION_DAYS`
+  (default 30, integer 1-3650; an invalid value fails startup). A message with a pending delivery is
+  never deleted.
 
 The `/v1/admin` API has no authentication of its own, which is why delivery-api is bound to
-`localhost:8300` only. Do not expose it through a tunnel or public hostname until a path-scoped
-Cloudflare Access application gates `/v1/admin/*`.
+`localhost:8300` only. `/v1/messages` is equally unauthenticated (`app_id` is caller-asserted, so any
+process that can reach the port can submit as, or read the status of, any app). Do not expose either
+through a tunnel or public hostname until a path-scoped Cloudflare Access application gates
+`/v1/admin/*` and `/v1/messages` has per-app authentication or its own Access policy.
 
 ## System diagram
 

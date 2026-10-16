@@ -65,7 +65,9 @@ func startSweeper(
 	fixedNow := func() time.Time { return testClockStart }
 	go func() {
 		defer close(done)
-		RunSweeper(ctx, expirer, retention, interval, fixedNow, logger)
+		RunSweeper(ctx, SweeperConfig{
+			Expirer: expirer, Retention: retention, Interval: interval, Now: fixedNow, Logger: logger,
+		})
 	}()
 	return func() {
 		cancel()
@@ -167,7 +169,10 @@ func TestRunSweeperDoesNotSweepWhenAlreadyCanceled(t *testing.T) {
 	expirer := newFakeExpirer()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	RunSweeper(ctx, expirer, time.Hour, time.Hour, nil, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	RunSweeper(ctx, SweeperConfig{
+		Expirer: expirer, Retention: time.Hour, Interval: time.Hour,
+		Logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+	})
 	if got := len(expirer.cutoffsSeen()); got != 0 {
 		t.Errorf("sweeps = %d, want 0 for a canceled context", got)
 	}
@@ -191,8 +196,10 @@ func TestRunSweeperRejectsInvalidConfigurationWithoutPanicking(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				RunSweeper(context.Background(), testCase.expirer, testCase.retention, testCase.interval, nil,
-					slog.New(slog.NewTextHandler(logs, nil)))
+				RunSweeper(context.Background(), SweeperConfig{
+					Expirer: testCase.expirer, Retention: testCase.retention, Interval: testCase.interval,
+					Logger: slog.New(slog.NewTextHandler(logs, nil)),
+				})
 			}()
 			select {
 			case <-done:

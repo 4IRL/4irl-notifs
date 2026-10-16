@@ -3,21 +3,17 @@ package registry
 import (
 	"context"
 	"errors"
-	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/pgutil"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
 	sqlStateUniqueViolation     = "23505"
 	sqlStateForeignKeyViolation = "23503"
-
-	// rollbackTimeout bounds the deferred rollback, which runs detached from the
-	// request context so a cancelled request still releases its locks.
-	rollbackTimeout = 5 * time.Second
 )
 
 // Names sort bytewise (COLLATE "C") so ordering never depends on the database's
@@ -36,18 +32,6 @@ LEFT JOIN route_destinations rd ON rd.route_id = r.id
 LEFT JOIN destinations d ON d.id = rd.destination_id`
 	routeGroup = ` GROUP BY r.id ORDER BY r.id`
 )
-
-// querier is the read/write surface shared by *pgxpool.Pool and pgx.Tx.
-type querier interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
-}
-
-// rowScanner is satisfied by both pgx.Row and pgx.Rows.
-type rowScanner interface {
-	Scan(dest ...any) error
-}
 
 // PGStore is the Postgres-backed Store. It is covered by the integration
 // tests, not unit tests.
@@ -78,7 +62,7 @@ VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+destinationColumns,
 		if pgErrorCode(scanErr) == sqlStateUniqueViolation {
 			return StoredDestination{}, ErrDestinationExists
 		}
-		return StoredDestination{}, wrapDBError("insert destination", scanErr)
+		return StoredDestination{}, pgutil.WrapDBError("insert destination", scanErr)
 	}
 	return inserted, nil
 }
@@ -88,11 +72,11 @@ func (store *PGStore) ListDestinations(ctx context.Context) ([]StoredDestination
 	rows, queryErr := store.pool.Query(ctx,
 		`SELECT `+destinationColumns+` FROM destinations ORDER BY name COLLATE "C"`)
 	if queryErr != nil {
-		return nil, wrapDBError("list destinations", queryErr)
+		return nil, pgutil.WrapDBError("list destinations", queryErr)
 	}
 	destinations, collectErr := collectDestinations(rows)
 	if collectErr != nil {
-		return nil, wrapDBError("list destinations", collectErr)
+		return nil, pgutil.WrapDBError("list destinations", collectErr)
 	}
 	return destinations, nil
 }
@@ -105,7 +89,7 @@ func (store *PGStore) GetDestination(ctx context.Context, name string) (StoredDe
 		if errors.Is(scanErr, pgx.ErrNoRows) {
 			return StoredDestination{}, ErrDestinationNotFound
 		}
-		return StoredDestination{}, wrapDBError("get destination", scanErr)
+		return StoredDestination{}, pgutil.WrapDBError("get destination", scanErr)
 	}
 	return destination, nil
 }
@@ -119,11 +103,11 @@ func (store *PGStore) GetDestinationsByID(ctx context.Context, ids []int64) ([]S
 	rows, queryErr := store.pool.Query(ctx,
 		`SELECT `+destinationColumns+` FROM destinations WHERE id = ANY($1) ORDER BY name COLLATE "C"`, ids)
 	if queryErr != nil {
-		return nil, wrapDBError("get destinations by id", queryErr)
+		return nil, pgutil.WrapDBError("get destinations by id", queryErr)
 	}
 	destinations, collectErr := collectDestinations(rows)
 	if collectErr != nil {
-		return nil, wrapDBError("get destinations by id", collectErr)
+		return nil, pgutil.WrapDBError("get destinations by id", collectErr)
 	}
 	return destinations, nil
 }
@@ -136,14 +120,14 @@ func (store *PGStore) UpdateDestination(
 	ctx context.Context, name string, mutate func(StoredDestination) (StoredDestination, error),
 ) (StoredDestination, error) {
 	var updated StoredDestination
-	txErr := store.withTx(ctx, func(tx pgx.Tx) error {
+	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		current, scanErr := scanDestination(tx.QueryRow(ctx,
 			`SELECT `+destinationColumns+` FROM destinations WHERE name = $1 FOR UPDATE`, name))
 		if scanErr != nil {
 			if errors.Is(scanErr, pgx.ErrNoRows) {
 				return ErrDestinationNotFound
 			}
-			return wrapDBError("lock destination", scanErr)
+			return pgutil.WrapDBError("lock destination", scanErr)
 		}
 
 		mutated, mutateErr := mutate(current)
@@ -158,7 +142,7 @@ WHERE id = $1 RETURNING `+destinationColumns,
 			current.ID, configOrEmpty(mutated.Config), mutated.SealedSecrets,
 			mutated.Enabled, mutated.DisabledReason))
 		if saveErr != nil {
-			return wrapDBError("update destination", saveErr)
+			return pgutil.WrapDBError("update destination", saveErr)
 		}
 		updated = saved
 		return nil
@@ -178,7 +162,7 @@ func (store *PGStore) DeleteDestination(ctx context.Context, name string) (bool,
 		if pgErrorCode(execErr) == sqlStateForeignKeyViolation {
 			return false, ErrDestinationInUse
 		}
-		return false, wrapDBError("delete destination", execErr)
+		return false, pgutil.WrapDBError("delete destination", execErr)
 	}
 	return tag.RowsAffected() > 0, nil
 }
@@ -189,7 +173,7 @@ func (store *PGStore) DeleteDestination(ctx context.Context, name string) (bool,
 // ErrRouteExists.
 func (store *PGStore) InsertRoute(ctx context.Context, route StoredRoute) (StoredRoute, error) {
 	var inserted StoredRoute
-	txErr := store.withTx(ctx, func(tx pgx.Tx) error {
+	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		destinationIDs, resolveErr := resolveDestinationIDs(ctx, tx, route.DestinationNames)
 		if resolveErr != nil {
 			return resolveErr
@@ -202,7 +186,7 @@ func (store *PGStore) InsertRoute(ctx context.Context, route StoredRoute) (Store
 			if pgErrorCode(scanErr) == sqlStateUniqueViolation {
 				return ErrRouteExists
 			}
-			return wrapDBError("insert route", scanErr)
+			return pgutil.WrapDBError("insert route", scanErr)
 		}
 		if linkErr := linkDestinations(ctx, tx, routeID, destinationIDs); linkErr != nil {
 			return linkErr
@@ -238,14 +222,14 @@ func (store *PGStore) UpdateRoute(
 	ctx context.Context, id int64, mutate func(StoredRoute) (StoredRoute, error),
 ) (StoredRoute, error) {
 	var updated StoredRoute
-	txErr := store.withTx(ctx, func(tx pgx.Tx) error {
+	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		var lockedID int64
 		lockErr := tx.QueryRow(ctx, `SELECT id FROM routes WHERE id = $1 FOR UPDATE`, id).Scan(&lockedID)
 		if lockErr != nil {
 			if errors.Is(lockErr, pgx.ErrNoRows) {
 				return ErrRouteNotFound
 			}
-			return wrapDBError("lock route", lockErr)
+			return pgutil.WrapDBError("lock route", lockErr)
 		}
 		current, loadErr := queryRoute(ctx, tx, id)
 		if loadErr != nil {
@@ -267,10 +251,10 @@ func (store *PGStore) UpdateRoute(
 			if pgErrorCode(execErr) == sqlStateUniqueViolation {
 				return ErrRouteExists
 			}
-			return wrapDBError("update route", execErr)
+			return pgutil.WrapDBError("update route", execErr)
 		}
 		if _, execErr := tx.Exec(ctx, `DELETE FROM route_destinations WHERE route_id = $1`, id); execErr != nil {
-			return wrapDBError("clear route destinations", execErr)
+			return pgutil.WrapDBError("clear route destinations", execErr)
 		}
 		if linkErr := linkDestinations(ctx, tx, id, destinationIDs); linkErr != nil {
 			return linkErr
@@ -294,7 +278,7 @@ func (store *PGStore) UpdateRoute(
 func (store *PGStore) DeleteRoute(ctx context.Context, id int64) (bool, error) {
 	tag, execErr := store.pool.Exec(ctx, `DELETE FROM routes WHERE id = $1`, id)
 	if execErr != nil {
-		return false, wrapDBError("delete route", execErr)
+		return false, pgutil.WrapDBError("delete route", execErr)
 	}
 	return tag.RowsAffected() > 0, nil
 }
@@ -302,29 +286,6 @@ func (store *PGStore) DeleteRoute(ctx context.Context, id int64) (bool, error) {
 // ListEnabledRoutes returns the enabled routes ordered by id.
 func (store *PGStore) ListEnabledRoutes(ctx context.Context) ([]StoredRoute, error) {
 	return queryRoutes(ctx, store.pool, "list enabled routes", " WHERE r.enabled")
-}
-
-// withTx runs fn in a transaction and commits when it returns nil. fn's error
-// is returned unchanged so sentinels and mutate errors survive; the rollback is
-// deferred and harmless after a successful commit.
-func (store *PGStore) withTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
-	tx, beginErr := store.pool.BeginTx(ctx, pgx.TxOptions{})
-	if beginErr != nil {
-		return wrapDBError("begin transaction", beginErr)
-	}
-	defer func() {
-		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
-		defer cancelRollback()
-		_ = tx.Rollback(rollbackCtx)
-	}()
-
-	if fnErr := fn(tx); fnErr != nil {
-		return fnErr
-	}
-	if commitErr := tx.Commit(ctx); commitErr != nil {
-		return wrapDBError("commit transaction", commitErr)
-	}
-	return nil
 }
 
 // resolveDestinationIDs maps destination names to ids, share-locking the rows so
@@ -336,7 +297,7 @@ func resolveDestinationIDs(ctx context.Context, tx pgx.Tx, names []string) ([]in
 	rows, queryErr := tx.Query(ctx,
 		`SELECT id, name FROM destinations WHERE name = ANY($1) FOR SHARE`, distinctNames)
 	if queryErr != nil {
-		return nil, wrapDBError("resolve destinations", queryErr)
+		return nil, pgutil.WrapDBError("resolve destinations", queryErr)
 	}
 	defer rows.Close()
 
@@ -345,12 +306,12 @@ func resolveDestinationIDs(ctx context.Context, tx pgx.Tx, names []string) ([]in
 		var destinationID int64
 		var destinationName string
 		if scanErr := rows.Scan(&destinationID, &destinationName); scanErr != nil {
-			return nil, wrapDBError("resolve destinations", scanErr)
+			return nil, pgutil.WrapDBError("resolve destinations", scanErr)
 		}
 		destinationIDs = append(destinationIDs, destinationID)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
-		return nil, wrapDBError("resolve destinations", rowsErr)
+		return nil, pgutil.WrapDBError("resolve destinations", rowsErr)
 	}
 	if len(destinationIDs) != len(distinctNames) {
 		return nil, ErrUnknownDestination
@@ -363,29 +324,29 @@ func linkDestinations(ctx context.Context, tx pgx.Tx, routeID int64, destination
 	if _, execErr := tx.Exec(ctx,
 		`INSERT INTO route_destinations (route_id, destination_id) SELECT $1, unnest($2::bigint[])`,
 		routeID, destinationIDs); execErr != nil {
-		return wrapDBError("link route destinations", execErr)
+		return pgutil.WrapDBError("link route destinations", execErr)
 	}
 	return nil
 }
 
 // queryRoute loads one route with its destinations, or ErrRouteNotFound.
-func queryRoute(ctx context.Context, db querier, id int64) (StoredRoute, error) {
+func queryRoute(ctx context.Context, db pgutil.Querier, id int64) (StoredRoute, error) {
 	route, scanErr := scanRoute(db.QueryRow(ctx, routeSelect+` WHERE r.id = $1`+routeGroup, id))
 	if scanErr != nil {
 		if errors.Is(scanErr, pgx.ErrNoRows) {
 			return StoredRoute{}, ErrRouteNotFound
 		}
-		return StoredRoute{}, wrapDBError("get route", scanErr)
+		return StoredRoute{}, pgutil.WrapDBError("get route", scanErr)
 	}
 	return route, nil
 }
 
 // queryRoutes loads every route matching the optional where clause (leading
 // space included), ordered by id and never nil.
-func queryRoutes(ctx context.Context, db querier, operation string, where string) ([]StoredRoute, error) {
+func queryRoutes(ctx context.Context, db pgutil.Querier, operation string, where string) ([]StoredRoute, error) {
 	rows, queryErr := db.Query(ctx, routeSelect+where+routeGroup)
 	if queryErr != nil {
-		return nil, wrapDBError(operation, queryErr)
+		return nil, pgutil.WrapDBError(operation, queryErr)
 	}
 	defer rows.Close()
 
@@ -393,12 +354,12 @@ func queryRoutes(ctx context.Context, db querier, operation string, where string
 	for rows.Next() {
 		route, scanErr := scanRoute(rows)
 		if scanErr != nil {
-			return nil, wrapDBError(operation, scanErr)
+			return nil, pgutil.WrapDBError(operation, scanErr)
 		}
 		routes = append(routes, route)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
-		return nil, wrapDBError(operation, rowsErr)
+		return nil, pgutil.WrapDBError(operation, rowsErr)
 	}
 	return routes, nil
 }
@@ -421,7 +382,7 @@ func collectDestinations(rows pgx.Rows) ([]StoredDestination, error) {
 }
 
 // scanDestination reads one row selected with destinationColumns.
-func scanDestination(row rowScanner) (StoredDestination, error) {
+func scanDestination(row pgutil.RowScanner) (StoredDestination, error) {
 	var destination StoredDestination
 	if scanErr := row.Scan(
 		&destination.ID, &destination.Name, &destination.Type, &destination.Config,
@@ -437,7 +398,7 @@ func scanDestination(row rowScanner) (StoredDestination, error) {
 }
 
 // scanRoute reads one row selected with routeSelect.
-func scanRoute(row rowScanner) (StoredRoute, error) {
+func scanRoute(row pgutil.RowScanner) (StoredRoute, error) {
 	var route StoredRoute
 	if scanErr := row.Scan(
 		&route.ID, &route.AppPattern, &route.ChannelPattern, &route.Enabled,
@@ -475,19 +436,6 @@ func distinct(names []string) []string {
 		unique = append(unique, name)
 	}
 	return unique
-}
-
-// wrapDBError labels a database error with its operation. A *pgconn.PgError is
-// flattened to its message and SQLSTATE without %w: its Detail field can hold
-// the whole failing row (including sealed_secrets), so it must not stay
-// reachable through errors.As or %+v. Other errors (context cancellation,
-// connection failures) keep their chain.
-func wrapDBError(operation string, err error) error {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return fmt.Errorf("%s: %s (SQLSTATE %s)", operation, pgErr.Message, pgErr.Code)
-	}
-	return fmt.Errorf("%s: %w", operation, err)
 }
 
 // pgErrorCode returns the SQLSTATE of a Postgres error, or "" for any other.

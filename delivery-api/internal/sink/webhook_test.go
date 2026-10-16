@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -117,7 +120,7 @@ func destinationFor(url string) registry.ResolvedDestination {
 
 func testSink() *WebhookSink {
 	sink := NewWebhookSink(http.DefaultClient)
-	sink.Now = func() time.Time { return goldenNow }
+	sink.now = func() time.Time { return goldenNow }
 	return sink
 }
 
@@ -136,15 +139,25 @@ func (roundTrip roundTripperFunc) RoundTrip(request *http.Request) (*http.Respon
 	return roundTrip(request)
 }
 
-func TestNewWebhookSinkSetsNow(t *testing.T) {
+func TestNewWebhookSinkSetsClockAndClient(t *testing.T) {
 	sink := NewWebhookSink(http.DefaultClient)
 
-	if sink.Now == nil {
-		t.Fatal("NewWebhookSink left Now nil")
+	if sink.now == nil {
+		t.Fatal("NewWebhookSink left the clock nil")
 	}
-	if sink.Client != http.DefaultClient {
+	if sink.client != http.DefaultClient {
 		t.Error("NewWebhookSink did not keep the client it was given")
 	}
+}
+
+func TestNewWebhookSinkPanicsWithoutClient(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("NewWebhookSink(nil) did not panic")
+		}
+	}()
+
+	NewWebhookSink(nil)
 }
 
 func TestDeliverSendsEveryHeaderAndGoldenSignature(t *testing.T) {
@@ -445,7 +458,8 @@ func TestTransportErrorRedactsHostname(t *testing.T) {
 			client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 				return nil, test.cause
 			})}
-			sink := &WebhookSink{Client: client, Now: func() time.Time { return goldenNow }}
+			sink := NewWebhookSink(client)
+			sink.now = func() time.Time { return goldenNow }
 
 			outcome := sink.Deliver(context.Background(), destinationFor("https://"+hostname+"/hook"), goldenRequest())
 
@@ -468,11 +482,85 @@ func TestTransportErrorRedactsHostname(t *testing.T) {
 	}
 }
 
+func TestTransportErrorMasksResolvedAddresses(t *testing.T) {
+	const hostname = "tenant-secret.example.com"
+	resolvedAddr := &net.TCPAddr{IP: net.ParseIP("203.0.113.9"), Port: 443}
+	tests := []struct {
+		name      string
+		cause     error
+		wantText  string
+		wantIsErr error
+	}{
+		{
+			name: "dial failure",
+			cause: &net.OpError{
+				Op: "dial", Net: "tcp", Addr: resolvedAddr,
+				Err: os.NewSyscallError("connect", syscall.ECONNREFUSED),
+			},
+			wantText: "dial tcp: connect: connection refused",
+		},
+		{
+			name: "dns failure names neither host nor resolver",
+			cause: &net.OpError{
+				Op: "dial", Net: "tcp",
+				Err: &net.DNSError{Err: "no such host", Name: hostname, Server: "127.0.0.11:53"},
+			},
+			wantText: "dial tcp: lookup failed: no such host",
+		},
+		{
+			name:     "bare dns failure",
+			cause:    &net.DNSError{Err: "i/o timeout", Name: hostname, Server: "127.0.0.11:53", IsTimeout: true},
+			wantText: "lookup failed: i/o timeout",
+		},
+		{
+			name: "blocked address does not name the internal ip",
+			cause: &net.OpError{
+				Op: "dial", Net: "tcp",
+				Addr: &net.TCPAddr{IP: net.ParseIP("10.0.0.5"), Port: 8443},
+				Err:  transport.ErrBlockedAddress,
+			},
+			wantText:  "dial tcp: " + transport.ErrBlockedAddress.Error(),
+			wantIsErr: transport.ErrBlockedAddress,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return nil, test.cause
+			})}
+
+			outcome := NewWebhookSink(client).Deliver(
+				context.Background(), destinationFor("https://"+hostname+"/hook"), goldenRequest(),
+			)
+
+			if outcome.Err == nil {
+				t.Fatal("want a transport error")
+			}
+			if want := "webhook request failed: " + test.wantText; outcome.Err.Error() != want {
+				t.Errorf("error = %q, want %q", outcome.Err, want)
+			}
+			for _, leaked := range []string{"203.0.113.9", "10.0.0.5", "443", "8443", "127.0.0.11", ":53", hostname} {
+				if strings.Contains(outcome.Err.Error(), leaked) {
+					t.Errorf("error %q leaks %q", outcome.Err, leaked)
+				}
+			}
+			if test.wantIsErr != nil {
+				if !errors.Is(outcome.Err, test.wantIsErr) {
+					t.Errorf("errors.Is(%v, %v) = false, want true", outcome.Err, test.wantIsErr)
+				}
+				if !transport.IsBlocked(outcome.Err) {
+					t.Error("transport.IsBlocked = false, want true")
+				}
+			}
+		})
+	}
+}
+
 func TestSSRFClientBlocksAndErrorStaysClean(t *testing.T) {
 	const urlSecret = "s3cr3t-path-token"
 	server, _ := newCaptureServer(t, http.StatusOK, "", nil)
 	sink := NewWebhookSink(transport.New(transport.Config{}))
-	sink.Now = func() time.Time { return goldenNow }
+	sink.now = func() time.Time { return goldenNow }
 
 	// The test server is plain http on loopback: the guarded client must refuse it.
 	outcome := sink.Deliver(context.Background(), destinationFor(server.URL+"/"+urlSecret), goldenRequest())
@@ -549,20 +637,9 @@ func TestDeliverRefusesUnencodablePayloadAsPermanent(t *testing.T) {
 	}
 }
 
-func TestDeliverRefusesWithoutClient(t *testing.T) {
-	sink := &WebhookSink{}
-	outcome := sink.Deliver(context.Background(), destinationFor("https://example.com/"), goldenRequest())
-	if outcome.Err == nil {
-		t.Fatal("want an error when the sink has no client")
-	}
-	if !errors.Is(outcome.Err, ErrInvalidDelivery) {
-		t.Errorf("err = %v, want ErrInvalidDelivery", outcome.Err)
-	}
-}
-
-func TestDeliverDefaultsNowWhenUnset(t *testing.T) {
+func TestDeliverSignsWithTheRealClockByDefault(t *testing.T) {
 	server, captured := newCaptureServer(t, http.StatusOK, "", nil)
-	sink := &WebhookSink{Client: http.DefaultClient}
+	sink := NewWebhookSink(http.DefaultClient)
 
 	outcome := sink.Deliver(context.Background(), destinationFor(server.URL), goldenRequest())
 

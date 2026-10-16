@@ -18,9 +18,6 @@ type Store interface {
 	// GetMessageByKey returns the message for (appID, idempotencyKey), or
 	// ErrMessageNotFound.
 	GetMessageByKey(ctx context.Context, appID string, idempotencyKey string) (StoredMessage, error)
-	// FindMessageByKey is the dedup pre-check: it reports absence as found=false
-	// with a nil error rather than ErrMessageNotFound.
-	FindMessageByKey(ctx context.Context, appID string, idempotencyKey string) (StoredMessage, bool, error)
 	// ClaimDue leases the oldest pending delivery whose next_attempt_at is at or
 	// before now, by pushing its next_attempt_at to now+lease in the same
 	// transaction (FOR UPDATE SKIP LOCKED), so concurrent workers never claim the

@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
 
 // appIDPattern matches an app_id: the same rule as provisioning-api and the
@@ -23,9 +25,6 @@ var channelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,31}$`)
 
 // idempotencyKeyPattern matches 1-200 printable, non-space ASCII bytes.
 var idempotencyKeyPattern = regexp.MustCompile(`^[\x21-\x7e]{1,200}$`)
-
-// destinationNamePattern matches a registry destination name.
-var destinationNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,62}$`)
 
 const (
 	// maxDisplayTitleBytes, maxDisplayBodyBytes and maxDisplayURLBytes bound the
@@ -115,7 +114,9 @@ func ValidateTo(toDestination string, toRecipient string) error {
 	if toRecipient != "" {
 		return &ValidationError{Message: "recipient delivery not yet supported"}
 	}
-	if toDestination != "" && !destinationNamePattern.MatchString(toDestination) {
+	// The registry owns the destination name rule; only its error is mapped to
+	// this API's message.
+	if toDestination != "" && registry.ValidateDestinationName(toDestination) != nil {
 		return &ValidationError{Message: "invalid to.destination"}
 	}
 	return nil

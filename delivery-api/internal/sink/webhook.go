@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -40,10 +41,6 @@ const (
 	hostMarker     = "[host]"
 )
 
-// errNoClient wraps ErrInvalidDelivery: a sink without a client can never send,
-// so retrying cannot help.
-var errNoClient = fmt.Errorf("%w: webhook sink has no HTTP client", ErrInvalidDelivery)
-
 // requestError is a transport failure with the destination hostname masked out
 // of its text. Unwrap returns the original cause so errors.Is, errors.As and
 // transport.IsBlocked still see through it.
@@ -56,17 +53,45 @@ func (failure *requestError) Error() string { return failure.message }
 
 func (failure *requestError) Unwrap() error { return failure.cause }
 
-// newRequestError wraps cause, replacing every case-insensitive occurrence of
-// hostname in its text with a placeholder. DNS and certificate errors quote the
-// host they failed on, and a webhook host can be tenant-identifying. An empty
-// hostname leaves the text as is.
+// newRequestError wraps cause with the destination's network identity masked
+// out of its text. Every case-insensitive occurrence of hostname becomes a
+// placeholder, because DNS and certificate errors quote the host they failed on
+// and a webhook host can be tenant-identifying; an empty hostname leaves the
+// text as is. Resolved IPs, ports and resolver addresses are dropped as well
+// (see addressFreeText), because the attempt log is readable through the admin
+// API and must not reveal what an internal name resolved to.
 func newRequestError(cause error, hostname string) *requestError {
-	text := cause.Error()
+	text := addressFreeText(cause)
 	if hostname != "" {
 		hostPattern := regexp.MustCompile("(?i)" + regexp.QuoteMeta(hostname))
 		text = hostPattern.ReplaceAllLiteralString(text, hostMarker)
 	}
 	return &requestError{message: "webhook request failed: " + text, cause: cause}
+}
+
+// addressFreeText renders cause without network addresses. A *net.OpError is
+// reduced to its operation, network and inner error, dropping the remote and
+// local address it carries; a *net.DNSError is reduced to its failure text,
+// dropping the name and the resolver address ("on 127.0.0.11:53"). Other errors
+// keep their own text. The blocked-address error from the SSRF guard has no
+// address of its own, so it reads the same as any other refusal.
+func addressFreeText(cause error) string {
+	var opErr *net.OpError
+	if errors.As(cause, &opErr) {
+		operation := opErr.Op
+		if opErr.Net != "" {
+			operation += " " + opErr.Net
+		}
+		if opErr.Err == nil {
+			return operation
+		}
+		return operation + ": " + addressFreeText(opErr.Err)
+	}
+	var dnsErr *net.DNSError
+	if errors.As(cause, &dnsErr) {
+		return "lookup failed: " + dnsErr.Err
+	}
+	return cause.Error()
 }
 
 // webhookBody is the JSON body posted to a webhook. Its field order is the wire
@@ -83,21 +108,26 @@ type webhookBody struct {
 	Display        *message.Display `json:"display,omitempty"`
 }
 
-// WebhookSink posts a signed envelope to a generic webhook destination.
-//
-// Client must be the SSRF-safe client from transport.New: the sink never builds
-// an HTTP client of its own, and refuses to send when Client is nil.
+// WebhookSink posts a signed envelope to a generic webhook destination. Build
+// one with NewWebhookSink; the zero value is not usable.
 type WebhookSink struct {
-	Client *http.Client
-	// Now supplies the signing timestamp and the previous-secret expiry check.
-	Now func() time.Time
+	client *http.Client
+	// now supplies the signing timestamp and the previous-secret expiry check.
+	now func() time.Time
 }
 
 var _ Sink = (*WebhookSink)(nil)
 
-// NewWebhookSink builds a WebhookSink around client with Now defaulting to time.Now.
+// NewWebhookSink builds a WebhookSink around client, which must be the SSRF-safe
+// client from transport.New: the sink never builds an HTTP client of its own.
+// It panics when client is nil, because a sink that can never send would only
+// fail later, at delivery time, so this fails fast at construction. The signing
+// clock is time.Now.
 func NewWebhookSink(client *http.Client) *WebhookSink {
-	return &WebhookSink{Client: client, Now: time.Now}
+	if client == nil {
+		panic("sink.NewWebhookSink: client is required")
+	}
+	return &WebhookSink{client: client, now: time.Now}
 }
 
 // Deliver signs the envelope and posts it to the destination's URL.
@@ -106,31 +136,25 @@ func NewWebhookSink(client *http.Client) *WebhookSink {
 // "v1=<hex>". While the destination's previous signing secret is unexpired, a
 // second "v1=" signature made with it is appended so receivers can rotate.
 //
-// The Outcome's Err never contains the webhook URL, its hostname or a secret: a
-// *url.Error is reduced to its cause with the hostname masked, which keeps
-// errors.Is and transport.IsBlocked working. The ResponseSnippet has the
+// The Outcome's Err never contains the webhook URL, its hostname, a resolved IP
+// or port, a resolver address or a secret: a *url.Error is reduced to its cause
+// with the hostname and addresses masked, which keeps errors.Is and
+// transport.IsBlocked working. The ResponseSnippet has the
 // destination URL (and its path, query and userinfo) and both signing secrets
 // redacted, because receivers often echo the request back in error pages.
 // Retry-After is capped at maxRetryAfter (24h).
 func (sink *WebhookSink) Deliver(
 	ctx context.Context, destination registry.ResolvedDestination, request Request,
 ) Outcome {
-	if sink.Client == nil {
-		return Outcome{Err: errNoClient}
-	}
-	now := time.Now
-	if sink.Now != nil {
-		now = sink.Now
-	}
-	currentTime := now()
+	currentTime := sink.now()
 
 	signingSecret := destination.Secrets["signing_secret"]
 	if signingSecret == "" || destination.Secrets["url"] == "" {
 		return Outcome{Err: fmt.Errorf("%w: missing url or signing secret", ErrInvalidDelivery)}
 	}
 	// These two values become header values; refuse anything that is not
-	// printable ASCII so a hostile value can never inject a header.
-	if !isHeaderToken(request.MessageID) ||
+	// printable, non-space ASCII so a hostile value can never inject a header.
+	if message.ValidateIdempotencyKey(request.MessageID) != nil ||
 		message.ValidateIdempotencyKey(request.Envelope.IdempotencyKey) != nil {
 		return Outcome{Err: fmt.Errorf("%w: invalid message identifier", ErrInvalidDelivery)}
 	}
@@ -170,7 +194,7 @@ func (sink *WebhookSink) Deliver(
 	httpRequest.Header.Set(headerTimestamp, timestamp)
 	httpRequest.Header.Set(headerSignature, strings.Join(signatures, ","))
 
-	response, doErr := sink.Client.Do(httpRequest)
+	response, doErr := sink.client.Do(httpRequest)
 	if doErr != nil {
 		return Outcome{Err: newRequestError(transport.Cause(doErr), httpRequest.URL.Hostname())}
 	}
@@ -246,21 +270,6 @@ func previousSecretActive(destination registry.ResolvedDestination, now time.Tim
 		return false
 	}
 	return now.Before(expiresAt)
-}
-
-// isHeaderToken reports whether value is non-empty printable ASCII with no
-// whitespace, the same alphabet idempotency keys are validated against.
-// It guards the message ID header; the idempotency key uses message's own rule.
-func isHeaderToken(value string) bool {
-	if value == "" {
-		return false
-	}
-	for index := 0; index < len(value); index++ {
-		if value[index] < 0x21 || value[index] > 0x7e {
-			return false
-		}
-	}
-	return true
 }
 
 // parseRetryAfter parses a Retry-After header as delta-seconds or an HTTP-date.
