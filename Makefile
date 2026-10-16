@@ -60,14 +60,9 @@ scripts-format: ## Auto-format scripts/ with the web/ Prettier config
 worktree-ports: ## Print this checkout's resolved ports
 	@node scripts/ports.mjs print
 
-# The export line above would hand the primary's default ports to the resolver; drop them for this recipe.
-worktree-new: unexport NTFY_PORT := $(NTFY_PORT)
-worktree-new: unexport API_PORT := $(API_PORT)
-worktree-new: unexport WEB_PORT := $(WEB_PORT)
-worktree-new: unexport E2E_PORT := $(E2E_PORT)
-worktree-new: unexport DELIVERY_PORT := $(DELIVERY_PORT)
+# `env -u` drops the exported primary ports so the resolver picks fresh ones (target-specific `unexport` fails to parse on make 4.3).
 worktree-new: ## Create a worktree: make worktree-new name=<slug> [b=<branch>] [base=<ref>]
-	@WT_NAME='$(subst ','\'',$(name))' WT_BRANCH='$(subst ','\'',$(b))' WT_BASE='$(subst ','\'',$(base))' node scripts/worktree.mjs new
+	@env -u NTFY_PORT -u API_PORT -u WEB_PORT -u E2E_PORT -u DELIVERY_PORT WT_NAME='$(subst ','\'',$(name))' WT_BRANCH='$(subst ','\'',$(b))' WT_BASE='$(subst ','\'',$(base))' node scripts/worktree.mjs new
 
 worktree-rm: ## Remove this worktree (run inside it)
 	@node scripts/worktree.mjs rm
