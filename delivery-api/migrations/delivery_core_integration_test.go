@@ -154,6 +154,27 @@ func TestDeliveryConstraints(testInstance *testing.T) {
 		expectSQLState(subTest, "insert delivery with unknown state", err, sqlStateCheckViolation)
 	})
 
+	testInstance.Run("negative attempt_count rejected", func(subTest *testing.T) {
+		_, err := pool.Exec(ctx,
+			"INSERT INTO message_deliveries (message_id, destination_name, destination_type, attempt_count) VALUES ($1, 'dest_neg_attempts', 'webhook', -1)",
+			messageID)
+		expectSQLState(subTest, "insert delivery with negative attempt_count", err, sqlStateCheckViolation)
+	})
+
+	testInstance.Run("negative budget_attempts rejected", func(subTest *testing.T) {
+		_, err := pool.Exec(ctx,
+			"INSERT INTO message_deliveries (message_id, destination_name, destination_type, budget_attempts) VALUES ($1, 'dest_neg_budget', 'webhook', -1)",
+			messageID)
+		expectSQLState(subTest, "insert delivery with negative budget_attempts", err, sqlStateCheckViolation)
+	})
+
+	testInstance.Run("zero attempt_count and budget_attempts insert", func(subTest *testing.T) {
+		_, err := pool.Exec(ctx,
+			"INSERT INTO message_deliveries (message_id, destination_name, destination_type, attempt_count, budget_attempts) VALUES ($1, 'dest_zero_counts', 'webhook', 0, 0)",
+			messageID)
+		expectSQLState(subTest, "insert delivery with zero counters", err, "")
+	})
+
 	testInstance.Run("duplicate message and destination name rejected", func(subTest *testing.T) {
 		var deliveryID int64
 		err := pool.QueryRow(ctx, insertDeliverySQL, messageID, nil, "dest_one", statePending, nil).Scan(&deliveryID)

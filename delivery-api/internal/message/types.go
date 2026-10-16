@@ -23,6 +23,20 @@ const (
 	StateDead = "dead"
 )
 
+// Message-level statuses returned by DeriveStatus. They are derived from the
+// delivery states, never stored, and kept distinct from the State* names.
+const (
+	// StatusPending marks a message with at least one pending delivery.
+	StatusPending = "pending"
+	// StatusDelivered marks a message whose deliveries were all delivered.
+	StatusDelivered = "delivered"
+	// StatusDead marks a message whose deliveries are all dead.
+	StatusDead = "dead"
+	// StatusPartial marks a message whose deliveries ended in a mix of delivered
+	// and dead.
+	StatusPartial = "partial"
+)
+
 // Dead-letter reasons, stored in message_deliveries.dead_reason.
 const (
 	// DeadReasonTerminalStatus is a non-retryable response from the sink.
@@ -91,4 +105,71 @@ type Envelope struct {
 	Critical       bool
 	Payload        json.RawMessage
 	Display        *Display
+}
+
+// DeliveryTarget is one resolved destination a message fans out to. The name
+// and type are snapshotted onto the delivery row so it stays meaningful if the
+// destination is later renamed away or deleted.
+type DeliveryTarget struct {
+	DestinationID   int64
+	DestinationName string
+	DestinationType string
+}
+
+// Delivery is the mutable per-destination state of a stored message.
+// DestinationID is nil once the destination has been deleted.
+type Delivery struct {
+	ID              int64
+	MessageID       string
+	DestinationID   *int64
+	DestinationName string
+	DestinationType string
+	State           string
+	DeadReason      *string
+	AttemptCount    int
+	BudgetAttempts  int
+	BudgetStartedAt time.Time
+	NextAttemptAt   time.Time
+	LastStatusCode  *int
+	DeliveredAt     *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// StoredMessage is a message as persisted, with its deliveries ordered by
+// destination name.
+type StoredMessage struct {
+	ID         string
+	Envelope   Envelope
+	CreatedAt  time.Time
+	Deliveries []Delivery
+}
+
+// DeriveStatus returns the message-level status: StatusPending when any delivery
+// is pending (or there are none, which cannot happen for a stored message),
+// StatusDelivered when all are delivered, StatusDead when all are dead, and
+// StatusPartial for a mix of delivered and dead.
+func DeriveStatus(deliveries []Delivery) string {
+	if len(deliveries) == 0 {
+		return StatusPending
+	}
+	delivered, dead := 0, 0
+	for _, delivery := range deliveries {
+		switch delivery.State {
+		case StateDelivered:
+			delivered++
+		case StateDead:
+			dead++
+		default:
+			return StatusPending
+		}
+	}
+	switch {
+	case dead == 0:
+		return StatusDelivered
+	case delivered == 0:
+		return StatusDead
+	default:
+		return StatusPartial
+	}
 }

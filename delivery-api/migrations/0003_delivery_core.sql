@@ -4,8 +4,10 @@
 -- messages is immutable after insert. All mutable state (pending / delivered /
 -- dead, the retry budget, the next attempt time) lives in message_deliveries;
 -- the message-level status is derived from its deliveries and never stored.
--- The CHECKs mirror internal/message validation so a bad row cannot be written
--- even by a code path that skips it.
+-- The CHECKs backstop the main identifier and shape rules in internal/message
+-- validation (app_id, channel, idempotency_key, to_*, payload and display type)
+-- so those bad rows cannot be written even by a code path that skips it; the
+-- rest of the validation (sizes, display fields, url, priority) lives only in Go.
 --
 -- to_recipient is always NULL until phase 4 ships the ntfy sink; the column is
 -- reserved now so that phase needs no migration. deliver_at is likewise
@@ -42,8 +44,8 @@ CREATE TABLE message_deliveries (
   state             text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'delivered', 'dead')),
   dead_reason       text NULL CHECK (dead_reason IN ('terminal_status', 'gone', 'budget_exhausted', 'destination_disabled', 'destination_deleted', 'blocked_address', 'unsupported_type')),
   CHECK ((state = 'dead') = (dead_reason IS NOT NULL)),
-  attempt_count     integer NOT NULL DEFAULT 0,
-  budget_attempts   integer NOT NULL DEFAULT 0,
+  attempt_count     integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  budget_attempts   integer NOT NULL DEFAULT 0 CHECK (budget_attempts >= 0),
   budget_started_at timestamptz NOT NULL DEFAULT now(),
   next_attempt_at   timestamptz NOT NULL DEFAULT now(),
   last_status_code  integer NULL,
