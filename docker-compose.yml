@@ -118,6 +118,10 @@ services:
 
   delivery-api:
     restart: unless-stopped
+    # LOCKSTEP: keep in sync with docker-compose.prod.yml. Must exceed delivery-api's worst-case graceful
+    # shutdown (main.go: shutdownTimeout 26s + backgroundStopTimeout 20s); the Docker default of 10s would
+    # SIGKILL an in-flight delivery attempt before its outcome is recorded.
+    stop_grace_period: 60s
     build:
       context: .
       dockerfile: delivery-api/Dockerfile

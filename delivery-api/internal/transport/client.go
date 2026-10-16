@@ -20,7 +20,8 @@ const (
 	defaultDialTimeout           = 5 * time.Second
 	defaultTLSHandshakeTimeout   = 5 * time.Second
 	defaultResponseHeaderTimeout = 8 * time.Second
-	// defaultTimeout bounds the whole exchange, body read included; it stays under the 10 s shutdown grace.
+	// defaultTimeout bounds the whole exchange, body read included. It matches the worker's attempt timeout
+	// (dispatch.DefaultAttemptTimeout), which is part of the shutdown budget in main.go.
 	defaultTimeout = 9 * time.Second
 
 	maxResponseHeaderBytes = 16 << 10

@@ -12,16 +12,21 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/database"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/readiness"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/secretenv"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/sink"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/transport"
 	"github.com/4IRL/4irl-notifs/delivery-api/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -30,7 +35,19 @@ const (
 	defaultListenAddress = ":8080"
 	readHeaderTimeout    = 10 * time.Second
 	idleTimeout          = 60 * time.Second
-	shutdownTimeout      = 10 * time.Second
+
+	// shutdownTimeout is the HTTP drain budget. It is deliberately generous (the two drains below actually run
+	// in parallel, since the background context is canceled the moment the signal arrives): it covers the
+	// 10 s a ?wait request can hold Shutdown (httpapi.MaxWait) plus the 16 s an in-flight delivery attempt can
+	// need to finish and be recorded (dispatch.MaxInFlightShutdown), so a SIGTERM never abandons either.
+	shutdownTimeout = httpapi.MaxWait + dispatch.MaxInFlightShutdown
+	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker and sweeper to unwind.
+	backgroundStopMargin = 4 * time.Second
+	// backgroundStopTimeout bounds how long runServe waits for the worker and sweeper after HTTP has drained.
+	// Worst-case total shutdown is shutdownTimeout + backgroundStopTimeout (46 s), which the compose
+	// stop_grace_period must exceed (docker-compose.yml and docker-compose.prod.yml; pinned by
+	// TestComposeStopGracePeriodCoversShutdown).
+	backgroundStopTimeout = dispatch.MaxInFlightShutdown + backgroundStopMargin
 )
 
 // envOrDefault returns the environment value for key, or fallback when unset.
@@ -90,9 +107,11 @@ func openDatabase(ctx context.Context) (*pgxpool.Pool, []migrate.Migration, erro
 	return pool, loaded, nil
 }
 
-// runServe loads the (mandatory) database config and master key first, so a
-// missing or invalid credential fails before any port is bound, then serves
-// HTTP until ctx is canceled. The pool is opened and closed here, around serve.
+// runServe loads the (mandatory) database config, master key and retention
+// window first, so a missing or invalid value fails before any port is bound,
+// then serves HTTP and runs the delivery worker and retention sweeper until ctx
+// is canceled. The pool is opened and closed here, around serve and the
+// background work: the deferred Close runs only after both have stopped.
 func runServe(ctx context.Context, logger *slog.Logger) error {
 	pool, loaded, openErr := openDatabase(ctx)
 	if openErr != nil {
@@ -100,20 +119,43 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer pool.Close()
 
-	// The master key is resolved before net.Listen so a missing or malformed
-	// key fails the process before any port is bound.
+	// The master key and retention window are resolved before net.Listen so a
+	// missing or malformed value fails the process before any port is bound.
 	sealer, sealErr := seal.FromEnv(secretenv.Resolve)
 	if sealErr != nil {
 		return sealErr
+	}
+	retention, retentionErr := dispatch.RetentionFromEnv(os.Getenv)
+	if retentionErr != nil {
+		return retentionErr
 	}
 
 	checker := readiness.NewChecker(pool, migrate.NewPGStore(pool), migrate.ExpectedVersion(loaded))
 	// See ServerConfig.Registry for why it is set only here.
 	registryService := registry.NewService(registry.NewPGStore(pool), sealer, logger)
+
+	// One transport client per process: it owns the connection pool and the SSRF guard. Production passes
+	// the zero Config, so the address policy and TLS settings are the guarded defaults.
+	messageStore := message.NewPGStore(pool)
+	worker := dispatch.NewWorker(dispatch.WorkerConfig{
+		Queue:    messageStore,
+		Resolver: registryService,
+		Sinks:    map[string]sink.Sink{registry.TypeWebhook: sink.NewWebhookSink(transport.New(transport.Config{}))},
+		Logger:   logger,
+	})
+	messageService := message.NewService(message.ServiceConfig{
+		Store:          messageStore,
+		Resolver:       registryService,
+		SupportedTypes: map[string]bool{registry.TypeWebhook: true},
+		Wake:           worker.Wake,
+		Logger:         logger,
+	})
+	// See ServerConfig.Messages for why it is set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
 		Logger:    logger,
 		Readiness: checker,
 		Registry:  registryService,
+		Messages:  messageService,
 	}).Handler()
 
 	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)
@@ -122,8 +164,61 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("listen on %s: %w", listenAddress, listenErr)
 	}
 
+	background := startBackground(ctx,
+		worker.Run,
+		func(backgroundCtx context.Context) {
+			dispatch.RunSweeper(backgroundCtx, messageStore, retention, dispatch.DefaultSweepInterval, time.Now, logger)
+		},
+	)
+
 	logger.Info("delivery-api listening", "address", listener.Addr().String())
-	return serve(ctx, logger, listener, handler, shutdownTimeout)
+	serveErr := serve(ctx, logger, listener, handler, shutdownTimeout)
+	// Stop the worker and sweeper whether serve returned on cancellation or on a listener failure, and wait
+	// for them before the deferred pool.Close so an in-flight attempt can still record its outcome.
+	background.stop(logger, backgroundStopTimeout)
+	return serveErr
+}
+
+// backgroundTasks tracks goroutines started by startBackground so they can be canceled and awaited together.
+type backgroundTasks struct {
+	cancel context.CancelFunc
+	group  sync.WaitGroup
+}
+
+// startBackground runs every function in its own goroutine with a context derived from ctx, so canceling
+// ctx (a signal) or calling stop cancels them all. The WaitGroup Add happens here, before each goroutine
+// launches: adding inside the goroutine would race with stop's Wait.
+func startBackground(ctx context.Context, runners ...func(context.Context)) *backgroundTasks {
+	backgroundCtx, cancel := context.WithCancel(ctx)
+	started := &backgroundTasks{cancel: cancel}
+	for _, runner := range runners {
+		started.group.Add(1)
+		go func() {
+			defer started.group.Done()
+			runner(backgroundCtx)
+		}()
+	}
+	return started
+}
+
+// stop cancels the background context and waits up to timeout for every goroutine to return, logging an
+// error instead of blocking forever when one does not. Calling it more than once is safe.
+func (started *backgroundTasks) stop(logger *slog.Logger, timeout time.Duration) {
+	started.cancel()
+
+	stopped := make(chan struct{})
+	go func() {
+		started.group.Wait()
+		close(stopped)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-stopped:
+	case <-timer.C:
+		logger.Error("background workers did not stop in time", "timeout", timeout.String())
+	}
 }
 
 // runMigrate applies the embedded migrations and returns the error, so the

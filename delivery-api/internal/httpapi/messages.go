@@ -19,6 +19,9 @@ const (
 	// maxWaitSeconds is the longest a submit may block waiting for a first
 	// delivery attempt; a larger ?wait= is clamped to it.
 	maxWaitSeconds = 10
+	// MaxWait is maxWaitSeconds as a duration: the longest a request can hold
+	// HTTP shutdown open, which the process shutdown budget must cover.
+	MaxWait = maxWaitSeconds * time.Second
 )
 
 // Error messages returned by the message endpoints.

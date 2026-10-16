@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -9,10 +10,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
 )
 
@@ -181,6 +186,180 @@ func TestRunServeFailsFastWithoutMasterKey(testInstance *testing.T) {
 				subTest.Fatalf("dial %s succeeded, want connection refused (run must not bind before the key check)", address)
 			}
 		})
+	}
+}
+
+// TestRunServeFailsFastOnInvalidRetention verifies serve rejects an invalid
+// DELIVERY_RETENTION_DAYS (with a valid database and master key) before binding
+// its listen address, and that the error never echoes the value.
+func TestRunServeFailsFastOnInvalidRetention(testInstance *testing.T) {
+	testCases := []struct {
+		name  string
+		value string
+	}{
+		{name: "zero", value: "0"},
+		{name: "negative", value: "-5"},
+		{name: "not a number", value: "secret-looking-value"},
+		{name: "above the maximum", value: "3651"},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			setDatabaseEnv(subTest)
+			subTest.Setenv("DELIVERY_MASTER_KEY", strings.Repeat("ab", 32))
+			subTest.Setenv("DELIVERY_MASTER_KEY_FILE", "")
+			subTest.Setenv("DELIVERY_RETENTION_DAYS", testCase.value)
+			address := reserveFreeAddress(subTest)
+			subTest.Setenv("LISTEN_ADDRESS", address)
+
+			ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+			defer cancel()
+			err := run(ctx, newTestLogger(), nil)
+
+			if err == nil {
+				subTest.Fatal("run returned nil, want an error")
+			}
+			if !strings.Contains(err.Error(), "DELIVERY_RETENTION_DAYS") {
+				subTest.Fatalf("run error = %q, want it to mention DELIVERY_RETENTION_DAYS", err)
+			}
+			if strings.Contains(err.Error(), testCase.value) {
+				subTest.Fatalf("run error = %q, must not contain the value", err)
+			}
+
+			connection, dialErr := net.Dial("tcp", address)
+			if dialErr == nil {
+				_ = connection.Close()
+				subTest.Fatalf("dial %s succeeded, want connection refused (run must not bind before the retention check)", address)
+			}
+		})
+	}
+}
+
+// TestShutdownBudgetCoversWorkerAndWaitingRequests pins the shutdown constants
+// to the delivery worker's worst case: a SIGTERM must leave an in-flight attempt
+// time to be recorded and a ?wait request time to finish.
+func TestShutdownBudgetCoversWorkerAndWaitingRequests(testInstance *testing.T) {
+	if want := dispatch.MaxInFlightShutdown + httpapi.MaxWait; shutdownTimeout < want {
+		testInstance.Fatalf("shutdownTimeout = %s, want at least %s", shutdownTimeout, want)
+	}
+	if backgroundStopTimeout < dispatch.MaxInFlightShutdown {
+		testInstance.Fatalf("backgroundStopTimeout = %s, want at least %s", backgroundStopTimeout, dispatch.MaxInFlightShutdown)
+	}
+}
+
+// composeStopGracePeriod returns the stop_grace_period of the delivery-api
+// service in a compose file, or -1 when it sets none (Docker then kills the
+// container after 10 s). It scans lines rather than parsing YAML so the module
+// keeps its standard-library-only dependency set.
+func composeStopGracePeriod(testInstance *testing.T, composePath string) time.Duration {
+	testInstance.Helper()
+	contents, readErr := os.ReadFile(composePath)
+	if readErr != nil {
+		testInstance.Fatalf("read %s: %v", composePath, readErr)
+	}
+	servicePattern := regexp.MustCompile(`^  delivery-api:\s*$`)
+	gracePattern := regexp.MustCompile(`^    stop_grace_period:\s*(\d+)s\s*$`)
+	inService := false
+	for _, line := range strings.Split(string(contents), "\n") {
+		switch {
+		case servicePattern.MatchString(line):
+			inService = true
+		case inService && line != "" && !strings.HasPrefix(line, "    "):
+			// A line indented less than a service property ends the delivery-api block.
+			return -1
+		case inService:
+			if match := gracePattern.FindStringSubmatch(line); match != nil {
+				seconds, parseErr := strconv.Atoi(match[1])
+				if parseErr != nil {
+					testInstance.Fatalf("parse stop_grace_period %q: %v", match[1], parseErr)
+				}
+				return time.Duration(seconds) * time.Second
+			}
+		}
+	}
+	return -1
+}
+
+// TestComposeStopGracePeriodCoversShutdown pins both compose files to the
+// process's worst-case graceful shutdown: with Docker's default 10 s, a SIGTERM
+// would be followed by SIGKILL while a delivery attempt is still being recorded.
+func TestComposeStopGracePeriodCoversShutdown(testInstance *testing.T) {
+	worstCase := shutdownTimeout + backgroundStopTimeout
+	for _, composeFile := range []string{"docker-compose.yml", "docker-compose.prod.yml"} {
+		testInstance.Run(composeFile, func(subTest *testing.T) {
+			grace := composeStopGracePeriod(subTest, filepath.Join("..", composeFile))
+			if grace < worstCase {
+				subTest.Fatalf("delivery-api stop_grace_period = %s, want at least the worst-case shutdown %s", grace, worstCase)
+			}
+		})
+	}
+}
+
+// TestBackgroundStopCancelsAndWaitsForEveryRunner verifies stop cancels the
+// context every runner shares and returns only after all of them have exited.
+func TestBackgroundStopCancelsAndWaitsForEveryRunner(testInstance *testing.T) {
+	const runnerCount = 3
+	var exited atomic.Int32
+	started := make(chan struct{}, runnerCount)
+	runner := func(runnerCtx context.Context) {
+		started <- struct{}{}
+		<-runnerCtx.Done()
+		exited.Add(1)
+	}
+
+	background := startBackground(context.Background(), runner, runner, runner)
+	for range runnerCount {
+		select {
+		case <-started:
+		case <-time.After(resultTimeout):
+			testInstance.Fatal("a runner never started")
+		}
+	}
+
+	background.stop(newTestLogger(), resultTimeout)
+
+	if got := exited.Load(); got != runnerCount {
+		testInstance.Fatalf("runners exited = %d, want %d (stop must wait for all of them)", got, runnerCount)
+	}
+}
+
+// TestBackgroundStopStopsWhenParentContextIsCanceled verifies a signal (the
+// parent context) stops the runners without stop having to cancel them.
+func TestBackgroundStopStopsWhenParentContextIsCanceled(testInstance *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	exited := make(chan struct{})
+	background := startBackground(parent, func(runnerCtx context.Context) {
+		<-runnerCtx.Done()
+		close(exited)
+	})
+
+	cancelParent()
+
+	select {
+	case <-exited:
+	case <-time.After(resultTimeout):
+		testInstance.Fatal("runner did not observe the parent cancellation")
+	}
+	background.stop(newTestLogger(), resultTimeout)
+}
+
+// TestBackgroundStopGivesUpOnARunnerThatIgnoresCancellation verifies stop is
+// bounded: a stuck runner is logged, not waited on forever.
+func TestBackgroundStopGivesUpOnARunnerThatIgnoresCancellation(testInstance *testing.T) {
+	release := make(chan struct{})
+	testInstance.Cleanup(func() { close(release) })
+	background := startBackground(context.Background(), func(context.Context) { <-release })
+
+	var logOutput bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logOutput, nil))
+	begin := time.Now()
+	background.stop(logger, 50*time.Millisecond)
+
+	if elapsed := time.Since(begin); elapsed > resultTimeout {
+		testInstance.Fatalf("stop took %s, want it bounded by its timeout", elapsed)
+	}
+	if !strings.Contains(logOutput.String(), "background workers did not stop in time") {
+		testInstance.Fatalf("log = %q, want the timeout message", logOutput.String())
 	}
 }
 
