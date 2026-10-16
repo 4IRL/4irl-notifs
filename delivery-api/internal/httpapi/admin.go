@@ -117,8 +117,7 @@ func (server *Server) requireRegistry(handler http.HandlerFunc) http.HandlerFunc
 	}
 }
 
-// handleCreateDestination serves POST /v1/admin/destinations. Validation order:
-// body, then the registry (which validates every field). 201 on success.
+// handleCreateDestination serves POST /v1/admin/destinations (201).
 func (server *Server) handleCreateDestination(responseWriter http.ResponseWriter, request *http.Request) {
 	var body createDestinationRequestBody
 	if !decodeJSON(responseWriter, request, &body) {
@@ -139,8 +138,7 @@ func (server *Server) handleCreateDestination(responseWriter http.ResponseWriter
 	writeJSON(responseWriter, http.StatusCreated, destinationResponseBody{Destination: view})
 }
 
-// handleListDestinations serves GET /v1/admin/destinations. Validation order:
-// the registry only (no path parameter or body).
+// handleListDestinations serves GET /v1/admin/destinations.
 func (server *Server) handleListDestinations(responseWriter http.ResponseWriter, request *http.Request) {
 	views, err := server.registry.ListDestinations(request.Context())
 	if err != nil {
@@ -153,8 +151,7 @@ func (server *Server) handleListDestinations(responseWriter http.ResponseWriter,
 	writeJSON(responseWriter, http.StatusOK, destinationsResponseBody{Destinations: views})
 }
 
-// handleGetDestination serves GET /v1/admin/destinations/{name}. Validation
-// order: path name (400 "invalid name"), then the registry.
+// handleGetDestination serves GET /v1/admin/destinations/{name}.
 func (server *Server) handleGetDestination(responseWriter http.ResponseWriter, request *http.Request) {
 	name, ok := server.pathDestinationName(responseWriter, request)
 	if !ok {
@@ -169,9 +166,7 @@ func (server *Server) handleGetDestination(responseWriter http.ResponseWriter, r
 	writeJSON(responseWriter, http.StatusOK, destinationResponseBody{Destination: view})
 }
 
-// handleUpdateDestination serves PATCH /v1/admin/destinations/{name}. Validation
-// order: path param, then body (unknown fields such as type are rejected), then
-// the registry.
+// handleUpdateDestination serves PATCH /v1/admin/destinations/{name}.
 func (server *Server) handleUpdateDestination(responseWriter http.ResponseWriter, request *http.Request) {
 	name, ok := server.pathDestinationName(responseWriter, request)
 	if !ok {
@@ -195,9 +190,7 @@ func (server *Server) handleUpdateDestination(responseWriter http.ResponseWriter
 	writeJSON(responseWriter, http.StatusOK, destinationResponseBody{Destination: view})
 }
 
-// handleDeleteDestination serves DELETE /v1/admin/destinations/{name}. The
-// delete is idempotent: it answers 200 deleted:true whether or not the row
-// existed. A destination a route still references is a 409 from the registry.
+// handleDeleteDestination serves DELETE /v1/admin/destinations/{name}, idempotently.
 func (server *Server) handleDeleteDestination(responseWriter http.ResponseWriter, request *http.Request) {
 	name, ok := server.pathDestinationName(responseWriter, request)
 	if !ok {
@@ -211,8 +204,7 @@ func (server *Server) handleDeleteDestination(responseWriter http.ResponseWriter
 	writeJSON(responseWriter, http.StatusOK, deleteDestinationResponseBody{Name: name, Deleted: true})
 }
 
-// handleCreateRoute serves POST /v1/admin/routes. Validation order: body, then
-// the registry. 201 on success.
+// handleCreateRoute serves POST /v1/admin/routes (201).
 func (server *Server) handleCreateRoute(responseWriter http.ResponseWriter, request *http.Request) {
 	var body createRouteRequestBody
 	if !decodeJSON(responseWriter, request, &body) {
@@ -232,8 +224,7 @@ func (server *Server) handleCreateRoute(responseWriter http.ResponseWriter, requ
 	writeJSON(responseWriter, http.StatusCreated, routeResponseBody{Route: view})
 }
 
-// handleListRoutes serves GET /v1/admin/routes. Validation order: the registry
-// only (no path parameter or body).
+// handleListRoutes serves GET /v1/admin/routes.
 func (server *Server) handleListRoutes(responseWriter http.ResponseWriter, request *http.Request) {
 	views, err := server.registry.ListRoutes(request.Context())
 	if err != nil {
@@ -246,8 +237,7 @@ func (server *Server) handleListRoutes(responseWriter http.ResponseWriter, reque
 	writeJSON(responseWriter, http.StatusOK, routesResponseBody{Routes: views})
 }
 
-// handleGetRoute serves GET /v1/admin/routes/{id}. Validation order: path id,
-// then the registry.
+// handleGetRoute serves GET /v1/admin/routes/{id}.
 func (server *Server) handleGetRoute(responseWriter http.ResponseWriter, request *http.Request) {
 	id, ok := parseRouteID(responseWriter, request)
 	if !ok {
@@ -262,8 +252,7 @@ func (server *Server) handleGetRoute(responseWriter http.ResponseWriter, request
 	writeJSON(responseWriter, http.StatusOK, routeResponseBody{Route: view})
 }
 
-// handleUpdateRoute serves PATCH /v1/admin/routes/{id}. Validation order: path
-// id, then body, then the registry.
+// handleUpdateRoute serves PATCH /v1/admin/routes/{id}.
 func (server *Server) handleUpdateRoute(responseWriter http.ResponseWriter, request *http.Request) {
 	id, ok := parseRouteID(responseWriter, request)
 	if !ok {
@@ -288,9 +277,7 @@ func (server *Server) handleUpdateRoute(responseWriter http.ResponseWriter, requ
 	writeJSON(responseWriter, http.StatusOK, routeResponseBody{Route: view})
 }
 
-// handleDeleteRoute serves DELETE /v1/admin/routes/{id}. Validation order: path
-// id, then the registry. The delete is idempotent: 200 deleted:true whether or
-// not the row existed.
+// handleDeleteRoute serves DELETE /v1/admin/routes/{id}, idempotently.
 func (server *Server) handleDeleteRoute(responseWriter http.ResponseWriter, request *http.Request) {
 	id, ok := parseRouteID(responseWriter, request)
 	if !ok {

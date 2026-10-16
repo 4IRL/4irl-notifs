@@ -108,11 +108,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	checker := readiness.NewChecker(pool, migrate.NewPGStore(pool), migrate.ExpectedVersion(loaded))
-	// Registry is assigned only here, once the service is actually built: a
-	// typed-nil *registry.Service stored in the interface field would be
-	// non-nil and bypass the handlers' 503 fail-closed guard. The admin
-	// handlers do no auth of their own, so the network boundary is the only
-	// gate once Registry is set.
+	// See ServerConfig.Registry for why it is set only here.
 	registryService := registry.NewService(registry.NewPGStore(pool), sealer, logger)
 	handler := httpapi.NewServer(httpapi.ServerConfig{
 		Logger:    logger,

@@ -1,17 +1,7 @@
 // Package seal encrypts and decrypts small secrets at rest with AES-256-GCM.
 //
-// A sealed blob has the layout
-//
-//	0x01 version byte | 12-byte random nonce | ciphertext | 16-byte GCM tag
-//
-// The caller supplies additional authenticated data (aad) on every Seal and
-// Open, so a blob sealed for one row cannot be moved onto another: opening it
-// with a different aad fails authentication.
-//
-// The 32-byte master key is delivered as the DELIVERY_MASTER_KEY secret
-// (64 lowercase hex characters). Losing the master key makes every sealed
-// value unrecoverable: there is no escrow and no fallback. Errors from this
-// package never contain key material or plaintext.
+// A sealed blob is 0x01 version byte | 12-byte random nonce | ciphertext | 16-byte GCM tag.
+// Losing the master key makes every sealed value unrecoverable: there is no escrow.
 package seal
 
 import (
