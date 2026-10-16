@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +181,41 @@ func TestRunServeFailsFastWithoutMasterKey(testInstance *testing.T) {
 				subTest.Fatalf("dial %s succeeded, want connection refused (run must not bind before the key check)", address)
 			}
 		})
+	}
+}
+
+// TestRunServeReadsMasterKeyFromFile verifies serve accepts a valid key supplied
+// through DELIVERY_MASTER_KEY_FILE: it gets past the key check and fails only on
+// the already-occupied listen address.
+func TestRunServeReadsMasterKeyFromFile(testInstance *testing.T) {
+	setDatabaseEnv(testInstance)
+	keyPath := filepath.Join(testInstance.TempDir(), "master-key")
+	keyContents := strings.Repeat("ab", 32) + "\n"
+	if writeErr := os.WriteFile(keyPath, []byte(keyContents), 0o600); writeErr != nil {
+		testInstance.Fatalf("write key file: %v", writeErr)
+	}
+	testInstance.Setenv("DELIVERY_MASTER_KEY", "")
+	testInstance.Setenv("DELIVERY_MASTER_KEY_FILE", keyPath)
+
+	occupied, occupyErr := net.Listen("tcp", "127.0.0.1:0")
+	if occupyErr != nil {
+		testInstance.Fatalf("occupy port: %v", occupyErr)
+	}
+	defer func() { _ = occupied.Close() }()
+	testInstance.Setenv("LISTEN_ADDRESS", occupied.Addr().String())
+
+	ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+	defer cancel()
+	err := run(ctx, newTestLogger(), nil)
+
+	if err == nil {
+		testInstance.Fatal("run returned nil, want a listen error")
+	}
+	if strings.Contains(err.Error(), "DELIVERY_MASTER_KEY") {
+		testInstance.Fatalf("run error = %q, want the key file accepted", err)
+	}
+	if !strings.Contains(err.Error(), "listen on") {
+		testInstance.Fatalf("run error = %q, want it to contain %q", err, "listen on")
 	}
 }
 
