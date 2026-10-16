@@ -42,6 +42,8 @@ const (
 	reservedEveryone = "everyone"
 	// maxURLLength is the maximum accepted destination URL length in bytes.
 	maxURLLength = 2048
+	// httpsScheme is the only URL scheme a destination URL may use.
+	httpsScheme = "https"
 	// minSigningSecretLength and maxSigningSecretLength bound a webhook
 	// signing secret in bytes.
 	minSigningSecretLength = 32
@@ -264,7 +266,7 @@ func parseHTTPSURL(rawURL string) (*url.URL, bool) {
 	if err != nil {
 		return nil, false
 	}
-	if parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
+	if parsed.Scheme != httpsScheme || parsed.Hostname() == "" || parsed.User != nil {
 		return nil, false
 	}
 	return parsed, true

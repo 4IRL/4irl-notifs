@@ -9,9 +9,10 @@
 -- so those bad rows cannot be written even by a code path that skips it; the
 -- rest of the validation (sizes, display fields, url, priority) lives only in Go.
 --
--- to_recipient is always NULL until phase 4 ships the ntfy sink; the column is
--- reserved now so that phase needs no migration. deliver_at is likewise
--- reserved for phase 6 and is always NULL until then.
+-- to_recipient is always NULL because no sink consumes a recipient yet; the
+-- column is reserved so adding one needs no migration. deliver_at is likewise
+-- reserved for scheduled delivery, which is not yet supported, and is always
+-- NULL.
 
 CREATE TABLE messages (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),

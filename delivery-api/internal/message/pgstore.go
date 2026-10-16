@@ -23,12 +23,14 @@ const rollbackTimeout = 5 * time.Second
 // deleted between the conflict and the re-select.
 const maxInsertAttempts = 2
 
-// DeleteExpiredBatchSize is how many messages one DeleteExpired statement removes. Each message cascades to
-// its deliveries and attempts, so the batch is kept small enough that a statement stays short.
+// DeleteExpiredBatchSize is how many messages one DeleteExpired statement
+// removes. Each message cascades to its deliveries and attempts, so the batch
+// is kept small enough that a statement stays short.
 const DeleteExpiredBatchSize = 500
 
-// DeleteExpiredMaxBatches is how many batches one DeleteExpired call runs before it stops and leaves the rest
-// for the next sweep, so a huge backlog cannot keep a single call (and its database load) running unbounded.
+// DeleteExpiredMaxBatches is how many batches one DeleteExpired call runs
+// before it stops and leaves the rest for the next sweep, so a huge backlog
+// cannot keep a single call (and its database load) running unbounded.
 const DeleteExpiredMaxBatches = 200
 
 // Attempt text caps, matching the delivery_attempts CHECK constraints: the error

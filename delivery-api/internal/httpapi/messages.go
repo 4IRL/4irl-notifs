@@ -224,7 +224,10 @@ func (server *Server) handleCreateMessage(responseWriter http.ResponseWriter, re
 			stored = awaited
 		}
 	}
-	writeJSON(responseWriter, http.StatusAccepted, submitResponseBody{Message: newMessageView(stored), Duplicate: duplicate})
+	writeJSON(responseWriter, http.StatusAccepted, submitResponseBody{
+		Message:   newMessageView(stored),
+		Duplicate: duplicate,
+	})
 }
 
 // handleGetMessage serves GET /v1/messages/{id}?app_id=. The app_id names the

@@ -106,8 +106,8 @@ func ValidateIdempotencyKey(idempotencyKey string) error {
 	return nil
 }
 
-// ValidateTo checks the delivery target. A recipient is rejected until the ntfy
-// sink ships (fail closed: nothing is queued without a sink to consume it);
+// ValidateTo checks the delivery target. A recipient is rejected because no sink
+// consumes one yet (fail closed: nothing is queued without a sink to consume it);
 // otherwise the destination is either empty (route fan-out) or a valid
 // destination name. It takes both values together because it must see the
 // recipient before judging the destination.
@@ -121,8 +121,8 @@ func ValidateTo(toDestination string, toRecipient string) error {
 	return nil
 }
 
-// ValidateDeliverAt rejects any scheduled delivery time until phase 6 ships
-// scheduling; the column is reserved now.
+// ValidateDeliverAt rejects any scheduled delivery time because scheduled
+// delivery is not yet supported; the column is reserved.
 func ValidateDeliverAt(deliverAt *time.Time) error {
 	if deliverAt != nil {
 		return &ValidationError{Message: "deliver_at not yet supported"}

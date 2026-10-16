@@ -36,7 +36,9 @@ type Store interface {
 	RecordAttempt(ctx context.Context, result AttemptResult) (Delivery, error)
 	// ListDeliveries returns up to limit deliveries in state (one of the State*
 	// constants), newest-updated first. It never returns nil without an error. An
-	// unknown state or a limit below 1 is a *ValidationError.
+	// unknown state or a limit below 1 is a *ValidationError. Service validates
+	// first; the store repeats the check as defense in depth so a direct call
+	// cannot reach SQL with bad arguments.
 	ListDeliveries(ctx context.Context, state string, limit int) ([]Delivery, error)
 	// ListAttempts returns a delivery's attempts in attempt order, or
 	// ErrDeliveryNotFound when the delivery does not exist.

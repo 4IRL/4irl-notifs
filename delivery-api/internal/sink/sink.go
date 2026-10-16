@@ -1,8 +1,7 @@
 // Package sink delivers one stored message to one resolved destination.
 //
-// Phase 3 ships a single implementation, the generic HMAC webhook sink in
-// webhook.go. Phase 4 adds the ntfy and Discord sinks behind the same Sink
-// interface. The package imports registry and message for their types only and
+// The generic HMAC webhook sink in webhook.go is the only sink implemented so
+// far; further sinks implement the same Sink interface. The package imports registry and message for their types only and
 // never the dispatch package, so the worker can depend on it without a cycle.
 package sink
 

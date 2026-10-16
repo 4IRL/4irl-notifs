@@ -126,16 +126,16 @@ func (sink *WebhookSink) Deliver(
 
 	signingSecret := destination.Secrets["signing_secret"]
 	if signingSecret == "" || destination.Secrets["url"] == "" {
-		return Outcome{Err: ErrInvalidDelivery}
+		return Outcome{Err: fmt.Errorf("%w: missing url or signing secret", ErrInvalidDelivery)}
 	}
 	// These two values become header values; refuse anything that is not
 	// printable ASCII so a hostile value can never inject a header.
 	if !isHeaderToken(request.MessageID) ||
 		message.ValidateIdempotencyKey(request.Envelope.IdempotencyKey) != nil {
-		return Outcome{Err: ErrInvalidDelivery}
+		return Outcome{Err: fmt.Errorf("%w: invalid message identifier", ErrInvalidDelivery)}
 	}
 
-	body, err := json.Marshal(webhookBody{
+	body, marshalErr := json.Marshal(webhookBody{
 		MessageID:      request.MessageID,
 		AppID:          request.Envelope.AppID,
 		Channel:        request.Envelope.Channel,
@@ -145,7 +145,7 @@ func (sink *WebhookSink) Deliver(
 		Payload:        request.Envelope.Payload,
 		Display:        request.Envelope.Display,
 	})
-	if err != nil {
+	if marshalErr != nil {
 		// The marshal error can quote payload content, so it is dropped.
 		return Outcome{Err: fmt.Errorf("%w: encode body", ErrInvalidDelivery)}
 	}
@@ -156,12 +156,12 @@ func (sink *WebhookSink) Deliver(
 		signatures = append(signatures, sign(destination.Secrets["signing_secret_previous"], timestamp, body))
 	}
 
-	httpRequest, err := http.NewRequestWithContext(
+	httpRequest, requestErr := http.NewRequestWithContext(
 		ctx, http.MethodPost, destination.Secrets["url"], bytes.NewReader(body),
 	)
-	if err != nil {
+	if requestErr != nil {
 		// The parse error embeds the raw URL, which may carry a secret.
-		return Outcome{Err: ErrInvalidDelivery}
+		return Outcome{Err: fmt.Errorf("%w: invalid request URL", ErrInvalidDelivery)}
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("User-Agent", userAgent)
@@ -170,9 +170,9 @@ func (sink *WebhookSink) Deliver(
 	httpRequest.Header.Set(headerTimestamp, timestamp)
 	httpRequest.Header.Set(headerSignature, strings.Join(signatures, ","))
 
-	response, err := sink.Client.Do(httpRequest)
-	if err != nil {
-		return Outcome{Err: newRequestError(transport.Cause(err), httpRequest.URL.Hostname())}
+	response, doErr := sink.Client.Do(httpRequest)
+	if doErr != nil {
+		return Outcome{Err: newRequestError(transport.Cause(doErr), httpRequest.URL.Hostname())}
 	}
 	defer func() { _ = response.Body.Close() }()
 
@@ -241,8 +241,8 @@ func previousSecretActive(destination registry.ResolvedDestination, now time.Tim
 	if destination.Secrets["signing_secret_previous"] == "" {
 		return false
 	}
-	expiresAt, err := time.Parse(time.RFC3339, destination.Config["previous_secret_expires_at"])
-	if err != nil {
+	expiresAt, parseErr := time.Parse(time.RFC3339, destination.Config["previous_secret_expires_at"])
+	if parseErr != nil {
 		return false
 	}
 	return now.Before(expiresAt)
@@ -273,18 +273,18 @@ func parseRetryAfter(header string, now time.Time) *time.Duration {
 	if header == "" {
 		return nil
 	}
-	seconds, err := strconv.ParseInt(header, 10, 64)
-	if err == nil {
+	seconds, secondsErr := strconv.ParseInt(header, 10, 64)
+	if secondsErr == nil {
 		return durationPointer(clampedSeconds(seconds))
 	}
-	if errors.Is(err, strconv.ErrRange) {
+	if errors.Is(secondsErr, strconv.ErrRange) {
 		if strings.HasPrefix(header, "-") {
 			return durationPointer(0)
 		}
 		return durationPointer(maxRetryAfter)
 	}
-	when, err := http.ParseTime(header)
-	if err != nil {
+	when, dateErr := http.ParseTime(header)
+	if dateErr != nil {
 		return nil
 	}
 	return durationPointer(min(max(when.Sub(now), 0), maxRetryAfter))
@@ -302,4 +302,5 @@ func clampedSeconds(seconds int64) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+// durationPointer returns a pointer to a copy of duration.
 func durationPointer(duration time.Duration) *time.Duration { return &duration }

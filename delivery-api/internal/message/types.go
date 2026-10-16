@@ -1,8 +1,8 @@
 // Package message holds the delivery-core domain: the envelope an app submits,
 // its validation, and the queue / delivery-log types built on it.
 //
-// types.go and validate.go are pure (no I/O, no clock, no database); the store,
-// pgstore and service files added alongside them are the I/O layer.
+// types.go and validate.go are pure (no I/O, no clock, no database); store.go,
+// pgstore.go and service.go are the I/O layer.
 package message
 
 import (
