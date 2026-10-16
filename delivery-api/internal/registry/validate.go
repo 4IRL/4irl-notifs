@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // destinationNamePattern matches a destination name (and an exact app_id):
@@ -41,6 +42,8 @@ const (
 	reservedEveryone = "everyone"
 	// maxURLLength is the maximum accepted destination URL length in bytes.
 	maxURLLength = 2048
+	// httpsScheme is the only URL scheme a destination URL may use.
+	httpsScheme = "https"
 	// minSigningSecretLength and maxSigningSecretLength bound a webhook
 	// signing secret in bytes.
 	minSigningSecretLength = 32
@@ -182,13 +185,16 @@ func validateDiscordFields(config, secrets map[string]string) error {
 	return nil
 }
 
-// validateWebhookFields requires an empty config, a valid secrets.url and a
-// printable-ASCII secrets.signing_secret of 32-256 bytes.
+// validateWebhookFields requires a valid secrets.url and a printable-ASCII
+// secrets.signing_secret of 32-256 bytes. It allows the key-rotation overlap
+// pair: secrets.signing_secret_previous (same rule as the signing secret) and
+// config.previous_secret_expires_at (RFC 3339), which must be set together or
+// not at all.
 func validateWebhookFields(config, secrets map[string]string) error {
-	if err := rejectUnknownKeys("config", config); err != nil {
+	if err := rejectUnknownKeys("config", config, "previous_secret_expires_at"); err != nil {
 		return err
 	}
-	if err := rejectUnknownKeys("secrets", secrets, "url", "signing_secret"); err != nil {
+	if err := rejectUnknownKeys("secrets", secrets, "url", "signing_secret", "signing_secret_previous"); err != nil {
 		return err
 	}
 	if _, ok := parseHTTPSURL(secrets["url"]); !ok {
@@ -196,6 +202,27 @@ func validateWebhookFields(config, secrets map[string]string) error {
 	}
 	if !validSigningSecret(secrets["signing_secret"]) {
 		return &ValidationError{Message: "invalid secrets.signing_secret"}
+	}
+	return validateRotationFields(config, secrets)
+}
+
+// validateRotationFields checks the optional previous-secret overlap pair of a
+// webhook destination.
+func validateRotationFields(config, secrets map[string]string) error {
+	previousSecret, hasPrevious := secrets["signing_secret_previous"]
+	expiresAt, hasExpiry := config["previous_secret_expires_at"]
+	if hasPrevious && !validSigningSecret(previousSecret) {
+		return &ValidationError{Message: "invalid secrets.signing_secret_previous"}
+	}
+	if hasPrevious != hasExpiry {
+		return &ValidationError{
+			Message: "secrets.signing_secret_previous and config.previous_secret_expires_at must be set together",
+		}
+	}
+	if hasExpiry {
+		if _, err := time.Parse(time.RFC3339, expiresAt); err != nil {
+			return &ValidationError{Message: "invalid config.previous_secret_expires_at"}
+		}
 	}
 	return nil
 }
@@ -239,7 +266,7 @@ func parseHTTPSURL(rawURL string) (*url.URL, bool) {
 	if err != nil {
 		return nil, false
 	}
-	if parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
+	if parsed.Scheme != httpsScheme || parsed.Hostname() == "" || parsed.User != nil {
 		return nil, false
 	}
 	return parsed, true

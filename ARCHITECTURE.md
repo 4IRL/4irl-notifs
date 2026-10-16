@@ -12,7 +12,7 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `localhost:8300` only    | Generic delivery service: `/healthz`, `/readyz` and the operator `/v1/admin` registry API. No public hostname yet. |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `localhost:8300` only    | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API and `/v1/messages`. Runs an in-process delivery worker (SSRF-guarded webhook sink) and retention sweeper. No public hostname yet. |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*` + `/people` proxy Functions.             |
 
@@ -30,9 +30,20 @@ the VPS; person-service + admin UI are Cloudflare-native.
 - `/v1/admin/routes` (`POST`, `GET`) and `/v1/admin/routes/{id}` (`GET`, `PATCH`, `DELETE`) — the routes
   that map to destinations.
 
+- `POST /v1/messages` (submit, optional `?wait=N`), `GET /v1/messages/{id}?app_id=` and
+  `GET /v1/messages?app_id=&idempotency_key=` — the app envelope API, live on `127.0.0.1:8300` only.
+  The in-process worker delivers each queued message to its webhook destination with retries; the
+  operator delivery log and replay live under `/v1/admin/deliveries`. The full contract and integration
+  guide come in a later phase.
+- Retention sweeper: an in-process sweeper deletes messages older than `DELIVERY_RETENTION_DAYS`
+  (default 30, integer 1-3650; an invalid value fails startup). A message with a pending delivery is
+  never deleted.
+
 The `/v1/admin` API has no authentication of its own, which is why delivery-api is bound to
-`localhost:8300` only. Do not expose it through a tunnel or public hostname until a path-scoped
-Cloudflare Access application gates `/v1/admin/*`.
+`localhost:8300` only. `/v1/messages` is equally unauthenticated (`app_id` is caller-asserted, so any
+process that can reach the port can submit as, or read the status of, any app). Do not expose either
+through a tunnel or public hostname until a path-scoped Cloudflare Access application gates
+`/v1/admin/*` and `/v1/messages` has per-app authentication or its own Access policy.
 
 ## System diagram
 

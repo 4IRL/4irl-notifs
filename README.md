@@ -7,8 +7,11 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
 - **ntfy** — self-hosted notification server (topics, users, ACLs)
 - **provisioning-api** — barebones Go service for parametric user/topic provisioning across apps
 - **delivery-api** — generic delivery service (Go) backed by its own Postgres (`delivery-postgres`,
-  schema applied by the one-shot `delivery-migrate`); serves `/healthz`, `/readyz` and the operator
-  `/v1/admin` registry API (destinations and routes, AES-256-GCM sealed secrets, masked reads); see
+  schema applied by the one-shot `delivery-migrate`); serves `/healthz`, `/readyz`, the app message
+  API (`/v1/messages`), the operator `/v1/admin` registry API (destinations and routes, AES-256-GCM
+  sealed secrets, masked reads) and the operator delivery log and replay
+  (`/v1/admin/deliveries`); delivers webhooks through an in-process delivery worker and prunes old
+  messages with a retention sweeper; see
   [`ARCHITECTURE.md`](ARCHITECTURE.md#delivery-api-endpoints)
 - **web** — admin UI (Cloudflare Pages, behind Cloudflare Access)
 
@@ -35,6 +38,7 @@ delivery-api runtime configuration (environment):
 | `DELIVERY_DB_PASSWORD` or `DELIVERY_DB_PASSWORD_FILE` | one required | Postgres password, inline or read from a file |
 | `DELIVERY_MASTER_KEY` or `DELIVERY_MASTER_KEY_FILE` | one required (serve only; `migrate` ignores it) | Master key sealing destination secrets at rest: exactly 64 lowercase hex characters, inline or read from a file |
 | `LISTEN_ADDRESS` | `:8080` | HTTP listen address |
+| `DELIVERY_RETENTION_DAYS` | `30` | Days a message is kept before the retention sweeper deletes it (integer 1-3650; a message with a pending delivery is never deleted; an invalid value fails startup) |
 
 Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own
 compose project and ports; see [`docs/worktrees.md`](docs/worktrees.md). In a worktree, start the

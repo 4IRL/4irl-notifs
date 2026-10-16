@@ -73,8 +73,10 @@ Components:
   email-keyed; the ntfy user derives from the email). Callable by the admin UI and by
   individual consuming apps, each authenticated via its own Cloudflare Access Service Token.
 - **delivery-api** — generic delivery service (Go + Postgres, with a one-shot `delivery-migrate`
-  container); serves the operator registry (destinations and routes) under `/v1/admin`,
-  alongside `/healthz` and `/readyz`.
+  container); serves the operator registry (destinations and routes) under `/v1/admin`, the
+  app message envelope API (`/v1/messages`) and the operator delivery log and replay endpoints
+  (`/v1/admin/deliveries`), alongside `/healthz` and `/readyz`. It runs the webhook delivery
+  worker and the retention sweeper in-process.
 - **web** — React/Vite admin UI, deployed to Cloudflare Pages behind Cloudflare Access
   (Google/GitHub OAuth).
 
