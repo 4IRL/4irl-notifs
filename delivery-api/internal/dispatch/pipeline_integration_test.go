@@ -17,18 +17,21 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/pgtest"
@@ -628,5 +631,50 @@ func TestPipelineDeliversARecipientMessageToTheNtfyTopic(testInstance *testing.T
 	}
 	if got, want := requests[0].header.Get("Authorization"), "Bearer "+recipientMintedToken; got != want {
 		testInstance.Fatalf("Authorization = %q, want the minted publisher token", got)
+	}
+}
+
+// TestPipelineRefusesADestinationTypeWithNoSinkAt422 pins the submit-time refusal
+// end to end: with a message service that supports only the webhook type, a route
+// that resolves to a real ntfy destination in the registry is refused before
+// anything is stored, and the HTTP API maps it to 422 "destination type not yet
+// supported". (The stack-level integration tests register every sink, so they
+// cannot reach this refusal.)
+func TestPipelineRefusesADestinationTypeWithNoSinkAt422(testInstance *testing.T) {
+	const (
+		ntfyDestinationName = "pipeline_ntfy"
+		ntfyChannel         = "ntfy_only"
+		wantStatus          = http.StatusUnprocessableEntity
+		wantErrorBody       = `{"error":"destination type not yet supported"}` + "\n"
+	)
+	live := startPipeline(testInstance, func(int) int { return http.StatusOK }, false)
+	if _, createErr := live.registryService.CreateDestination(live.ctx, registry.DestinationInput{
+		Name: ntfyDestinationName, Type: registry.TypeNtfy, Config: map[string]string{"topic": "pipeline_topic"},
+	}); createErr != nil {
+		testInstance.Fatalf("create ntfy destination: %v", createErr)
+	}
+	if _, routeErr := live.registryService.CreateRoute(live.ctx, registry.RouteInput{
+		AppPattern: "*", ChannelPattern: ntfyChannel, Destinations: []string{ntfyDestinationName},
+	}); routeErr != nil {
+		testInstance.Fatalf("create ntfy route: %v", routeErr)
+	}
+	envelope := message.Envelope{
+		AppID: pipelineAppID, Channel: ntfyChannel, IdempotencyKey: "unsupported-1",
+		Payload: json.RawMessage(`{"order":42}`), Display: &message.Display{Title: "Hello", Body: "Body"},
+	}
+
+	if _, _, submitErr := live.messages.Submit(live.ctx, envelope); !errors.Is(submitErr, message.ErrUnsupportedDestinationType) {
+		testInstance.Fatalf("Submit error = %v, want ErrUnsupportedDestinationType", submitErr)
+	}
+
+	server := httpapi.NewServer(httpapi.ServerConfig{Messages: live.messages, Logger: slog.New(slog.DiscardHandler)})
+	requestBody := `{"app_id":"` + pipelineAppID + `","channel":"` + ntfyChannel + `","idempotency_key":"unsupported-2",` +
+		`"payload":{"order":42},"display":{"title":"Hello","body":"Body"}}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != wantStatus || recorder.Body.String() != wantErrorBody {
+		testInstance.Fatalf("POST /v1/messages = %d %q, want %d %q", recorder.Code, recorder.Body.String(), wantStatus, wantErrorBody)
 	}
 }

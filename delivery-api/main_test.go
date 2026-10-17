@@ -327,15 +327,23 @@ func TestBuildSinksAddsNtfyOnlyWhenConfigured(testInstance *testing.T) {
 }
 
 // TestComposeSetsDeliveryNtfyURL pins both compose files to the internal ntfy
-// origin, so a stack started from either enables the ntfy sink.
+// and provisioning-api origins, so a stack started from either enables the ntfy
+// sink and publisher minting (an unset DELIVERY_PROVISIONING_URL silently
+// disables minting, which makes every recipient submit fail).
 func TestComposeSetsDeliveryNtfyURL(testInstance *testing.T) {
+	wantLines := []string{
+		"- DELIVERY_NTFY_URL=http://ntfy:80",
+		"- DELIVERY_PROVISIONING_URL=http://provisioning-api:8080",
+	}
 	for _, composeFile := range []string{"docker-compose.yml", "docker-compose.prod.yml"} {
 		contents, readErr := os.ReadFile(filepath.Join("..", composeFile))
 		if readErr != nil {
 			testInstance.Fatalf("read %s: %v", composeFile, readErr)
 		}
-		if !strings.Contains(string(contents), "- DELIVERY_NTFY_URL=http://ntfy:80") {
-			testInstance.Errorf("%s does not set DELIVERY_NTFY_URL=http://ntfy:80", composeFile)
+		for _, wantLine := range wantLines {
+			if !strings.Contains(string(contents), wantLine) {
+				testInstance.Errorf("%s does not set %s", composeFile, strings.TrimPrefix(wantLine, "- "))
+			}
 		}
 	}
 }

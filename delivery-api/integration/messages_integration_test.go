@@ -366,7 +366,9 @@ func assertSubmitRejections(testInstance *testing.T, routedChannel string) {
 	status, body = apiRequest(testInstance, http.MethodPost, messagesPath,
 		submitBody(ntfyChannel, "it-ntfy-"+randomSuffix(testInstance)))
 	// ntfy is a supported type, so a message without display text is refused by
-	// validation (400) before any destination is resolved.
+	// validation (400) before any destination is resolved. The 422 "destination type not
+	// yet supported" refusal needs a service without the type; it is pinned by
+	// TestPipelineRefusesADestinationTypeWithNoSinkAt422 in internal/dispatch.
 	requireStatus(testInstance, "POST message without display to an ntfy destination", status, http.StatusBadRequest, body)
 	requireErrorMessage(testInstance, "POST message without display to an ntfy destination", body,
 		"display.title or display.body is required for ntfy and discord destinations")
