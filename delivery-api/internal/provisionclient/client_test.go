@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,57 @@ func TestMintPublisherRejectsBadResponses(testInstance *testing.T) {
 				if strings.Contains(message, leaked) {
 					subTest.Errorf("error %q leaks response content %q", message, leaked)
 				}
+			}
+		})
+	}
+}
+
+func TestMintPublisherRejectsAnOversizeResponseBody(testInstance *testing.T) {
+	// A well-formed grant whose JSON value is larger than the read cap must not decode.
+	oversize := `{"app_id":"urls4irl","token":"` + validToken + `","topic_pattern":"` +
+		strings.Repeat("a", maxResponseBytes) + `"}`
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(oversize))
+	}))
+	defer server.Close()
+
+	grant, mintErr := New(Config{BaseURL: server.URL}).MintPublisher(context.Background(), "urls4irl")
+
+	if mintErr == nil {
+		testInstance.Fatalf("MintPublisher succeeded with %d-byte body, want an error", len(oversize))
+	}
+	if grant != (PublisherGrant{}) {
+		testInstance.Errorf("grant = %+v alongside an error, want zero", grant)
+	}
+	if strings.Contains(mintErr.Error(), validToken) {
+		testInstance.Errorf("error %q leaks the token", mintErr)
+	}
+}
+
+func TestMintPublisherDoesNotFollowRedirects(testInstance *testing.T) {
+	for _, status := range []int{http.StatusFound, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		testInstance.Run(http.StatusText(status), func(subTest *testing.T) {
+			targetHits := 0
+			target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				targetHits++
+				_, _ = writer.Write([]byte(`{"app_id":"urls4irl","token":"` + validToken + `"}`))
+			}))
+			defer target.Close()
+			redirector := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				http.Redirect(writer, request, target.URL+"/v1/provision-app", status)
+			}))
+			defer redirector.Close()
+
+			grant, mintErr := New(Config{BaseURL: redirector.URL}).MintPublisher(context.Background(), "urls4irl")
+
+			if mintErr == nil {
+				subTest.Fatalf("MintPublisher succeeded with %+v after a redirect, want an error", grant)
+			}
+			if !strings.Contains(mintErr.Error(), strconv.Itoa(status)) {
+				subTest.Errorf("error %q does not name status %d", mintErr, status)
+			}
+			if targetHits != 0 {
+				subTest.Errorf("redirect target was hit %d times, want 0", targetHits)
 			}
 		})
 	}

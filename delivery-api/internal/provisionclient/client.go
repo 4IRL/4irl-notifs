@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -25,6 +26,10 @@ const (
 	defaultTimeout = 5 * time.Second
 
 	provisionAppPath = "/v1/provision-app"
+
+	// maxResponseBytes caps how much of a mint response is read; a real grant is
+	// a few hundred bytes.
+	maxResponseBytes = 64 << 10
 )
 
 // tokenPattern is the shape of an ntfy access token. A response whose token does
@@ -66,8 +71,14 @@ func New(config Config) *Client {
 		timeout = defaultTimeout
 	}
 	return &Client{
-		baseURL:    strings.TrimSuffix(config.BaseURL, "/"),
-		httpClient: &http.Client{Timeout: timeout},
+		baseURL: strings.TrimSuffix(config.BaseURL, "/"),
+		httpClient: &http.Client{
+			Timeout: timeout,
+			// A redirect is never followed: a 307/308 would re-POST the app_id body to
+			// wherever it points. The 3xx response comes back as an ordinary non-2xx
+			// status error.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 }
 
@@ -89,8 +100,10 @@ type provisionAppRequest struct {
 // every publisher-labeled token for the app, including the ones apps hold for
 // direct publishing.
 //
-// A non-2xx status returns an error naming only the status code, never the
-// response body, so nothing the server echoes can reach logs or the API. A token
+// A non-2xx status (a redirect included, since none is followed) returns an
+// error naming only the status code, never the response body, so nothing the
+// server echoes can reach logs or the API. At most 64 KiB of a response is read.
+// A token
 // that does not look like an ntfy access token is an error. The token is never
 // logged or put in an error.
 func (client *Client) MintPublisher(ctx context.Context, appID string) (PublisherGrant, error) {
@@ -119,7 +132,7 @@ func (client *Client) MintPublisher(ctx context.Context, appID string) (Publishe
 	}
 
 	var grant PublisherGrant
-	if decodeErr := json.NewDecoder(response.Body).Decode(&grant); decodeErr != nil {
+	if decodeErr := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes)).Decode(&grant); decodeErr != nil {
 		return PublisherGrant{}, errors.New("provision-app: decode response failed")
 	}
 	if !tokenPattern.MatchString(grant.Token) {
