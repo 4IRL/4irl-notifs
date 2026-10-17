@@ -39,6 +39,10 @@ var (
 	ErrRouteNotFound = errors.New("route not found")
 	// ErrRouteExists means a route with that app and channel pattern exists.
 	ErrRouteExists = errors.New("route already exists")
+	// ErrNoPublisher means an app has no ntfy publisher token. It lives here
+	// rather than in the publisher package so dispatch and message can match it
+	// without importing publisher.
+	ErrNoPublisher = errors.New("app has no ntfy publisher")
 )
 
 // ValidationError reports a request field that failed validation. Message is

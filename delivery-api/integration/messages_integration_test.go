@@ -364,6 +364,9 @@ func assertSubmitRejections(testInstance *testing.T, routedChannel string) {
 	createRoute(testInstance, ntfyChannel, ntfyName)
 	status, body = apiRequest(testInstance, http.MethodPost, messagesPath,
 		submitBody(ntfyChannel, "it-ntfy-"+randomSuffix(testInstance)))
-	requireStatus(testInstance, "POST message to an ntfy destination", status, http.StatusUnprocessableEntity, body)
-	requireErrorMessage(testInstance, "POST message to an ntfy destination", body, "destination type not yet supported")
+	// ntfy is a supported type, so a message without display text is refused by
+	// validation (400) before any destination is resolved.
+	requireStatus(testInstance, "POST message without display to an ntfy destination", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "POST message without display to an ntfy destination", body,
+		"display.title or display.body is required for ntfy and discord destinations")
 }

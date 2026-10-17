@@ -53,6 +53,9 @@ const (
 	DeadReasonBlockedAddress = "blocked_address"
 	// DeadReasonUnsupportedType is a destination type with no sink yet.
 	DeadReasonUnsupportedType = "unsupported_type"
+	// DeadReasonNoPublisher is a recipient delivery whose app has no ntfy
+	// publisher token.
+	DeadReasonNoPublisher = "no_publisher"
 )
 
 // Attempt outcomes, stored in delivery_attempts.outcome.
