@@ -188,6 +188,41 @@ func TestUnknownAppHasNoPublisher(testInstance *testing.T) {
 	}
 }
 
+func TestGetReturnsTheMintedViewWithoutAToken(testInstance *testing.T) {
+	service := NewService(newFakeStore(),
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance))
+	minted, mintErr := service.Mint(context.Background(), "urls4irl")
+	if mintErr != nil {
+		testInstance.Fatalf("Mint: %v", mintErr)
+	}
+
+	got, getErr := service.Get(context.Background(), "urls4irl")
+	if getErr != nil {
+		testInstance.Fatalf("Get: %v", getErr)
+	}
+	if !reflect.DeepEqual(got, minted) {
+		testInstance.Errorf("Get = %+v, want the minted view %+v", got, minted)
+	}
+	encoded, marshalErr := json.Marshal(got)
+	if marshalErr != nil {
+		testInstance.Fatalf("Marshal: %v", marshalErr)
+	}
+	if strings.Contains(string(encoded), firstToken) {
+		testInstance.Errorf("Get view JSON %s exposes the token", encoded)
+	}
+}
+
+func TestMintReturnsTheUpsertErrorUnchanged(testInstance *testing.T) {
+	storeErr := errors.New("db down")
+	service := NewService(&failingStore{err: storeErr},
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance))
+
+	_, mintErr := service.Mint(context.Background(), "urls4irl")
+	if mintErr != storeErr { //nolint:errorlint // the contract is that the error is returned unchanged
+		testInstance.Errorf("Mint err = %v, want the upsert error returned unchanged", mintErr)
+	}
+}
+
 func TestResolveRecipientBuildsAnNtfyDestinationFromTheAppToken(testInstance *testing.T) {
 	service := NewService(newFakeStore(),
 		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance))

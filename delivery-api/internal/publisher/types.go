@@ -44,10 +44,10 @@ type StoredPublisher struct {
 }
 
 // PublisherView is the operator-facing publisher record. It carries no token.
-// The name is fixed by the delivery-sinks plan and is referenced by the admin
-// API, so the revive stutter check is waived here.
+// It is the public admin-API view of a publisher and reads naturally as
+// publisher.PublisherView at call sites, so the revive stutter check is waived.
 //
-//nolint:revive // plan-mandated name
+//nolint:revive // the admin-API view; publisher.PublisherView reads clearly at call sites
 type PublisherView struct {
 	AppID           string    `json:"app_id"`
 	PublisherUserID string    `json:"publisher_user_id"`

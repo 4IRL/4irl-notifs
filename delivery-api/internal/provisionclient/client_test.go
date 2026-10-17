@@ -3,6 +3,7 @@ package provisionclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -144,8 +145,19 @@ func TestConfigured(testInstance *testing.T) {
 	}
 }
 
+// failingRoundTripper fails the test if any request reaches the transport.
+type failingRoundTripper struct{ testInstance *testing.T }
+
+func (failing failingRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	failing.testInstance.Errorf("unexpected request to %s: an unconfigured client must not dial", request.URL)
+	return nil, errors.New("unexpected request")
+}
+
 func TestMintPublisherUnconfiguredFailsWithoutDialing(testInstance *testing.T) {
-	if _, mintErr := New(Config{}).MintPublisher(context.Background(), "urls4irl"); mintErr == nil {
-		testInstance.Fatal("MintPublisher succeeded with no BaseURL, want an error")
+	client := New(Config{})
+	client.httpClient.Transport = failingRoundTripper{testInstance: testInstance}
+	_, mintErr := client.MintPublisher(context.Background(), "urls4irl")
+	if !errors.Is(mintErr, ErrNotConfigured) {
+		testInstance.Fatalf("MintPublisher error = %v, want ErrNotConfigured", mintErr)
 	}
 }
