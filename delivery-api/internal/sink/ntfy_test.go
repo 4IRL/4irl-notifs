@@ -121,6 +121,22 @@ func TestNtfyDeliverTitleOnlyUsesTitleAsBodyWithoutTitleHeader(t *testing.T) {
 	}
 }
 
+func TestNtfyDeliverBlankBodyUsesTitleAsBodyWithoutTitleHeader(t *testing.T) {
+	server, captured := newCaptureServer(t, http.StatusOK, "{}", nil)
+
+	outcome := newTestNtfySink(server.URL).Deliver(
+		context.Background(), ntfyDestination(ntfyTestTopic, ""), ntfyRequest(&message.Display{Title: "Real title", Body: " \n"}),
+	)
+
+	requireDelivered(t, outcome)
+	if got := string(captured.Body()); got != "Real title" {
+		t.Errorf("body = %q, want the title", got)
+	}
+	if _, present := captured.Headers()["Title"]; present {
+		t.Errorf("Title header present = %q, want none", captured.Headers().Get("Title"))
+	}
+}
+
 func TestNtfyDeliverBodyOnlyHasNoTitleHeader(t *testing.T) {
 	server, captured := newCaptureServer(t, http.StatusOK, "{}", nil)
 
@@ -263,6 +279,7 @@ func TestNtfyDeliverRefusesUnbuildableDeliveriesWithoutSending(t *testing.T) {
 		"no display":             {ntfyDestination(ntfyTestTopic, ""), nil},
 		"empty display":          {ntfyDestination(ntfyTestTopic, ""), &message.Display{}},
 		"url only":               {ntfyDestination(ntfyTestTopic, ""), &message.Display{URL: "https://example.test"}},
+		"whitespace only":        {ntfyDestination(ntfyTestTopic, ""), &message.Display{Title: " \t", Body: "\n\r", URL: "https://example.test"}},
 		"title with CRLF":        {ntfyDestination(ntfyTestTopic, ""), &message.Display{Title: "a\r\nX-Evil: 1", Body: "B"}},
 		"title with LF":          {ntfyDestination(ntfyTestTopic, ""), &message.Display{Title: "a\nb", Body: "B"}},
 		"priority with CRLF":     {ntfyDestination(ntfyTestTopic, ""), &message.Display{Title: "T", Priority: "high\r\nX: 1"}},
@@ -349,6 +366,9 @@ func TestNtfyTransportErrorIsRetryableAndLeaksNoTokenOrAddress(t *testing.T) {
 		t.Errorf("StatusCode = %d, want 0", outcome.StatusCode)
 	}
 	text := outcome.Err.Error()
+	if !strings.HasPrefix(text, "ntfy request failed: ") {
+		t.Errorf("Err %q does not carry the ntfy label", text)
+	}
 	if strings.Contains(text, ntfyTestToken) {
 		t.Errorf("Err %q contains the access token", text)
 	}

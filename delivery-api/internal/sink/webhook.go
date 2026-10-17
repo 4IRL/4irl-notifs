@@ -54,19 +54,21 @@ func (failure *requestError) Error() string { return failure.message }
 func (failure *requestError) Unwrap() error { return failure.cause }
 
 // newRequestError wraps cause with the destination's network identity masked
-// out of its text. Every case-insensitive occurrence of hostname becomes a
+// out of its text, prefixed "<sinkName> request failed: " ("webhook", "discord"
+// or "ntfy"). Every case-insensitive occurrence of hostname becomes a
 // placeholder, because DNS and certificate errors quote the host they failed on
-// and a webhook host can be tenant-identifying; an empty hostname leaves the
-// text as is. Resolved IPs, ports and resolver addresses are dropped as well
-// (see addressFreeText), because the attempt log is readable through the admin
-// API and must not reveal what an internal name resolved to.
-func newRequestError(cause error, hostname string) *requestError {
+// and a webhook host can be tenant-identifying; an empty hostname (ntfy, whose
+// origin is a fixed internal address) leaves the text as is. Resolved IPs, ports
+// and resolver addresses are dropped as well (see addressFreeText), because the
+// attempt log is readable through the admin API and must not reveal what an
+// internal name resolved to.
+func newRequestError(sinkName string, cause error, hostname string) *requestError {
 	text := addressFreeText(cause)
 	if hostname != "" {
 		hostPattern := regexp.MustCompile("(?i)" + regexp.QuoteMeta(hostname))
 		text = hostPattern.ReplaceAllLiteralString(text, hostMarker)
 	}
-	return &requestError{message: "webhook request failed: " + text, cause: cause}
+	return &requestError{message: sinkName + " request failed: " + text, cause: cause}
 }
 
 // addressFreeText renders cause without network addresses. A *net.OpError is
@@ -196,7 +198,7 @@ func (sink *WebhookSink) Deliver(
 
 	response, doErr := sink.client.Do(httpRequest)
 	if doErr != nil {
-		return Outcome{Err: newRequestError(transport.Cause(doErr), httpRequest.URL.Hostname())}
+		return Outcome{Err: newRequestError("webhook", transport.Cause(doErr), httpRequest.URL.Hostname())}
 	}
 	defer func() { _ = response.Body.Close() }()
 

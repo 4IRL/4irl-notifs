@@ -8,6 +8,7 @@ package message
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -108,6 +109,16 @@ type Display struct {
 	Body     string `json:"body,omitempty"`
 	URL      string `json:"url,omitempty"`
 	Priority string `json:"priority,omitempty"`
+}
+
+// HasRenderableText reports whether the display carries something a
+// human-facing sink can show: a title or body that is not blank (empty or only
+// whitespace). It is nil-safe: a nil display, or one with only a URL or
+// priority, has no renderable text. The message service (at submit) and the
+// ntfy and Discord sinks (at send) all use this one rule so they agree.
+func (display *Display) HasRenderableText() bool {
+	return display != nil &&
+		(strings.TrimSpace(display.Title) != "" || strings.TrimSpace(display.Body) != "")
 }
 
 // Envelope is a message as an app submits it. Payload is opaque to the

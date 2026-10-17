@@ -25,6 +25,10 @@ const (
 	// discordTruncationMarker ends content that had to be cut to fit the limit.
 	discordTruncationMarker = "…"
 
+	// discordUnknownWebhookCode is the error code in the body of the 404 Discord
+	// returns for a deleted webhook (Unknown Webhook).
+	discordUnknownWebhookCode = 10015
+
 	discordWebhookURLKey = "webhook_url"
 )
 
@@ -45,6 +49,12 @@ type discordAllowedMentions struct {
 // discordRateLimit is the part of a Discord 429 body the sink reads.
 type discordRateLimit struct {
 	RetryAfter *float64 `json:"retry_after"`
+}
+
+// discordError is the part of a Discord error body the sink reads: the numeric
+// error code.
+type discordError struct {
+	Code *int `json:"code"`
 }
 
 // DiscordSink posts a message's display text to a Discord webhook. Build one
@@ -73,9 +83,11 @@ func NewDiscordSink(client *http.Client) *DiscordSink {
 // message is reported rather than accepted blindly.
 //
 // A 429 reports the "retry_after" seconds from the JSON body, falling back to the
-// Retry-After header, capped at maxRetryAfter. A 404 or 401 sets Outcome.Gone: a
-// deleted webhook answers 404 (Unknown Webhook) and a webhook whose token no
-// longer matches answers 401, and neither can recover by retrying.
+// Retry-After header, capped at maxRetryAfter. A 401, or a 404 whose body carries
+// the Unknown Webhook error code (10015), sets Outcome.Gone: a deleted webhook
+// and a webhook whose token no longer matches cannot recover by retrying. Any
+// other 404 (for example Unknown Channel, 10003, from a deleted thread_id) is an
+// ordinary non-Gone failure.
 //
 // A destination without a usable webhook_url, or a display with neither title
 // nor body, is a permanent ErrInvalidDelivery and nothing is sent. The Outcome's
@@ -118,7 +130,7 @@ func (sink *DiscordSink) Deliver(
 
 	response, doErr := sink.client.Do(httpRequest)
 	if doErr != nil {
-		return Outcome{Err: newRequestError(transport.Cause(doErr), target.Hostname())}
+		return Outcome{Err: newRequestError("discord", transport.Cause(doErr), target.Hostname())}
 	}
 	defer func() { _ = response.Body.Close() }()
 
@@ -126,7 +138,7 @@ func (sink *DiscordSink) Deliver(
 	outcome := Outcome{
 		StatusCode:      response.StatusCode,
 		ResponseSnippet: redactSnippet(snippet, discordRedactionNeedles(webhookURL, target)),
-		Gone:            response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusUnauthorized,
+		Gone:            discordWebhookIsGone(response.StatusCode, snippet),
 	}
 	if response.StatusCode == http.StatusTooManyRequests {
 		outcome.RetryAfter = discordRetryAfter(snippet, response.Header.Get("Retry-After"))
@@ -134,18 +146,38 @@ func (sink *DiscordSink) Deliver(
 	return outcome
 }
 
+// discordWebhookIsGone reports whether a response proves the webhook can never
+// work again. A 401 means the webhook's token no longer matches. A 404 proves it
+// only when Discord's error code is Unknown Webhook (10015): Discord also answers
+// 404 for a healthy webhook whose thread_id points at a deleted thread (code
+// 10003, Unknown Channel), which an operator can fix, so any other 404, and a 404
+// whose body does not parse, is an ordinary failure. responseBody is the
+// size-capped, not yet redacted snippet; it is only parsed, never returned.
+func discordWebhookIsGone(statusCode int, responseBody string) bool {
+	switch statusCode {
+	case http.StatusUnauthorized:
+		return true
+	case http.StatusNotFound:
+		var failure discordError
+		return json.Unmarshal([]byte(responseBody), &failure) == nil &&
+			failure.Code != nil && *failure.Code == discordUnknownWebhookCode
+	default:
+		return false
+	}
+}
+
 // discordContent renders display as "**title**\nbody\nurl", joining only the
-// non-empty parts. It returns "" when there is neither a title nor a body, since
-// a link alone is not a message.
+// non-blank parts. It returns "" when display has no renderable text (see
+// message.Display.HasRenderableText), since a link alone is not a message.
 func discordContent(display *message.Display) string {
-	if display == nil || (display.Title == "" && display.Body == "") {
+	if !display.HasRenderableText() {
 		return ""
 	}
 	parts := make([]string, 0, 3)
-	if display.Title != "" {
+	if strings.TrimSpace(display.Title) != "" {
 		parts = append(parts, "**"+display.Title+"**")
 	}
-	if display.Body != "" {
+	if strings.TrimSpace(display.Body) != "" {
 		parts = append(parts, display.Body)
 	}
 	if display.URL != "" {

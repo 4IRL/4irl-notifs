@@ -87,7 +87,7 @@ func (sink *NtfySink) Deliver(
 		return Outcome{Err: fmt.Errorf("%w: missing or invalid topic", ErrInvalidDelivery)}
 	}
 	display := request.Envelope.Display
-	if display == nil || (display.Title == "" && display.Body == "") {
+	if !display.HasRenderableText() {
 		return Outcome{Err: fmt.Errorf("%w: display has neither title nor body", ErrInvalidDelivery)}
 	}
 	accessToken := destination.Secrets[ntfyAccessTokenKey]
@@ -96,7 +96,7 @@ func (sink *NtfySink) Deliver(
 	}
 
 	body := display.Body
-	if body == "" {
+	if strings.TrimSpace(body) == "" {
 		body = display.Title
 	}
 	httpRequest, requestErr := http.NewRequestWithContext(
@@ -111,8 +111,7 @@ func (sink *NtfySink) Deliver(
 
 	response, doErr := sink.client.Do(httpRequest)
 	if doErr != nil {
-		cause := transport.Cause(doErr)
-		return Outcome{Err: &requestError{message: "ntfy request failed: " + addressFreeText(cause), cause: cause}}
+		return Outcome{Err: newRequestError("ntfy", transport.Cause(doErr), "")}
 	}
 	defer func() { _ = response.Body.Close() }()
 
@@ -129,7 +128,7 @@ func (sink *NtfySink) Deliver(
 
 // setNtfyHeaders sets each ntfy publish header whose value is non-empty.
 func setNtfyHeaders(header http.Header, display *message.Display, accessToken string) {
-	if display.Title != "" && display.Body != "" {
+	if strings.TrimSpace(display.Title) != "" && strings.TrimSpace(display.Body) != "" {
 		header.Set("Title", encodeHeaderValue(display.Title))
 	}
 	if display.Priority != "" {

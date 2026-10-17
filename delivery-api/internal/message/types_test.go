@@ -6,6 +6,32 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 )
 
+func TestDisplayHasRenderableText(testInstance *testing.T) {
+	cases := []struct {
+		name    string
+		display *message.Display
+		want    bool
+	}{
+		{"nil display", nil, false},
+		{"empty display", &message.Display{}, false},
+		{"only a url and priority", &message.Display{URL: "https://example.com", Priority: "high"}, false},
+		{"whitespace-only title", &message.Display{Title: " \t"}, false},
+		{"whitespace-only body", &message.Display{Body: "\n\r\t "}, false},
+		{"whitespace-only title and body with a url", &message.Display{Title: " ", Body: "\n", URL: "https://example.com"}, false},
+		{"title", &message.Display{Title: "T"}, true},
+		{"body", &message.Display{Body: "B"}, true},
+		{"blank title and real body", &message.Display{Title: " ", Body: "B"}, true},
+		{"real title and blank body", &message.Display{Title: "T", Body: "\n"}, true},
+	}
+	for _, testCase := range cases {
+		testInstance.Run(testCase.name, func(testInstance *testing.T) {
+			if got := testCase.display.HasRenderableText(); got != testCase.want {
+				testInstance.Errorf("HasRenderableText = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestDeriveStatus(testInstance *testing.T) {
 	deliveriesIn := func(states ...string) []message.Delivery {
 		deliveries := make([]message.Delivery, 0, len(states))

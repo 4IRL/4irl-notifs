@@ -198,7 +198,7 @@ func (service *Service) resolveTargets(ctx context.Context, envelope Envelope) (
 			return nil, ErrUnsupportedDestinationType
 		}
 		humanFacing := destination.Type == registry.TypeNtfy || destination.Type == registry.TypeDiscord
-		if humanFacing && !hasRenderableDisplay(envelope.Display) {
+		if humanFacing && !envelope.Display.HasRenderableText() {
 			return nil, &ValidationError{Message: errMsgDisplayRequired}
 		}
 		// Copy the ID so each target points at its own value, not the loop variable.
@@ -226,7 +226,7 @@ func (service *Service) resolveRecipientTarget(ctx context.Context, envelope Env
 	if len(topic) > maxNtfyTopicLength {
 		return nil, &ValidationError{Message: "app_id and channel are too long for a recipient topic"}
 	}
-	if !hasRenderableDisplay(envelope.Display) {
+	if !envelope.Display.HasRenderableText() {
 		return nil, &ValidationError{Message: errMsgDisplayRequired}
 	}
 	if service.publishers == nil {
@@ -244,13 +244,6 @@ func (service *Service) resolveRecipientTarget(ctx context.Context, envelope Env
 		DestinationName: registry.RecipientDestinationName,
 		DestinationType: registry.TypeNtfy,
 	}}, nil
-}
-
-// hasRenderableDisplay reports whether display carries something a human-facing
-// sink can show: a non-empty title or body. A nil display, or one with only a
-// URL or priority, is not renderable.
-func hasRenderableDisplay(display *Display) bool {
-	return display != nil && (display.Title != "" || display.Body != "")
 }
 
 // Get returns the message with the given id, scoped to appID: a message that

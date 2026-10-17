@@ -278,22 +278,34 @@ func TestDiscordDeliverIgnoresRetryAfterBodyOnNon429(t *testing.T) {
 	}
 }
 
-func TestDiscordDeliverGoneOnlyFor404And401(t *testing.T) {
+func TestDiscordDeliverGoneOnlyForUnknownWebhookAnd401(t *testing.T) {
+	const (
+		unknownWebhookBody = `{"message": "Unknown Webhook", "code": 10015}`
+		unknownChannelBody = `{"message": "Unknown Channel", "code": 10003}`
+	)
 	testCases := []struct {
+		name     string
 		status   int
+		body     string
 		wantGone bool
 	}{
-		{http.StatusNotFound, true},
-		{http.StatusUnauthorized, true},
-		{http.StatusBadRequest, false},
-		{http.StatusForbidden, false},
-		{http.StatusTooManyRequests, false},
-		{http.StatusInternalServerError, false},
-		{http.StatusOK, false},
+		{"404 unknown webhook", http.StatusNotFound, unknownWebhookBody, true},
+		{"404 unknown channel (deleted thread)", http.StatusNotFound, unknownChannelBody, false},
+		{"404 with an unparseable body", http.StatusNotFound, "<html>not found</html>", false},
+		{"404 with an empty body", http.StatusNotFound, "", false},
+		{"404 with an empty json object", http.StatusNotFound, "{}", false},
+		{"404 with a non-numeric code", http.StatusNotFound, `{"code": "10015"}`, false},
+		{"401", http.StatusUnauthorized, "{}", true},
+		{"401 unknown webhook body", http.StatusUnauthorized, unknownWebhookBody, true},
+		{"400 unknown webhook body", http.StatusBadRequest, unknownWebhookBody, false},
+		{"403", http.StatusForbidden, "{}", false},
+		{"429", http.StatusTooManyRequests, "{}", false},
+		{"500", http.StatusInternalServerError, "{}", false},
+		{"200", http.StatusOK, "{}", false},
 	}
 	for _, testCase := range testCases {
-		t.Run(http.StatusText(testCase.status), func(subTest *testing.T) {
-			server, _ := newCaptureServer(subTest, testCase.status, "{}", nil)
+		t.Run(testCase.name, func(subTest *testing.T) {
+			server, _ := newCaptureServer(subTest, testCase.status, testCase.body, nil)
 
 			outcome := newTestDiscordSink().Deliver(
 				context.Background(), discordDestination(server.URL+discordPath), discordRequest(&message.Display{Title: "T"}),
@@ -323,6 +335,10 @@ func TestDiscordDeliverRefusesUnbuildableDeliveriesWithoutSending(t *testing.T) 
 		{"unparseable webhook url", func(string) string { return "http://\x7f/api/webhooks/1/s3cr3t-token" }, false, titled},
 		{"relative webhook url", func(string) string { return "/api/webhooks/1/s3cr3t-token" }, false, titled},
 		{"nil display", func(serverURL string) string { return serverURL + discordPath }, false, nil},
+		{
+			"whitespace-only title and body", func(serverURL string) string { return serverURL + discordPath }, false,
+			&message.Display{Title: " \t", Body: "\n\r", URL: "https://x"},
+		},
 		{"empty display", func(serverURL string) string { return serverURL + discordPath }, false, &message.Display{}},
 		{
 			"display with only a url", func(serverURL string) string { return serverURL + discordPath }, false,
@@ -423,6 +439,30 @@ func TestDiscordTransportErrorMasksAHostnameTheCauseQuotes(t *testing.T) {
 	}
 	if !strings.Contains(outcome.Err.Error(), sentinel.Error()) {
 		t.Errorf("error %q lost the cause text", outcome.Err)
+	}
+	if !strings.HasPrefix(outcome.Err.Error(), "discord request failed: ") {
+		t.Errorf("error %q does not carry the discord label", outcome.Err)
+	}
+}
+
+func TestDiscordGoneNeverPutsTheResponseBodyInTheError(t *testing.T) {
+	// A 404 body echoing the webhook url must not reach Err; the snippet has it redacted.
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		writer.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(writer, `{"message":"Unknown Webhook","code":10015,"url":"http://`+request.Host+request.URL.Path+`"}`)
+	}))
+	t.Cleanup(server.Close)
+
+	outcome := newTestDiscordSink().Deliver(
+		context.Background(), discordDestination(server.URL+discordPath), discordRequest(&message.Display{Title: "T"}),
+	)
+
+	if outcome.Err != nil || !outcome.Gone {
+		t.Fatalf("outcome = %+v, want a Gone outcome with no error", outcome)
+	}
+	if strings.Contains(outcome.ResponseSnippet, discordTokenSegment) {
+		t.Errorf("snippet %q leaks the webhook token", outcome.ResponseSnippet)
 	}
 }
 

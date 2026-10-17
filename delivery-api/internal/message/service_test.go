@@ -336,7 +336,23 @@ func TestSubmitHumanFacingDestinationsRequireARenderableDisplay(testInstance *te
 			name: "discord with only a url and priority", destinationType: registry.TypeDiscord,
 			display: &Display{URL: "https://example.com", Priority: "high"}, wantRefused: true,
 		},
+		{
+			name: "ntfy with a whitespace-only title", destinationType: registry.TypeNtfy,
+			display: &Display{Title: "   "}, wantRefused: true,
+		},
+		{
+			name: "discord with a whitespace-only body", destinationType: registry.TypeDiscord,
+			display: &Display{Body: "\n\t\r "}, wantRefused: true,
+		},
+		{
+			name: "discord with a whitespace-only title and body and a url", destinationType: registry.TypeDiscord,
+			display: &Display{Title: " ", Body: "\n", URL: "https://example.com"}, wantRefused: true,
+		},
 		{name: "discord with a title", destinationType: registry.TypeDiscord, display: &Display{Title: "T"}},
+		{
+			name: "ntfy with a blank title but a real body", destinationType: registry.TypeNtfy,
+			display: &Display{Title: " ", Body: "B"},
+		},
 		{name: "ntfy with a body", destinationType: registry.TypeNtfy, display: &Display{Body: "B"}},
 		{name: "webhook without display", destinationType: registry.TypeWebhook, display: nil},
 	}
@@ -514,6 +530,12 @@ func TestSubmitRecipientFailuresStoreNothing(testInstance *testing.T) {
 			name:       "missing display",
 			configure:  func(fixture recipientFixture) *Service { return fixture.service },
 			mutate:     func(envelope *Envelope) { envelope.Display = nil },
+			wantFields: "display.title or display.body is required for ntfy and discord destinations",
+		},
+		{
+			name:       "whitespace-only title and body",
+			configure:  func(fixture recipientFixture) *Service { return fixture.service },
+			mutate:     func(envelope *Envelope) { envelope.Display = &Display{Title: "  ", Body: "\n\t"} },
 			wantFields: "display.title or display.body is required for ntfy and discord destinations",
 		},
 	}

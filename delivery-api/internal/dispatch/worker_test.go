@@ -547,7 +547,8 @@ func TestWorkerGoneDisablesDestinationOnceAndRecordsDeadGone(t *testing.T) {
 	}
 }
 
-// A sink can assert Gone itself (Discord 404/401, ntfy 404) without a 410 status.
+// A sink can assert Gone itself (Discord 401, or a 404 carrying Unknown Webhook
+// code 10015) without a 410 status; a bare 404 is not Gone (see policy_test.go).
 func TestWorkerSinkAssertedGoneDisablesANamedDestination(t *testing.T) {
 	harnessInstance := newHarness(t, nil)
 	harnessInstance.sink.deliver = func(context.Context, registry.ResolvedDestination, sink.Request) sink.Outcome {
