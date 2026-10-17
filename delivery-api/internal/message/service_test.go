@@ -318,6 +318,59 @@ func TestSubmitFailsClosedWithoutSupportedTypes(testInstance *testing.T) {
 	}
 }
 
+func TestSubmitHumanFacingDestinationsRequireARenderableDisplay(testInstance *testing.T) {
+	const wantMessage = "display.title or display.body is required for ntfy and discord destinations"
+	testCases := []struct {
+		name            string
+		destinationType string
+		display         *Display
+		wantRefused     bool
+	}{
+		{name: "ntfy without display", destinationType: registry.TypeNtfy, display: nil, wantRefused: true},
+		{name: "discord without display", destinationType: registry.TypeDiscord, display: nil, wantRefused: true},
+		{name: "ntfy with an empty display", destinationType: registry.TypeNtfy, display: &Display{}, wantRefused: true},
+		{
+			name: "discord with only a url and priority", destinationType: registry.TypeDiscord,
+			display: &Display{URL: "https://example.com", Priority: "high"}, wantRefused: true,
+		},
+		{name: "discord with a title", destinationType: registry.TypeDiscord, display: &Display{Title: "T"}},
+		{name: "ntfy with a body", destinationType: registry.TypeNtfy, display: &Display{Body: "B"}},
+		{name: "webhook without display", destinationType: registry.TypeWebhook, display: nil},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			fixture := newServiceFixture()
+			service := NewService(ServiceConfig{
+				Store: fixture.store,
+				Resolver: &fakeResolver{result: []registry.ResolvedDestination{
+					{ID: 3, Name: "dest", Type: testCase.destinationType},
+				}},
+				SupportedTypes: map[string]bool{
+					registry.TypeWebhook: true, registry.TypeNtfy: true, registry.TypeDiscord: true,
+				},
+			})
+			envelope := validEnvelope()
+			envelope.Display = testCase.display
+
+			_, _, err := service.Submit(context.Background(), envelope)
+
+			if testCase.wantRefused {
+				wantValidationMessage(subTest, err, wantMessage)
+				if len(fixture.store.insertCalls) != 0 {
+					subTest.Fatalf("insert calls = %d, want none", len(fixture.store.insertCalls))
+				}
+				return
+			}
+			if err != nil {
+				subTest.Fatalf("Submit error = %v, want success", err)
+			}
+			if len(fixture.store.insertCalls) != 1 {
+				subTest.Fatalf("insert calls = %d, want 1", len(fixture.store.insertCalls))
+			}
+		})
+	}
+}
+
 func TestSubmitCopiesSupportedTypes(testInstance *testing.T) {
 	supported := map[string]bool{registry.TypeWebhook: true}
 	service := NewService(ServiceConfig{

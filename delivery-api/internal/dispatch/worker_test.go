@@ -496,7 +496,7 @@ func TestWorkerGoneDisablesDestinationOnceAndRecordsDeadGone(t *testing.T) {
 		t.Fatalf("result = %+v, want dead/gone", result)
 	}
 	calls := harnessInstance.resolver.disableCalls()
-	if len(calls) != 1 || calls[0].name != testDestination || calls[0].reason != "webhook returned 410 Gone" {
+	if len(calls) != 1 || calls[0].name != testDestination || calls[0].reason != "destination reported gone (410 or equivalent)" {
 		t.Errorf("DisableDestination calls = %+v, want one for %q with the 410 reason", calls, testDestination)
 	}
 	// The disable is conditional on the ID this attempt resolved (7 is the ID the fake resolver hands out), so a

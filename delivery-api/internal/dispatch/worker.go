@@ -81,9 +81,10 @@ const (
 	errorTextSinkPanic           = "sink panicked"
 )
 
-// disableReason is stored as the destination's disabled_reason after a 410
-// Gone.
-const disableReason = "webhook returned 410 Gone"
+// disableReason is stored as the destination's disabled_reason after the
+// destination reports itself gone: a 410, or a sink-asserted Gone such as a
+// deleted Discord webhook.
+const disableReason = "destination reported gone (410 or equivalent)"
 
 var (
 	// errSinkPanic is the outcome error recorded when a sink panics. The panic
@@ -350,7 +351,7 @@ func (worker *Worker) process(ctx context.Context, claim message.Claim) {
 	}
 }
 
-// disableDestination disables the claim's destination after a 410 Gone, on its
+// disableDestination disables the claim's destination after it reported gone, on its
 // own short context so it neither depends on the exhausted attempt context nor
 // eats into the record's time. It disables only the destination whose ID the
 // attempt resolved (destinationID): one deleted and re-created under the same

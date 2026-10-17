@@ -136,17 +136,21 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 
 	// One transport client per process: it owns the connection pool and the SSRF guard. Production passes
 	// the zero Config, so the address policy and TLS settings are the guarded defaults.
+	guardedClient := transport.New(transport.Config{})
 	messageStore := message.NewPGStore(pool)
 	worker := dispatch.NewWorker(dispatch.WorkerConfig{
 		Queue:    messageStore,
 		Resolver: registryService,
-		Sinks:    map[string]sink.Sink{registry.TypeWebhook: sink.NewWebhookSink(transport.New(transport.Config{}))},
-		Logger:   logger,
+		Sinks: map[string]sink.Sink{
+			registry.TypeWebhook: sink.NewWebhookSink(guardedClient),
+			registry.TypeDiscord: sink.NewDiscordSink(guardedClient),
+		},
+		Logger: logger,
 	})
 	messageService := message.NewService(message.ServiceConfig{
 		Store:          messageStore,
 		Resolver:       registryService,
-		SupportedTypes: map[string]bool{registry.TypeWebhook: true},
+		SupportedTypes: map[string]bool{registry.TypeWebhook: true, registry.TypeDiscord: true},
 		Wake:           worker.Wake,
 		Logger:         logger,
 	})

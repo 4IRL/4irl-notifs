@@ -168,6 +168,10 @@ func (service *Service) resolveTargets(ctx context.Context, envelope Envelope) (
 		if !service.supportedTypes[destination.Type] {
 			return nil, ErrUnsupportedDestinationType
 		}
+		humanFacing := destination.Type == registry.TypeNtfy || destination.Type == registry.TypeDiscord
+		if humanFacing && !hasRenderableDisplay(envelope.Display) {
+			return nil, &ValidationError{Message: "display.title or display.body is required for ntfy and discord destinations"}
+		}
 		targets = append(targets, DeliveryTarget{
 			DestinationID:   destination.ID,
 			DestinationName: destination.Name,
@@ -175,6 +179,13 @@ func (service *Service) resolveTargets(ctx context.Context, envelope Envelope) (
 		})
 	}
 	return targets, nil
+}
+
+// hasRenderableDisplay reports whether display carries something a human-facing
+// sink can show: a non-empty title or body. A nil display, or one with only a
+// URL or priority, is not renderable.
+func hasRenderableDisplay(display *Display) bool {
+	return display != nil && (display.Title != "" || display.Body != "")
 }
 
 // Get returns the message with the given id, scoped to appID: a message that

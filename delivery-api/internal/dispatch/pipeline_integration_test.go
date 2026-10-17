@@ -48,7 +48,7 @@ const (
 	pipelineWorkerPoll      = 20 * time.Millisecond
 	pipelineQuietPeriod     = 300 * time.Millisecond
 	pipelineClockAdvance    = time.Minute
-	pipelineGoneDisableText = "webhook returned 410 Gone"
+	pipelineGoneDisableText = "destination reported gone (410 or equivalent)"
 )
 
 // shiftedClock is the worker's clock: real time plus an offset a test advances to
