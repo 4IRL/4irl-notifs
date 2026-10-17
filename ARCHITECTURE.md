@@ -12,7 +12,7 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `localhost:8300` only    | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API and `/v1/messages`. Runs an in-process delivery worker (SSRF-guarded webhook sink) and retention sweeper. No public hostname yet. |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `localhost:8300` only    | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API and `/v1/messages`. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery) and retention sweeper. No public hostname yet. |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*` + `/people` proxy Functions.             |
 
@@ -29,10 +29,16 @@ the VPS; person-service + admin UI are Cloudflare-native.
   as the ntfy `access_token` requires deleting and recreating the destination.
 - `/v1/admin/routes` (`POST`, `GET`) and `/v1/admin/routes/{id}` (`GET`, `PATCH`, `DELETE`) — the routes
   that map to destinations.
+- `/v1/admin/apps/{app_id}/ntfy-publisher` (`POST`, `GET`, `DELETE`) — the per-app ntfy publisher token
+  that `to.recipient` delivery publishes with. `POST` mints one through provisioning-api
+  (`DELIVERY_PROVISIONING_URL`; unset answers 503) and stores it sealed, `GET` returns the record (never
+  the token), and `DELETE` removes delivery-api's stored copy (idempotent, 204) so recipient submits fail
+  closed until a re-mint. It does not revoke the token in ntfy.
 
 - `POST /v1/messages` (submit, optional `?wait=N`), `GET /v1/messages/{id}?app_id=` and
   `GET /v1/messages?app_id=&idempotency_key=` — the app envelope API, live on `127.0.0.1:8300` only.
-  The in-process worker delivers each queued message to its webhook destination with retries; the
+  The in-process worker delivers each queued message to its webhook, Discord or ntfy destination (or,
+  for `to.recipient`, to the person's ntfy topic) with retries; the
   operator delivery log and replay live under `/v1/admin/deliveries`. The full contract and integration
   guide come in a later phase.
 - Retention sweeper: an in-process sweeper deletes messages older than `DELIVERY_RETENTION_DAYS`
@@ -43,7 +49,10 @@ The `/v1/admin` API has no authentication of its own, which is why delivery-api 
 `localhost:8300` only. `/v1/messages` is equally unauthenticated (`app_id` is caller-asserted, so any
 process that can reach the port can submit as, or read the status of, any app). Do not expose either
 through a tunnel or public hostname until a path-scoped Cloudflare Access application gates
-`/v1/admin/*` and `/v1/messages` has per-app authentication or its own Access policy.
+`/v1/admin/*` and `/v1/messages` has per-app authentication or its own Access policy. The same
+localhost-only rule covers the `/v1/admin/apps/{app_id}/ntfy-publisher` endpoints: the unauthenticated
+`POST` makes provisioning-api create an ntfy publisher user and token for any `app_id`, and the
+`DELETE` removes an app's stored publisher.
 
 ## System diagram
 

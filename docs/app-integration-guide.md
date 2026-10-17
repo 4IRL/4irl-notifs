@@ -262,7 +262,8 @@ POST /v1/messages?wait=10
 
 ### Human-facing sinks (ntfy and Discord)
 
-The ntfy and Discord sinks render only `display`, which needs a `title` or a `body` (400 otherwise).
+The ntfy and Discord sinks render only `display`, which needs a `title` or a `body` that is not blank
+(400 otherwise; whitespace alone does not count).
 
 - **ntfy:** `title` becomes the ntfy title and `body` the message (a title-only message is sent as the
   message with no title), `url` the click action, and `priority` maps to the ntfy `Priority`.
@@ -282,9 +283,19 @@ Recipient deliveries publish with a per-app ntfy publisher token that delivery-a
 minted once through provisioning-api by an explicit operator call, never lazily on submit:
 
 - Mint on the VPS: `curl -X POST http://127.0.0.1:${DELIVERY_PORT}/v1/admin/apps/<app>/ntfy-publisher`
-- Re-run the same call to replace the token.
+- Re-running the same call stores a new token in delivery-api, but it does **not** revoke the previous
+  one. The mint is additive (`rotate:false`), so the previous publisher token stays valid in ntfy, with
+  write access to the app's `{app_id}-*` topics. To revoke it, rotate the app's publisher in
+  provisioning-api (the admin UI "remint with rotate"), then re-mint so delivery-api stores the new
+  token. Rotating also invalidates every token the app itself holds for direct publishing.
 - An admin-UI "remint with rotate" on the same app revokes delivery-api's token too. Recipient
   deliveries then dead-letter as `terminal_status` with a 401 until the publisher is re-minted.
+- After `POST /v1/deprovision-app` the app's ntfy publisher user is gone, but delivery-api still holds
+  its stored token, so recipient submits are accepted (202) and then dead-letter on a 401. Remove the
+  stored publisher so submits fail closed (422, `app has no ntfy publisher`):
+  `curl -X DELETE http://127.0.0.1:${DELIVERY_PORT}/v1/admin/apps/<app>/ntfy-publisher` (204, idempotent;
+  it removes only delivery-api's copy and revokes nothing in ntfy). Re-mint the publisher before
+  recipient sends are expected to work again.
 
 ---
 
