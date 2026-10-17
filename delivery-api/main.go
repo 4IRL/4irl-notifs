@@ -32,6 +32,9 @@ import (
 )
 
 const (
+	// ntfyURLEnv names the env var holding the internal ntfy origin (e.g. http://ntfy:80).
+	ntfyURLEnv = "DELIVERY_NTFY_URL"
+
 	defaultListenAddress = ":8080"
 	readHeaderTimeout    = 10 * time.Second
 	idleTimeout          = 60 * time.Second
@@ -56,6 +59,30 @@ func envOrDefault(key string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// buildSinks returns the delivery sinks and the destination types message
+// submission accepts; both hold exactly the same types, so a type is never
+// accepted at submit that the worker could not deliver. The ntfy sink is added
+// only when ntfyURL is set; otherwise it is left out of both (fail closed: an
+// ntfy destination is rejected at submit rather than dead-lettered later).
+func buildSinks(guardedClient *http.Client, ntfyURL string, logger *slog.Logger) (map[string]sink.Sink, map[string]bool) {
+	sinks := map[string]sink.Sink{
+		registry.TypeWebhook: sink.NewWebhookSink(guardedClient),
+		registry.TypeDiscord: sink.NewDiscordSink(guardedClient),
+	}
+	ntfySink := sink.NewNtfySink(sink.NtfyConfig{BaseURL: ntfyURL})
+	if ntfySink.Configured() {
+		sinks[registry.TypeNtfy] = ntfySink
+	} else {
+		logger.Warn("ntfy sink disabled: " + ntfyURLEnv + " unset")
+	}
+
+	supportedTypes := make(map[string]bool, len(sinks))
+	for destinationType := range sinks {
+		supportedTypes[destinationType] = true
+	}
+	return sinks, supportedTypes
 }
 
 func main() {
@@ -138,19 +165,17 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	// the zero Config, so the address policy and TLS settings are the guarded defaults.
 	guardedClient := transport.New(transport.Config{})
 	messageStore := message.NewPGStore(pool)
+	sinks, supportedTypes := buildSinks(guardedClient, envOrDefault(ntfyURLEnv, ""), logger)
 	worker := dispatch.NewWorker(dispatch.WorkerConfig{
 		Queue:    messageStore,
 		Resolver: registryService,
-		Sinks: map[string]sink.Sink{
-			registry.TypeWebhook: sink.NewWebhookSink(guardedClient),
-			registry.TypeDiscord: sink.NewDiscordSink(guardedClient),
-		},
-		Logger: logger,
+		Sinks:    sinks,
+		Logger:   logger,
 	})
 	messageService := message.NewService(message.ServiceConfig{
 		Store:          messageStore,
 		Resolver:       registryService,
-		SupportedTypes: map[string]bool{registry.TypeWebhook: true, registry.TypeDiscord: true},
+		SupportedTypes: supportedTypes,
 		Wake:           worker.Wake,
 		Logger:         logger,
 	})

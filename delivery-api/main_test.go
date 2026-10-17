@@ -295,6 +295,51 @@ func TestComposeStopGracePeriodCoversShutdown(testInstance *testing.T) {
 	}
 }
 
+func TestBuildSinksAddsNtfyOnlyWhenConfigured(testInstance *testing.T) {
+	guardedClient := http.DefaultClient
+
+	configured, configuredTypes := buildSinks(guardedClient, "http://ntfy:80", newTestLogger())
+	for _, destinationType := range []string{"webhook", "discord", "ntfy"} {
+		if configured[destinationType] == nil {
+			testInstance.Errorf("configured: no sink for %q", destinationType)
+		}
+		if !configuredTypes[destinationType] {
+			testInstance.Errorf("configured: %q not accepted at submit", destinationType)
+		}
+	}
+
+	var logOutput bytes.Buffer
+	unconfigured, unconfiguredTypes := buildSinks(guardedClient, "", slog.New(slog.NewTextHandler(&logOutput, nil)))
+	if unconfigured["ntfy"] != nil || unconfiguredTypes["ntfy"] {
+		testInstance.Error("unconfigured: ntfy must be left out of both the sinks and the supported types")
+	}
+	for _, destinationType := range []string{"webhook", "discord"} {
+		if unconfigured[destinationType] == nil || !unconfiguredTypes[destinationType] {
+			testInstance.Errorf("unconfigured: %q missing", destinationType)
+		}
+	}
+	if len(unconfigured) != len(unconfiguredTypes) {
+		testInstance.Errorf("sinks (%d) and supported types (%d) diverged", len(unconfigured), len(unconfiguredTypes))
+	}
+	if !strings.Contains(logOutput.String(), "ntfy sink disabled: DELIVERY_NTFY_URL unset") {
+		testInstance.Errorf("no warn line for the disabled ntfy sink, log = %q", logOutput.String())
+	}
+}
+
+// TestComposeSetsDeliveryNtfyURL pins both compose files to the internal ntfy
+// origin, so a stack started from either enables the ntfy sink.
+func TestComposeSetsDeliveryNtfyURL(testInstance *testing.T) {
+	for _, composeFile := range []string{"docker-compose.yml", "docker-compose.prod.yml"} {
+		contents, readErr := os.ReadFile(filepath.Join("..", composeFile))
+		if readErr != nil {
+			testInstance.Fatalf("read %s: %v", composeFile, readErr)
+		}
+		if !strings.Contains(string(contents), "- DELIVERY_NTFY_URL=http://ntfy:80") {
+			testInstance.Errorf("%s does not set DELIVERY_NTFY_URL=http://ntfy:80", composeFile)
+		}
+	}
+}
+
 // TestBackgroundStopCancelsAndWaitsForEveryRunner verifies stop cancels the
 // context every runner shares and returns only after all of them have exited.
 func TestBackgroundStopCancelsAndWaitsForEveryRunner(testInstance *testing.T) {
