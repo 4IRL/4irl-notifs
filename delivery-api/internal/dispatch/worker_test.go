@@ -547,6 +547,28 @@ func TestWorkerGoneDisablesDestinationOnceAndRecordsDeadGone(t *testing.T) {
 	}
 }
 
+// A sink can assert Gone itself (Discord 404/401, ntfy 404) without a 410 status.
+func TestWorkerSinkAssertedGoneDisablesANamedDestination(t *testing.T) {
+	harnessInstance := newHarness(t, nil)
+	harnessInstance.sink.deliver = func(context.Context, registry.ResolvedDestination, sink.Request) sink.Outcome {
+		return sink.Outcome{StatusCode: 404, Gone: true}
+	}
+	harnessInstance.queue.add(newClaim(14, testDestination))
+	harnessInstance.start()
+	defer harnessInstance.stop(t)
+
+	result := harnessInstance.waitForRecords(t, 1)[0]
+	if result.Record.Outcome != message.OutcomeGone || result.NextState != message.StateDead ||
+		result.DeadReason == nil || *result.DeadReason != message.DeadReasonGone {
+		t.Fatalf("result = %+v, want dead/gone", result)
+	}
+	calls := harnessInstance.resolver.disableCalls()
+	want := disableCall{name: testDestination, destinationID: 7, reason: "destination reported gone (410 or equivalent)"}
+	if len(calls) != 1 || calls[0] != want {
+		t.Errorf("DisableDestination calls = %+v, want exactly [%+v]", calls, want)
+	}
+}
+
 func TestWorkerGoneForAReplacedDestinationIsRecordedWithoutAnErrorLog(t *testing.T) {
 	harnessInstance := newHarness(t, nil)
 	// The registry answers not-found when the ID no longer matches the name: the destination was deleted and
@@ -1296,6 +1318,20 @@ func TestWorkerLeavesTheLeaseWhenRecipientResolutionFailsUnexpectedly(t *testing
 	if results[0].NextState != message.StateDead || results[0].DeadReason == nil ||
 		*results[0].DeadReason != message.DeadReasonBudgetExhausted {
 		t.Errorf("result = %+v, want dead/%s", results[0], message.DeadReasonBudgetExhausted)
+	}
+	// The broken claim did reach recipient resolution, and nothing was recorded for it even after the worker stopped.
+	wantRecipient := recipientArguments{appID: "urls4irl", personHash: testPersonHash, channel: "alerts"}
+	seen := harnessInstance.recipients.argumentsSeen()
+	if len(seen) == 0 {
+		t.Errorf("ResolveRecipient was never called for the broken claim")
+	}
+	for _, arguments := range seen {
+		if arguments != wantRecipient {
+			t.Errorf("ResolveRecipient arguments = %+v, want %+v", arguments, wantRecipient)
+		}
+	}
+	if after := harnessInstance.queue.recordedResults(); len(after) != 1 {
+		t.Errorf("recorded %d attempts after stop, want still 1", len(after))
 	}
 	if got := harnessInstance.ntfySink.callCount(); got != 0 {
 		t.Errorf("ntfy sink calls = %d, want 0", got)

@@ -358,9 +358,10 @@ func (worker *Worker) process(ctx context.Context, claim message.Claim) {
 	// call may have used the whole attempt budget and a slow disable must never
 	// starve the record.
 	worker.record(ctx, claim, result)
-	// A recipient destination is synthetic (ID 0): there is no registry row to
+	// A recipient destination is synthetic: there is no registry row to
 	// disable, and a gone topic must never disable anything.
-	if result.Record.Outcome == message.OutcomeGone && destination.ID != 0 {
+	isRecipientDelivery := claim.Delivery.DestinationName == registry.RecipientDestinationName
+	if result.Record.Outcome == message.OutcomeGone && !isRecipientDelivery {
 		worker.disableDestination(ctx, claim, destination.ID)
 	}
 }
