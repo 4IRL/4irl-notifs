@@ -188,6 +188,61 @@ func TestUnknownAppHasNoPublisher(testInstance *testing.T) {
 	}
 }
 
+func TestResolveRecipientBuildsAnNtfyDestinationFromTheAppToken(testInstance *testing.T) {
+	service := NewService(newFakeStore(),
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance))
+	if _, mintErr := service.Mint(context.Background(), "urls4irl"); mintErr != nil {
+		testInstance.Fatalf("Mint: %v", mintErr)
+	}
+
+	got, resolveErr := service.ResolveRecipient(context.Background(), "urls4irl", "76gzqgp4byjl6dje", "all")
+	if resolveErr != nil {
+		testInstance.Fatalf("ResolveRecipient: %v", resolveErr)
+	}
+	want := registry.ResolvedDestination{
+		ID:      0,
+		Name:    registry.RecipientDestinationName,
+		Type:    registry.TypeNtfy,
+		Config:  map[string]string{"topic": "urls4irl-76gzqgp4byjl6dje-all"},
+		Secrets: map[string]string{"access_token": firstToken},
+	}
+	if !reflect.DeepEqual(got, want) {
+		testInstance.Errorf("ResolveRecipient = %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveRecipientWithoutPublisherIsErrNoPublisher(testInstance *testing.T) {
+	service := NewService(newFakeStore(), nil, newSealer(testInstance))
+
+	_, resolveErr := service.ResolveRecipient(context.Background(), "ghost", "76gzqgp4byjl6dje", "all")
+	if !errors.Is(resolveErr, registry.ErrNoPublisher) {
+		testInstance.Errorf("ResolveRecipient err = %v, want ErrNoPublisher", resolveErr)
+	}
+}
+
+func TestResolveRecipientRejectsANonHashRecipient(testInstance *testing.T) {
+	store := newFakeStore()
+	service := NewService(store,
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance))
+	if _, mintErr := service.Mint(context.Background(), "urls4irl"); mintErr != nil {
+		testInstance.Fatalf("Mint: %v", mintErr)
+	}
+
+	for _, recipient := range []string{"alice@example.com", "", "76GZQGP4BYJL6DJE", "short"} {
+		got, resolveErr := service.ResolveRecipient(context.Background(), "urls4irl", recipient, "all")
+		if resolveErr == nil {
+			testInstance.Errorf("ResolveRecipient(%q) = %+v, want an error (fail closed)", recipient, got)
+			continue
+		}
+		if errors.Is(resolveErr, registry.ErrNoPublisher) {
+			testInstance.Errorf("ResolveRecipient(%q): a bad recipient must not read as ErrNoPublisher", recipient)
+		}
+		if got.Secrets != nil {
+			testInstance.Errorf("ResolveRecipient(%q) returned secrets alongside an error", recipient)
+		}
+	}
+}
+
 func TestHasPublisher(testInstance *testing.T) {
 	service := NewService(newFakeStore(),
 		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance))

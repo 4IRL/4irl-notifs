@@ -9,8 +9,14 @@ package personhash
 import (
 	"crypto/sha256"
 	"encoding/base32"
+	"regexp"
 	"strings"
 )
+
+// personHashPattern is the required shape of a person hash: 16 characters of the
+// lowercased RFC 4648 base32 alphabet. It matches provisioning-api's
+// personHashPattern.
+var personHashPattern = regexp.MustCompile(`^[a-z2-7]{16}$`)
 
 // hashLength is how many characters of the base32-encoded digest form the
 // person hash: 16 characters (80 bits) — comfortably collision-free for a
@@ -36,6 +42,20 @@ func Hash(email string) string {
 	digest := sha256.Sum256([]byte(Normalize(email)))
 	encoded := base32.StdEncoding.EncodeToString(digest[:])
 	return strings.ToLower(encoded[:hashLength])
+}
+
+// IsHash reports whether value has the shape of a person hash (16 characters of
+// [a-z2-7]). It checks shape only, not that any person has this hash.
+func IsHash(value string) bool {
+	return personHashPattern.MatchString(value)
+}
+
+// PersonChannelTopic returns the ntfy topic a person receives an app's channel
+// on: "{appID}-{hash}-{channel}". It mirrors provisioning-api
+// ntfycli.PersonChannelTopic; Go internal/ rules block importing it across
+// modules.
+func PersonChannelTopic(appID, hash, channel string) string {
+	return appID + "-" + hash + "-" + channel
 }
 
 // NtfyUserFromHash returns the global ntfy username for a person hash:

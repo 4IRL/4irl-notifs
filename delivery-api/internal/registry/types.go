@@ -21,6 +21,11 @@ const (
 	TypeWebhook = "webhook"
 )
 
+// RecipientDestinationName is the synthetic destination_name of a to.recipient
+// delivery; '@' is outside destinationNamePattern, so no operator destination
+// can collide with it.
+const RecipientDestinationName = "@recipient"
+
 // Sentinel errors returned by the registry service and store. Handlers map
 // them to HTTP statuses at a single chokepoint.
 var (

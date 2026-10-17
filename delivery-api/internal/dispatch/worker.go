@@ -78,6 +78,7 @@ const (
 	errorTextDestinationDisabled = "destination is disabled"
 	errorTextUnsupportedType     = "no sink for destination type"
 	errorTextUnresolvable        = "destination could not be resolved"
+	errorTextNoPublisher         = "app has no ntfy publisher"
 	errorTextSinkPanic           = "sink panicked"
 )
 
@@ -112,14 +113,25 @@ type Resolver interface {
 	DisableDestination(ctx context.Context, name string, destinationID int64, reason string) error
 }
 
+// RecipientResolver builds the synthetic ntfy destination of a to.recipient
+// delivery. It is satisfied by *publisher.Service; dispatch does not import
+// publisher. It returns registry.ErrNoPublisher when the app has no publisher.
+type RecipientResolver interface {
+	ResolveRecipient(ctx context.Context, appID, personHash, channel string) (registry.ResolvedDestination, error)
+}
+
 // WorkerConfig configures a Worker. Queue, Resolver and Sinks are required;
 // Sinks is keyed by destination type. Every other zero field takes its default
 // (see the Default* constants; Now is time.Now and Random is rand.Float64).
 type WorkerConfig struct {
 	Queue    Queue
 	Resolver Resolver
-	Sinks    map[string]sink.Sink
-	Logger   *slog.Logger
+	// Recipients resolves to.recipient deliveries. It is optional: when nil
+	// (ntfy is not configured), a recipient delivery is dead-lettered with
+	// message.DeadReasonNoPublisher instead of being sent.
+	Recipients RecipientResolver
+	Sinks      map[string]sink.Sink
+	Logger     *slog.Logger
 
 	Concurrency    int
 	PollInterval   time.Duration
@@ -346,7 +358,9 @@ func (worker *Worker) process(ctx context.Context, claim message.Claim) {
 	// call may have used the whole attempt budget and a slow disable must never
 	// starve the record.
 	worker.record(ctx, claim, result)
-	if result.Record.Outcome == message.OutcomeGone {
+	// A recipient destination is synthetic (ID 0): there is no registry row to
+	// disable, and a gone topic must never disable anything.
+	if result.Record.Outcome == message.OutcomeGone && destination.ID != 0 {
 		worker.disableDestination(ctx, claim, destination.ID)
 	}
 }
@@ -381,6 +395,9 @@ func (worker *Worker) disableDestination(ctx context.Context, claim message.Clai
 func (worker *Worker) resolve(
 	ctx context.Context, claim message.Claim,
 ) (registry.ResolvedDestination, string, error) {
+	if claim.Delivery.DestinationName == registry.RecipientDestinationName {
+		return worker.resolveRecipient(ctx, claim)
+	}
 	// An empty name would make Resolve fan out by route instead of naming one
 	// destination: fail closed.
 	if claim.Delivery.DestinationName == "" {
@@ -407,6 +424,28 @@ func (worker *Worker) resolve(
 		return registry.ResolvedDestination{}, message.DeadReasonDestinationDeleted, nil
 	}
 	return resolved[0], "", nil
+}
+
+// resolveRecipient builds the ntfy destination of a to.recipient delivery from
+// the envelope's person hash. It fails closed: with no recipient resolver
+// configured, or an app with no publisher, the delivery is dead-lettered with
+// message.DeadReasonNoPublisher; any other error means the state is unknown.
+func (worker *Worker) resolveRecipient(
+	ctx context.Context, claim message.Claim,
+) (registry.ResolvedDestination, string, error) {
+	if worker.config.Recipients == nil {
+		return registry.ResolvedDestination{}, message.DeadReasonNoPublisher, nil
+	}
+	envelope := claim.Message.Envelope
+	resolved, resolveErr := worker.config.Recipients.ResolveRecipient(
+		ctx, envelope.AppID, envelope.ToRecipient, envelope.Channel)
+	switch {
+	case errors.Is(resolveErr, registry.ErrNoPublisher):
+		return registry.ResolvedDestination{}, message.DeadReasonNoPublisher, nil
+	case resolveErr != nil:
+		return registry.ResolvedDestination{}, "", resolveErr
+	}
+	return resolved, "", nil
 }
 
 // deliver calls the sink, turning a panic into a retryable outcome so one bad
@@ -438,6 +477,8 @@ func (worker *Worker) recordNeverSent(ctx context.Context, claim message.Claim, 
 		errorText = errorTextUnsupportedType
 	case message.DeadReasonBudgetExhausted:
 		errorText = errorTextUnresolvable
+	case message.DeadReasonNoPublisher:
+		errorText = errorTextNoPublisher
 	}
 	result := message.AttemptResult{
 		Record: message.AttemptRecord{

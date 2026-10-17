@@ -170,19 +170,6 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	guardedClient := transport.New(transport.Config{})
 	messageStore := message.NewPGStore(pool)
 	sinks, supportedTypes := buildSinks(guardedClient, envOrDefault(ntfyURLEnv, ""), logger)
-	worker := dispatch.NewWorker(dispatch.WorkerConfig{
-		Queue:    messageStore,
-		Resolver: registryService,
-		Sinks:    sinks,
-		Logger:   logger,
-	})
-	messageService := message.NewService(message.ServiceConfig{
-		Store:          messageStore,
-		Resolver:       registryService,
-		SupportedTypes: supportedTypes,
-		Wake:           worker.Wake,
-		Logger:         logger,
-	})
 	// The minter is passed only when a provisioning-api origin is configured: a nil interface (not a typed-nil
 	// *provisionclient.Client) makes publisher.Service.Mint answer ErrMintUnavailable.
 	var minter publisher.Minter
@@ -193,6 +180,26 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		logger.Warn("publisher minting disabled: " + provisioningURLEnv + " unset")
 	}
 	publisherService := publisher.NewService(publisher.NewPGStore(pool), minter, sealer)
+	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil
+	// *publisher.Service) makes the worker dead-letter a recipient delivery as no_publisher instead of sending.
+	var recipients dispatch.RecipientResolver
+	if _, ntfyConfigured := sinks[registry.TypeNtfy]; ntfyConfigured {
+		recipients = publisherService
+	}
+	worker := dispatch.NewWorker(dispatch.WorkerConfig{
+		Queue:      messageStore,
+		Resolver:   registryService,
+		Recipients: recipients,
+		Sinks:      sinks,
+		Logger:     logger,
+	})
+	messageService := message.NewService(message.ServiceConfig{
+		Store:          messageStore,
+		Resolver:       registryService,
+		SupportedTypes: supportedTypes,
+		Wake:           worker.Wake,
+		Logger:         logger,
+	})
 	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
 		Logger:     logger,

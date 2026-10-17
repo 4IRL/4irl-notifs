@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
 )
@@ -99,6 +100,31 @@ func (service *Service) Token(ctx context.Context, appID string) (string, error)
 		return "", fmt.Errorf("open publisher token: %w", openErr)
 	}
 	return string(token), nil
+}
+
+// ResolveRecipient builds the ntfy destination for a to.recipient delivery: the
+// person's topic for the app and channel, authenticated with the app's
+// publisher token. The result is synthetic (ID 0, name
+// registry.RecipientDestinationName) and never persisted. A personHash that is
+// not a person hash fails closed with an error before the store is read; an app
+// with no publisher returns registry.ErrNoPublisher.
+func (service *Service) ResolveRecipient(
+	ctx context.Context, appID, personHash, channel string,
+) (registry.ResolvedDestination, error) {
+	if !personhash.IsHash(personHash) {
+		return registry.ResolvedDestination{}, errors.New("recipient is not a person hash")
+	}
+	token, tokenErr := service.Token(ctx, appID)
+	if tokenErr != nil {
+		return registry.ResolvedDestination{}, tokenErr
+	}
+	return registry.ResolvedDestination{
+		ID:      0,
+		Name:    registry.RecipientDestinationName,
+		Type:    registry.TypeNtfy,
+		Config:  map[string]string{"topic": personhash.PersonChannelTopic(appID, personHash, channel)},
+		Secrets: map[string]string{"access_token": token},
+	}, nil
 }
 
 func viewOf(stored StoredPublisher) PublisherView {
