@@ -14,6 +14,10 @@ const (
 	// maxNtfyTopicLength is ntfy's cap on a topic name.
 	maxNtfyTopicLength = 64
 
+	// errMsgDisplayRequired is the validation message for an envelope with no
+	// renderable display text bound for an ntfy or discord destination.
+	errMsgDisplayRequired = "display.title or display.body is required for ntfy and discord destinations"
+
 	// DefaultListLimit is the page size of an operator delivery list that names
 	// no limit.
 	DefaultListLimit = 50
@@ -195,7 +199,7 @@ func (service *Service) resolveTargets(ctx context.Context, envelope Envelope) (
 		}
 		humanFacing := destination.Type == registry.TypeNtfy || destination.Type == registry.TypeDiscord
 		if humanFacing && !hasRenderableDisplay(envelope.Display) {
-			return nil, &ValidationError{Message: "display.title or display.body is required for ntfy and discord destinations"}
+			return nil, &ValidationError{Message: errMsgDisplayRequired}
 		}
 		// Copy the ID so each target points at its own value, not the loop variable.
 		destinationID := destination.ID
@@ -223,7 +227,7 @@ func (service *Service) resolveRecipientTarget(ctx context.Context, envelope Env
 		return nil, &ValidationError{Message: "app_id and channel are too long for a recipient topic"}
 	}
 	if !hasRenderableDisplay(envelope.Display) {
-		return nil, &ValidationError{Message: "display.title or display.body is required for ntfy and discord destinations"}
+		return nil, &ValidationError{Message: errMsgDisplayRequired}
 	}
 	if service.publishers == nil {
 		return nil, registry.ErrNoPublisher

@@ -124,6 +124,12 @@ func TestValidateTo(testInstance *testing.T) {
 		{name: "empty local part", toRecipient: "@b", wantMessage: invalidRecipientMessage},
 		{name: "space inside", toRecipient: "a b@example.com", wantMessage: invalidRecipientMessage},
 		{name: "two at signs", toRecipient: "a@b@example.com", wantMessage: invalidRecipientMessage},
+		{name: "whitespace only recipient", toRecipient: "   ", wantMessage: invalidRecipientMessage},
+		{name: "tab inside the address", toRecipient: "a\tb@example.com", wantMessage: invalidRecipientMessage},
+		{
+			name:        "254 bytes only after trimming and lowercasing",
+			toRecipient: "  " + strings.Repeat("A", 242) + "@Example.com\t",
+		},
 		{name: "254 byte email", toRecipient: strings.Repeat("a", 242) + "@example.com"},
 		{name: "255 byte email", toRecipient: strings.Repeat("a", 243) + "@example.com", wantMessage: invalidRecipientMessage},
 		{
