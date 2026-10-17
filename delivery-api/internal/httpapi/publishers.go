@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
@@ -23,6 +24,7 @@ const (
 type Publishers interface {
 	Mint(ctx context.Context, appID string) (publisher.PublisherView, error)
 	Get(ctx context.Context, appID string) (publisher.PublisherView, error)
+	Remove(ctx context.Context, appID string) error
 }
 
 // publisherResponseBody wraps one publisher view. It never carries a token.
@@ -64,6 +66,17 @@ func (server *Server) handleGetPublisher(responseWriter http.ResponseWriter, req
 	writeJSON(responseWriter, http.StatusOK, publisherResponseBody{Publisher: view})
 }
 
+// handleDeletePublisher serves DELETE /v1/admin/apps/{app_id}/ntfy-publisher
+// (204), idempotently: an app with no stored publisher also answers 204. It
+// removes only delivery-api's stored copy; the ntfy token is not revoked.
+func (server *Server) handleDeletePublisher(responseWriter http.ResponseWriter, request *http.Request) {
+	if err := server.publishers.Remove(request.Context(), request.PathValue("app_id")); err != nil {
+		server.writePublisherError(responseWriter, request, err)
+		return
+	}
+	responseWriter.WriteHeader(http.StatusNoContent)
+}
+
 // writePublisherError is the single chokepoint mapping a publisher error to an
 // HTTP response. Validation errors carry a client-safe message; known sentinels
 // map to fixed messages; anything else is a provisioning-api mint failure (or a
@@ -76,7 +89,7 @@ func (server *Server) writePublisherError(responseWriter http.ResponseWriter, re
 		writeError(responseWriter, http.StatusBadRequest, validationErr.Message)
 	case errors.Is(err, registry.ErrNoPublisher):
 		writeError(responseWriter, http.StatusNotFound, errMsgPublisherNotFound)
-	case errors.Is(err, publisher.ErrMintUnavailable):
+	case errors.Is(err, publisher.ErrMintUnavailable), errors.Is(err, provisionclient.ErrNotConfigured):
 		writeError(responseWriter, http.StatusServiceUnavailable, errMsgPublisherMintUnavailable)
 	default:
 		server.logger.Error(errMsgPublisherMintFailed, "error", err, "path", request.URL.Path)

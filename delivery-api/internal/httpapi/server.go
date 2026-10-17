@@ -151,6 +151,7 @@ func (server *Server) routes() {
 
 	server.mux.HandleFunc("POST /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleMintPublisher))
 	server.mux.HandleFunc("GET /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleGetPublisher))
+	server.mux.HandleFunc("DELETE /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleDeletePublisher))
 
 	server.mux.HandleFunc("POST /v1/messages", server.requireMessages(server.handleCreateMessage))
 	server.mux.HandleFunc("GET /v1/messages/{id}", server.requireMessages(server.handleGetMessage))

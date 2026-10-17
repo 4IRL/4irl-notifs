@@ -258,6 +258,20 @@ func TestRecipientDeliveryThroughNtfy(testInstance *testing.T) {
 		testInstance.Fatalf("ntfy message = (title %q, message %q), want (%q, %q)",
 			events[0].Title, events[0].Message, sinkMessageTitle, sinkMessageBody)
 	}
+
+	// 5. Removing the publisher (the operator step after POST /v1/deprovision-app) is
+	// idempotent and makes later recipient submits fail closed.
+	publisherPath := adminBasePath + "/apps/" + appID + "/ntfy-publisher"
+	for attempt := 1; attempt <= 2; attempt++ {
+		status, body = apiRequest(testInstance, http.MethodDelete, publisherPath, nil)
+		requireStatus(testInstance, fmt.Sprintf("DELETE ntfy-publisher #%d", attempt), status, http.StatusNoContent, body)
+	}
+	status, body = apiRequest(testInstance, http.MethodGet, publisherPath, nil)
+	requireStatus(testInstance, "GET ntfy-publisher after DELETE", status, http.StatusNotFound, body)
+	status, body = apiRequest(testInstance, http.MethodPost, messagesPath,
+		recipientSubmitBody(appID, email, "it-removed-"+suffix))
+	requireStatus(testInstance, "POST recipient message after DELETE", status, http.StatusUnprocessableEntity, body)
+	requireErrorMessage(testInstance, "POST recipient message after DELETE", body, "app has no ntfy publisher")
 }
 
 func TestRecipientWithoutPublisherIsRejected(testInstance *testing.T) {

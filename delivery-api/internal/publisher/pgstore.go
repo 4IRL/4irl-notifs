@@ -56,6 +56,15 @@ func (store *PGStore) Get(ctx context.Context, appID string) (StoredPublisher, e
 	return stored, nil
 }
 
+// Delete removes the app's publisher row. Deleting an app with no publisher is
+// not an error.
+func (store *PGStore) Delete(ctx context.Context, appID string) error {
+	if _, execErr := store.pool.Exec(ctx, `DELETE FROM app_publishers WHERE app_id = $1`, appID); execErr != nil {
+		return pgutil.WrapDBError("delete app publisher", execErr)
+	}
+	return nil
+}
+
 func scanPublisher(row pgutil.RowScanner) (StoredPublisher, error) {
 	var stored StoredPublisher
 	scanErr := row.Scan(&stored.AppID, &stored.PublisherUserID, &stored.TopicPattern,

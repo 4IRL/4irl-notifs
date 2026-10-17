@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
@@ -19,11 +21,18 @@ const publisherPath = "/v1/admin/apps/urls4irl/ntfy-publisher"
 
 // fakePublishers is a Publishers double that returns canned results and counts calls.
 type fakePublishers struct {
-	view      publisher.PublisherView
-	err       error
-	mintCalls int
-	getCalls  int
-	lastAppID string
+	view        publisher.PublisherView
+	err         error
+	mintCalls   int
+	getCalls    int
+	removeCalls int
+	lastAppID   string
+}
+
+func (fake *fakePublishers) Remove(_ context.Context, appID string) error {
+	fake.removeCalls++
+	fake.lastAppID = appID
+	return fake.err
 }
 
 func (fake *fakePublishers) Mint(_ context.Context, appID string) (publisher.PublisherView, error) {
@@ -86,6 +95,56 @@ func TestPublishersRouteToTheRightMethod(testInstance *testing.T) {
 	if fake.mintCalls != 1 || fake.getCalls != 1 {
 		testInstance.Fatalf("GET: mint=%d get=%d, want 1/1", fake.mintCalls, fake.getCalls)
 	}
+	servePublishers(fake, nil, http.MethodDelete, publisherPath)
+	if fake.mintCalls != 1 || fake.getCalls != 1 || fake.removeCalls != 1 {
+		testInstance.Fatalf("DELETE: mint=%d get=%d remove=%d, want 1/1/1", fake.mintCalls, fake.getCalls, fake.removeCalls)
+	}
+}
+
+func TestPublishersDeleteIs204WithNoBody(testInstance *testing.T) {
+	fake := &fakePublishers{}
+
+	recorder := servePublishers(fake, nil, http.MethodDelete, publisherPath)
+
+	if recorder.Code != http.StatusNoContent || recorder.Body.Len() != 0 {
+		testInstance.Fatalf("status/body = %d/%q, want 204 and no body", recorder.Code, recorder.Body.String())
+	}
+	if fake.lastAppID != "urls4irl" {
+		testInstance.Fatalf("app id = %q, want urls4irl", fake.lastAppID)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		testInstance.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+func TestPublishersDeleteMapsErrors(testInstance *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "validation error is 400", err: &publisher.ValidationError{Message: "invalid app_id"},
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"invalid app_id"}` + "\n",
+		},
+		{
+			name: "store failure is a generic 502", err: errors.New("delete app publisher: db down"),
+			wantStatus: http.StatusBadGateway, wantBody: `{"error":"provisioning-api mint failed"}` + "\n",
+		},
+	}
+	for _, testCase := range tests {
+		testInstance.Run(testCase.name, func(testInstance *testing.T) {
+			recorder := servePublishers(&fakePublishers{err: testCase.err}, nil, http.MethodDelete, publisherPath)
+			assertResponse(testInstance, recorder, testCase.wantStatus, testCase.wantBody)
+		})
+	}
+}
+
+func TestPublishersDeleteInvalidAppIDIs400(testInstance *testing.T) {
+	service := publisher.NewService(nil, nil, nil)
+	recorder := servePublishers(service, nil, http.MethodDelete, "/v1/admin/apps/Bad-App/ntfy-publisher")
+	assertResponse(testInstance, recorder, http.StatusBadRequest, `{"error":"invalid app_id"}`+"\n")
 }
 
 func TestPublishersMapErrors(testInstance *testing.T) {
@@ -114,6 +173,16 @@ func TestPublishersMapErrors(testInstance *testing.T) {
 		{
 			name: "wrapped mint unavailable is 503", method: http.MethodPost,
 			err:        errors.Join(errors.New("context"), publisher.ErrMintUnavailable),
+			wantStatus: http.StatusServiceUnavailable, wantBody: `{"error":"publisher minting unavailable"}` + "\n",
+		},
+		{
+			name: "unconfigured provisioning client is 503", method: http.MethodPost,
+			err:        provisionclient.ErrNotConfigured,
+			wantStatus: http.StatusServiceUnavailable, wantBody: `{"error":"publisher minting unavailable"}` + "\n",
+		},
+		{
+			name: "wrapped unconfigured provisioning client is 503", method: http.MethodPost,
+			err:        fmt.Errorf("mint publisher: %w", provisionclient.ErrNotConfigured),
 			wantStatus: http.StatusServiceUnavailable, wantBody: `{"error":"publisher minting unavailable"}` + "\n",
 		},
 		{
@@ -157,7 +226,7 @@ func TestPublishersMintFailureIsLoggedNotEchoed(testInstance *testing.T) {
 }
 
 func TestPublishersNilFailsClosed(testInstance *testing.T) {
-	for _, method := range []string{http.MethodPost, http.MethodGet} {
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
 		testInstance.Run(method, func(testInstance *testing.T) {
 			recorder := servePublishers(nil, nil, method, publisherPath)
 			assertResponse(testInstance, recorder, http.StatusServiceUnavailable, `{"error":"publisher minting unavailable"}`+"\n")

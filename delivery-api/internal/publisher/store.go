@@ -13,6 +13,9 @@ type Store interface {
 	Upsert(ctx context.Context, publisher StoredPublisher) (StoredPublisher, error)
 	// Get returns the app's publisher, or registry.ErrNoPublisher.
 	Get(ctx context.Context, appID string) (StoredPublisher, error)
+	// Delete removes the app's publisher row. It is idempotent: an app with no
+	// publisher is not an error.
+	Delete(ctx context.Context, appID string) error
 }
 
 // Minter obtains a fresh publisher grant for an app. *provisionclient.Client

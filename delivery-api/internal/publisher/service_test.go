@@ -25,6 +25,7 @@ const (
 type fakeStore struct {
 	rows        map[string]StoredPublisher
 	upsertCalls int
+	deleteCalls int
 }
 
 func newFakeStore() *fakeStore {
@@ -50,6 +51,12 @@ func (store *fakeStore) Get(_ context.Context, appID string) (StoredPublisher, e
 		return StoredPublisher{}, registry.ErrNoPublisher
 	}
 	return publisher, nil
+}
+
+func (store *fakeStore) Delete(_ context.Context, appID string) error {
+	store.deleteCalls++
+	delete(store.rows, appID)
+	return nil
 }
 
 // fakeMinter returns queued grants, or err when set.
@@ -314,6 +321,67 @@ func (store *failingStore) Upsert(context.Context, StoredPublisher) (StoredPubli
 
 func (store *failingStore) Get(context.Context, string) (StoredPublisher, error) {
 	return StoredPublisher{}, store.err
+}
+
+func (store *failingStore) Delete(context.Context, string) error { return store.err }
+
+func TestRemoveDeletesThePublisherSoRecipientSubmitsFailClosed(testInstance *testing.T) {
+	store := newFakeStore()
+	service := NewService(store,
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance))
+	if _, mintErr := service.Mint(context.Background(), "urls4irl"); mintErr != nil {
+		testInstance.Fatalf("Mint: %v", mintErr)
+	}
+
+	if removeErr := service.Remove(context.Background(), "urls4irl"); removeErr != nil {
+		testInstance.Fatalf("Remove: %v", removeErr)
+	}
+
+	has, hasErr := service.HasPublisher(context.Background(), "urls4irl")
+	if hasErr != nil || has {
+		testInstance.Errorf("HasPublisher after Remove = %v, %v; want false, nil", has, hasErr)
+	}
+	if _, getErr := service.Get(context.Background(), "urls4irl"); !errors.Is(getErr, registry.ErrNoPublisher) {
+		testInstance.Errorf("Get after Remove err = %v, want registry.ErrNoPublisher", getErr)
+	}
+}
+
+func TestRemoveIsIdempotent(testInstance *testing.T) {
+	store := newFakeStore()
+	service := NewService(store, nil, newSealer(testInstance))
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if removeErr := service.Remove(context.Background(), "urls4irl"); removeErr != nil {
+			testInstance.Fatalf("Remove attempt %d on an app with no publisher: %v", attempt, removeErr)
+		}
+	}
+	if store.deleteCalls != 2 {
+		testInstance.Errorf("store delete calls = %d, want 2", store.deleteCalls)
+	}
+}
+
+func TestRemoveRejectsInvalidAppIDBeforeTheStore(testInstance *testing.T) {
+	store := newFakeStore()
+	service := NewService(store, nil, newSealer(testInstance))
+
+	removeErr := service.Remove(context.Background(), "Bad-App")
+
+	var validationErr *ValidationError
+	if !errors.As(removeErr, &validationErr) {
+		testInstance.Fatalf("err = %v, want *ValidationError", removeErr)
+	}
+	if store.deleteCalls != 0 {
+		testInstance.Errorf("store delete calls = %d for an invalid app_id, want 0", store.deleteCalls)
+	}
+}
+
+func TestRemovePropagatesStoreFailure(testInstance *testing.T) {
+	storeErr := errors.New("db down")
+	service := NewService(&failingStore{err: storeErr}, nil, newSealer(testInstance))
+
+	if removeErr := service.Remove(context.Background(), "urls4irl"); !errors.Is(removeErr, storeErr) {
+		testInstance.Errorf("Remove err = %v, want the store error", removeErr)
+	}
 }
 
 func TestMintRejectsInvalidAppIDBeforeCallingMinter(testInstance *testing.T) {

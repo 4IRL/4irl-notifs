@@ -75,6 +75,18 @@ func (service *Service) Get(ctx context.Context, appID string) (PublisherView, e
 	return viewOf(stored), nil
 }
 
+// Remove deletes the app's stored publisher so recipient submits for the app
+// fail closed with registry.ErrNoPublisher until it is minted again. It is
+// idempotent: an app with no publisher is not an error. It returns
+// *ValidationError for an invalid app id (before the store is touched). It does
+// not revoke the token in ntfy; that is a provisioning-api operator step.
+func (service *Service) Remove(ctx context.Context, appID string) error {
+	if !appIDPattern.MatchString(appID) {
+		return &ValidationError{Message: "invalid app_id"}
+	}
+	return service.store.Delete(ctx, appID)
+}
+
 // HasPublisher reports whether the app has a publisher. Only a store failure is
 // an error; a missing publisher is false, nil.
 func (service *Service) HasPublisher(ctx context.Context, appID string) (bool, error) {

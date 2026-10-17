@@ -117,3 +117,36 @@ func TestPGStoreGetMissIsErrNoPublisher(testInstance *testing.T) {
 		testInstance.Errorf("Get err = %v, want ErrNoPublisher", getErr)
 	}
 }
+
+func TestPGStoreDeleteRemovesOnlyTheNamedAppAndIsIdempotent(testInstance *testing.T) {
+	ctx, store, pool := newTestStore(testInstance)
+	for _, appID := range []string{"urls4irl", "chores4irl"} {
+		if _, upsertErr := store.Upsert(ctx, samplePublisher(appID, []byte{0x01})); upsertErr != nil {
+			testInstance.Fatalf("Upsert %s: %v", appID, upsertErr)
+		}
+	}
+
+	if deleteErr := store.Delete(ctx, "urls4irl"); deleteErr != nil {
+		testInstance.Fatalf("Delete: %v", deleteErr)
+	}
+
+	if _, getErr := store.Get(ctx, "urls4irl"); !errors.Is(getErr, registry.ErrNoPublisher) {
+		testInstance.Errorf("Get after Delete err = %v, want ErrNoPublisher", getErr)
+	}
+	if _, getErr := store.Get(ctx, "chores4irl"); getErr != nil {
+		testInstance.Errorf("Delete removed another app's publisher: %v", getErr)
+	}
+	if deleteErr := store.Delete(ctx, "urls4irl"); deleteErr != nil {
+		testInstance.Errorf("second Delete of the same app: %v, want nil (idempotent)", deleteErr)
+	}
+	if deleteErr := store.Delete(ctx, "ghost"); deleteErr != nil {
+		testInstance.Errorf("Delete of an app with no publisher: %v, want nil", deleteErr)
+	}
+	var rowCount int
+	if countErr := pool.QueryRow(ctx, "SELECT count(*) FROM app_publishers").Scan(&rowCount); countErr != nil {
+		testInstance.Fatalf("count: %v", countErr)
+	}
+	if rowCount != 1 {
+		testInstance.Errorf("rows = %d, want 1", rowCount)
+	}
+}
