@@ -270,4 +270,5 @@ func TestRecipientWithoutPublisherIsRejected(testInstance *testing.T) {
 	status, body := apiRequest(testInstance, http.MethodPost, messagesPath,
 		recipientSubmitBody(appID, "it-nopub-"+suffix+"@example.com", "it-"+suffix))
 	requireStatus(testInstance, "POST recipient message without publisher", status, http.StatusUnprocessableEntity, body)
+	requireErrorMessage(testInstance, "POST recipient message without publisher", body, "app has no ntfy publisher")
 }

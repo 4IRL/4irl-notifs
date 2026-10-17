@@ -132,6 +132,7 @@ type pipeline struct {
 	receiver        *receiver
 	worker          *dispatch.Worker
 	clock           *shiftedClock
+	appID           string // the app waitForDelivery reads messages under
 }
 
 // startPipeline wires the real stack and starts the worker. guarded true uses the
@@ -209,7 +210,7 @@ func startPipeline(testInstance *testing.T, respond func(requestNumber int) int,
 
 	return &pipeline{
 		ctx: ctx, registryService: registryService, messages: messageService,
-		receiver: webhook, worker: worker, clock: clock,
+		receiver: webhook, worker: worker, clock: clock, appID: pipelineAppID,
 	}
 }
 
@@ -242,7 +243,7 @@ func (live *pipeline) waitForDelivery(
 	deadline := time.Now().Add(pipelineWaitTimeout)
 	var last message.Delivery
 	for time.Now().Before(deadline) {
-		stored, getErr := live.messages.Get(live.ctx, pipelineAppID, messageID)
+		stored, getErr := live.messages.Get(live.ctx, live.appID, messageID)
 		if getErr != nil {
 			testInstance.Fatalf("Get message: %v", getErr)
 		}
@@ -612,24 +613,8 @@ func TestPipelineDeliversARecipientMessageToTheNtfyTopic(testInstance *testing.T
 		testInstance.Fatalf("deliveries = %+v, want one synthetic recipient delivery with a NULL destination_id", stored.Deliveries)
 	}
 
-	// waitForDelivery reads the message under pipelineAppID, so poll under this test's own app.
-	deadline := time.Now().Add(pipelineWaitTimeout)
-	delivered := false
-	var last message.Delivery
-	for !delivered && time.Now().Before(deadline) {
-		current, getErr := messageService.Get(ctx, recipientAppID, stored.ID)
-		if getErr != nil {
-			testInstance.Fatalf("Get message: %v", getErr)
-		}
-		last = current.Deliveries[0]
-		delivered = deliveredAfterAttempts(1)(last)
-		if !delivered {
-			time.Sleep(pipelinePollInterval)
-		}
-	}
-	if !delivered {
-		testInstance.Fatalf("timed out waiting for the recipient delivery to be delivered; last = %+v", last)
-	}
+	live := &pipeline{ctx: ctx, messages: messageService, appID: recipientAppID}
+	live.waitForDelivery(testInstance, stored.ID, "the recipient delivery to be delivered", deliveredAfterAttempts(1))
 
 	ntfyMutex.Lock()
 	requests := append([]receivedRequest(nil), ntfyRequests...)
