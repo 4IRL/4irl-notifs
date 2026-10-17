@@ -21,6 +21,8 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/readiness"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
@@ -32,6 +34,11 @@ import (
 )
 
 const (
+	// ntfyURLEnv names the env var holding the internal ntfy origin (e.g. http://ntfy:80).
+	ntfyURLEnv = "DELIVERY_NTFY_URL"
+	// provisioningURLEnv names the env var holding the internal provisioning-api origin (e.g. http://provisioning-api:8080).
+	provisioningURLEnv = "DELIVERY_PROVISIONING_URL"
+
 	defaultListenAddress = ":8080"
 	readHeaderTimeout    = 10 * time.Second
 	idleTimeout          = 60 * time.Second
@@ -56,6 +63,30 @@ func envOrDefault(key string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// buildSinks returns the delivery sinks and the destination types message
+// submission accepts; both hold exactly the same types, so a type is never
+// accepted at submit that the worker could not deliver. The ntfy sink is added
+// only when ntfyURL is set; otherwise it is left out of both (fail closed: an
+// ntfy destination is rejected at submit rather than dead-lettered later).
+func buildSinks(guardedClient *http.Client, ntfyURL string, logger *slog.Logger) (map[string]sink.Sink, map[string]bool) {
+	sinks := map[string]sink.Sink{
+		registry.TypeWebhook: sink.NewWebhookSink(guardedClient),
+		registry.TypeDiscord: sink.NewDiscordSink(guardedClient),
+	}
+	ntfySink := sink.NewNtfySink(sink.NtfyConfig{BaseURL: ntfyURL})
+	if ntfySink.Configured() {
+		sinks[registry.TypeNtfy] = ntfySink
+	} else {
+		logger.Warn("ntfy sink disabled: " + ntfyURLEnv + " unset")
+	}
+
+	supportedTypes := make(map[string]bool, len(sinks))
+	for destinationType := range sinks {
+		supportedTypes[destinationType] = true
+	}
+	return sinks, supportedTypes
 }
 
 func main() {
@@ -136,26 +167,47 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 
 	// One transport client per process: it owns the connection pool and the SSRF guard. Production passes
 	// the zero Config, so the address policy and TLS settings are the guarded defaults.
+	guardedClient := transport.New(transport.Config{})
 	messageStore := message.NewPGStore(pool)
+	sinks, supportedTypes := buildSinks(guardedClient, envOrDefault(ntfyURLEnv, ""), logger)
+	// The minter is passed only when a provisioning-api origin is configured: a nil interface (not a typed-nil
+	// *provisionclient.Client) makes publisher.Service.Mint answer ErrMintUnavailable.
+	var minter publisher.Minter
+	provisionClient := provisionclient.New(provisionclient.Config{BaseURL: envOrDefault(provisioningURLEnv, "")})
+	if provisionClient.Configured() {
+		minter = provisionClient
+	} else {
+		logger.Warn("publisher minting disabled: " + provisioningURLEnv + " unset")
+	}
+	publisherService := publisher.NewService(publisher.NewPGStore(pool), minter, sealer)
+	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil
+	// *publisher.Service) makes the worker dead-letter a recipient delivery as no_publisher instead of sending.
+	var recipients dispatch.RecipientResolver
+	if _, ntfyConfigured := sinks[registry.TypeNtfy]; ntfyConfigured {
+		recipients = publisherService
+	}
 	worker := dispatch.NewWorker(dispatch.WorkerConfig{
-		Queue:    messageStore,
-		Resolver: registryService,
-		Sinks:    map[string]sink.Sink{registry.TypeWebhook: sink.NewWebhookSink(transport.New(transport.Config{}))},
-		Logger:   logger,
+		Queue:      messageStore,
+		Resolver:   registryService,
+		Recipients: recipients,
+		Sinks:      sinks,
+		Logger:     logger,
 	})
 	messageService := message.NewService(message.ServiceConfig{
 		Store:          messageStore,
 		Resolver:       registryService,
-		SupportedTypes: map[string]bool{registry.TypeWebhook: true},
+		Publishers:     publisherService,
+		SupportedTypes: supportedTypes,
 		Wake:           worker.Wake,
 		Logger:         logger,
 	})
-	// See ServerConfig.Messages for why it is set only here.
+	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
-		Logger:    logger,
-		Readiness: checker,
-		Registry:  registryService,
-		Messages:  messageService,
+		Logger:     logger,
+		Readiness:  checker,
+		Registry:   registryService,
+		Messages:   messageService,
+		Publishers: publisherService,
 	}).Handler()
 
 	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)

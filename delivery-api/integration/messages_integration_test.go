@@ -337,16 +337,17 @@ func containsDelivery(deliveries []deliveryJSON, deliveryID int64) bool {
 	return false
 }
 
-// assertSubmitRejections covers the submit-time refusals: a recipient, a channel
+// assertSubmitRejections covers the submit-time refusals: an invalid recipient, a channel
 // with no route and a destination whose type has no sink yet. None stores a message.
 func assertSubmitRejections(testInstance *testing.T, routedChannel string) {
 	testInstance.Helper()
 
 	recipientBody := submitBody(routedChannel, "it-recipient-"+randomSuffix(testInstance))
-	recipientBody["to"] = map[string]string{"recipient": "someone@example.com"}
+	recipientBody["to"] = map[string]string{"recipient": "not-an-email"}
 	status, body := apiRequest(testInstance, http.MethodPost, messagesPath, recipientBody)
-	requireStatus(testInstance, "POST message with recipient", status, http.StatusBadRequest, body)
-	requireErrorMessage(testInstance, "POST message with recipient", body, "recipient delivery not yet supported")
+	requireStatus(testInstance, "POST message with an invalid recipient", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "POST message with an invalid recipient", body,
+		"to.recipient must be an email or person_hash")
 
 	unroutedChannel := "it_" + randomSuffix(testInstance)
 	status, body = apiRequest(testInstance, http.MethodPost, messagesPath,
@@ -364,6 +365,11 @@ func assertSubmitRejections(testInstance *testing.T, routedChannel string) {
 	createRoute(testInstance, ntfyChannel, ntfyName)
 	status, body = apiRequest(testInstance, http.MethodPost, messagesPath,
 		submitBody(ntfyChannel, "it-ntfy-"+randomSuffix(testInstance)))
-	requireStatus(testInstance, "POST message to an ntfy destination", status, http.StatusUnprocessableEntity, body)
-	requireErrorMessage(testInstance, "POST message to an ntfy destination", body, "destination type not yet supported")
+	// ntfy is a supported type, so a message without display text is refused by
+	// validation (400) before any destination is resolved. The 422 "destination type not
+	// yet supported" refusal needs a service without the type; it is pinned by
+	// TestPipelineRefusesADestinationTypeWithNoSinkAt422 in internal/dispatch.
+	requireStatus(testInstance, "POST message without display to an ntfy destination", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "POST message without display to an ntfy destination", body,
+		"display.title or display.body is required for ntfy and discord destinations")
 }

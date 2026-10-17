@@ -34,7 +34,7 @@ func newRealService(testInstance *testing.T) (context.Context, *message.Service,
 	service := message.NewService(message.ServiceConfig{
 		Store: store,
 		Resolver: staticResolver{destination: registry.ResolvedDestination{
-			ID: target.DestinationID, Name: target.DestinationName, Type: target.DestinationType,
+			ID: *target.DestinationID, Name: target.DestinationName, Type: target.DestinationType,
 		}},
 		SupportedTypes: map[string]bool{registry.TypeNtfy: true},
 	})

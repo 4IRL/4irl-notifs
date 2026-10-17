@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
 
@@ -105,14 +106,20 @@ func ValidateIdempotencyKey(idempotencyKey string) error {
 	return nil
 }
 
-// ValidateTo checks the delivery target. A recipient is rejected because no sink
-// consumes one yet (fail closed: nothing is queued without a sink to consume it);
-// otherwise the destination is either empty (route fan-out) or a valid
-// destination name. It takes both values together because it must see the
-// recipient before judging the destination.
+// ValidateTo checks the delivery target. A destination and a recipient are
+// mutually exclusive. A recipient must be a person_hash or an email; otherwise
+// the destination is either empty (route fan-out) or a valid destination name.
+// It takes both values together because the exclusivity check must see both
+// before either is judged on its own.
 func ValidateTo(toDestination string, toRecipient string) error {
+	if toDestination != "" && toRecipient != "" {
+		return &ValidationError{Message: "to.destination and to.recipient cannot both be set"}
+	}
 	if toRecipient != "" {
-		return &ValidationError{Message: "recipient delivery not yet supported"}
+		if !personhash.IsHash(toRecipient) && !isValidEmail(toRecipient) {
+			return &ValidationError{Message: "to.recipient must be an email or person_hash"}
+		}
+		return nil
 	}
 	// The registry owns the destination name rule; only its error is mapped to
 	// this API's message.

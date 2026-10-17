@@ -34,6 +34,7 @@ const (
 	errMsgDestinationDisabled        = "destination disabled"
 	errMsgNoDestinationMatched       = "no destination matched"
 	errMsgDestinationTypeUnsupported = "destination type not yet supported"
+	errMsgNoPublisher                = "app has no ntfy publisher"
 	errMsgMessageNotFound            = "message not found"
 	errMsgDeliveryNotFound           = "delivery not found"
 	errMsgDeliveryNotDead            = "delivery not dead"
@@ -437,6 +438,8 @@ func (server *Server) writeMessageError(responseWriter http.ResponseWriter, requ
 		writeError(responseWriter, http.StatusUnprocessableEntity, errMsgNoDestinationMatched)
 	case errors.Is(err, message.ErrUnsupportedDestinationType):
 		writeError(responseWriter, http.StatusUnprocessableEntity, errMsgDestinationTypeUnsupported)
+	case errors.Is(err, registry.ErrNoPublisher):
+		writeError(responseWriter, http.StatusUnprocessableEntity, errMsgNoPublisher)
 	case errors.Is(err, message.ErrMessageNotFound):
 		writeError(responseWriter, http.StatusNotFound, errMsgMessageNotFound)
 	case errors.Is(err, message.ErrDeliveryNotFound):

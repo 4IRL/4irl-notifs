@@ -8,6 +8,7 @@ package message
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -53,6 +54,9 @@ const (
 	DeadReasonBlockedAddress = "blocked_address"
 	// DeadReasonUnsupportedType is a destination type with no sink yet.
 	DeadReasonUnsupportedType = "unsupported_type"
+	// DeadReasonNoPublisher is a recipient delivery whose app has no ntfy
+	// publisher token.
+	DeadReasonNoPublisher = "no_publisher"
 )
 
 // Attempt outcomes, stored in delivery_attempts.outcome.
@@ -107,6 +111,16 @@ type Display struct {
 	Priority string `json:"priority,omitempty"`
 }
 
+// HasRenderableText reports whether the display carries something a
+// human-facing sink can show: a title or body that is not blank (empty or only
+// whitespace). It is nil-safe: a nil display, or one with only a URL or
+// priority, has no renderable text. The message service (at submit) and the
+// ntfy and Discord sinks (at send) all use this one rule so they agree.
+func (display *Display) HasRenderableText() bool {
+	return display != nil &&
+		(strings.TrimSpace(display.Title) != "" || strings.TrimSpace(display.Body) != "")
+}
+
 // Envelope is a message as an app submits it. Payload is opaque to the
 // service; it is validated only for shape and size.
 type Envelope struct {
@@ -123,9 +137,10 @@ type Envelope struct {
 
 // DeliveryTarget is one resolved destination a message fans out to. The name
 // and type are snapshotted onto the delivery row so it stays meaningful if the
-// destination is later renamed away or deleted.
+// destination is later renamed away or deleted. DestinationID is nil for a
+// to.recipient target, which has no registry destination.
 type DeliveryTarget struct {
-	DestinationID   int64
+	DestinationID   *int64
 	DestinationName string
 	DestinationType string
 }

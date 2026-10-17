@@ -135,7 +135,17 @@ services:
       - DELIVERY_DB_NAME=delivery
       - DELIVERY_DB_PASSWORD=delivery-local-dev # dev-only credential; prod uses a file secret
       - DELIVERY_MASTER_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef # dev-only, obviously-fake key; prod uses a persistent file secret
+      # In-compose HTTP origin of the ntfy server, used by the ntfy delivery sink (the ntfy service
+      # listens on :80 inside the compose network). Unset disables the ntfy sink. LOCKSTEP: keep in
+      # sync with docker-compose.prod.yml and with provisioning-api's NTFY_PUBLISH_URL.
+      - DELIVERY_NTFY_URL=http://ntfy:80
+      # In-compose HTTP origin of provisioning-api, used only by the operator publisher-mint endpoint
+      # (POST /v1/admin/apps/{app_id}/ntfy-publisher). Unset disables minting. LOCKSTEP: keep in sync
+      # with docker-compose.prod.yml.
+      - DELIVERY_PROVISIONING_URL=http://provisioning-api:8080
     depends_on:
+      provisioning-api:
+        condition: service_healthy
       delivery-postgres:
         condition: service_healthy
       delivery-migrate:

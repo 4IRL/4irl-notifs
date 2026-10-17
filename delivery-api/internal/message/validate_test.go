@@ -99,6 +99,11 @@ func TestValidateIdempotencyKey(testInstance *testing.T) {
 	}
 }
 
+const (
+	invalidRecipientMessage = "to.recipient must be an email or person_hash"
+	bothSetMessage          = "to.destination and to.recipient cannot both be set"
+)
+
 func TestValidateTo(testInstance *testing.T) {
 	testCases := []struct {
 		name          string
@@ -112,14 +117,37 @@ func TestValidateTo(testInstance *testing.T) {
 		{name: "64 character destination", toDestination: strings.Repeat("d", 64), wantMessage: "invalid to.destination"},
 		{name: "uppercase destination", toDestination: "Ops", wantMessage: "invalid to.destination"},
 		{name: "hyphen destination", toDestination: "ops-webhook", wantMessage: "invalid to.destination"},
-		{name: "recipient rejected", toRecipient: "someone", wantMessage: "recipient delivery not yet supported"},
+		{name: "email recipient", toRecipient: "Alice@Example.com "},
+		{name: "person_hash recipient", toRecipient: "76gzqgp4byjl6dje"},
+		{name: "no at sign", toRecipient: "not-an-email", wantMessage: invalidRecipientMessage},
+		{name: "empty domain", toRecipient: "a@", wantMessage: invalidRecipientMessage},
+		{name: "empty local part", toRecipient: "@b", wantMessage: invalidRecipientMessage},
+		{name: "space inside", toRecipient: "a b@example.com", wantMessage: invalidRecipientMessage},
+		{name: "two at signs", toRecipient: "a@b@example.com", wantMessage: invalidRecipientMessage},
+		{name: "whitespace only recipient", toRecipient: "   ", wantMessage: invalidRecipientMessage},
+		{name: "tab inside the address", toRecipient: "a\tb@example.com", wantMessage: invalidRecipientMessage},
 		{
-			name: "recipient wins over a bad destination", toDestination: "Bad-Name", toRecipient: "someone",
-			wantMessage: "recipient delivery not yet supported",
+			name:        "254 bytes only after trimming and lowercasing",
+			toRecipient: "  " + strings.Repeat("A", 242) + "@Example.com\t",
+		},
+		{name: "254 byte email", toRecipient: strings.Repeat("a", 242) + "@example.com"},
+		{name: "255 byte email", toRecipient: strings.Repeat("a", 243) + "@example.com", wantMessage: invalidRecipientMessage},
+		{
+			name: "16 chars outside the hash alphabet", toRecipient: "76gzqgp4byjl6dj1",
+			wantMessage: invalidRecipientMessage,
+		},
+		{name: "uppercase hash is not a hash", toRecipient: "76GZQGP4BYJL6DJE", wantMessage: invalidRecipientMessage},
+		{
+			name: "destination and recipient both set", toDestination: "ops_webhook", toRecipient: "alice@example.com",
+			wantMessage: bothSetMessage,
 		},
 		{
-			name: "recipient rejected alongside a valid destination", toDestination: "ops_webhook", toRecipient: "someone",
-			wantMessage: "recipient delivery not yet supported",
+			name: "both set wins over a bad destination", toDestination: "Bad-Name", toRecipient: "someone",
+			wantMessage: bothSetMessage,
+		},
+		{
+			name: "both set wins over a bad recipient", toDestination: "ops_webhook", toRecipient: "someone",
+			wantMessage: bothSetMessage,
 		},
 	}
 	for _, testCase := range testCases {
@@ -355,7 +383,7 @@ func TestValidateEnvelopeEachRule(testInstance *testing.T) {
 		{
 			name:        "recipient",
 			mutate:      func(envelope *Envelope) { envelope.ToRecipient = "someone" },
-			wantMessage: "recipient delivery not yet supported",
+			wantMessage: invalidRecipientMessage,
 		},
 		{name: "deliver_at", mutate: func(envelope *Envelope) { envelope.DeliverAt = &someTime }, wantMessage: "deliver_at not yet supported"},
 		{name: "bad payload", mutate: func(envelope *Envelope) { envelope.Payload = json.RawMessage(`[]`) }, wantMessage: "invalid payload"},
@@ -404,7 +432,7 @@ func TestValidateEnvelopeEarlierRuleWins(testInstance *testing.T) {
 				AppID: "urls4irl", Channel: "alerts", IdempotencyKey: "key-1", ToRecipient: "someone",
 				DeliverAt: &someTime, Payload: json.RawMessage(`[]`),
 			},
-			wantMessage: "recipient delivery not yet supported",
+			wantMessage: invalidRecipientMessage,
 		},
 		{
 			name: "deliver_at before payload",

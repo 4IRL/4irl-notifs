@@ -17,20 +17,26 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/pgtest"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/sink"
@@ -48,7 +54,7 @@ const (
 	pipelineWorkerPoll      = 20 * time.Millisecond
 	pipelineQuietPeriod     = 300 * time.Millisecond
 	pipelineClockAdvance    = time.Minute
-	pipelineGoneDisableText = "webhook returned 410 Gone"
+	pipelineGoneDisableText = "destination reported gone (410 or equivalent)"
 )
 
 // shiftedClock is the worker's clock: real time plus an offset a test advances to
@@ -129,6 +135,7 @@ type pipeline struct {
 	receiver        *receiver
 	worker          *dispatch.Worker
 	clock           *shiftedClock
+	appID           string // the app waitForDelivery reads messages under
 }
 
 // startPipeline wires the real stack and starts the worker. guarded true uses the
@@ -206,7 +213,7 @@ func startPipeline(testInstance *testing.T, respond func(requestNumber int) int,
 
 	return &pipeline{
 		ctx: ctx, registryService: registryService, messages: messageService,
-		receiver: webhook, worker: worker, clock: clock,
+		receiver: webhook, worker: worker, clock: clock, appID: pipelineAppID,
 	}
 }
 
@@ -239,7 +246,7 @@ func (live *pipeline) waitForDelivery(
 	deadline := time.Now().Add(pipelineWaitTimeout)
 	var last message.Delivery
 	for time.Now().Before(deadline) {
-		stored, getErr := live.messages.Get(live.ctx, pipelineAppID, messageID)
+		stored, getErr := live.messages.Get(live.ctx, live.appID, messageID)
 		if getErr != nil {
 			testInstance.Fatalf("Get message: %v", getErr)
 		}
@@ -497,5 +504,177 @@ func TestPipelineDefaultTransportBlocksALoopbackReceiver(testInstance *testing.T
 	if len(attempts) != 1 || attempts[0].Outcome != message.OutcomeBlocked || attempts[0].StatusCode != nil ||
 		attempts[0].ResponseSnippet != nil {
 		testInstance.Fatalf("attempts = %+v, want one blocked attempt with no status and no snippet", attempts)
+	}
+}
+
+const (
+	recipientAppID = "pipeapp"
+	// recipientMintedToken has the shape provisioning-api mints: "tk_" + 29 lowercase alphanumerics.
+	recipientMintedToken = "tk_abcdefghijklmnopqrstuvwxyz012"
+	recipientEmail       = "Alice@Example.com"
+)
+
+// pipelineMinter is a publisher.Minter that returns a fixed grant.
+type pipelineMinter struct{}
+
+func (pipelineMinter) MintPublisher(_ context.Context, appID string) (provisionclient.PublisherGrant, error) {
+	return provisionclient.PublisherGrant{
+		AppID: appID, PublisherUserID: "app-" + appID, TopicPattern: appID + "-*", Token: recipientMintedToken,
+	}, nil
+}
+
+// TestPipelineDeliversARecipientMessageToTheNtfyTopic runs a to.recipient email
+// through the real message.Service, worker and NtfySink: the service stores only
+// the person hash and queues the synthetic ntfy delivery, and the worker publishes
+// to {app_id}-{hash}-{channel} with the app's minted publisher token.
+func TestPipelineDeliversARecipientMessageToTheNtfyTopic(testInstance *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), pipelineTestTimeout)
+	testInstance.Cleanup(cancel)
+	pool := pgtest.IsolatedPool(ctx, testInstance)
+	logger := slog.New(slog.DiscardHandler)
+
+	sealer, sealErr := seal.New([]byte("0123456789abcdef0123456789abcdef"))
+	if sealErr != nil {
+		testInstance.Fatalf("seal.New: %v", sealErr)
+	}
+
+	var ntfyMutex sync.Mutex
+	var ntfyRequests []receivedRequest
+	ntfyServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		body, readErr := io.ReadAll(request.Body)
+		if readErr != nil {
+			testInstance.Errorf("ntfy: reading request body: %v", readErr)
+		}
+		ntfyMutex.Lock()
+		ntfyRequests = append(ntfyRequests, receivedRequest{
+			method: request.Method, path: request.URL.Path, header: request.Header.Clone(), body: body,
+		})
+		ntfyMutex.Unlock()
+		responseWriter.WriteHeader(http.StatusOK)
+	}))
+	testInstance.Cleanup(ntfyServer.Close)
+
+	registryService := registry.NewService(registry.NewPGStore(pool), sealer, logger)
+	store := message.NewPGStore(pool)
+	publishers := publisher.NewService(publisher.NewPGStore(pool), pipelineMinter{}, sealer)
+	if _, mintErr := publishers.Mint(ctx, recipientAppID); mintErr != nil {
+		testInstance.Fatalf("Mint: %v", mintErr)
+	}
+
+	worker := dispatch.NewWorker(dispatch.WorkerConfig{
+		Queue:        store,
+		Resolver:     registryService,
+		Recipients:   publishers,
+		Sinks:        map[string]sink.Sink{registry.TypeNtfy: sink.NewNtfySink(sink.NtfyConfig{BaseURL: ntfyServer.URL})},
+		Logger:       logger,
+		Concurrency:  2,
+		PollInterval: pipelineWorkerPoll,
+		Random:       func() float64 { return 0 },
+	})
+	messageService := message.NewService(message.ServiceConfig{
+		Store:          store,
+		Resolver:       registryService,
+		Publishers:     publishers,
+		SupportedTypes: map[string]bool{registry.TypeNtfy: true},
+		Wake:           worker.Wake,
+		Logger:         logger,
+	})
+
+	workerCtx, stopWorker := context.WithCancel(ctx)
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		worker.Run(workerCtx)
+	}()
+	// Registered after the pool's cleanup, so (LIFO) the worker stops before the pool closes.
+	testInstance.Cleanup(func() {
+		stopWorker()
+		select {
+		case <-workerDone:
+		case <-time.After(pipelineWaitTimeout):
+			testInstance.Error("worker did not stop")
+		}
+	})
+
+	stored, duplicate, submitErr := messageService.Submit(ctx, message.Envelope{
+		AppID:          recipientAppID,
+		Channel:        pipelineChannel,
+		IdempotencyKey: "recipient-1",
+		ToRecipient:    recipientEmail,
+		Payload:        json.RawMessage(`{"order":42}`),
+		Display:        &message.Display{Title: "Hello", Body: "Body"},
+	})
+	if submitErr != nil || duplicate {
+		testInstance.Fatalf("Submit = (duplicate %v, %v), want a new message", duplicate, submitErr)
+	}
+	wantHash := personhash.Hash(recipientEmail)
+	if stored.Envelope.ToRecipient != wantHash {
+		testInstance.Fatalf("stored to_recipient = %q, want the hash %q", stored.Envelope.ToRecipient, wantHash)
+	}
+	if len(stored.Deliveries) != 1 || stored.Deliveries[0].DestinationID != nil ||
+		stored.Deliveries[0].DestinationName != registry.RecipientDestinationName {
+		testInstance.Fatalf("deliveries = %+v, want one synthetic recipient delivery with a NULL destination_id", stored.Deliveries)
+	}
+
+	live := &pipeline{ctx: ctx, messages: messageService, appID: recipientAppID}
+	live.waitForDelivery(testInstance, stored.ID, "the recipient delivery to be delivered", deliveredAfterAttempts(1))
+
+	ntfyMutex.Lock()
+	requests := append([]receivedRequest(nil), ntfyRequests...)
+	ntfyMutex.Unlock()
+	if len(requests) != 1 {
+		testInstance.Fatalf("ntfy saw %d requests, want 1", len(requests))
+	}
+	wantPath := "/" + recipientAppID + "-" + wantHash + "-" + pipelineChannel
+	if requests[0].method != http.MethodPost || requests[0].path != wantPath {
+		testInstance.Fatalf("request = %s %s, want POST %s", requests[0].method, requests[0].path, wantPath)
+	}
+	if got, want := requests[0].header.Get("Authorization"), "Bearer "+recipientMintedToken; got != want {
+		testInstance.Fatalf("Authorization = %q, want the minted publisher token", got)
+	}
+}
+
+// TestPipelineRefusesADestinationTypeWithNoSinkAt422 pins the submit-time refusal
+// end to end: with a message service that supports only the webhook type, a route
+// that resolves to a real ntfy destination in the registry is refused before
+// anything is stored, and the HTTP API maps it to 422 "destination type not yet
+// supported". (The stack-level integration tests register every sink, so they
+// cannot reach this refusal.)
+func TestPipelineRefusesADestinationTypeWithNoSinkAt422(testInstance *testing.T) {
+	const (
+		ntfyDestinationName = "pipeline_ntfy"
+		ntfyChannel         = "ntfy_only"
+		wantStatus          = http.StatusUnprocessableEntity
+		wantErrorBody       = `{"error":"destination type not yet supported"}` + "\n"
+	)
+	live := startPipeline(testInstance, func(int) int { return http.StatusOK }, false)
+	if _, createErr := live.registryService.CreateDestination(live.ctx, registry.DestinationInput{
+		Name: ntfyDestinationName, Type: registry.TypeNtfy, Config: map[string]string{"topic": "pipeline_topic"},
+	}); createErr != nil {
+		testInstance.Fatalf("create ntfy destination: %v", createErr)
+	}
+	if _, routeErr := live.registryService.CreateRoute(live.ctx, registry.RouteInput{
+		AppPattern: "*", ChannelPattern: ntfyChannel, Destinations: []string{ntfyDestinationName},
+	}); routeErr != nil {
+		testInstance.Fatalf("create ntfy route: %v", routeErr)
+	}
+	envelope := message.Envelope{
+		AppID: pipelineAppID, Channel: ntfyChannel, IdempotencyKey: "unsupported-1",
+		Payload: json.RawMessage(`{"order":42}`), Display: &message.Display{Title: "Hello", Body: "Body"},
+	}
+
+	if _, _, submitErr := live.messages.Submit(live.ctx, envelope); !errors.Is(submitErr, message.ErrUnsupportedDestinationType) {
+		testInstance.Fatalf("Submit error = %v, want ErrUnsupportedDestinationType", submitErr)
+	}
+
+	server := httpapi.NewServer(httpapi.ServerConfig{Messages: live.messages, Logger: slog.New(slog.DiscardHandler)})
+	requestBody := `{"app_id":"` + pipelineAppID + `","channel":"` + ntfyChannel + `","idempotency_key":"unsupported-2",` +
+		`"payload":{"order":42},"display":{"title":"Hello","body":"Body"}}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != wantStatus || recorder.Body.String() != wantErrorBody {
+		testInstance.Fatalf("POST /v1/messages = %d %q, want %d %q", recorder.Code, recorder.Body.String(), wantStatus, wantErrorBody)
 	}
 }

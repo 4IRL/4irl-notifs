@@ -1,8 +1,9 @@
 // Package sink delivers one stored message to one resolved destination.
 //
-// The generic HMAC webhook sink in webhook.go is the only sink implemented so
-// far; further sinks implement the same Sink interface. The package imports registry and message for their types only and
-// never the dispatch package, so the worker can depend on it without a cycle.
+// The generic HMAC webhook sink in webhook.go and the Discord sink in discord.go
+// are implemented so far; further sinks implement the same Sink interface. The
+// package imports registry and message for their types only and never the
+// dispatch package, so the worker can depend on it without a cycle.
 package sink
 
 import (
@@ -49,6 +50,11 @@ type Outcome struct {
 	RetryAfter      *time.Duration
 	ResponseSnippet string
 	Err             error
+	// Gone is set by a sink when the response proves the destination permanently
+	// no longer exists (e.g. Discord 404 Unknown Webhook); classified like a 410
+	// and disables the destination. It is ignored when Err is set, because then
+	// no response was obtained.
+	Gone bool
 }
 
 // Sink delivers a request to one destination. Implementations must not retain

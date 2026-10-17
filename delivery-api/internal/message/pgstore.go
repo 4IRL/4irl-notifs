@@ -529,7 +529,8 @@ func truncateBytes(text string, limit int) string {
 
 // insertDeliveries bulk-inserts one pending delivery per target.
 func insertDeliveries(ctx context.Context, tx pgx.Tx, messageID string, targets []DeliveryTarget) error {
-	destinationIDs := make([]int64, 0, len(targets))
+	// A *int64 slice encodes a nil entry (a recipient target) as SQL NULL.
+	destinationIDs := make([]*int64, 0, len(targets))
 	destinationNames := make([]string, 0, len(targets))
 	destinationTypes := make([]string, 0, len(targets))
 	for _, target := range targets {

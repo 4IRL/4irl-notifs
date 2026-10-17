@@ -28,6 +28,7 @@ const (
 	secretSigning    = "super-secret-signing-value-0123456789"
 	payloadMarker    = "PAYLOAD-MARKER-4f9c1"
 	testDestination  = "ops"
+	testPersonHash   = "76gzqgp4byjl6dje"
 	testClockStartAt = "2026-10-16T12:00:00Z"
 )
 
@@ -211,6 +212,34 @@ func (resolver *fakeResolver) resolveCallCount() int {
 	return resolver.resolveCalls
 }
 
+type recipientArguments struct{ appID, personHash, channel string }
+
+// fakeRecipients resolves any recipient to an ntfy destination unless err is set.
+type fakeRecipients struct {
+	mutex       sync.Mutex
+	destination registry.ResolvedDestination
+	err         error
+	seen        []recipientArguments
+}
+
+func (recipients *fakeRecipients) ResolveRecipient(
+	_ context.Context, appID, personHash, channel string,
+) (registry.ResolvedDestination, error) {
+	recipients.mutex.Lock()
+	defer recipients.mutex.Unlock()
+	recipients.seen = append(recipients.seen, recipientArguments{appID, personHash, channel})
+	if recipients.err != nil {
+		return registry.ResolvedDestination{}, recipients.err
+	}
+	return recipients.destination, nil
+}
+
+func (recipients *fakeRecipients) argumentsSeen() []recipientArguments {
+	recipients.mutex.Lock()
+	defer recipients.mutex.Unlock()
+	return append([]recipientArguments(nil), recipients.seen...)
+}
+
 // fakeSink runs deliver for every call and keeps the requests it saw.
 type fakeSink struct {
 	mutex    sync.Mutex
@@ -268,14 +297,16 @@ func (locked *lockedBuffer) Reset() {
 }
 
 type harness struct {
-	queue    *fakeQueue
-	resolver *fakeResolver
-	sink     *fakeSink
-	clock    *stepClock
-	logs     *lockedBuffer
-	worker   *Worker
-	cancel   context.CancelFunc
-	done     chan struct{}
+	queue      *fakeQueue
+	resolver   *fakeResolver
+	recipients *fakeRecipients
+	sink       *fakeSink
+	ntfySink   *fakeSink
+	clock      *stepClock
+	logs       *lockedBuffer
+	worker     *Worker
+	cancel     context.CancelFunc
+	done       chan struct{}
 }
 
 // newHarness builds a single-loop worker (so event order is deterministic) on a fake clock with the fakes
@@ -291,14 +322,24 @@ func newHarness(t *testing.T, mutate func(config *WorkerConfig)) *harness {
 			Config:  map[string]string{},
 			Secrets: map[string]string{"url": secretURL, "signing_secret": secretSigning},
 		}},
-		sink:  &fakeSink{},
-		clock: &stepClock{current: testClockStart, step: testClockStep},
-		logs:  logs,
-		done:  make(chan struct{}),
+		recipients: &fakeRecipients{destination: registry.ResolvedDestination{
+			Name:    registry.RecipientDestinationName,
+			Type:    registry.TypeNtfy,
+			Config:  map[string]string{"topic": "urls4irl-" + testPersonHash + "-alerts"},
+			Secrets: map[string]string{"access_token": "tk_abcdefghijklmnopqrstuvwxyz012"},
+		}},
+		sink:     &fakeSink{},
+		ntfySink: &fakeSink{},
+		clock:    &stepClock{current: testClockStart, step: testClockStep},
+		logs:     logs,
+		done:     make(chan struct{}),
 	}
 	config := WorkerConfig{
-		Queue:            harnessInstance.queue,
-		Resolver:         harnessInstance.resolver,
+		Queue:      harnessInstance.queue,
+		Resolver:   harnessInstance.resolver,
+		Recipients: harnessInstance.recipients,
+		// The ntfy sink is registered only by the recipient tests (see recipientHarness), so the
+		// "unregistered destination type" case keeps seeing no ntfy sink.
 		Sinks:            map[string]sink.Sink{registry.TypeWebhook: harnessInstance.sink},
 		Logger:           slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Concurrency:      1,
@@ -496,13 +537,36 @@ func TestWorkerGoneDisablesDestinationOnceAndRecordsDeadGone(t *testing.T) {
 		t.Fatalf("result = %+v, want dead/gone", result)
 	}
 	calls := harnessInstance.resolver.disableCalls()
-	if len(calls) != 1 || calls[0].name != testDestination || calls[0].reason != "webhook returned 410 Gone" {
+	if len(calls) != 1 || calls[0].name != testDestination || calls[0].reason != "destination reported gone (410 or equivalent)" {
 		t.Errorf("DisableDestination calls = %+v, want one for %q with the 410 reason", calls, testDestination)
 	}
 	// The disable is conditional on the ID this attempt resolved (7 is the ID the fake resolver hands out), so a
 	// destination re-created under the same name cannot be disabled by the old endpoint's 410.
 	if len(calls) == 1 && calls[0].destinationID != 7 {
 		t.Errorf("DisableDestination destination id = %d, want the resolved id 7", calls[0].destinationID)
+	}
+}
+
+// A sink can assert Gone itself (Discord 401, or a 404 carrying Unknown Webhook
+// code 10015) without a 410 status; a bare 404 is not Gone (see policy_test.go).
+func TestWorkerSinkAssertedGoneDisablesANamedDestination(t *testing.T) {
+	harnessInstance := newHarness(t, nil)
+	harnessInstance.sink.deliver = func(context.Context, registry.ResolvedDestination, sink.Request) sink.Outcome {
+		return sink.Outcome{StatusCode: 404, Gone: true}
+	}
+	harnessInstance.queue.add(newClaim(14, testDestination))
+	harnessInstance.start()
+	defer harnessInstance.stop(t)
+
+	result := harnessInstance.waitForRecords(t, 1)[0]
+	if result.Record.Outcome != message.OutcomeGone || result.NextState != message.StateDead ||
+		result.DeadReason == nil || *result.DeadReason != message.DeadReasonGone {
+		t.Fatalf("result = %+v, want dead/gone", result)
+	}
+	calls := harnessInstance.resolver.disableCalls()
+	want := disableCall{name: testDestination, destinationID: 7, reason: "destination reported gone (410 or equivalent)"}
+	if len(calls) != 1 || calls[0] != want {
+		t.Errorf("DisableDestination calls = %+v, want exactly [%+v]", calls, want)
 	}
 }
 
@@ -1144,6 +1208,154 @@ func TestNewWorkerLeavesTheDefaultAndAnAdequateLeaseUntouched(t *testing.T) {
 func TestMaxInFlightShutdownCoversAttemptRecordAndDisable(t *testing.T) {
 	if MaxInFlightShutdown != 16*time.Second {
 		t.Errorf("MaxInFlightShutdown = %v, want 16s (9s attempt + 5s record + 2s disable)", MaxInFlightShutdown)
+	}
+}
+
+// newRecipientHarness is a harness whose worker also has an ntfy sink registered, for to.recipient rows.
+func newRecipientHarness(t *testing.T, mutate func(config *WorkerConfig)) *harness {
+	t.Helper()
+	harnessInstance := newHarness(t, mutate)
+	harnessInstance.worker.config.Sinks[registry.TypeNtfy] = harnessInstance.ntfySink
+	return harnessInstance
+}
+
+// newRecipientClaim is a claim for a to.recipient delivery: the synthetic destination name, no destination
+// id, and the person hash on the envelope.
+func newRecipientClaim(deliveryID int64) message.Claim {
+	claim := newClaim(deliveryID, registry.RecipientDestinationName)
+	claim.Delivery.DestinationID = nil
+	claim.Delivery.DestinationType = registry.TypeNtfy
+	claim.Message.Envelope.ToRecipient = testPersonHash
+	return claim
+}
+
+func TestWorkerDeliversARecipientRowThroughTheNtfySink(t *testing.T) {
+	harnessInstance := newRecipientHarness(t, nil)
+	harnessInstance.queue.add(newRecipientClaim(200))
+	harnessInstance.start()
+	defer harnessInstance.stop(t)
+
+	result := harnessInstance.waitForRecords(t, 1)[0]
+	if result.NextState != message.StateDelivered || result.Record.Outcome != message.OutcomeSuccess {
+		t.Fatalf("result = %+v, want delivered/success", result)
+	}
+	wantRecipient := recipientArguments{appID: "urls4irl", personHash: testPersonHash, channel: "alerts"}
+	if seen := harnessInstance.recipients.argumentsSeen(); len(seen) != 1 || seen[0] != wantRecipient {
+		t.Errorf("ResolveRecipient arguments = %+v, want [%+v]", seen, wantRecipient)
+	}
+	if got := harnessInstance.resolver.resolveCallCount(); got != 0 {
+		t.Errorf("Resolver.Resolve calls = %d, want 0 (a recipient row has no registry destination)", got)
+	}
+	if got := harnessInstance.sink.callCount(); got != 0 {
+		t.Errorf("webhook sink calls = %d, want 0", got)
+	}
+	if got := harnessInstance.ntfySink.callCount(); got != 1 {
+		t.Fatalf("ntfy sink calls = %d, want 1", got)
+	}
+}
+
+func TestWorkerDeadLettersARecipientRowWithoutAPublisher(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(config *WorkerConfig)
+		setup  func(harnessInstance *harness)
+	}{
+		{
+			name: "the app has no publisher",
+			setup: func(harnessInstance *harness) {
+				harnessInstance.recipients.err = fmt.Errorf("wrapped: %w", registry.ErrNoPublisher)
+			},
+		},
+		{
+			name:   "no recipient resolver is configured",
+			mutate: func(config *WorkerConfig) { config.Recipients = nil },
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			harnessInstance := newRecipientHarness(t, testCase.mutate)
+			if testCase.setup != nil {
+				testCase.setup(harnessInstance)
+			}
+			harnessInstance.queue.add(newRecipientClaim(201))
+			harnessInstance.start()
+			defer harnessInstance.stop(t)
+
+			result := harnessInstance.waitForRecords(t, 1)[0]
+			if result.NextState != message.StateDead || result.DeadReason == nil ||
+				*result.DeadReason != message.DeadReasonNoPublisher {
+				t.Fatalf("result = %+v, want dead/%s", result, message.DeadReasonNoPublisher)
+			}
+			record := result.Record
+			if record.Outcome != message.OutcomeTerminal || record.StatusCode != nil ||
+				record.Error == nil || *record.Error != errorTextNoPublisher {
+				t.Errorf("record = %+v, want terminal, no status and error %q", record, errorTextNoPublisher)
+			}
+			if got := harnessInstance.ntfySink.callCount(); got != 0 {
+				t.Errorf("ntfy sink calls = %d, want 0", got)
+			}
+			if got := harnessInstance.resolver.resolveCallCount(); got != 0 {
+				t.Errorf("Resolver.Resolve calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestWorkerLeavesTheLeaseWhenRecipientResolutionFailsUnexpectedly(t *testing.T) {
+	harnessInstance := newRecipientHarness(t, nil)
+	harnessInstance.recipients.err = errors.New("store unavailable")
+	broken := newRecipientClaim(202)
+	spent := newRecipientClaim(203)
+	spent.Delivery.BudgetStartedAt = testClockStart.Add(-2 * MaxBudgetAge)
+	harnessInstance.queue.add(broken, spent)
+	harnessInstance.start()
+
+	// Only the spent-budget row is recorded; the other keeps its lease like a failed named resolve.
+	results := harnessInstance.waitForRecords(t, 1)
+	harnessInstance.stop(t)
+	if len(results) != 1 {
+		t.Fatalf("recorded %d attempts, want 1", len(results))
+	}
+	if results[0].NextState != message.StateDead || results[0].DeadReason == nil ||
+		*results[0].DeadReason != message.DeadReasonBudgetExhausted {
+		t.Errorf("result = %+v, want dead/%s", results[0], message.DeadReasonBudgetExhausted)
+	}
+	// The broken claim did reach recipient resolution, and nothing was recorded for it even after the worker stopped.
+	wantRecipient := recipientArguments{appID: "urls4irl", personHash: testPersonHash, channel: "alerts"}
+	seen := harnessInstance.recipients.argumentsSeen()
+	if len(seen) == 0 {
+		t.Errorf("ResolveRecipient was never called for the broken claim")
+	}
+	for _, arguments := range seen {
+		if arguments != wantRecipient {
+			t.Errorf("ResolveRecipient arguments = %+v, want %+v", arguments, wantRecipient)
+		}
+	}
+	if after := harnessInstance.queue.recordedResults(); len(after) != 1 {
+		t.Errorf("recorded %d attempts after stop, want still 1", len(after))
+	}
+	if got := harnessInstance.ntfySink.callCount(); got != 0 {
+		t.Errorf("ntfy sink calls = %d, want 0", got)
+	}
+}
+
+func TestWorkerNeverDisablesADestinationForAGoneRecipientDelivery(t *testing.T) {
+	harnessInstance := newRecipientHarness(t, nil)
+	harnessInstance.ntfySink.deliver = func(context.Context, registry.ResolvedDestination, sink.Request) sink.Outcome {
+		return sink.Outcome{Gone: true}
+	}
+	harnessInstance.queue.add(newRecipientClaim(204))
+	harnessInstance.start()
+	defer harnessInstance.stop(t)
+
+	result := harnessInstance.waitForRecords(t, 1)[0]
+	if result.Record.Outcome != message.OutcomeGone {
+		t.Fatalf("outcome = %q, want %q", result.Record.Outcome, message.OutcomeGone)
+	}
+	// Give an erroneous disable a chance to run before asserting it did not.
+	harnessInstance.stop(t)
+	if calls := harnessInstance.resolver.disableCalls(); len(calls) != 0 {
+		t.Errorf("DisableDestination calls = %+v, want none for a synthetic recipient destination", calls)
 	}
 }
 

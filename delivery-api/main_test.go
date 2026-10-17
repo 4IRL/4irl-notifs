@@ -295,6 +295,59 @@ func TestComposeStopGracePeriodCoversShutdown(testInstance *testing.T) {
 	}
 }
 
+func TestBuildSinksAddsNtfyOnlyWhenConfigured(testInstance *testing.T) {
+	guardedClient := http.DefaultClient
+
+	configured, configuredTypes := buildSinks(guardedClient, "http://ntfy:80", newTestLogger())
+	for _, destinationType := range []string{"webhook", "discord", "ntfy"} {
+		if configured[destinationType] == nil {
+			testInstance.Errorf("configured: no sink for %q", destinationType)
+		}
+		if !configuredTypes[destinationType] {
+			testInstance.Errorf("configured: %q not accepted at submit", destinationType)
+		}
+	}
+
+	var logOutput bytes.Buffer
+	unconfigured, unconfiguredTypes := buildSinks(guardedClient, "", slog.New(slog.NewTextHandler(&logOutput, nil)))
+	if unconfigured["ntfy"] != nil || unconfiguredTypes["ntfy"] {
+		testInstance.Error("unconfigured: ntfy must be left out of both the sinks and the supported types")
+	}
+	for _, destinationType := range []string{"webhook", "discord"} {
+		if unconfigured[destinationType] == nil || !unconfiguredTypes[destinationType] {
+			testInstance.Errorf("unconfigured: %q missing", destinationType)
+		}
+	}
+	if len(unconfigured) != len(unconfiguredTypes) {
+		testInstance.Errorf("sinks (%d) and supported types (%d) diverged", len(unconfigured), len(unconfiguredTypes))
+	}
+	if !strings.Contains(logOutput.String(), "ntfy sink disabled: DELIVERY_NTFY_URL unset") {
+		testInstance.Errorf("no warn line for the disabled ntfy sink, log = %q", logOutput.String())
+	}
+}
+
+// TestComposeSetsDeliveryNtfyURL pins both compose files to the internal ntfy
+// and provisioning-api origins, so a stack started from either enables the ntfy
+// sink and publisher minting (an unset DELIVERY_PROVISIONING_URL silently
+// disables minting, which makes every recipient submit fail).
+func TestComposeSetsDeliveryNtfyURL(testInstance *testing.T) {
+	wantLines := []string{
+		"- DELIVERY_NTFY_URL=http://ntfy:80",
+		"- DELIVERY_PROVISIONING_URL=http://provisioning-api:8080",
+	}
+	for _, composeFile := range []string{"docker-compose.yml", "docker-compose.prod.yml"} {
+		contents, readErr := os.ReadFile(filepath.Join("..", composeFile))
+		if readErr != nil {
+			testInstance.Fatalf("read %s: %v", composeFile, readErr)
+		}
+		for _, wantLine := range wantLines {
+			if !strings.Contains(string(contents), wantLine) {
+				testInstance.Errorf("%s does not set %s", composeFile, strings.TrimPrefix(wantLine, "- "))
+			}
+		}
+	}
+}
+
 // TestBackgroundStopCancelsAndWaitsForEveryRunner verifies stop cancels the
 // context every runner shares and returns only after all of them have exited.
 func TestBackgroundStopCancelsAndWaitsForEveryRunner(testInstance *testing.T) {

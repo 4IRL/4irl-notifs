@@ -39,7 +39,8 @@ const (
 //   - A transport error is blocked when the SSRF guard or the https-only rule
 //     refused it, terminal when the sink reports sink.ErrInvalidDelivery
 //     (misconfigured destination; retrying cannot help), otherwise retryable.
-//   - 2xx is success, 410 is gone, 408, 429 and 500-599 are retryable.
+//   - 2xx is success, 410 (or a sink-asserted Gone) is gone, 408, 429 and
+//     500-599 are retryable.
 func Classify(outcome sink.Outcome) string {
 	if outcome.Err != nil {
 		switch {
@@ -54,7 +55,7 @@ func Classify(outcome sink.Outcome) string {
 	switch code := outcome.StatusCode; {
 	case code >= 200 && code <= 299:
 		return message.OutcomeSuccess
-	case code == 410:
+	case code == 410, outcome.Gone:
 		return message.OutcomeGone
 	case code == 408, code == 429, code >= 500 && code <= 599:
 		return message.OutcomeRetryable

@@ -131,6 +131,38 @@ func TestNtfyUser(t *testing.T) {
 	}
 }
 
+func TestIsHash(t *testing.T) {
+	testCases := []struct {
+		name     string
+		value    string
+		expected bool
+	}{
+		{name: "golden vector hash", value: "76gzqgp4byjl6dje", expected: true},
+		{name: "an email", value: "alice@example.com", expected: false},
+		{name: "uppercase", value: "76GZQGP4BYJL6DJE", expected: false},
+		{name: "fifteen characters", value: "76gzqgp4byjl6dj", expected: false},
+		{name: "seventeen characters", value: "76gzqgp4byjl6djee", expected: false},
+		{name: "characters outside the base32 alphabet", value: "0189zqgp4byjl6dj", expected: false},
+		{name: "empty", value: "", expected: false},
+		{name: "trailing newline", value: "76gzqgp4byjl6dje\n", expected: false},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := IsHash(testCase.value); got != testCase.expected {
+				t.Fatalf("IsHash(%q) = %v, expected %v", testCase.value, got, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestPersonChannelTopic(t *testing.T) {
+	const expected = "urls4irl-76gzqgp4byjl6dje-all"
+	if got := PersonChannelTopic("urls4irl", "76gzqgp4byjl6dje", "all"); got != expected {
+		t.Fatalf("PersonChannelTopic = %q, expected %q", got, expected)
+	}
+}
+
 // sharedVector is one entry of the repo-root testdata/personhash-vectors.json
 // fixture. Every Go copy of this package (provisioning-api, delivery-api)
 // asserts the same fixture, so a drifted copy fails its own test suite.
