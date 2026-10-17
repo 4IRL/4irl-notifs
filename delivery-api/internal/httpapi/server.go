@@ -1,7 +1,8 @@
 // Package httpapi exposes the delivery service over HTTP: the liveness and
 // readiness probes, the operator registry endpoints under /v1/admin, the app
-// message endpoints (submit and status under /v1/messages) and the operator
-// delivery log and replay endpoints under /v1/admin/deliveries.
+// message endpoints (submit and status under /v1/messages), the operator
+// delivery log and replay endpoints under /v1/admin/deliveries, and the
+// per-app ntfy publisher endpoints under /v1/admin/apps.
 package httpapi
 
 import (
@@ -69,15 +70,21 @@ type ServerConfig struct {
 	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
 	// caveat as Registry applies.
 	Messages Messages
+	// Publishers backs the /v1/admin/apps/{app_id}/ntfy-publisher endpoints. When
+	// nil, both routes answer 503 (fail closed). Callers must leave this an
+	// untyped nil when no service exists: a typed-nil pointer stored here is a
+	// non-nil interface and would bypass that guard.
+	Publishers Publishers
 }
 
 // Server wraps an *http.ServeMux exposing the delivery HTTP API.
 type Server struct {
-	logger    *slog.Logger
-	readiness ReadinessChecker
-	registry  Registry
-	messages  Messages
-	mux       *http.ServeMux
+	logger     *slog.Logger
+	readiness  ReadinessChecker
+	registry   Registry
+	messages   Messages
+	publishers Publishers
+	mux        *http.ServeMux
 }
 
 // readinessResponseBody is the /readyz JSON body when the database answered.
@@ -110,11 +117,12 @@ func NewServer(config ServerConfig) *Server {
 	}
 
 	server := &Server{
-		logger:    logger,
-		readiness: config.Readiness,
-		registry:  config.Registry,
-		messages:  config.Messages,
-		mux:       http.NewServeMux(),
+		logger:     logger,
+		readiness:  config.Readiness,
+		registry:   config.Registry,
+		messages:   config.Messages,
+		publishers: config.Publishers,
+		mux:        http.NewServeMux(),
 	}
 	server.routes()
 	return server
@@ -140,6 +148,9 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /v1/admin/routes/{id}", server.requireRegistry(server.handleGetRoute))
 	server.mux.HandleFunc("PATCH /v1/admin/routes/{id}", server.requireRegistry(server.handleUpdateRoute))
 	server.mux.HandleFunc("DELETE /v1/admin/routes/{id}", server.requireRegistry(server.handleDeleteRoute))
+
+	server.mux.HandleFunc("POST /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleMintPublisher))
+	server.mux.HandleFunc("GET /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleGetPublisher))
 
 	server.mux.HandleFunc("POST /v1/messages", server.requireMessages(server.handleCreateMessage))
 	server.mux.HandleFunc("GET /v1/messages/{id}", server.requireMessages(server.handleGetMessage))

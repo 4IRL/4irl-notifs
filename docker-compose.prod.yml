@@ -180,10 +180,16 @@ services:
       # listens on :80 inside the compose network). Unset disables the ntfy sink. LOCKSTEP: keep in
       # sync with docker-compose.yml and with provisioning-api's NTFY_PUBLISH_URL.
       - DELIVERY_NTFY_URL=http://ntfy:80
+      # In-compose HTTP origin of provisioning-api, used only by the operator publisher-mint endpoint
+      # (POST /v1/admin/apps/{app_id}/ntfy-publisher). Unset disables minting. LOCKSTEP: keep in sync
+      # with docker-compose.yml.
+      - DELIVERY_PROVISIONING_URL=http://provisioning-api:8080
     secrets:
       - DELIVERY_DB_PASSWORD
       - DELIVERY_MASTER_KEY
     depends_on:
+      provisioning-api:
+        condition: service_healthy
       delivery-postgres:
         condition: service_healthy
       delivery-migrate:

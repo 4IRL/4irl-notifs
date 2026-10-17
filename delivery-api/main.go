@@ -21,6 +21,8 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/readiness"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
@@ -34,6 +36,8 @@ import (
 const (
 	// ntfyURLEnv names the env var holding the internal ntfy origin (e.g. http://ntfy:80).
 	ntfyURLEnv = "DELIVERY_NTFY_URL"
+	// provisioningURLEnv names the env var holding the internal provisioning-api origin (e.g. http://provisioning-api:8080).
+	provisioningURLEnv = "DELIVERY_PROVISIONING_URL"
 
 	defaultListenAddress = ":8080"
 	readHeaderTimeout    = 10 * time.Second
@@ -179,12 +183,23 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Wake:           worker.Wake,
 		Logger:         logger,
 	})
-	// See ServerConfig.Messages for why it is set only here.
+	// The minter is passed only when a provisioning-api origin is configured: a nil interface (not a typed-nil
+	// *provisionclient.Client) makes publisher.Service.Mint answer ErrMintUnavailable.
+	var minter publisher.Minter
+	provisionClient := provisionclient.New(provisionclient.Config{BaseURL: envOrDefault(provisioningURLEnv, "")})
+	if provisionClient.Configured() {
+		minter = provisionClient
+	} else {
+		logger.Warn("publisher minting disabled: " + provisioningURLEnv + " unset")
+	}
+	publisherService := publisher.NewService(publisher.NewPGStore(pool), minter, sealer)
+	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
-		Logger:    logger,
-		Readiness: checker,
-		Registry:  registryService,
-		Messages:  messageService,
+		Logger:     logger,
+		Readiness:  checker,
+		Registry:   registryService,
+		Messages:   messageService,
+		Publishers: publisherService,
 	}).Handler()
 
 	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)
