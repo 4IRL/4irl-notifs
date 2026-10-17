@@ -126,9 +126,10 @@ type Envelope struct {
 
 // DeliveryTarget is one resolved destination a message fans out to. The name
 // and type are snapshotted onto the delivery row so it stays meaningful if the
-// destination is later renamed away or deleted.
+// destination is later renamed away or deleted. DestinationID is nil for a
+// to.recipient target, which has no registry destination.
 type DeliveryTarget struct {
-	DestinationID   int64
+	DestinationID   *int64
 	DestinationName string
 	DestinationType string
 }

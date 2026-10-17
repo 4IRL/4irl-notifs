@@ -30,7 +30,10 @@ import (
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/pgtest"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/sink"
@@ -497,5 +500,148 @@ func TestPipelineDefaultTransportBlocksALoopbackReceiver(testInstance *testing.T
 	if len(attempts) != 1 || attempts[0].Outcome != message.OutcomeBlocked || attempts[0].StatusCode != nil ||
 		attempts[0].ResponseSnippet != nil {
 		testInstance.Fatalf("attempts = %+v, want one blocked attempt with no status and no snippet", attempts)
+	}
+}
+
+const (
+	recipientAppID = "pipeapp"
+	// recipientMintedToken has the shape provisioning-api mints: "tk_" + 29 lowercase alphanumerics.
+	recipientMintedToken = "tk_abcdefghijklmnopqrstuvwxyz012"
+	recipientEmail       = "Alice@Example.com"
+)
+
+// pipelineMinter is a publisher.Minter that returns a fixed grant.
+type pipelineMinter struct{}
+
+func (pipelineMinter) MintPublisher(_ context.Context, appID string) (provisionclient.PublisherGrant, error) {
+	return provisionclient.PublisherGrant{
+		AppID: appID, PublisherUserID: "app-" + appID, TopicPattern: appID + "-*", Token: recipientMintedToken,
+	}, nil
+}
+
+// TestPipelineDeliversARecipientMessageToTheNtfyTopic runs a to.recipient email
+// through the real message.Service, worker and NtfySink: the service stores only
+// the person hash and queues the synthetic ntfy delivery, and the worker publishes
+// to {app_id}-{hash}-{channel} with the app's minted publisher token.
+func TestPipelineDeliversARecipientMessageToTheNtfyTopic(testInstance *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), pipelineTestTimeout)
+	testInstance.Cleanup(cancel)
+	pool := pgtest.IsolatedPool(ctx, testInstance)
+	logger := slog.New(slog.DiscardHandler)
+
+	sealer, sealErr := seal.New([]byte("0123456789abcdef0123456789abcdef"))
+	if sealErr != nil {
+		testInstance.Fatalf("seal.New: %v", sealErr)
+	}
+
+	var ntfyMutex sync.Mutex
+	var ntfyRequests []receivedRequest
+	ntfyServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		body, readErr := io.ReadAll(request.Body)
+		if readErr != nil {
+			testInstance.Errorf("ntfy: reading request body: %v", readErr)
+		}
+		ntfyMutex.Lock()
+		ntfyRequests = append(ntfyRequests, receivedRequest{
+			method: request.Method, path: request.URL.Path, header: request.Header.Clone(), body: body,
+		})
+		ntfyMutex.Unlock()
+		responseWriter.WriteHeader(http.StatusOK)
+	}))
+	testInstance.Cleanup(ntfyServer.Close)
+
+	registryService := registry.NewService(registry.NewPGStore(pool), sealer, logger)
+	store := message.NewPGStore(pool)
+	publishers := publisher.NewService(publisher.NewPGStore(pool), pipelineMinter{}, sealer)
+	if _, mintErr := publishers.Mint(ctx, recipientAppID); mintErr != nil {
+		testInstance.Fatalf("Mint: %v", mintErr)
+	}
+
+	worker := dispatch.NewWorker(dispatch.WorkerConfig{
+		Queue:        store,
+		Resolver:     registryService,
+		Recipients:   publishers,
+		Sinks:        map[string]sink.Sink{registry.TypeNtfy: sink.NewNtfySink(sink.NtfyConfig{BaseURL: ntfyServer.URL})},
+		Logger:       logger,
+		Concurrency:  2,
+		PollInterval: pipelineWorkerPoll,
+		Random:       func() float64 { return 0 },
+	})
+	messageService := message.NewService(message.ServiceConfig{
+		Store:          store,
+		Resolver:       registryService,
+		Publishers:     publishers,
+		SupportedTypes: map[string]bool{registry.TypeNtfy: true},
+		Wake:           worker.Wake,
+		Logger:         logger,
+	})
+
+	workerCtx, stopWorker := context.WithCancel(ctx)
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		worker.Run(workerCtx)
+	}()
+	// Registered after the pool's cleanup, so (LIFO) the worker stops before the pool closes.
+	testInstance.Cleanup(func() {
+		stopWorker()
+		select {
+		case <-workerDone:
+		case <-time.After(pipelineWaitTimeout):
+			testInstance.Error("worker did not stop")
+		}
+	})
+
+	stored, duplicate, submitErr := messageService.Submit(ctx, message.Envelope{
+		AppID:          recipientAppID,
+		Channel:        pipelineChannel,
+		IdempotencyKey: "recipient-1",
+		ToRecipient:    recipientEmail,
+		Payload:        json.RawMessage(`{"order":42}`),
+		Display:        &message.Display{Title: "Hello", Body: "Body"},
+	})
+	if submitErr != nil || duplicate {
+		testInstance.Fatalf("Submit = (duplicate %v, %v), want a new message", duplicate, submitErr)
+	}
+	wantHash := personhash.Hash(recipientEmail)
+	if stored.Envelope.ToRecipient != wantHash {
+		testInstance.Fatalf("stored to_recipient = %q, want the hash %q", stored.Envelope.ToRecipient, wantHash)
+	}
+	if len(stored.Deliveries) != 1 || stored.Deliveries[0].DestinationID != nil ||
+		stored.Deliveries[0].DestinationName != registry.RecipientDestinationName {
+		testInstance.Fatalf("deliveries = %+v, want one synthetic recipient delivery with a NULL destination_id", stored.Deliveries)
+	}
+
+	// waitForDelivery reads the message under pipelineAppID, so poll under this test's own app.
+	deadline := time.Now().Add(pipelineWaitTimeout)
+	delivered := false
+	var last message.Delivery
+	for !delivered && time.Now().Before(deadline) {
+		current, getErr := messageService.Get(ctx, recipientAppID, stored.ID)
+		if getErr != nil {
+			testInstance.Fatalf("Get message: %v", getErr)
+		}
+		last = current.Deliveries[0]
+		delivered = deliveredAfterAttempts(1)(last)
+		if !delivered {
+			time.Sleep(pipelinePollInterval)
+		}
+	}
+	if !delivered {
+		testInstance.Fatalf("timed out waiting for the recipient delivery to be delivered; last = %+v", last)
+	}
+
+	ntfyMutex.Lock()
+	requests := append([]receivedRequest(nil), ntfyRequests...)
+	ntfyMutex.Unlock()
+	if len(requests) != 1 {
+		testInstance.Fatalf("ntfy saw %d requests, want 1", len(requests))
+	}
+	wantPath := "/" + recipientAppID + "-" + wantHash + "-" + pipelineChannel
+	if requests[0].method != http.MethodPost || requests[0].path != wantPath {
+		testInstance.Fatalf("request = %s %s, want POST %s", requests[0].method, requests[0].path, wantPath)
+	}
+	if got, want := requests[0].header.Get("Authorization"), "Bearer "+recipientMintedToken; got != want {
+		testInstance.Fatalf("Authorization = %q, want the minted publisher token", got)
 	}
 }

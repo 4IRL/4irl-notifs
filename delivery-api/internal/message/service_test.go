@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
 
@@ -191,7 +193,8 @@ func TestSubmitStoresResolvedTargetsAndWakesOnce(testInstance *testing.T) {
 	if stored.ID == "" {
 		testInstance.Fatalf("stored id is empty")
 	}
-	wantTargets := []DeliveryTarget{{DestinationID: 7, DestinationName: "ops_webhook", DestinationType: registry.TypeWebhook}}
+	wantDestinationID := int64(7)
+	wantTargets := []DeliveryTarget{{DestinationID: &wantDestinationID, DestinationName: "ops_webhook", DestinationType: registry.TypeWebhook}}
 	if len(fixture.store.insertCalls) != 1 || !reflect.DeepEqual(fixture.store.insertCalls[0].targets, wantTargets) {
 		testInstance.Fatalf("insert calls = %+v, want one with targets %+v", fixture.store.insertCalls, wantTargets)
 	}
@@ -368,6 +371,199 @@ func TestSubmitHumanFacingDestinationsRequireARenderableDisplay(testInstance *te
 				subTest.Fatalf("insert calls = %d, want 1", len(fixture.store.insertCalls))
 			}
 		})
+	}
+}
+
+// fakePublishers is a scripted Publishers.
+type fakePublishers struct {
+	has   bool
+	err   error
+	calls []string
+}
+
+func (fake *fakePublishers) HasPublisher(_ context.Context, appID string) (bool, error) {
+	fake.calls = append(fake.calls, appID)
+	return fake.has, fake.err
+}
+
+// recipientFixture is a service with ntfy supported and a publisher present.
+type recipientFixture struct {
+	service    *Service
+	store      *fakeServiceStore
+	resolver   *fakeResolver
+	publishers *fakePublishers
+	wakes      *wakeCounter
+}
+
+func newRecipientFixture() recipientFixture {
+	store := &fakeServiceStore{}
+	resolver := &fakeResolver{result: []registry.ResolvedDestination{webhookDestination}}
+	publishers := &fakePublishers{has: true}
+	wakes := &wakeCounter{}
+	service := NewService(ServiceConfig{
+		Store:          store,
+		Resolver:       resolver,
+		Publishers:     publishers,
+		SupportedTypes: map[string]bool{registry.TypeWebhook: true, registry.TypeNtfy: true},
+		Wake:           wakes.wake,
+		PollInterval:   time.Millisecond,
+	})
+	return recipientFixture{service: service, store: store, resolver: resolver, publishers: publishers, wakes: wakes}
+}
+
+func recipientEnvelope(recipient string) Envelope {
+	envelope := validEnvelope()
+	envelope.ToRecipient = recipient
+	envelope.Display = &Display{Title: "T", Body: "B"}
+	return envelope
+}
+
+func TestSubmitRecipientEmailIsStoredAsItsHash(testInstance *testing.T) {
+	fixture := newRecipientFixture()
+
+	_, duplicate, err := fixture.service.Submit(context.Background(), recipientEnvelope(" Alice@Example.com "))
+	if err != nil || duplicate {
+		testInstance.Fatalf("Submit = (%v, duplicate %v), want a new message", err, duplicate)
+	}
+	if len(fixture.store.insertCalls) != 1 {
+		testInstance.Fatalf("insert calls = %d, want 1", len(fixture.store.insertCalls))
+	}
+	call := fixture.store.insertCalls[0]
+	if want := personhash.Hash("alice@example.com"); call.envelope.ToRecipient != want {
+		testInstance.Fatalf("stored ToRecipient = %q, want the hash %q (the email must never reach the store)",
+			call.envelope.ToRecipient, want)
+	}
+	wantTargets := []DeliveryTarget{{
+		DestinationID: nil, DestinationName: registry.RecipientDestinationName, DestinationType: registry.TypeNtfy,
+	}}
+	if !reflect.DeepEqual(call.targets, wantTargets) {
+		testInstance.Fatalf("targets = %+v, want %+v", call.targets, wantTargets)
+	}
+	if len(fixture.resolver.calls) != 0 {
+		testInstance.Fatalf("resolver calls = %d, want 0: a recipient bypasses the registry", len(fixture.resolver.calls))
+	}
+	if !reflect.DeepEqual(fixture.publishers.calls, []string{"urls4irl"}) {
+		testInstance.Fatalf("publisher lookups = %v, want one for urls4irl", fixture.publishers.calls)
+	}
+	if fixture.wakes.calls() != 1 {
+		testInstance.Fatalf("Wake calls = %d, want 1", fixture.wakes.calls())
+	}
+}
+
+func TestSubmitRecipientHashIsStoredUnchanged(testInstance *testing.T) {
+	fixture := newRecipientFixture()
+	const hash = "76gzqgp4byjl6dje"
+
+	if _, _, err := fixture.service.Submit(context.Background(), recipientEnvelope(hash)); err != nil {
+		testInstance.Fatalf("Submit error = %v", err)
+	}
+	if got := fixture.store.insertCalls[0].envelope.ToRecipient; got != hash {
+		testInstance.Fatalf("stored ToRecipient = %q, want %q", got, hash)
+	}
+}
+
+func TestSubmitRecipientFailuresStoreNothing(testInstance *testing.T) {
+	storeErr := errors.New("publisher lookup failed")
+	testCases := []struct {
+		name       string
+		configure  func(fixture recipientFixture) *Service
+		mutate     func(envelope *Envelope)
+		wantErr    error
+		wantFields string
+	}{
+		{
+			name:      "no publisher",
+			configure: func(fixture recipientFixture) *Service { fixture.publishers.has = false; return fixture.service },
+			wantErr:   registry.ErrNoPublisher,
+		},
+		{
+			name: "nil Publishers fails closed",
+			configure: func(fixture recipientFixture) *Service {
+				return NewService(ServiceConfig{
+					Store: fixture.store, Resolver: fixture.resolver,
+					SupportedTypes: map[string]bool{registry.TypeNtfy: true},
+				})
+			},
+			wantErr: registry.ErrNoPublisher,
+		},
+		{
+			name:      "publisher lookup failure",
+			configure: func(fixture recipientFixture) *Service { fixture.publishers.err = storeErr; return fixture.service },
+			wantErr:   storeErr,
+		},
+		{
+			name: "ntfy not supported",
+			configure: func(fixture recipientFixture) *Service {
+				return NewService(ServiceConfig{
+					Store: fixture.store, Resolver: fixture.resolver, Publishers: fixture.publishers,
+					SupportedTypes: map[string]bool{registry.TypeWebhook: true},
+				})
+			},
+			wantErr: ErrUnsupportedDestinationType,
+		},
+		{
+			name:      "topic over 64 characters",
+			configure: func(fixture recipientFixture) *Service { return fixture.service },
+			mutate: func(envelope *Envelope) {
+				envelope.AppID = strings.Repeat("a", 30)
+				envelope.Channel = strings.Repeat("c", 17)
+			},
+			wantFields: "app_id and channel are too long for a recipient topic",
+		},
+		{
+			name:       "missing display",
+			configure:  func(fixture recipientFixture) *Service { return fixture.service },
+			mutate:     func(envelope *Envelope) { envelope.Display = nil },
+			wantFields: "display.title or display.body is required for ntfy and discord destinations",
+		},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			fixture := newRecipientFixture()
+			service := testCase.configure(fixture)
+			envelope := recipientEnvelope("alice@example.com")
+			if testCase.mutate != nil {
+				testCase.mutate(&envelope)
+			}
+
+			_, _, err := service.Submit(context.Background(), envelope)
+
+			if testCase.wantFields != "" {
+				wantValidationMessage(subTest, err, testCase.wantFields)
+			} else if !errors.Is(err, testCase.wantErr) {
+				subTest.Fatalf("error = %v, want %v", err, testCase.wantErr)
+			}
+			if len(fixture.store.insertCalls) != 0 || fixture.wakes.calls() != 0 {
+				subTest.Fatalf("insert/wake = %d/%d, want none", len(fixture.store.insertCalls), fixture.wakes.calls())
+			}
+		})
+	}
+}
+
+func TestSubmitRecipientTopicOfExactly64CharactersIsAccepted(testInstance *testing.T) {
+	fixture := newRecipientFixture()
+	envelope := recipientEnvelope("alice@example.com")
+	envelope.AppID = strings.Repeat("a", 30)
+	envelope.Channel = strings.Repeat("c", 16)
+
+	if _, _, err := fixture.service.Submit(context.Background(), envelope); err != nil {
+		testInstance.Fatalf("Submit error = %v, want success for a 64-character topic", err)
+	}
+}
+
+func TestSubmitDuplicateRecipientShortCircuitsBeforePublisherCheck(testInstance *testing.T) {
+	fixture := newRecipientFixture()
+	fixture.publishers.has = false
+	fixture.store.getByKeyPresent = true
+	fixture.store.getByKeyResult = StoredMessage{ID: "22222222-2222-2222-2222-222222222222", Envelope: validEnvelope()}
+
+	_, duplicate, err := fixture.service.Submit(context.Background(), recipientEnvelope("alice@example.com"))
+	if err != nil || !duplicate {
+		testInstance.Fatalf("Submit = (%v, duplicate %v), want a duplicate", err, duplicate)
+	}
+	if len(fixture.publishers.calls) != 0 || len(fixture.store.insertCalls) != 0 {
+		testInstance.Fatalf("publisher lookups/inserts = %d/%d, want none",
+			len(fixture.publishers.calls), len(fixture.store.insertCalls))
 	}
 }
 

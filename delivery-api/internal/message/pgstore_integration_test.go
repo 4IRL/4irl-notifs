@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/pgtest"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
@@ -51,7 +52,7 @@ func seedTarget(
 		testInstance.Fatalf("insert destination %s: %v", name, err)
 	}
 	return message.DeliveryTarget{
-		DestinationID:   destination.ID,
+		DestinationID:   &destination.ID,
 		DestinationName: destination.Name,
 		DestinationType: destination.Type,
 	}
@@ -144,7 +145,7 @@ func TestInsertThenGetRoundTripsEveryEnvelopeField(testInstance *testing.T) {
 			delivery := got.Deliveries[index]
 			if delivery.DestinationName != target.DestinationName ||
 				delivery.DestinationType != target.DestinationType ||
-				delivery.DestinationID == nil || *delivery.DestinationID != target.DestinationID {
+				delivery.DestinationID == nil || *delivery.DestinationID != *target.DestinationID {
 				testInstance.Errorf("%s delivery[%d] = %+v, want target %+v", name, index, delivery, target)
 			}
 			if delivery.MessageID != inserted.ID || delivery.ID == 0 {
@@ -211,6 +212,44 @@ func TestInsertWithRecipientOnlyRoundTrips(testInstance *testing.T) {
 	if got.Envelope.ToRecipient != "someone" || got.Envelope.ToDestination != "" {
 		testInstance.Errorf("to = %q/%q, want empty destination and recipient %q",
 			got.Envelope.ToDestination, got.Envelope.ToRecipient, "someone")
+	}
+}
+
+func TestInsertRecipientTargetStoresANullDestinationID(testInstance *testing.T) {
+	ctx, store, _, pool := newMessageStore(testInstance)
+	hash := personhash.Hash("alice@example.com")
+	envelope := sampleEnvelope("recipient-target")
+	envelope.ToDestination = ""
+	envelope.ToRecipient = hash
+	target := message.DeliveryTarget{
+		DestinationID: nil, DestinationName: registry.RecipientDestinationName, DestinationType: registry.TypeNtfy,
+	}
+
+	inserted, _, err := store.InsertMessage(ctx, envelope, []message.DeliveryTarget{target})
+	if err != nil {
+		testInstance.Fatalf("InsertMessage with a recipient target: %v", err)
+	}
+
+	var destinationIsNull bool
+	var destinationName, destinationType, storedRecipient string
+	if scanErr := pool.QueryRow(ctx,
+		`SELECT d.destination_id IS NULL, d.destination_name, d.destination_type, m.to_recipient
+FROM message_deliveries d JOIN messages m ON m.id = d.message_id
+WHERE d.message_id = $1::text::uuid`, inserted.ID).Scan(
+		&destinationIsNull, &destinationName, &destinationType, &storedRecipient); scanErr != nil {
+		testInstance.Fatalf("read delivery row: %v", scanErr)
+	}
+	if !destinationIsNull || destinationName != "@recipient" || destinationType != registry.TypeNtfy || storedRecipient != hash {
+		testInstance.Errorf("row = (destination_id null %v, %q, %q, to_recipient %q), want (true, @recipient, ntfy, %q)",
+			destinationIsNull, destinationName, destinationType, storedRecipient, hash)
+	}
+
+	got, getErr := store.GetMessage(ctx, inserted.ID)
+	if getErr != nil {
+		testInstance.Fatalf("GetMessage: %v", getErr)
+	}
+	if len(got.Deliveries) != 1 || got.Deliveries[0].DestinationID != nil {
+		testInstance.Errorf("deliveries = %+v, want one with a nil DestinationID", got.Deliveries)
 	}
 }
 

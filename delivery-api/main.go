@@ -196,6 +196,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	messageService := message.NewService(message.ServiceConfig{
 		Store:          messageStore,
 		Resolver:       registryService,
+		Publishers:     publisherService,
 		SupportedTypes: supportedTypes,
 		Wake:           worker.Wake,
 		Logger:         logger,

@@ -6,10 +6,14 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
 
 const (
+	// maxNtfyTopicLength is ntfy's cap on a topic name.
+	maxNtfyTopicLength = 64
+
 	// DefaultListLimit is the page size of an operator delivery list that names
 	// no limit.
 	DefaultListLimit = 50
@@ -29,12 +33,22 @@ type Resolver interface {
 	Resolve(ctx context.Context, appID, destinationName, channel string) ([]registry.ResolvedDestination, error)
 }
 
+// Publishers reports whether an app has an ntfy publisher token, which a
+// to.recipient delivery needs. *publisher.Service satisfies it.
+type Publishers interface {
+	HasPublisher(ctx context.Context, appID string) (bool, error)
+}
+
 // ServiceConfig configures a Service.
 type ServiceConfig struct {
 	// Store persists messages. Required.
 	Store Store
 	// Resolver resolves destinations at submit time. Required.
 	Resolver Resolver
+	// Publishers gates to.recipient submits on the app having a publisher token.
+	// Optional: when nil, every recipient submit is refused with
+	// registry.ErrNoPublisher (fail closed).
+	Publishers Publishers
 	// SupportedTypes is the set of destination types that have a sink. A resolved
 	// destination of any other type is refused (fail closed), so a nil or empty
 	// set accepts nothing.
@@ -61,6 +75,7 @@ type ServiceConfig struct {
 type Service struct {
 	store          Store
 	resolver       Resolver
+	publishers     Publishers
 	supportedTypes map[string]bool
 	wake           func()
 	logger         *slog.Logger
@@ -84,6 +99,7 @@ func NewService(config ServiceConfig) *Service {
 	service := &Service{
 		store:          config.Store,
 		resolver:       config.Resolver,
+		publishers:     config.Publishers,
 		supportedTypes: make(map[string]bool, len(config.SupportedTypes)),
 		wake:           config.Wake,
 		logger:         config.Logger,
@@ -134,6 +150,12 @@ func (service *Service) Submit(ctx context.Context, envelope Envelope) (StoredMe
 		return StoredMessage{}, false, findErr
 	}
 
+	// Only the hash is ever stored: an email recipient is replaced by its hash
+	// before it reaches resolution or the store.
+	if envelope.ToRecipient != "" && !personhash.IsHash(envelope.ToRecipient) {
+		envelope.ToRecipient = personhash.Hash(envelope.ToRecipient)
+	}
+
 	targets, resolveErr := service.resolveTargets(ctx, envelope)
 	if resolveErr != nil {
 		return StoredMessage{}, false, resolveErr
@@ -156,6 +178,9 @@ func (service *Service) Submit(ctx context.Context, envelope Envelope) (StoredMe
 // targets. It fails closed: no match, or a destination type without a sink,
 // stores nothing.
 func (service *Service) resolveTargets(ctx context.Context, envelope Envelope) ([]DeliveryTarget, error) {
+	if envelope.ToRecipient != "" {
+		return service.resolveRecipientTarget(ctx, envelope)
+	}
 	resolved, resolveErr := service.resolver.Resolve(ctx, envelope.AppID, envelope.ToDestination, envelope.Channel)
 	if resolveErr != nil {
 		return nil, resolveErr
@@ -172,13 +197,49 @@ func (service *Service) resolveTargets(ctx context.Context, envelope Envelope) (
 		if humanFacing && !hasRenderableDisplay(envelope.Display) {
 			return nil, &ValidationError{Message: "display.title or display.body is required for ntfy and discord destinations"}
 		}
+		// Copy the ID so each target points at its own value, not the loop variable.
+		destinationID := destination.ID
 		targets = append(targets, DeliveryTarget{
-			DestinationID:   destination.ID,
+			DestinationID:   &destinationID,
 			DestinationName: destination.Name,
 			DestinationType: destination.Type,
 		})
 	}
 	return targets, nil
+}
+
+// resolveRecipientTarget builds the single synthetic ntfy delivery for a
+// to.recipient envelope, whose ToRecipient is already a person hash. The
+// recipient bypasses the registry (there is no destination row), so it fails
+// closed itself: ntfy must have a sink, the per-person topic must fit ntfy's
+// 64-character cap, the display must be renderable, and the app must have a
+// publisher token (a nil Publishers is that same refusal, not a panic).
+func (service *Service) resolveRecipientTarget(ctx context.Context, envelope Envelope) ([]DeliveryTarget, error) {
+	if !service.supportedTypes[registry.TypeNtfy] {
+		return nil, ErrUnsupportedDestinationType
+	}
+	topic := personhash.PersonChannelTopic(envelope.AppID, envelope.ToRecipient, envelope.Channel)
+	if len(topic) > maxNtfyTopicLength {
+		return nil, &ValidationError{Message: "app_id and channel are too long for a recipient topic"}
+	}
+	if !hasRenderableDisplay(envelope.Display) {
+		return nil, &ValidationError{Message: "display.title or display.body is required for ntfy and discord destinations"}
+	}
+	if service.publishers == nil {
+		return nil, registry.ErrNoPublisher
+	}
+	hasPublisher, publisherErr := service.publishers.HasPublisher(ctx, envelope.AppID)
+	if publisherErr != nil {
+		return nil, publisherErr
+	}
+	if !hasPublisher {
+		return nil, registry.ErrNoPublisher
+	}
+	return []DeliveryTarget{{
+		DestinationID:   nil,
+		DestinationName: registry.RecipientDestinationName,
+		DestinationType: registry.TypeNtfy,
+	}}, nil
 }
 
 // hasRenderableDisplay reports whether display carries something a human-facing

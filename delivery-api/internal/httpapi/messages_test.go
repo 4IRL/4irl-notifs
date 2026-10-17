@@ -221,14 +221,29 @@ func TestSubmitPassesDecodedEnvelopeToTheService(testInstance *testing.T) {
 	}
 }
 
+func TestSubmitAcceptsARecipientBody(testInstance *testing.T) {
+	fake := &fakeMessages{submitResult: sampleStoredMessage()}
+	body := `{"app_id":"urls4irl","to":{"recipient":"alice@example.com"},"channel":"alerts","idempotency_key":"key-1",` +
+		`"payload":{},"display":{"title":"T"}}`
+
+	recorder := serveMessages(fake, nil, http.MethodPost, "/v1/messages", body)
+
+	if recorder.Code != http.StatusAccepted {
+		testInstance.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if len(fake.submitCalls) != 1 || fake.submitCalls[0].ToRecipient != "alice@example.com" {
+		testInstance.Fatalf("Submit calls = %+v, want the recipient forwarded to the service", fake.submitCalls)
+	}
+}
+
 func TestSubmitPassesRecipientAndDeliverAtToValidation(testInstance *testing.T) {
-	fake := &fakeMessages{submitErr: &message.ValidationError{Message: "recipient delivery not yet supported"}}
+	fake := &fakeMessages{submitErr: &message.ValidationError{Message: "to.recipient must be an email or person_hash"}}
 	body := `{"app_id":"urls4irl","to":{"recipient":"someone"},"channel":"alerts","idempotency_key":"key-1",` +
 		`"deliver_at":"2027-01-01T00:00:00Z","payload":{}}`
 
 	recorder := serveMessages(fake, nil, http.MethodPost, "/v1/messages", body)
 
-	assertResponse(testInstance, recorder, http.StatusBadRequest, `{"error":"recipient delivery not yet supported"}`+"\n")
+	assertResponse(testInstance, recorder, http.StatusBadRequest, `{"error":"to.recipient must be an email or person_hash"}`+"\n")
 	if len(fake.submitCalls) != 1 || fake.submitCalls[0].ToRecipient != "someone" || fake.submitCalls[0].DeliverAt == nil {
 		testInstance.Fatalf("Submit calls = %+v, want the recipient and deliver_at forwarded", fake.submitCalls)
 	}
@@ -625,6 +640,8 @@ func TestWriteMessageErrorBranches(testInstance *testing.T) {
 		{name: "destination disabled", err: registry.ErrDestinationDisabled, wantStatus: 409, wantBody: `{"error":"destination disabled"}`},
 		{name: "no destination matched", err: message.ErrNoDestinationMatched, wantStatus: 422, wantBody: `{"error":"no destination matched"}`},
 		{name: "unsupported type", err: message.ErrUnsupportedDestinationType, wantStatus: 422, wantBody: `{"error":"destination type not yet supported"}`},
+		{name: "no publisher", err: registry.ErrNoPublisher, wantStatus: 422, wantBody: `{"error":"app has no ntfy publisher"}`},
+		{name: "wrapped no publisher", err: fmt.Errorf("submit: %w", registry.ErrNoPublisher), wantStatus: 422, wantBody: `{"error":"app has no ntfy publisher"}`},
 		{name: "message not found", err: message.ErrMessageNotFound, wantStatus: 404, wantBody: `{"error":"message not found"}`},
 		{name: "delivery not found", err: message.ErrDeliveryNotFound, wantStatus: 404, wantBody: `{"error":"delivery not found"}`},
 		{name: "delivery not dead", err: message.ErrDeliveryNotDead, wantStatus: 409, wantBody: `{"error":"delivery not dead"}`},
