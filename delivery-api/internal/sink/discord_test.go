@@ -320,8 +320,8 @@ func TestDiscordDeliverRefusesUnbuildableDeliveriesWithoutSending(t *testing.T) 
 	}{
 		{"missing webhook url", nil, true, titled},
 		{"empty webhook url", func(string) string { return "" }, false, titled},
-		{"unparseable webhook url", func(string) string { return "http://\x7f/hook" }, false, titled},
-		{"relative webhook url", func(string) string { return "/api/webhooks/1/abc" }, false, titled},
+		{"unparseable webhook url", func(string) string { return "http://\x7f/api/webhooks/1/s3cr3t-token" }, false, titled},
+		{"relative webhook url", func(string) string { return "/api/webhooks/1/s3cr3t-token" }, false, titled},
 		{"nil display", func(serverURL string) string { return serverURL + discordPath }, false, nil},
 		{"empty display", func(serverURL string) string { return serverURL + discordPath }, false, &message.Display{}},
 		{
@@ -334,14 +334,23 @@ func TestDiscordDeliverRefusesUnbuildableDeliveriesWithoutSending(t *testing.T) 
 			server, captured := newCaptureServer(subTest, http.StatusOK, "{}", nil)
 			destination := discordDestination("")
 			delete(destination.Secrets, "webhook_url")
+			configuredURL := ""
 			if !testCase.noSecretKey {
-				destination.Secrets["webhook_url"] = testCase.webhookURL(server.URL)
+				configuredURL = testCase.webhookURL(server.URL)
+				destination.Secrets["webhook_url"] = configuredURL
 			}
 
 			outcome := newTestDiscordSink().Deliver(context.Background(), destination, discordRequest(testCase.display))
 
 			if !errors.Is(outcome.Err, ErrInvalidDelivery) {
 				subTest.Fatalf("Err = %v, want ErrInvalidDelivery", outcome.Err)
+			}
+			// The error text is recorded and logged, so it must never carry the webhook URL or its token.
+			if configuredURL != "" && strings.Contains(outcome.Err.Error(), configuredURL) {
+				subTest.Errorf("Err %q leaks the configured webhook url", outcome.Err)
+			}
+			if strings.Contains(outcome.Err.Error(), "s3cr3t-token") {
+				subTest.Errorf("Err %q leaks the webhook token", outcome.Err)
 			}
 			if outcome.StatusCode != 0 {
 				subTest.Errorf("status = %d, want 0", outcome.StatusCode)

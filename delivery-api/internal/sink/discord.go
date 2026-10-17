@@ -100,7 +100,7 @@ func (sink *DiscordSink) Deliver(
 		return Outcome{Err: fmt.Errorf("%w: display has neither title nor body", ErrInvalidDelivery)}
 	}
 	body, marshalErr := json.Marshal(discordBody{
-		Content:         truncateRunes(content, discordMaxContentRunes, discordTruncationMarker),
+		Content:         truncateRunes(content, discordMaxContentRunes),
 		AllowedMentions: discordAllowedMentions{Parse: []string{}},
 	})
 	if marshalErr != nil {
@@ -155,15 +155,15 @@ func discordContent(display *message.Display) string {
 }
 
 // truncateRunes returns text unchanged when it has at most limit runes;
-// otherwise the first limit-len(marker) runes followed by marker, so the result
-// has exactly limit runes. It cuts on rune boundaries, never inside a multi-byte
-// character. marker must be a single rune.
-func truncateRunes(text string, limit int, marker string) string {
+// otherwise the first limit-1 runes followed by discordTruncationMarker (one
+// rune), so the result has exactly limit runes. It cuts on rune boundaries, never
+// inside a multi-byte character.
+func truncateRunes(text string, limit int) string {
 	runes := []rune(text)
 	if len(runes) <= limit {
 		return text
 	}
-	return string(runes[:limit-1]) + marker
+	return string(runes[:limit-1]) + discordTruncationMarker
 }
 
 // discordRetryAfter reads a 429's wait time: the "retry_after" seconds (a float)

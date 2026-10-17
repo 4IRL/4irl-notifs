@@ -45,10 +45,6 @@ func newTestNtfySink(baseURL string) *NtfySink {
 	return NewNtfySink(NtfyConfig{BaseURL: baseURL})
 }
 
-func TestNtfySinkImplementsSink(t *testing.T) {
-	var _ Sink = (*NtfySink)(nil)
-}
-
 func TestNewNtfySinkConfigured(t *testing.T) {
 	tests := map[string]bool{
 		"":                        false,
