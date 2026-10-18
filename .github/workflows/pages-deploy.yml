@@ -16,12 +16,16 @@ env:
   # The SPA now calls same-origin relative paths (/v1/*, /people, /apps), proxied server-side by
   # web/functions/ to the backends — so no backend hostnames are baked in at build time. The
   # build-time flags VITE_PEOPLE_ENABLED and VITE_APPS_ENABLED turn on the People and Apps views
-  # for prod (local dev omits them via unset flags). The backend hostnames + service-token secrets
-  # are RUNTIME Pages Function bindings (PROVISIONING_API_URL, PERSON_SERVICE_URL,
+  # for prod (local dev omits them via unset flags). VITE_DESTINATIONS_ENABLED and
+  # VITE_DELIVERY_LOG_ENABLED turn on the Delivery tab (status card, destinations and routes; delivery
+  # log). The backend hostnames + service-token secrets
+  # are RUNTIME Pages Function bindings (PROVISIONING_API_URL, PERSON_SERVICE_URL, DELIVERY_API_URL,
   # PROXY_ACCESS_CLIENT_ID, PROXY_ACCESS_CLIENT_SECRET), set on the Pages project — see
   # ARCHITECTURE.md ("Admin-UI same-origin proxy").
   VITE_PEOPLE_ENABLED: 'true'
   VITE_APPS_ENABLED: 'true'
+  VITE_DESTINATIONS_ENABLED: 'true'
+  VITE_DELIVERY_LOG_ENABLED: 'true'
 
 jobs:
   PagesDeploy:

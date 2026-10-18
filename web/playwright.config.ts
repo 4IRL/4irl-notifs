@@ -34,6 +34,12 @@ export default defineConfig({
     timeout: 120000,
     // Bakes the people + apps views into the e2e production build; the person
     // service is mocked per-test via page.route (there is no real Worker).
-    env: { VITE_PEOPLE_ENABLED: 'true', VITE_APPS_ENABLED: 'true' },
+    // Also bakes in the Delivery tab (status card, destinations, log).
+    env: {
+      VITE_PEOPLE_ENABLED: 'true',
+      VITE_APPS_ENABLED: 'true',
+      VITE_DESTINATIONS_ENABLED: 'true',
+      VITE_DELIVERY_LOG_ENABLED: 'true',
+    },
   },
 });

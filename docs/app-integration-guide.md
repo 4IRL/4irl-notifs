@@ -239,6 +239,68 @@ Besides publishing to ntfy directly, an app can submit an envelope to delivery-a
 (retries, backoff and a delivery log included). The human-facing sinks and per-person recipients below
 apply to that path.
 
+delivery-api is reachable at `https://notifs-send.4irl.app`, behind Cloudflare Access. Send the same
+`CF-Access-Client-Id` / `CF-Access-Client-Secret` headers as for `notifs-api`, using a service token the
+operator has authorized on the `notifs-send` Access application (see the operator runbook below). Your
+app token reaches `/v1/messages`, `/readyz` and `/healthz`; `/v1/admin/*` returns 403 to it.
+
+### Envelope contract
+
+`POST /v1/messages` takes one JSON object. An unknown field, a wrong JSON type or trailing data is
+`400 {"error":"invalid JSON body"}`. The request body is capped at 256 KiB.
+
+| Field             | Required | Rule                                                                                       |
+| ----------------- | -------- | ------------------------------------------------------------------------------------------ |
+| `app_id`          | yes      | `^[a-z0-9][a-z0-9_]{0,62}$`                                                                |
+| `channel`         | yes      | `^[a-z0-9][a-z0-9_]{0,31}$` (exact name, no wildcards)                                     |
+| `idempotency_key` | yes      | 1-200 printable, non-space ASCII characters                                                |
+| `to`              | no       | `{"destination": "<name>"}` or `{"recipient": "<email or person_hash>"}`, never both; empty fans out through the routes |
+| `critical`        | no       | boolean, recorded only (see `critical` below)                                              |
+| `payload`         | yes      | a single JSON object, at most 128 KiB, storable in Postgres jsonb                         |
+| `display`         | no       | `title` (max 250 bytes), `body` (max 4096), `url` (max 2048, https), `priority` (`min` `low` `default` `high` `urgent`) |
+| `deliver_at`      | no       | not supported: any value is rejected                                                       |
+
+Validation is checked in a fixed order (`app_id`, `channel`, `idempotency_key`, `to`, `deliver_at`,
+`payload`, `display`) and the first failure is returned as `400 {"error":"<message>"}`, for example
+`invalid app_id`, `invalid channel`, `invalid idempotency_key`, `invalid to.destination`,
+`to.destination and to.recipient cannot both be set`, `to.recipient must be an email or person_hash`,
+`deliver_at not yet supported`, `invalid payload`, `invalid display.title`, `invalid display.body`,
+`invalid display.url`, `invalid display.priority`.
+
+A successful submit is `202 {"message": {...}, "duplicate": false}`. The message carries `message_id`,
+`app_id`, `channel`, `idempotency_key`, `critical`, `status` (`pending`, `delivered`, `dead` or
+`partial`), `created_at` and `deliveries[]` (`id`, `destination`, `state`, `dead_reason`,
+`attempt_count`, `last_status_code`, `next_attempt_at`, `delivered_at`).
+
+### Idempotency and `wait`
+
+- **Idempotency:** `(app_id, idempotency_key)` identifies a message. Re-submitting it returns the
+  original message with `"duplicate": true` and never waits, so retrying after a timeout is safe.
+- **`wait`:** `?wait=N` (whole seconds, 0-10, a larger value is clamped to 10) holds the response until
+  every delivery has had a first attempt or the wait elapses. The message is already committed when the
+  wait ends, so a short wait is not a failure: read the returned `deliveries[].state`. A non-integer or
+  negative `wait` is `400 {"error":"invalid wait"}`.
+
+### Status endpoints
+
+- `GET /v1/messages/{id}?app_id=<app>` returns `200 {"message": {...}}`; `app_id` is required
+  (`400 app_id is required`) and another app's message is `404 message not found`.
+- `GET /v1/messages?app_id=<app>&idempotency_key=<key>` looks a message up by key
+  (`400 app_id and idempotency_key are required`).
+
+### Errors
+
+| Status | Body `error`                                                                 | Meaning                                                    |
+| ------ | ---------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 400    | a validation message above, `invalid JSON body`, `invalid wait`, `unknown destination` | Fix the request                                  |
+| 409    | `destination disabled`                                                       | `to.destination` is disabled                               |
+| 413    | `request body too large`                                                     | Body over 256 KiB                                          |
+| 422    | `no destination matched`, `app has no ntfy publisher`, `destination type not yet supported` | No route/destination/publisher can take it |
+| 503    | `messages unavailable`                                                       | delivery-api is up but cannot accept messages              |
+| 500    | `internal error`                                                             | Retry later; the cause is logged server-side               |
+
+Through Cloudflare Access an unauthorized token gets a Cloudflare `403`/redirect before reaching the API.
+
 ### Recipients
 
 `to.recipient` takes an **email or a `person_hash`** and sends the notification to that person's
@@ -277,12 +339,34 @@ Discord output is the same as for a non-critical message (set `display.priority`
 caller owns the fallback. On a non-2xx, a timeout, or a `wait` result whose delivery is not `delivered`,
 post directly to the app's own fallback Discord webhook.
 
+The direct-fallback pattern for a critical alert: submit with `?wait=10` and treat the alert as sent only
+when the response is `202` and every `deliveries[].state` is `delivered`. On a non-2xx, a network error or
+timeout, an empty `deliveries[]`, or any delivery still `pending` or `dead`, post the alert straight to
+the fallback webhook. Re-submitting with the same `idempotency_key` is safe (a duplicate never waits), so
+poll `GET /v1/messages/{id}?app_id=` instead of resubmitting if you want to confirm before falling back.
+
+### Verifying webhook signatures (including during a rotation)
+
+A webhook destination signs each delivery. Headers: `X-Delivery-Message-Id`, `X-Delivery-Idempotency-Key`,
+`X-Delivery-Timestamp` (Unix seconds) and `X-Delivery-Signature`. The signature is `v1=` plus the hex
+HMAC-SHA256, keyed with the signing secret, of `<timestamp>.<raw request body>`.
+
+During a rotation overlap (the operator rotates the secret in the admin UI with an overlap of 1-168
+hours) `X-Delivery-Signature` carries **two** comma-separated `v1=` values: one made with the new secret
+and one with the previous secret, until the overlap expires. Verify by accepting the request when **any**
+`v1=` value matches the HMAC computed with a secret you hold, using a constant-time comparison. Deploy
+the new secret to the receiver before the overlap ends; after it ends only the new signature is sent.
+A second rotation during an open overlap replaces the previous secret at once, so the earlier rotation's
+secret stops being signed immediately.
+
 ### Operator runbook: ntfy publisher for an app
 
 Recipient deliveries publish with a per-app ntfy publisher token that delivery-api stores sealed. It is
 minted once through provisioning-api by an explicit operator call, never lazily on submit:
 
-- Mint on the VPS: `curl -X POST http://127.0.0.1:${DELIVERY_PORT}/v1/admin/apps/<app>/ntfy-publisher`
+- Mint with the operator's admin proxy token (the VPS-local `http://127.0.0.1:${DELIVERY_PORT}` form
+  still works on the VPS itself):
+  `curl -X POST https://notifs-send.4irl.app/v1/admin/apps/<app>/ntfy-publisher -H "CF-Access-Client-Id: <proxy-id>" -H "CF-Access-Client-Secret: <proxy-secret>"`
 - Re-running the same call stores a new token in delivery-api, but it does **not** revoke the previous
   one. The mint is additive (`rotate:false`), so the previous publisher token stays valid in ntfy, with
   write access to the app's `{app_id}-*` topics. To revoke it, rotate the app's publisher in
@@ -293,9 +377,25 @@ minted once through provisioning-api by an explicit operator call, never lazily 
 - After `POST /v1/deprovision-app` the app's ntfy publisher user is gone, but delivery-api still holds
   its stored token, so recipient submits are accepted (202) and then dead-letter on a 401. Remove the
   stored publisher so submits fail closed (422, `app has no ntfy publisher`):
-  `curl -X DELETE http://127.0.0.1:${DELIVERY_PORT}/v1/admin/apps/<app>/ntfy-publisher` (204, idempotent;
-  it removes only delivery-api's copy and revokes nothing in ntfy). Re-mint the publisher before
-  recipient sends are expected to work again.
+  `curl -X DELETE https://notifs-send.4irl.app/v1/admin/apps/<app>/ntfy-publisher` with the same two
+  proxy-token headers (204, idempotent; it removes only delivery-api's copy and revokes nothing in ntfy).
+  Re-mint the publisher before recipient sends are expected to work again.
+
+### Operator runbook: exposing delivery-api and issuing app tokens
+
+One-time setup, in this order, so the hostname is never reachable without an Access app in front of it:
+
+1. In Zero Trust create two **Service Auth** Access applications: `notifs-send.4irl.app/v1/admin`
+   (policy: the admin proxy token only) and `notifs-send.4irl.app` (policy: the proxy token plus every
+   per-app token). Add the proxy token to both.
+2. Add a Tunnel public hostname `notifs-send.4irl.app` → `http://localhost:8300`.
+3. Set the admin Pages binding `DELIVERY_API_URL` to `https://notifs-send.4irl.app`.
+4. Add `/delivery` to the `notifs-admin` Access **Bypass** app, then verify with a non-GET (disable then
+   enable a test destination in the Delivery tab: 200, not 302/405).
+
+Per app: create a service token named e.g. `<app> → notifs-send`, add it to the whole-host
+`notifs-send` policy **only** (never the `/v1/admin` one), and give the app the id and secret. Confirm an
+app token gets 403 on `/v1/admin/destinations` and 202 on `POST /v1/messages`.
 
 ---
 

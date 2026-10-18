@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import App from './App.tsx';
 import { createApiClient } from './api/client.ts';
+import { createDeliveryApiClient } from './api/deliveryClient.ts';
 import { createPersonApiClient } from './api/personClient.ts';
 import './theme.css';
 import './index.css';
@@ -21,6 +22,14 @@ const peopleEnabled = import.meta.env.VITE_PEOPLE_ENABLED === 'true';
 const appsEnabled = import.meta.env.VITE_APPS_ENABLED === 'true';
 const personClient = peopleEnabled || appsEnabled ? createPersonApiClient({}) : undefined;
 
+// The Delivery tab reaches delivery-api through the same-origin `/delivery/*`
+// Pages Function. Its status card + Destinations/Routes and its Delivery Log are
+// gated on their own build flags; the client exists only when either is on.
+const destinationsEnabled = import.meta.env.VITE_DESTINATIONS_ENABLED === 'true';
+const deliveryLogEnabled = import.meta.env.VITE_DELIVERY_LOG_ENABLED === 'true';
+const deliveryClient =
+  destinationsEnabled || deliveryLogEnabled ? createDeliveryApiClient({}) : undefined;
+
 const rootElement = document.getElementById('root');
 if (rootElement === null) {
   throw new Error('root element not found');
@@ -28,6 +37,13 @@ if (rootElement === null) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <App client={client} personClient={personClient} appsEnabled={appsEnabled} />
+    <App
+      client={client}
+      personClient={personClient}
+      appsEnabled={appsEnabled}
+      deliveryClient={deliveryClient}
+      destinationsEnabled={destinationsEnabled}
+      deliveryLogEnabled={deliveryLogEnabled}
+    />
   </StrictMode>,
 );

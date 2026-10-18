@@ -17,6 +17,11 @@ import type {
   PersonSummary,
   UpdateAppParams,
 } from './api/personClient';
+import type { DeliveryApiClient } from './api/deliveryClient';
+import { AppTabs } from './components/AppTabs';
+import { DeliveryStatusCard } from './components/DeliveryStatusCard';
+import { DeliveryLog } from './components/DeliveryLog';
+import { DeliveryRegistry } from './components/DeliveryRegistry';
 import { ProvisionForm } from './components/ProvisionForm';
 import { SendTestNotification } from './components/SendTestNotification';
 import { UsersTable } from './components/UsersTable';
@@ -39,9 +44,22 @@ interface AppProps {
   client: ApiClient;
   personClient?: PersonApiClient;
   appsEnabled?: boolean;
+  /** delivery-api client; the Delivery tab renders only with it AND a flag on. */
+  deliveryClient?: DeliveryApiClient;
+  /** VITE_DESTINATIONS_ENABLED: status card, Destinations and Routes. */
+  destinationsEnabled?: boolean;
+  /** VITE_DELIVERY_LOG_ENABLED: the Delivery Log. */
+  deliveryLogEnabled?: boolean;
 }
 
-function App({ client, personClient, appsEnabled = false }: AppProps) {
+function App({
+  client,
+  personClient,
+  appsEnabled = false,
+  deliveryClient,
+  destinationsEnabled = false,
+  deliveryLogEnabled = false,
+}: AppProps) {
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -289,63 +307,85 @@ function App({ client, personClient, appsEnabled = false }: AppProps) {
     [client, refreshApps, refreshUsers],
   );
 
+  // The Provisioning content. With tabs it is the Provisioning panel's body
+  // (the shared error banner is its first child, so it never shows on the
+  // Delivery tab); without tabs it is the page's <main> content, unchanged.
+  const provisioningContent = (
+    <>
+      {error !== null && (
+        <p role="alert" className="app__error">
+          {error}
+        </p>
+      )}
+      <div className="app__forms">
+        <ProvisionForm onProvision={handleProvision} apps={apps} />
+        {appsSectionEnabled && <AddAppForm onAddApp={handleAddApp} />}
+      </div>
+      <SendTestNotification
+        users={users}
+        loading={loading}
+        emailByPersonHash={emailByPersonHash}
+        displayNameByAppId={displayNameByAppId}
+        onSendTest={handleTestNotify}
+      />
+      <UsersTable
+        users={users}
+        loading={loading}
+        emailByPersonHash={emailByPersonHash}
+        onDeprovision={handleDeprovision}
+        onDelete={handleDelete}
+      />
+      {appsSectionEnabled && (
+        <AppsTable
+          apps={apps}
+          subscriberCountByApp={subscriberCountByApp}
+          loading={appsLoading}
+          error={appsError}
+          onUpdateApp={handleUpdateApp}
+          onRemintToken={handleRemintToken}
+          onRemoveApp={handleRemoveApp}
+        />
+      )}
+      {appsSectionEnabled && (
+        <UnregisteredApps
+          appIds={unregisteredAppIds}
+          subscriberCountByApp={subscriberCountByApp}
+          loading={loading || appsLoading}
+        />
+      )}
+      {personClient !== undefined && (
+        <PeopleTable
+          people={people}
+          loading={peopleLoading}
+          error={peopleError}
+          onDelete={handleDeletePerson}
+        />
+      )}
+    </>
+  );
+
+  const tabsEnabled = deliveryClient !== undefined && (destinationsEnabled || deliveryLogEnabled);
+
   return (
     <div className="app">
       <header className="app__header">
         <h1>{strings.appTitle}</h1>
         <span className="app__badge">{strings.headerBadge}</span>
       </header>
-      <main className="app__main">
-        {error !== null && (
-          <p role="alert" className="app__error">
-            {error}
-          </p>
-        )}
-        <div className="app__forms">
-          <ProvisionForm onProvision={handleProvision} apps={apps} />
-          {appsSectionEnabled && <AddAppForm onAddApp={handleAddApp} />}
-        </div>
-        <SendTestNotification
-          users={users}
-          loading={loading}
-          emailByPersonHash={emailByPersonHash}
-          displayNameByAppId={displayNameByAppId}
-          onSendTest={handleTestNotify}
+      {tabsEnabled ? (
+        <AppTabs
+          provisioning={provisioningContent}
+          delivery={
+            <>
+              {destinationsEnabled && <DeliveryStatusCard client={deliveryClient} />}
+              {destinationsEnabled && <DeliveryRegistry client={deliveryClient} />}
+              {deliveryLogEnabled && <DeliveryLog client={deliveryClient} />}
+            </>
+          }
         />
-        <UsersTable
-          users={users}
-          loading={loading}
-          emailByPersonHash={emailByPersonHash}
-          onDeprovision={handleDeprovision}
-          onDelete={handleDelete}
-        />
-        {appsSectionEnabled && (
-          <AppsTable
-            apps={apps}
-            subscriberCountByApp={subscriberCountByApp}
-            loading={appsLoading}
-            error={appsError}
-            onUpdateApp={handleUpdateApp}
-            onRemintToken={handleRemintToken}
-            onRemoveApp={handleRemoveApp}
-          />
-        )}
-        {appsSectionEnabled && (
-          <UnregisteredApps
-            appIds={unregisteredAppIds}
-            subscriberCountByApp={subscriberCountByApp}
-            loading={loading || appsLoading}
-          />
-        )}
-        {personClient !== undefined && (
-          <PeopleTable
-            people={people}
-            loading={peopleLoading}
-            error={peopleError}
-            onDelete={handleDeletePerson}
-          />
-        )}
-      </main>
+      ) : (
+        <main className="app__main">{provisioningContent}</main>
+      )}
     </div>
   );
 }
