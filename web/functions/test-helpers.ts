@@ -8,6 +8,7 @@ export function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
     PROVISIONING_API_URL: 'https://notifs-api.4irl.app',
     PERSON_SERVICE_URL: 'https://notifs-people.4irl.app',
+    DELIVERY_API_URL: 'https://notifs-send.4irl.app',
     PROXY_ACCESS_CLIENT_ID: 'id',
     PROXY_ACCESS_CLIENT_SECRET: 'sec',
     ACCESS_TEAM_DOMAIN: '',

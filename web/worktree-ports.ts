@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 // Mirrors scripts/ports.mjs loadPorts; deliberately not imported from there so the
 // web build stays self-contained.
 
-const DEFAULTS = { API_PORT: 8091, WEB_PORT: 5173, E2E_PORT: 4173 } as const;
+const DEFAULTS = { API_PORT: 8091, WEB_PORT: 5173, E2E_PORT: 4173, DELIVERY_PORT: 8300 } as const;
 
 type PortKey = keyof typeof DEFAULTS;
 
@@ -20,6 +20,7 @@ interface WebPorts {
   apiPort: number;
   webPort: number;
   e2ePort: number;
+  deliveryPort: number;
 }
 
 function parsePort({ key, value }: { key: string; value: string }): number {
@@ -66,5 +67,6 @@ export function webPorts({ fileText, env = process.env }: WebPortsInput = {}): W
     apiPort: resolve('API_PORT'),
     webPort: resolve('WEB_PORT'),
     e2ePort: resolve('E2E_PORT'),
+    deliveryPort: resolve('DELIVERY_PORT'),
   };
 }

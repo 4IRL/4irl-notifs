@@ -74,6 +74,20 @@ describe('strings module', () => {
     ).toBe('id VkT2p9wQ · urls4irl-hash-all');
   });
 
+  it('exposes the tab and delivery status card copy', () => {
+    expect(strings.tabProvisioning).toBe('Provisioning');
+    expect(strings.tabDelivery).toBe('Delivery');
+    expect(strings.deliveryStatusRefresh).toBe('Refresh status');
+    expect(strings.deliveryStatusChecking).toBe('Checking…');
+    expect(strings.deliveryStatusSchemaValue({ current: 3, expected: 4 })).toBe('3 of 4');
+    expect(
+      strings.deliveryStatusFailureValue({ version: 5, failedAt: '2026-10-17 06:00 UTC' }),
+    ).toBe('v5 · 2026-10-17 06:00 UTC');
+    expect(strings.deliveryStatusUnreachableDetail({ message: 'boom' })).toBe(
+      'Could not reach delivery-api: boom',
+    );
+  });
+
   it('exposes the people section heading, status copy, and column headers', () => {
     expect(strings.peopleHeading).toBe('People');
     expect(strings.peopleLoading).toBe('Loading people…');
