@@ -239,9 +239,9 @@ Besides publishing to ntfy directly, an app can submit an envelope to delivery-a
 (retries, backoff and a delivery log included). The human-facing sinks and per-person recipients below
 apply to that path.
 
-delivery-api is reachable at `https://notifs-send.4irl.app`, behind Cloudflare Access. Send the same
+delivery-api is reachable at `https://notifs-delivery.4irl.app`, behind Cloudflare Access. Send the same
 `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers as for `notifs-api`, using a service token the
-operator has authorized on the `notifs-send` Access application (see the operator runbook below). Your
+operator has authorized on the `notifs-delivery` Access application (see the operator runbook below). Your
 app token reaches `/v1/messages`, `/readyz` and `/healthz`; `/v1/admin/*` returns 403 to it.
 
 ### Envelope contract
@@ -366,7 +366,7 @@ minted once through provisioning-api by an explicit operator call, never lazily 
 
 - Mint with the operator's admin proxy token (the VPS-local `http://127.0.0.1:${DELIVERY_PORT}` form
   still works on the VPS itself):
-  `curl -X POST https://notifs-send.4irl.app/v1/admin/apps/<app>/ntfy-publisher -H "CF-Access-Client-Id: <proxy-id>" -H "CF-Access-Client-Secret: <proxy-secret>"`
+  `curl -X POST https://notifs-delivery.4irl.app/v1/admin/apps/<app>/ntfy-publisher -H "CF-Access-Client-Id: <proxy-id>" -H "CF-Access-Client-Secret: <proxy-secret>"`
 - Re-running the same call stores a new token in delivery-api, but it does **not** revoke the previous
   one. The mint is additive (`rotate:false`), so the previous publisher token stays valid in ntfy, with
   write access to the app's `{app_id}-*` topics. To revoke it, rotate the app's publisher in
@@ -377,7 +377,7 @@ minted once through provisioning-api by an explicit operator call, never lazily 
 - After `POST /v1/deprovision-app` the app's ntfy publisher user is gone, but delivery-api still holds
   its stored token, so recipient submits are accepted (202) and then dead-letter on a 401. Remove the
   stored publisher so submits fail closed (422, `app has no ntfy publisher`):
-  `curl -X DELETE https://notifs-send.4irl.app/v1/admin/apps/<app>/ntfy-publisher` with the same two
+  `curl -X DELETE https://notifs-delivery.4irl.app/v1/admin/apps/<app>/ntfy-publisher` with the same two
   proxy-token headers (204, idempotent; it removes only delivery-api's copy and revokes nothing in ntfy).
   Re-mint the publisher before recipient sends are expected to work again.
 
@@ -385,16 +385,17 @@ minted once through provisioning-api by an explicit operator call, never lazily 
 
 One-time setup, in this order, so the hostname is never reachable without an Access app in front of it:
 
-1. In Zero Trust create two **Service Auth** Access applications: `notifs-send.4irl.app/v1/admin`
-   (policy: the admin proxy token only) and `notifs-send.4irl.app` (policy: the proxy token plus every
-   per-app token). Add the proxy token to both.
-2. Add a Tunnel public hostname `notifs-send.4irl.app` → `http://localhost:8300`.
-3. Set the admin Pages binding `DELIVERY_API_URL` to `https://notifs-send.4irl.app`.
+1. In Zero Trust create one **Service Auth** Access application for `notifs-delivery.4irl.app` (policy: the
+   admin proxy token only). Before onboarding the first app, split it into two path-scoped apps:
+   `notifs-delivery.4irl.app/v1/admin` (the admin proxy token only) and `notifs-delivery.4irl.app` (the
+   proxy token plus every per-app token).
+2. Add a Tunnel public hostname `notifs-delivery.4irl.app` → `http://localhost:8300`.
+3. Set the admin Pages binding `DELIVERY_API_URL` to `https://notifs-delivery.4irl.app`.
 4. Add `/delivery` to the `notifs-admin` Access **Bypass** app, then verify with a non-GET (disable then
    enable a test destination in the Delivery tab: 200, not 302/405).
 
-Per app: create a service token named e.g. `<app> → notifs-send`, add it to the whole-host
-`notifs-send` policy **only** (never the `/v1/admin` one), and give the app the id and secret. Confirm an
+Per app: create a service token named e.g. `<app> → notifs-delivery`, add it to the whole-host
+`notifs-delivery` policy **only** (never the `/v1/admin` one), and give the app the id and secret. Confirm an
 app token gets 403 on `/v1/admin/destinations` and 202 on `POST /v1/messages`.
 
 ---

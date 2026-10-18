@@ -12,7 +12,7 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-send.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API and `/v1/messages`. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery) and retention sweeper. Has no auth of its own; reachable only behind the path-scoped Access apps below. |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API and `/v1/messages`. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery) and retention sweeper. Has no auth of its own; reachable only behind the path-scoped Access apps below. |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*`, `/people`, `/apps` and `/delivery/*` proxy Functions. |
 
@@ -57,21 +57,21 @@ the VPS; person-service + admin UI are Cloudflare-native.
 
 **Exposure and authentication.** delivery-api has no authentication of its own and stays bound to
 `127.0.0.1:8300`; Cloudflare Access is its only boundary. It is published through the shared Tunnel as
-`notifs-send.4irl.app` (public hostname → `http://localhost:8300`) behind two **path-scoped Access
-applications**, most specific path first:
+`notifs-delivery.4irl.app` (public hostname → `http://localhost:8300`) behind one **Service Auth Access
+application** for the whole hostname, whose policy allows the admin proxy token only. App tokens are not
+authorized yet, so apps cannot reach `/v1/messages` until the operator adds them.
 
-1. `notifs-send.4irl.app/v1/admin` — **Service Auth: the admin proxy token only.** Covers every
-   `/v1/admin/*` route, including the `ntfy-publisher` mint (the unauthenticated `POST` makes
-   provisioning-api create an ntfy publisher user and token for any `app_id`) and rotate-secret. An app
-   service token gets 403 here.
-2. `notifs-send.4irl.app` (the whole hostname) — **Service Auth: the admin proxy token plus the per-app
-   service tokens.** This is what lets an app reach `/v1/messages`, `/readyz` and `/healthz`.
+**Before the first app is onboarded**, split the hostname into two path-scoped Access apps, most specific
+path first: `notifs-delivery.4irl.app/v1/admin` (proxy token only, so an app token gets 403 on the
+`ntfy-publisher` mint, which makes provisioning-api create an ntfy publisher user and token for any
+`app_id`, and on rotate-secret) and the whole hostname (the proxy token plus the per-app tokens, for
+`/v1/messages`, `/readyz` and `/healthz`). Never add an app token to a policy that covers `/v1/admin`.
 
 `app_id` on `/v1/messages` is still caller-asserted: any holder of an authorized token can submit as, or
 read the status of, any app, so per-app tokens are an operator-trust boundary, not isolation between
-apps. Never publish the hostname before both Access apps exist (see the runbook order in the admin UI
-PR). Operator runbook: create both Access apps and add the proxy token, add the Tunnel public hostname,
-then set the Pages `DELIVERY_API_URL` binding and add `/delivery` to the `notifs-admin` Bypass app.
+apps. Never publish the hostname before its Access app exists. Operator runbook: create the Access app
+and add the proxy token, add the Tunnel public hostname, then set the Pages `DELIVERY_API_URL` binding and
+add `/delivery` to the `notifs-admin` Bypass app.
 
 ## System diagram
 
@@ -113,7 +113,7 @@ graph TD
 | `notifs-api.4irl.app`    | Tunnel → `127.0.0.1:8091` | Yes (service-token only) | provisioning-api container   |
 | `notifs.4irl.app`        | Tunnel → `127.0.0.1:8090` | **No** (ntfy token auth) | ntfy container               |
 | `notifs-people.4irl.app` | Worker custom domain      | Yes (service-token only) | person-service Worker        |
-| `notifs-send.4irl.app`   | Tunnel → `127.0.0.1:8300` | Yes (service-token only; path-scoped, see below) | delivery-api container |
+| `notifs-delivery.4irl.app`   | Tunnel → `127.0.0.1:8300` | Yes (service-token only; path-scoped, see below) | delivery-api container |
 
 - The Tunnel is a **shared, remotely-managed** connector (also fronts urls4irl); notifs routes were
   added as public hostnames — no new daemon/credential, dashboard-only.
@@ -133,8 +133,7 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 | ------------------------- | ---------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------ |
 | `notifs-admin`            | `notifs-admin.4irl.app`                        | `907dc277…575f`   | `U4I Dev Policy` — **Allow**, GitHub org `4IRL` (human login)                        |
 | `notifs-admin` API bypass | `notifs-admin.4irl.app/v1`, `/people`, `/apps`, `/delivery` | —                 | **Bypass** (Everyone) — Access does NOT gate these paths; the Function authenticates |
-| `notifs-send` admin       | `notifs-send.4irl.app/v1/admin`                | (dashboard)       | **Service Auth** (proxy token only) — app tokens get 403                             |
-| `notifs-send`             | `notifs-send.4irl.app`                         | (dashboard)       | **Service Auth** (proxy token + per-app service tokens)                              |
+| `notifs-delivery`         | `notifs-delivery.4irl.app`                     | (dashboard)       | **Service Auth** (proxy token only; per-app tokens and a `/v1/admin` split come with the first onboarded app) |
 | `notifs-api`              | `notifs-api.4irl.app`                          | `91ad97d9…694150` | **Service Auth** (proxy token) only                                                  |
 | `notifs-people`           | `notifs-people.4irl.app`                       | `5a270164…658f5a` | **Service Auth** (VPS dual-write token + proxy token) only                           |
 
@@ -151,9 +150,9 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 
 | Token                           | Presented by                                          | Authorized on                               |
 | ------------------------------- | ----------------------------------------------------- | ------------------------------------------- |
-| `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`)         | `notifs-api` + `notifs-people` + both `notifs-send` Service Auth apps |
+| `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`)         | `notifs-api` + `notifs-people` + `notifs-delivery` Service Auth apps |
 | VPS dual-write token            | provisioning-api (Go)                                 | `notifs-people` Service Auth                |
-| per-consuming-app tokens        | tasktracker backend (live); urls4irl backend (future) | `notifs-api` Service Auth; the whole-host `notifs-send` app (never the `/v1/admin` app) |
+| per-consuming-app tokens        | tasktracker backend (live); urls4irl backend (future) | `notifs-api` Service Auth; the whole-host `notifs-delivery` app once split from `/v1/admin` (never the `/v1/admin` app) |
 
 ### Admin-UI request flow (the important one)
 
@@ -218,7 +217,7 @@ sequenceDiagram
 | ---------------------------- | --------- | ------------------------------------------------------------------ |
 | `PROVISIONING_API_URL`       | plaintext | `https://notifs-api.4irl.app`                                      |
 | `PERSON_SERVICE_URL`         | plaintext | `https://notifs-people.4irl.app`                                   |
-| `DELIVERY_API_URL`           | plaintext | `https://notifs-send.4irl.app`                                     |
+| `DELIVERY_API_URL`           | plaintext | `https://notifs-delivery.4irl.app`                                     |
 | `PROXY_ACCESS_CLIENT_ID`     | secret    | proxy service token client id                                      |
 | `PROXY_ACCESS_CLIENT_SECRET` | secret    | proxy service token client secret                                  |
 | `ACCESS_TEAM_DOMAIN`         | plaintext | `urls4irl.cloudflareaccess.com` (JWKS host + issuer)               |
@@ -432,7 +431,7 @@ graph TD
 | Admin API `502 {"error":"upstream unreachable"}`      | `PROVISIONING_API_URL`/`PERSON_SERVICE_URL` wrong/down, or Tunnel route missing.                                                                                                                     |
 | Admin API `401 {"error":"unauthorized"}`              | JWT invalid/missing: `aud`≠`notifs-admin` AUD, wrong `ACCESS_TEAM_DOMAIN`, or expired session.                                                                                                       |
 | Provisioning/Apps POST/PATCH/DELETE → 302 login / 405 | The path (`/v1`, `/people`, `/apps`) is missing from the Access **Bypass** app → Access is edge-challenging the write. (Apps section lists via GET but every mutation fails until `/apps` is added.) |
-| `/delivery` `502 {"error":"upstream auth failed"}`    | Proxy token not on **both** `notifs-send` Service Auth apps (`/v1/admin` and whole host), or `DELIVERY_API_URL` points at the wrong host.                                                             |
+| `/delivery` `502 {"error":"upstream auth failed"}`    | Proxy token not on the `notifs-delivery` Service Auth policy, or `DELIVERY_API_URL` points at the wrong host.                                                             |
 | `/delivery` non-GET → 302 login / 405                 | `/delivery` is missing from the `notifs-admin` Access **Bypass** app (GETs still work, writes fail).                                                                                                 |
 | `/delivery/readyz` shows `schema_mismatch`            | The delivery-api binary and database schema differ: `schema_version` ≠ `expected_schema_version` (a migration not applied, or an old binary). Check `delivery-migrate` logs and the `last_migration_failure` the status card shows. |
 | Rotate secret → 404 right after a deploy              | The Pages UI deploys in parallel with the backend; an old `delivery-api` binary has no `rotate-secret` route. Wait for the `deploy-prod` job, then retry (not "destination does not exist"). |

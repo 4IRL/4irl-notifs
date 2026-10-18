@@ -166,7 +166,7 @@ services:
     image: ghcr.io/4irl/4irl-notifs-delivery-api:latest
     container_name: 4irl-notifs-delivery-api
     ports:
-      # localhost only; the Tunnel public hostname notifs-send.4irl.app -> localhost:8300 is the
+      # localhost only; the Tunnel public hostname notifs-delivery.4irl.app -> localhost:8300 is the
       # sole public entry, gated by the path-scoped Access apps (see ARCHITECTURE.md)
       - "127.0.0.1:8300:8080"
     environment:
