@@ -1,0 +1,44 @@
+.app-tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+  padding: 0 var(--space-4);
+  max-width: 60rem;
+  margin: 0 auto;
+}
+
+.app-tabs__tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text);
+  font: 600 0.9375rem var(--sans);
+  min-height: 2.75rem;
+  padding: 0 var(--space-3);
+  cursor: pointer;
+}
+
+.app-tabs__tab:hover {
+  color: var(--text-h);
+}
+
+.app-tabs__tab[aria-selected='true'] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.app-tabs__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.app-tabs__panel {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+/* The author display rule above would otherwise defeat the `hidden` attribute. */
+.app-tabs__panel[hidden] {
+  display: none;
+}

@@ -1,10 +1,11 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from './App';
 import { ApiError } from './api/client';
 import type { ApiClient } from './api/client';
+import type { DeliveryApiClient } from './api/deliveryClient';
 import type { PersonApiClient } from './api/personClient';
 import { strings } from './strings';
 
@@ -53,6 +54,33 @@ function buildFakePersonClient(overrides: Partial<PersonApiClient> = {}): Person
       createdAt: '2026-07-25T10:00:00Z',
     }),
     deleteApp: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+// buildFakeDeliveryClient returns a full DeliveryApiClient test double with
+// vi.fn() methods that default to benign values, overridable per test.
+function buildFakeDeliveryClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiClient {
+  return {
+    getReadiness: vi.fn().mockResolvedValue({
+      kind: 'ok',
+      schemaVersion: 4,
+      expectedSchemaVersion: 4,
+      lastMigrationFailure: null,
+    }),
+    listDestinations: vi.fn().mockResolvedValue([]),
+    createDestination: vi.fn(),
+    updateDestination: vi.fn(),
+    deleteDestination: vi.fn().mockResolvedValue(undefined),
+    rotateSecret: vi.fn(),
+    sendTest: vi.fn(),
+    listRoutes: vi.fn().mockResolvedValue([]),
+    createRoute: vi.fn(),
+    updateRoute: vi.fn(),
+    deleteRoute: vi.fn().mockResolvedValue(undefined),
+    listDeliveries: vi.fn().mockResolvedValue([]),
+    listAttempts: vi.fn().mockResolvedValue([]),
+    replayDelivery: vi.fn(),
     ...overrides,
   };
 }
@@ -659,5 +687,199 @@ describe('App', () => {
         title: 'URLs 4 IRL test',
       }),
     );
+  });
+});
+
+describe('App Delivery tab', () => {
+  beforeEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  function tab(name: string) {
+    return screen.getByRole('tab', { name });
+  }
+
+  it('renders no tab bar with both flags off, even with a client', () => {
+    render(<App client={buildFakeClient()} deliveryClient={buildFakeDeliveryClient()} />);
+
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(screen.getByRole('main')).toContainElement(
+      screen.getByRole('heading', { name: strings.provisionHeading }),
+    );
+  });
+
+  it('renders no tab bar with a flag on but no client', () => {
+    render(<App client={buildFakeClient()} destinationsEnabled deliveryLogEnabled />);
+
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['destinationsEnabled', { destinationsEnabled: true }],
+    ['deliveryLogEnabled', { deliveryLogEnabled: true }],
+  ])('renders the tab bar when only %s is on', (_name, flags) => {
+    render(
+      <App client={buildFakeClient()} deliveryClient={buildFakeDeliveryClient()} {...flags} />,
+    );
+
+    expect(screen.getByRole('tablist')).toBeInTheDocument();
+    expect(tab(strings.tabProvisioning)).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('makes no delivery request until the Delivery tab is first shown', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient();
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />);
+
+    // Let the provisioning fetches settle so a stray delivery call would show.
+    await screen.findByText(strings.usersEmpty);
+    expect(deliveryClient.getReadiness).not.toHaveBeenCalled();
+
+    await user.click(tab(strings.tabDelivery));
+    await waitFor(() => expect(deliveryClient.getReadiness).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(strings.deliveryStatusReady)).toBeInTheDocument();
+
+    await user.click(tab(strings.tabProvisioning));
+    await user.click(tab(strings.tabDelivery));
+    expect(deliveryClient.getReadiness).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens Delivery directly when the page loads on #delivery', async () => {
+    window.history.replaceState(null, '', '/#delivery');
+    const deliveryClient = buildFakeDeliveryClient();
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />);
+
+    expect(tab(strings.tabDelivery)).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText(strings.deliveryStatusReady)).toBeInTheDocument();
+  });
+
+  it('keeps a provision-token reveal and typed input across tab switches', async () => {
+    const user = userEvent.setup();
+    render(
+      <App
+        client={buildFakeClient()}
+        deliveryClient={buildFakeDeliveryClient()}
+        destinationsEnabled
+      />,
+    );
+
+    await user.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
+    await user.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
+    await user.click(screen.getByRole('button', { name: strings.provisionAction }));
+    expect(await screen.findByText('tk_generated')).toBeInTheDocument();
+    await user.type(screen.getByLabelText(strings.appIdLabel), 'half');
+
+    await user.click(tab(strings.tabDelivery));
+    expect(document.getElementById('app-panel-provisioning')).toHaveAttribute('hidden');
+    await user.click(tab(strings.tabProvisioning));
+
+    expect(screen.getByText('tk_generated')).toBeInTheDocument();
+    expect(screen.getByLabelText(strings.appIdLabel)).toHaveValue('urls4irlhalf');
+  });
+
+  it('shows the provisioning error banner in the Provisioning panel only', async () => {
+    const user = userEvent.setup();
+    const client = buildFakeClient({
+      listUsers: vi.fn().mockRejectedValue(new ApiError({ message: 'users down', status: 500 })),
+    });
+    render(<App client={client} deliveryClient={buildFakeDeliveryClient()} destinationsEnabled />);
+
+    const banner = await screen.findByText('users down');
+    const provisioningPanel = screen.getByRole('tabpanel', { name: strings.tabProvisioning });
+    expect(provisioningPanel).toContainElement(banner);
+
+    await user.click(tab(strings.tabDelivery));
+    expect(screen.getByRole('tabpanel', { name: strings.tabDelivery })).not.toContainElement(
+      banner,
+    );
+  });
+
+  it('keeps a delivery-api outage out of the shared provisioning error banner', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient({
+      getReadiness: vi.fn().mockResolvedValue({ kind: 'unreachable', message: 'upstream down' }),
+    });
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />);
+
+    await user.click(tab(strings.tabDelivery));
+    const delivery = screen.getByRole('tabpanel', { name: strings.tabDelivery });
+    expect(await within(delivery).findByRole('alert')).toHaveTextContent('upstream down');
+    const provisioningPanel = document.getElementById('app-panel-provisioning');
+    expect(provisioningPanel).not.toBeNull();
+    expect(
+      within(provisioningPanel as HTMLElement).queryByRole('alert', { hidden: true }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the status card only when destinations are enabled', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient();
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} deliveryLogEnabled />);
+
+    await user.click(tab(strings.tabDelivery));
+
+    expect(screen.queryByText(strings.deliveryStatusHeading)).not.toBeInTheDocument();
+    expect(deliveryClient.getReadiness).not.toHaveBeenCalled();
+  });
+
+  it('lists destinations only after the Delivery tab is first shown', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient();
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />);
+
+    await screen.findByText(strings.usersEmpty);
+    expect(deliveryClient.listDestinations).not.toHaveBeenCalled();
+
+    await user.click(tab(strings.tabDelivery));
+    expect(await screen.findByText(strings.destinationsEmpty)).toBeInTheDocument();
+    expect(deliveryClient.listDestinations).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists deliveries only after the Delivery tab is first shown, gated by deliveryLogEnabled', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient();
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} deliveryLogEnabled />);
+
+    await screen.findByText(strings.usersEmpty);
+    expect(deliveryClient.listDeliveries).not.toHaveBeenCalled();
+
+    await user.click(tab(strings.tabDelivery));
+    expect(await screen.findByText('No dead deliveries.')).toBeInTheDocument();
+    expect(deliveryClient.listDeliveries).toHaveBeenCalledTimes(1);
+    expect(deliveryClient.listDestinations).not.toHaveBeenCalled();
+  });
+
+  it('does not show the Delivery Log when only destinations are enabled', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient();
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />);
+
+    await user.click(tab(strings.tabDelivery));
+    await screen.findByText(strings.destinationsEmpty);
+
+    expect(deliveryClient.listDeliveries).not.toHaveBeenCalled();
+  });
+
+  it('keeps a destinations load failure out of the shared provisioning error banner', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient({
+      listDestinations: vi
+        .fn()
+        .mockRejectedValue(new ApiError({ message: 'destinations down', status: 502 })),
+    });
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />);
+
+    await user.click(tab(strings.tabDelivery));
+
+    const delivery = screen.getByRole('tabpanel', { name: strings.tabDelivery });
+    expect(await within(delivery).findByText('destinations down')).toBeInTheDocument();
+    const provisioningPanel = document.getElementById('app-panel-provisioning');
+    expect(
+      within(provisioningPanel as HTMLElement).queryByText('destinations down'),
+    ).not.toBeInTheDocument();
   });
 });

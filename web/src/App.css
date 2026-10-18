@@ -36,6 +36,11 @@
   padding: var(--space-5) var(--space-4);
 }
 
+/* Wide tables scroll inside their own wrapper instead of stretching the grid. */
+.app__main > * {
+  min-width: 0;
+}
+
 /* The provision + add-app forms sit side by side on wide screens and wrap to a
    single, equal-width column on narrow ones. Each form owns no width itself
    (the flex item does), so the two always match: flex-basis sets the wrap
