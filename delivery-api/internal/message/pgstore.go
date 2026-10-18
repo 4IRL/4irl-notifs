@@ -52,6 +52,16 @@ const (
 	attempt_count, budget_attempts, budget_started_at, next_attempt_at, last_status_code, delivered_at,
 	created_at, updated_at`
 
+	// adminDeliveryColumns is deliveryColumns qualified with the d alias of
+	// adminDeliveryFrom, followed by the parent message's app_id and channel.
+	adminDeliveryColumns = `d.id, d.message_id::text, d.destination_id, d.destination_name, d.destination_type,
+	d.state, d.dead_reason, d.attempt_count, d.budget_attempts, d.budget_started_at, d.next_attempt_at,
+	d.last_status_code, d.delivered_at, d.created_at, d.updated_at, m.app_id, m.channel`
+
+	// adminDeliveryFrom joins a delivery to its message only; destinations are
+	// never joined, so a deleted destination keeps its row.
+	adminDeliveryFrom = `message_deliveries d JOIN messages m ON m.id = d.message_id`
+
 	attemptColumns = `id, delivery_id, attempt_number, outcome, status_code, latency_ms, error, response_snippet, started_at`
 
 	// deliveryOrder sorts bytewise (COLLATE "C") so ordering never depends on the
@@ -293,7 +303,7 @@ WHERE id = $1 RETURNING `+deliveryColumns,
 
 // ListDeliveries returns up to limit deliveries in state, most recently updated
 // first.
-func (store *PGStore) ListDeliveries(ctx context.Context, state string, limit int) ([]Delivery, error) {
+func (store *PGStore) ListDeliveries(ctx context.Context, state string, limit int) ([]AdminDelivery, error) {
 	if !isDeliveryState(state) {
 		return nil, &ValidationError{Message: "invalid state"}
 	}
@@ -301,12 +311,12 @@ func (store *PGStore) ListDeliveries(ctx context.Context, state string, limit in
 		return nil, &ValidationError{Message: "invalid limit"}
 	}
 	rows, queryErr := store.pool.Query(ctx,
-		`SELECT `+deliveryColumns+` FROM message_deliveries WHERE state = $1
-ORDER BY updated_at DESC, id DESC LIMIT $2`, state, limit)
+		`SELECT `+adminDeliveryColumns+` FROM `+adminDeliveryFrom+` WHERE d.state = $1
+ORDER BY d.updated_at DESC, d.id DESC LIMIT $2`, state, limit)
 	if queryErr != nil {
 		return nil, pgutil.WrapDBError("list deliveries", queryErr)
 	}
-	deliveries, collectErr := collectDeliveries(rows)
+	deliveries, collectErr := collectAdminDeliveries(rows)
 	if collectErr != nil {
 		return nil, pgutil.WrapDBError("list deliveries", collectErr)
 	}
@@ -359,11 +369,11 @@ func (store *PGStore) ListAttempts(ctx context.Context, deliveryID int64) ([]Att
 
 // Replay returns a dead delivery to the queue with a fresh retry budget. The
 // cumulative attempt_count is kept so log numbering stays monotonic.
-func (store *PGStore) Replay(ctx context.Context, deliveryID int64, now time.Time) (Delivery, error) {
+func (store *PGStore) Replay(ctx context.Context, deliveryID int64, now time.Time) (AdminDelivery, error) {
 	if now.IsZero() {
-		return Delivery{}, errors.New("replay delivery: now must be set")
+		return AdminDelivery{}, errors.New("replay delivery: now must be set")
 	}
-	var replayed Delivery
+	var replayed AdminDelivery
 	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		current, lockErr := lockDelivery(ctx, tx, deliveryID)
 		if lockErr != nil {
@@ -372,19 +382,23 @@ func (store *PGStore) Replay(ctx context.Context, deliveryID int64, now time.Tim
 		if current.State != StateDead {
 			return ErrDeliveryNotDead
 		}
-		var updateErr error
-		replayed, updateErr = scanDelivery(tx.QueryRow(ctx,
+		if _, updateErr := tx.Exec(ctx,
 			`UPDATE message_deliveries SET
   state = 'pending', dead_reason = NULL, budget_attempts = 0,
   budget_started_at = $2, next_attempt_at = $2, updated_at = now()
-WHERE id = $1 RETURNING `+deliveryColumns, current.ID, now))
-		if updateErr != nil {
+WHERE id = $1`, current.ID, now); updateErr != nil {
 			return pgutil.WrapDBError("replay delivery", updateErr)
+		}
+		var selectErr error
+		replayed, selectErr = scanAdminDelivery(tx.QueryRow(ctx,
+			`SELECT `+adminDeliveryColumns+` FROM `+adminDeliveryFrom+` WHERE d.id = $1`, current.ID))
+		if selectErr != nil {
+			return pgutil.WrapDBError("replay delivery", selectErr)
 		}
 		return nil
 	})
 	if txErr != nil {
-		return Delivery{}, txErr
+		return AdminDelivery{}, txErr
 	}
 	return replayed, nil
 }
@@ -632,6 +646,38 @@ func scanDelivery(row pgutil.RowScanner) (Delivery, error) {
 		&delivery.LastStatusCode, &delivery.DeliveredAt, &delivery.CreatedAt, &delivery.UpdatedAt,
 	); scanErr != nil {
 		return Delivery{}, scanErr
+	}
+	return delivery, nil
+}
+
+// collectAdminDeliveries drains rows into a non-nil slice and closes them.
+func collectAdminDeliveries(rows pgx.Rows) ([]AdminDelivery, error) {
+	defer rows.Close()
+	deliveries := []AdminDelivery{}
+	for rows.Next() {
+		delivery, scanErr := scanAdminDelivery(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		deliveries = append(deliveries, delivery)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
+	}
+	return deliveries, nil
+}
+
+// scanAdminDelivery reads one row selected with adminDeliveryColumns.
+func scanAdminDelivery(row pgutil.RowScanner) (AdminDelivery, error) {
+	var delivery AdminDelivery
+	if scanErr := row.Scan(
+		&delivery.ID, &delivery.MessageID, &delivery.DestinationID, &delivery.DestinationName,
+		&delivery.DestinationType, &delivery.State, &delivery.DeadReason, &delivery.AttemptCount,
+		&delivery.BudgetAttempts, &delivery.BudgetStartedAt, &delivery.NextAttemptAt,
+		&delivery.LastStatusCode, &delivery.DeliveredAt, &delivery.CreatedAt, &delivery.UpdatedAt,
+		&delivery.AppID, &delivery.Channel,
+	); scanErr != nil {
+		return AdminDelivery{}, scanErr
 	}
 	return delivery, nil
 }

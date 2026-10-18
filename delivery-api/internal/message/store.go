@@ -36,7 +36,7 @@ type Store interface {
 	// unknown state or a limit below 1 is a *ValidationError. Service validates
 	// first; the store repeats the check as defense in depth so a direct call
 	// cannot reach SQL with bad arguments.
-	ListDeliveries(ctx context.Context, state string, limit int) ([]Delivery, error)
+	ListDeliveries(ctx context.Context, state string, limit int) ([]AdminDelivery, error)
 	// ListAttempts returns a delivery's attempts in attempt order, or
 	// ErrDeliveryNotFound when the delivery does not exist.
 	ListAttempts(ctx context.Context, deliveryID int64) ([]Attempt, error)
@@ -44,7 +44,7 @@ type Store interface {
 	// due at now. The cumulative attempt count is kept. It returns
 	// ErrDeliveryNotFound for an unknown delivery and ErrDeliveryNotDead unless
 	// the delivery is dead.
-	Replay(ctx context.Context, deliveryID int64, now time.Time) (Delivery, error)
+	Replay(ctx context.Context, deliveryID int64, now time.Time) (AdminDelivery, error)
 	// DeleteExpired deletes messages created before cutoff that have no pending
 	// delivery (their deliveries and attempts cascade) and returns how many.
 	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)

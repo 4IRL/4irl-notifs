@@ -67,12 +67,24 @@ type messageResponse struct {
 	Message messageJSON `json:"message"`
 }
 
+// adminDeliveryJSON is the operator delivery view: the app-facing fields plus the
+// parent message's identity, the destination type and the row timestamps.
+type adminDeliveryJSON struct {
+	deliveryJSON
+	MessageID       string `json:"message_id"`
+	AppID           string `json:"app_id"`
+	Channel         string `json:"channel"`
+	DestinationType string `json:"destination_type"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
 type deliveriesResponse struct {
-	Deliveries []deliveryJSON `json:"deliveries"`
+	Deliveries []adminDeliveryJSON `json:"deliveries"`
 }
 
 type deliveryResponse struct {
-	Delivery deliveryJSON `json:"delivery"`
+	Delivery adminDeliveryJSON `json:"delivery"`
 }
 
 type attemptJSON struct {
@@ -265,9 +277,11 @@ func TestMessagesBlockedAddressReplayAndRejections(testInstance *testing.T) {
 	requireStatus(testInstance, "GET dead deliveries", status, http.StatusOK, body)
 	var dead deliveriesResponse
 	decodeBody(testInstance, "GET dead deliveries", body, &dead)
-	if !containsDelivery(dead.Deliveries, delivery.ID) {
+	listed, found := findAdminDelivery(dead.Deliveries, delivery.ID)
+	if !found {
 		testInstance.Fatalf("dead-letter list does not include delivery %d (body: %s)", delivery.ID, body)
 	}
+	requireAdminFields(testInstance, "dead list", listed, messageID, destinationName)
 
 	// The delivery log shows a blocked attempt and stores no response snippet.
 	attemptsPath := fmt.Sprintf("/v1/admin/deliveries/%d/attempts", delivery.ID)
@@ -289,6 +303,10 @@ func TestMessagesBlockedAddressReplayAndRejections(testInstance *testing.T) {
 	if replayed.Delivery.ID != delivery.ID {
 		testInstance.Fatalf("replayed delivery id = %d, want %d", replayed.Delivery.ID, delivery.ID)
 	}
+	if replayed.Delivery.State != "pending" {
+		testInstance.Fatalf("replayed delivery state = %q, want pending", replayed.Delivery.State)
+	}
+	requireAdminFields(testInstance, "replay", replayed.Delivery, messageID, destinationName)
 	waitForSecondAttempt(testInstance, messageID, delivery.ID)
 
 	status, body = apiRequest(testInstance, http.MethodGet, attemptsPath, nil)
@@ -328,13 +346,29 @@ func waitForSecondAttempt(testInstance *testing.T, messageID string, deliveryID 
 	testInstance.Fatalf("replayed delivery never dead-lettered again after 2 attempts; last = %+v", last)
 }
 
-func containsDelivery(deliveries []deliveryJSON, deliveryID int64) bool {
+func findAdminDelivery(deliveries []adminDeliveryJSON, deliveryID int64) (adminDeliveryJSON, bool) {
 	for _, candidate := range deliveries {
 		if candidate.ID == deliveryID {
-			return true
+			return candidate, true
 		}
 	}
-	return false
+	return adminDeliveryJSON{}, false
+}
+
+// requireAdminFields asserts the enriched operator fields of a webhook delivery
+// of the test's own message.
+func requireAdminFields(testInstance *testing.T, label string, view adminDeliveryJSON, messageID, destinationName string) {
+	testInstance.Helper()
+	if view.MessageID != messageID || view.AppID != messageAppID || view.DestinationType != registry.TypeWebhook ||
+		view.Destination != destinationName || view.Channel == "" {
+		testInstance.Fatalf("%s: admin fields = %+v, want message %s, app %s, type %s, destination %s and a channel",
+			label, view, messageID, messageAppID, registry.TypeWebhook, destinationName)
+	}
+	for field, value := range map[string]string{"created_at": view.CreatedAt, "updated_at": view.UpdatedAt} {
+		if _, parseErr := time.Parse(time.RFC3339, value); parseErr != nil {
+			testInstance.Fatalf("%s: %s = %q is not RFC3339: %v", label, field, value, parseErr)
+		}
+	}
 }
 
 // assertSubmitRejections covers the submit-time refusals: an invalid recipient, a channel

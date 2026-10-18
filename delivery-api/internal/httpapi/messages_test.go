@@ -46,7 +46,7 @@ type fakeMessages struct {
 	awaitErr    error
 	awaitCalls  []awaitCall
 
-	listDeliveriesResult []message.Delivery
+	listDeliveriesResult []message.AdminDelivery
 	listDeliveriesErr    error
 	listDeliveriesCalls  []listDeliveriesCall
 
@@ -54,7 +54,7 @@ type fakeMessages struct {
 	listAttemptsErr    error
 	listAttemptsCalls  []int64
 
-	replayResult message.Delivery
+	replayResult message.AdminDelivery
 	replayErr    error
 	replayCalls  []int64
 }
@@ -95,7 +95,7 @@ func (fake *fakeMessages) Await(_ context.Context, appID string, id string, time
 	return fake.awaitResult, fake.awaitErr
 }
 
-func (fake *fakeMessages) ListDeliveries(_ context.Context, state string, limit int) ([]message.Delivery, error) {
+func (fake *fakeMessages) ListDeliveries(_ context.Context, state string, limit int) ([]message.AdminDelivery, error) {
 	fake.listDeliveriesCalls = append(fake.listDeliveriesCalls, listDeliveriesCall{state: state, limit: limit})
 	return fake.listDeliveriesResult, fake.listDeliveriesErr
 }
@@ -105,7 +105,7 @@ func (fake *fakeMessages) ListAttempts(_ context.Context, deliveryID int64) ([]m
 	return fake.listAttemptsResult, fake.listAttemptsErr
 }
 
-func (fake *fakeMessages) Replay(_ context.Context, deliveryID int64) (message.Delivery, error) {
+func (fake *fakeMessages) Replay(_ context.Context, deliveryID int64) (message.AdminDelivery, error) {
 	fake.replayCalls = append(fake.replayCalls, deliveryID)
 	return fake.replayResult, fake.replayErr
 }
@@ -454,16 +454,33 @@ func TestGetMessageByKeyRequiresBothParams(testInstance *testing.T) {
 }
 
 func TestListDeliveriesReturnsTheExactBody(testInstance *testing.T) {
-	fake := &fakeMessages{listDeliveriesResult: sampleStoredMessage().Deliveries}
+	admin := make([]message.AdminDelivery, 0, 3)
+	for _, delivery := range sampleStoredMessage().Deliveries {
+		delivery.MessageID = sampleMessageID
+		delivery.DestinationType = "webhook"
+		delivery.CreatedAt = adminTimestamp.Add(-time.Hour)
+		delivery.UpdatedAt = adminTimestamp
+		admin = append(admin, message.AdminDelivery{Delivery: delivery, AppID: "urls4irl", Channel: "alerts"})
+	}
+	fake := &fakeMessages{listDeliveriesResult: admin}
 
 	recorder := serveMessages(fake, nil, http.MethodGet, "/v1/admin/deliveries?state=dead&limit=3", "")
 
+	const adminSuffix = `,"message_id":"` + sampleMessageID + `","app_id":"urls4irl","channel":"alerts",` +
+		`"destination_type":"webhook","created_at":"2026-10-16T11:00:00Z","updated_at":"` + adminTimestampJSON + `"}`
 	assertResponse(testInstance, recorder, http.StatusOK,
-		`{"deliveries":[`+pendingDeliveryJSON+`,`+deadDeliveryJSON+`,`+deliveredDeliveryJSON+`]}`+"\n")
+		`{"deliveries":[`+withAdminFields(pendingDeliveryJSON, adminSuffix)+`,`+
+			withAdminFields(deadDeliveryJSON, adminSuffix)+`,`+withAdminFields(deliveredDeliveryJSON, adminSuffix)+`]}`+"\n")
 	want := []listDeliveriesCall{{state: "dead", limit: 3}}
 	if !reflect.DeepEqual(fake.listDeliveriesCalls, want) {
 		testInstance.Fatalf("ListDeliveries calls = %+v, want %+v", fake.listDeliveriesCalls, want)
 	}
+}
+
+// withAdminFields appends the admin-only JSON fields (suffix starts with a comma
+// and ends with the closing brace) to an app-facing delivery JSON object.
+func withAdminFields(deliveryJSON string, suffix string) string {
+	return strings.TrimSuffix(deliveryJSON, "}") + suffix
 }
 
 func TestListDeliveriesDefaultsAndLimitParsing(testInstance *testing.T) {
@@ -531,7 +548,7 @@ func (unusedResolver) Resolve(context.Context, string, string, string) ([]regist
 // the embedded nil Store provides the methods the test never calls.
 type listStore struct{ message.Store }
 
-func (*listStore) ListDeliveries(context.Context, string, int) ([]message.Delivery, error) {
+func (*listStore) ListDeliveries(context.Context, string, int) ([]message.AdminDelivery, error) {
 	panic("store reached with an invalid list request")
 }
 
@@ -567,16 +584,23 @@ func TestListAttemptsReturnsTheExactBody(testInstance *testing.T) {
 }
 
 func TestReplayReturnsTheExactBody(testInstance *testing.T) {
-	fake := &fakeMessages{replayResult: message.Delivery{
-		ID: 12, DestinationName: "b_hook", State: message.StatePending, AttemptCount: 2,
-		LastStatusCode: intPointer(400), NextAttemptAt: adminTimestamp.Add(30 * time.Second),
+	fake := &fakeMessages{replayResult: message.AdminDelivery{
+		Delivery: message.Delivery{
+			ID: 12, MessageID: sampleMessageID, DestinationName: "b_hook", DestinationType: "webhook",
+			State: message.StatePending, AttemptCount: 2, LastStatusCode: intPointer(400),
+			NextAttemptAt: adminTimestamp.Add(30 * time.Second),
+			CreatedAt:     adminTimestamp.Add(-time.Hour), UpdatedAt: adminTimestamp,
+		},
+		AppID: "urls4irl", Channel: "alerts",
 	}}
 
 	recorder := serveMessages(fake, nil, http.MethodPost, "/v1/admin/deliveries/12/replay", "")
 
 	assertResponse(testInstance, recorder, http.StatusOK,
 		`{"delivery":{"id":12,"destination":"b_hook","state":"pending","dead_reason":null,"attempt_count":2,`+
-			`"last_status_code":400,"next_attempt_at":"2026-10-16T12:00:30Z","delivered_at":null}}`+"\n")
+			`"last_status_code":400,"next_attempt_at":"2026-10-16T12:00:30Z","delivered_at":null,`+
+			`"message_id":"`+sampleMessageID+`","app_id":"urls4irl","channel":"alerts","destination_type":"webhook",`+
+			`"created_at":"2026-10-16T11:00:00Z","updated_at":"`+adminTimestampJSON+`"}}`+"\n")
 	if !reflect.DeepEqual(fake.replayCalls, []int64{12}) {
 		testInstance.Fatalf("Replay calls = %v, want [12]", fake.replayCalls)
 	}

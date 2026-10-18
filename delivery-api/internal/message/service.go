@@ -345,7 +345,7 @@ func attempted(stored StoredMessage) bool {
 // ListDeliveries returns up to limit deliveries in state, newest-updated first.
 // state must be one of the State* values and limit must be in [1, MaxListLimit];
 // anything else is a *ValidationError. The result is never nil without an error.
-func (service *Service) ListDeliveries(ctx context.Context, state string, limit int) ([]Delivery, error) {
+func (service *Service) ListDeliveries(ctx context.Context, state string, limit int) ([]AdminDelivery, error) {
 	if !isDeliveryState(state) {
 		return nil, &ValidationError{Message: "invalid state"}
 	}
@@ -357,7 +357,7 @@ func (service *Service) ListDeliveries(ctx context.Context, state string, limit 
 		return nil, listErr
 	}
 	if deliveries == nil {
-		deliveries = []Delivery{}
+		deliveries = []AdminDelivery{}
 	}
 	return deliveries, nil
 }
@@ -378,10 +378,10 @@ func (service *Service) ListAttempts(ctx context.Context, deliveryID int64) ([]A
 // Replay returns a dead delivery to the queue with a fresh retry budget and
 // wakes the worker. It returns ErrDeliveryNotFound for an unknown delivery and
 // ErrDeliveryNotDead unless the delivery is dead.
-func (service *Service) Replay(ctx context.Context, deliveryID int64) (Delivery, error) {
+func (service *Service) Replay(ctx context.Context, deliveryID int64) (AdminDelivery, error) {
 	replayed, replayErr := service.store.Replay(ctx, deliveryID, service.now())
 	if replayErr != nil {
-		return Delivery{}, replayErr
+		return AdminDelivery{}, replayErr
 	}
 	service.logger.Info("delivery replayed", "delivery_id", replayed.ID, "message_id", replayed.MessageID)
 	service.wake()

@@ -40,6 +40,9 @@ var (
 	// ErrUnknownDestination means a name in a route or envelope does not name
 	// an existing destination.
 	ErrUnknownDestination = errors.New("unknown destination")
+	// ErrRotationUnsupported means the destination type has no signing secret
+	// to rotate (only webhook destinations do).
+	ErrRotationUnsupported = errors.New("destination type does not support rotation")
 	// ErrRouteNotFound means no route has the requested id.
 	ErrRouteNotFound = errors.New("route not found")
 	// ErrRouteExists means a route with that app and channel pattern exists.

@@ -720,7 +720,7 @@ func TestListDeliveriesOrdersFiltersAndLimits(testInstance *testing.T) {
 	forceState(ctx, testInstance, pool, ids["dead_tie_b"], message.StateDead, goneReason, queueBaseTime.Add(3*time.Minute))
 	forceState(ctx, testInstance, pool, ids["delivered"], message.StateDelivered, nil, queueBaseTime.Add(4*time.Minute))
 
-	idsOf := func(deliveries []message.Delivery) []int64 {
+	idsOf := func(deliveries []message.AdminDelivery) []int64 {
 		listed := make([]int64, 0, len(deliveries))
 		for _, delivery := range deliveries {
 			listed = append(listed, delivery.ID)
@@ -752,6 +752,61 @@ func TestListDeliveriesOrdersFiltersAndLimits(testInstance *testing.T) {
 	delivered, deliveredErr := store.ListDeliveries(ctx, message.StateDelivered, 50)
 	if deliveredErr != nil || !slices.Equal(idsOf(delivered), []int64{ids["delivered"]}) {
 		testInstance.Errorf("delivered = %v, err %v; want only %d", idsOf(delivered), deliveredErr, ids["delivered"])
+	}
+}
+
+func TestListDeliveriesAndReplayCarryMessageFieldsAndSnapshots(testInstance *testing.T) {
+	ctx, store, registryStore, pool := newMessageStore(testInstance)
+	stored, ids := seedQueue(ctx, testInstance, store, registryStore, pool, "admin-fields",
+		"gone_dest", "recipient_dest")
+	envelope := sampleEnvelope("admin-fields")
+	deletedReason := stringPointer(message.DeadReasonDestinationDeleted)
+	forceState(ctx, testInstance, pool, ids["gone_dest"], message.StateDead, deletedReason, queueBaseTime.Add(2*time.Minute))
+	forceState(ctx, testInstance, pool, ids["recipient_dest"], message.StateDead, deletedReason, queueBaseTime.Add(time.Minute))
+	// A deleted destination leaves destination_id NULL; a to.recipient delivery is stored as ntfy "@name".
+	if _, execErr := pool.Exec(ctx,
+		`UPDATE message_deliveries SET destination_id = NULL WHERE id = $1`, ids["gone_dest"]); execErr != nil {
+		testInstance.Fatalf("null destination_id: %v", execErr)
+	}
+	if _, execErr := pool.Exec(ctx,
+		`UPDATE message_deliveries SET destination_id = NULL, destination_name = '@alice', destination_type = 'ntfy'
+WHERE id = $1`, ids["recipient_dest"]); execErr != nil {
+		testInstance.Fatalf("make recipient delivery: %v", execErr)
+	}
+
+	listed, listErr := store.ListDeliveries(ctx, message.StateDead, 50)
+	if listErr != nil || len(listed) != 2 {
+		testInstance.Fatalf("ListDeliveries = %+v, err %v; want 2 rows", listed, listErr)
+	}
+	// Newest-updated first: the deleted-destination row, then the recipient row.
+	if listed[0].ID != ids["gone_dest"] || listed[1].ID != ids["recipient_dest"] {
+		testInstance.Fatalf("order = %d, %d; want %d, %d", listed[0].ID, listed[1].ID, ids["gone_dest"], ids["recipient_dest"])
+	}
+	for _, row := range listed {
+		if row.MessageID != stored.ID || row.AppID != envelope.AppID || row.Channel != envelope.Channel {
+			testInstance.Errorf("row %d = message %s app %q channel %q; want %s %q %q",
+				row.ID, row.MessageID, row.AppID, row.Channel, stored.ID, envelope.AppID, envelope.Channel)
+		}
+		if row.DestinationID != nil || row.CreatedAt.IsZero() || row.UpdatedAt.IsZero() {
+			testInstance.Errorf("row %d = %+v; want a nil destination_id and both timestamps set", row.ID, row)
+		}
+	}
+	if listed[0].DestinationName != "gone_dest" || listed[0].DestinationType == "" {
+		testInstance.Errorf("deleted-destination row kept name %q type %q; want the snapshot", listed[0].DestinationName, listed[0].DestinationType)
+	}
+	if listed[1].DestinationName != "@alice" || listed[1].DestinationType != "ntfy" {
+		testInstance.Errorf("recipient row = %q/%q, want @alice/ntfy", listed[1].DestinationName, listed[1].DestinationType)
+	}
+
+	replayed, replayErr := store.Replay(ctx, ids["gone_dest"], queueBaseTime.Add(time.Hour))
+	if replayErr != nil {
+		testInstance.Fatalf("Replay: %v", replayErr)
+	}
+	if replayed.State != message.StatePending || replayed.MessageID != stored.ID ||
+		replayed.AppID != envelope.AppID || replayed.Channel != envelope.Channel ||
+		replayed.DestinationName != "gone_dest" || replayed.DestinationType != listed[0].DestinationType ||
+		replayed.CreatedAt.IsZero() || replayed.UpdatedAt.IsZero() {
+		testInstance.Errorf("replayed = %+v; want the enriched pending row", replayed)
 	}
 }
 

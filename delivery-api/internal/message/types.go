@@ -165,6 +165,14 @@ type Delivery struct {
 	UpdatedAt       time.Time
 }
 
+// AdminDelivery is a Delivery plus the parent message's app and channel: the
+// operator view returned by the delivery list and replay.
+type AdminDelivery struct {
+	Delivery
+	AppID   string
+	Channel string
+}
+
 // StoredMessage is a message as persisted, with its deliveries ordered by
 // destination name.
 type StoredMessage struct {

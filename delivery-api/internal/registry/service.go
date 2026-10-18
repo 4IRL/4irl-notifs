@@ -2,6 +2,8 @@ package registry
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
 )
@@ -21,6 +24,8 @@ const (
 	// secretsErrorKey is the masked-secrets key returned for a destination whose
 	// sealed blob cannot be opened.
 	secretsErrorKey = "error"
+	// signingSecretBytes is the entropy of a generated webhook signing secret.
+	signingSecretBytes = 32
 )
 
 // errMalformedSecrets means a sealed blob opened but did not hold a JSON object
@@ -39,8 +44,9 @@ type DestinationInput struct {
 
 // DestinationPatch is a partial update of a destination. A nil field is kept:
 // Enabled nil leaves the flag, Config nil keeps the stored config, and Secrets
-// nil keeps every secret. A non-nil Config replaces the config; a non-nil
-// Secrets replaces the listed keys only and keeps the rest.
+// nil keeps every secret. A non-nil Config and a non-nil Secrets are each
+// merged key by key into the stored map: listed keys are replaced, every other
+// key is kept, and a key cannot be removed. A nil or empty map changes nothing.
 type DestinationPatch struct {
 	Enabled *bool
 	Config  map[string]string
@@ -72,6 +78,8 @@ type Service struct {
 	store  Store
 	sealer *seal.Sealer
 	logger *slog.Logger
+	// now is the clock behind secret-rotation expiry; tests replace it.
+	now func() time.Time
 }
 
 // NewService builds a Service over store and sealer. A nil logger defaults to
@@ -80,7 +88,7 @@ func NewService(store Store, sealer *seal.Sealer, logger *slog.Logger) *Service 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{store: store, sealer: sealer, logger: logger}
+	return &Service{store: store, sealer: sealer, logger: logger, now: time.Now}
 }
 
 // CreateDestination validates, seals the secrets and stores a new destination.
@@ -155,6 +163,76 @@ func (service *Service) UpdateDestination(
 		return DestinationView{}, storeErr
 	}
 	return service.destinationView(ctx, stored), nil
+}
+
+// RotateWebhookSecret rotates the signing secret of the named webhook
+// destination. Inside the store's row-locked update it moves signing_secret to
+// signing_secret_previous, sets config.previous_secret_expires_at to now plus
+// overlapHours, generates a new secret, re-validates the result and reseals it
+// in that one write. It returns the masked view and the new plaintext secret,
+// which exists nowhere else; the plaintext is returned only after the commit.
+// A destination that is not a webhook returns ErrRotationUnsupported and a
+// missing one ErrDestinationNotFound; nothing is written on any error.
+func (service *Service) RotateWebhookSecret(
+	ctx context.Context, name string, overlapHours int,
+) (DestinationView, string, error) {
+	var newSecret string
+	stored, storeErr := service.store.UpdateDestination(ctx, name,
+		func(current StoredDestination) (StoredDestination, error) {
+			rotated, secret, rotateErr := service.rotateSecret(current, overlapHours)
+			if rotateErr != nil {
+				return StoredDestination{}, rotateErr
+			}
+			newSecret = secret
+			return rotated, nil
+		})
+	if storeErr != nil {
+		return DestinationView{}, "", storeErr
+	}
+	return service.destinationView(ctx, stored), newSecret, nil
+}
+
+// rotateSecret is the RotateWebhookSecret mutate step: it runs inside the
+// store's row lock.
+func (service *Service) rotateSecret(
+	current StoredDestination, overlapHours int,
+) (StoredDestination, string, error) {
+	if current.Type != TypeWebhook {
+		return StoredDestination{}, "", ErrRotationUnsupported
+	}
+	secrets, openErr := service.openSecrets(current.Name, current.SealedSecrets)
+	if openErr != nil {
+		return StoredDestination{}, "", openErr
+	}
+	newSecret, generateErr := generateSigningSecret()
+	if generateErr != nil {
+		return StoredDestination{}, "", generateErr
+	}
+	config := cloneMap(current.Config)
+	secrets["signing_secret_previous"] = secrets["signing_secret"]
+	secrets["signing_secret"] = newSecret
+	expiresAt := service.now().UTC().Add(time.Duration(overlapHours) * time.Hour)
+	config["previous_secret_expires_at"] = expiresAt.Format(time.RFC3339)
+	if err := ValidateDestinationFields(current.Type, config, secrets); err != nil {
+		return StoredDestination{}, "", err
+	}
+	sealed, sealErr := service.sealSecrets(current.Name, secrets)
+	if sealErr != nil {
+		return StoredDestination{}, "", sealErr
+	}
+	current.Config = config
+	current.SealedSecrets = sealed
+	return current, newSecret, nil
+}
+
+// generateSigningSecret returns 32 random bytes as unpadded base64url (43
+// characters).
+func generateSigningSecret() (string, error) {
+	random := make([]byte, signingSecretBytes)
+	if _, err := rand.Read(random); err != nil {
+		return "", fmt.Errorf("generate signing secret: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(random), nil
 }
 
 // DisableDestination disables the named destination, but only while its ID is
@@ -374,9 +452,7 @@ func (service *Service) applyDestinationPatch(
 		return StoredDestination{}, openErr
 	}
 	config := cloneMap(current.Config)
-	if patch.Config != nil {
-		config = cloneMap(patch.Config)
-	}
+	maps.Copy(config, patch.Config)
 	maps.Copy(secrets, patch.Secrets)
 	if err := ValidateDestinationFields(current.Type, config, secrets); err != nil {
 		return StoredDestination{}, err

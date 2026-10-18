@@ -32,6 +32,14 @@ const (
 	errMsgDestinationInUse    = "destination is used by a route"
 	errMsgUnknownDestination  = "unknown destination"
 	errMsgInternalError       = "internal error"
+	errMsgInvalidOverlapHours = "invalid overlap_hours"
+	errMsgRotationUnsupported = "destination type does not support rotation"
+)
+
+// Bounds of the rotate-secret overlap window, in hours.
+const (
+	minOverlapHours = 1
+	maxOverlapHours = 168
 )
 
 // errorResponseBody is the JSON body of every admin error response.
@@ -87,6 +95,20 @@ type patchDestinationRequestBody struct {
 	Enabled *bool             `json:"enabled"`
 	Config  map[string]string `json:"config"`
 	Secrets map[string]string `json:"secrets"`
+}
+
+// rotateSecretRequestBody is the POST /v1/admin/destinations/{name}/rotate-secret
+// body. OverlapHours is a pointer so a missing or null value is distinguishable
+// from 0.
+type rotateSecretRequestBody struct {
+	OverlapHours *int `json:"overlap_hours"`
+}
+
+// rotateSecretResponseBody carries the rotated destination and the one-time
+// plaintext of its new signing secret.
+type rotateSecretResponseBody struct {
+	Destination   registry.DestinationView `json:"destination"`
+	SigningSecret string                   `json:"signing_secret"`
 }
 
 // createRouteRequestBody is the POST /v1/admin/routes body.
@@ -205,6 +227,31 @@ func (server *Server) handleDeleteDestination(responseWriter http.ResponseWriter
 		return
 	}
 	writeJSON(responseWriter, http.StatusOK, deleteDestinationResponseBody{Name: name, Deleted: true})
+}
+
+// handleRotateSecret serves POST /v1/admin/destinations/{name}/rotate-secret.
+// The new plaintext secret appears only in this response body.
+func (server *Server) handleRotateSecret(responseWriter http.ResponseWriter, request *http.Request) {
+	name, ok := server.pathDestinationName(responseWriter, request)
+	if !ok {
+		return
+	}
+
+	var body rotateSecretRequestBody
+	if !decodeJSON(responseWriter, request, &body, maxAdminBodyBytes) {
+		return
+	}
+	if body.OverlapHours == nil || *body.OverlapHours < minOverlapHours || *body.OverlapHours > maxOverlapHours {
+		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidOverlapHours)
+		return
+	}
+
+	view, signingSecret, err := server.registry.RotateWebhookSecret(request.Context(), name, *body.OverlapHours)
+	if err != nil {
+		server.writeServiceError(responseWriter, request, err)
+		return
+	}
+	writeJSON(responseWriter, http.StatusOK, rotateSecretResponseBody{Destination: view, SigningSecret: signingSecret})
 }
 
 // handleCreateRoute serves POST /v1/admin/routes (201).
@@ -373,6 +420,8 @@ func (server *Server) writeServiceError(responseWriter http.ResponseWriter, requ
 		writeError(responseWriter, http.StatusBadRequest, validationErr.Message)
 	case errors.Is(err, registry.ErrDestinationNotFound):
 		writeError(responseWriter, http.StatusNotFound, errMsgDestinationNotFound)
+	case errors.Is(err, registry.ErrRotationUnsupported):
+		writeError(responseWriter, http.StatusUnprocessableEntity, errMsgRotationUnsupported)
 	case errors.Is(err, registry.ErrRouteNotFound):
 		writeError(responseWriter, http.StatusNotFound, errMsgRouteNotFound)
 	case errors.Is(err, registry.ErrDestinationExists):
