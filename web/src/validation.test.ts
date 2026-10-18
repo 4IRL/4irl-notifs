@@ -1,6 +1,89 @@
 import { describe, expect, it } from 'vitest';
 
-import { isValidAppId, isValidChannel, isValidEmail, isValidTitle } from './validation';
+import {
+  hasSurroundingWhitespace,
+  isHttpsUrl,
+  isValidAppId,
+  isValidChannel,
+  isValidDestinationName,
+  isValidEmail,
+  isValidNtfyTopic,
+  isValidRouteAppPattern,
+  isValidRouteChannelPattern,
+  isValidSigningSecret,
+  isValidTitle,
+} from './validation';
+
+describe('route pattern validators', () => {
+  it.each([
+    ['*', true],
+    ['chores4irl', true],
+    ['everyone', false],
+    ['Chores', false],
+    ['_x', false],
+    ['', false],
+    ['a'.repeat(64), false],
+  ])('isValidRouteAppPattern(%j) === %s', (value, expected) => {
+    expect(isValidRouteAppPattern(value)).toBe(expected);
+  });
+
+  it.each([
+    ['*', true],
+    ['digest', true],
+    ['alerts*', true],
+    ['a'.repeat(32), true],
+    ['a'.repeat(33), false],
+    ['a'.repeat(31) + '*', true],
+    ['a'.repeat(32) + '*', false],
+    ['*alerts', false],
+    ['a*b', false],
+    ['Alerts', false],
+    ['', false],
+  ])('isValidRouteChannelPattern(%j) === %s', (value, expected) => {
+    expect(isValidRouteChannelPattern(value)).toBe(expected);
+  });
+});
+
+describe('destination validators', () => {
+  it.each([
+    ['ops_discord', true],
+    ['Ops', false],
+    ['_x', false],
+    ['', false],
+    ['a'.repeat(64), false],
+  ])('isValidDestinationName(%j) === %s', (value, expected) => {
+    expect(isValidDestinationName(value)).toBe(expected);
+  });
+
+  it.each([
+    ['family_alerts', true],
+    ['Mixed-Case_1', true],
+    ['has space', false],
+    ['', false],
+    ['a'.repeat(65), false],
+  ])('isValidNtfyTopic(%j) === %s', (value, expected) => {
+    expect(isValidNtfyTopic(value)).toBe(expected);
+  });
+
+  it.each([
+    ['a'.repeat(32), true],
+    ['a'.repeat(31), false],
+    ['a'.repeat(256), true],
+    ['a'.repeat(257), false],
+    [`${'a'.repeat(31)}é`, false],
+  ])('isValidSigningSecret(%j) === %s', (value, expected) => {
+    expect(isValidSigningSecret(value)).toBe(expected);
+  });
+
+  it('checks the https prefix and surrounding whitespace', () => {
+    expect(isHttpsUrl('https://example.com/x')).toBe(true);
+    expect(isHttpsUrl('http://example.com')).toBe(false);
+    expect(isHttpsUrl('https://')).toBe(false);
+    expect(hasSurroundingWhitespace(' x')).toBe(true);
+    expect(hasSurroundingWhitespace('x ')).toBe(true);
+    expect(hasSurroundingWhitespace('x y')).toBe(false);
+  });
+});
 
 describe('isValidAppId', () => {
   it.each([

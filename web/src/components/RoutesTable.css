@@ -1,0 +1,149 @@
+.routes {
+  min-width: 0;
+}
+
+.routes__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.routes__head h2 {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.routes__hint {
+  color: var(--text);
+  font-size: 0.8125rem;
+  margin: 0 0 var(--space-3);
+  overflow-wrap: anywhere;
+}
+
+.routes__status {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.routes__scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.routes__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.routes__table th,
+.routes__table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+
+.routes__table th {
+  color: var(--text);
+  font-size: 0.75rem;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.routes__mono {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.routes__chip {
+  display: inline-block;
+  margin: 0 var(--space-1) var(--space-1) 0;
+  padding: 0.1rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text-h);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.routes__pill {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.routes__pill--ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border: 1px solid var(--ok);
+}
+
+.routes__pill--neutral {
+  color: var(--text);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+}
+
+.routes__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.routes__button {
+  min-height: 2.75rem;
+  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  border: 1px solid var(--accent-2-border);
+  background: var(--accent-2-bg);
+  color: var(--accent-2);
+}
+
+.routes__button:hover {
+  border-color: var(--accent-2-hover);
+  color: var(--accent-2-hover);
+}
+
+.routes__button[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.routes__button--danger {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.routes__button--danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.routes .confirm-button__cancel {
+  min-height: 2.75rem;
+}
+
+.routes__row-error {
+  margin: var(--space-2) 0 0;
+  border: 1px solid var(--danger);
+  background: var(--danger-bg);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  color: var(--danger);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}

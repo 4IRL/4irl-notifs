@@ -45,6 +45,59 @@ export function isValidTitle(title: string): boolean {
   );
 }
 
+const DESTINATION_NAME_PATTERN = /^[a-z0-9][a-z0-9_]{0,62}$/;
+const NTFY_TOPIC_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+// Printable ASCII (space through tilde), 32-256 characters, as delivery-api requires.
+const SIGNING_SECRET_PATTERN = /^[\x20-\x7E]{32,256}$/;
+const HTTPS_PREFIX = 'https://';
+
+/** Mirrors delivery-api's destination-name slug rule. A UX pre-check only. */
+export function isValidDestinationName(name: string): boolean {
+  return DESTINATION_NAME_PATTERN.test(name);
+}
+
+const ROUTE_APP_PATTERN = /^[a-z0-9][a-z0-9_]{0,62}$/;
+const ROUTE_CHANNEL_EXACT_PATTERN = /^[a-z0-9][a-z0-9_]{0,31}$/;
+const ROUTE_CHANNEL_PREFIX_PATTERN = /^[a-z0-9][a-z0-9_]{0,30}\*$/;
+const RESERVED_ROUTE_APP = 'everyone';
+
+/** Mirrors delivery-api's route app pattern: `*` or an app id (not `everyone`). */
+export function isValidRouteAppPattern(pattern: string): boolean {
+  if (pattern === '*') {
+    return true;
+  }
+  return pattern !== RESERVED_ROUTE_APP && ROUTE_APP_PATTERN.test(pattern);
+}
+
+/** Mirrors delivery-api's route channel pattern: `*`, an exact channel or a `prefix*`. */
+export function isValidRouteChannelPattern(pattern: string): boolean {
+  return (
+    pattern === '*' ||
+    ROUTE_CHANNEL_EXACT_PATTERN.test(pattern) ||
+    ROUTE_CHANNEL_PREFIX_PATTERN.test(pattern)
+  );
+}
+
+/** Mirrors delivery-api's ntfy topic rule. A UX pre-check only. */
+export function isValidNtfyTopic(topic: string): boolean {
+  return NTFY_TOPIC_PATTERN.test(topic);
+}
+
+/** Mirrors delivery-api's webhook signing-secret rule (32-256 printable ASCII). */
+export function isValidSigningSecret(secret: string): boolean {
+  return SIGNING_SECRET_PATTERN.test(secret);
+}
+
+/** Reports whether value looks like an https URL; the server does the full parse. */
+export function isHttpsUrl(value: string): boolean {
+  return value.startsWith(HTTPS_PREFIX) && value.length > HTTPS_PREFIX.length;
+}
+
+/** True when value has leading or trailing whitespace. */
+export function hasSurroundingWhitespace(value: string): boolean {
+  return value !== value.trim();
+}
+
 /**
  * Reports whether email is well-formed per the stack-wide rule: after
  * trimming surrounding whitespace and lowercasing, the address must be
