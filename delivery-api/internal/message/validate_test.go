@@ -369,6 +369,27 @@ func TestValidateEnvelopeAcceptsValid(testInstance *testing.T) {
 	wantValidationMessage(testInstance, ValidateEnvelope(envelope), "")
 }
 
+// TestValidateEnvelopeAcceptsAdminSendTest pins the exact envelope the admin UI's
+// send-test action submits (web/src/api/deliveryClient.ts sendTest), so a
+// validator change that would reject it fails here rather than in production.
+func TestValidateEnvelopeAcceptsAdminSendTest(testInstance *testing.T) {
+	envelope := Envelope{
+		AppID:          "admin_test",
+		ToDestination:  "ops_webhook",
+		Channel:        "test",
+		IdempotencyKey: "0b8f3a52-6c1e-4d7a-9f2b-3e5c7a1d9b04",
+		Payload:        json.RawMessage(`{"source":"admin-ui"}`),
+		Display: &Display{
+			Title: "Test from 4IRL admin",
+			Body:  "Test delivery to ops_webhook",
+		},
+	}
+	if len(envelope.IdempotencyKey) != 36 || envelope.IdempotencyKey != strings.ToLower(envelope.IdempotencyKey) {
+		testInstance.Fatalf("idempotency key %q is not a lowercase 36-char UUID", envelope.IdempotencyKey)
+	}
+	wantValidationMessage(testInstance, ValidateEnvelope(envelope), "")
+}
+
 func TestValidateEnvelopeEachRule(testInstance *testing.T) {
 	someTime := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	testCases := []struct {

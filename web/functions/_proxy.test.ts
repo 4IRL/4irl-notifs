@@ -24,6 +24,27 @@ describe('proxyTo', () => {
     vi.unstubAllGlobals();
   });
 
+  it('strips stripPrefix from the pathname and keeps the query string', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+    await proxyTo({
+      request: new Request('https://notifs-admin.4irl.app/delivery/v1/admin/deliveries?state=dead'),
+      upstreamBase: UPSTREAM,
+      env: makeEnv(),
+      stripPrefix: '/delivery',
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(`${UPSTREAM}/v1/admin/deliveries?state=dead`);
+  });
+
+  it('forwards the pathname verbatim when stripPrefix is absent', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+    await proxyTo({
+      request: new Request('https://notifs-admin.4irl.app/delivery/readyz'),
+      upstreamBase: UPSTREAM,
+      env: makeEnv(),
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(`${UPSTREAM}/delivery/readyz`);
+  });
+
   it('forwards a GET with service-token headers and returns the upstream response unchanged', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
     const request = new Request('https://notifs-admin.4irl.app/v1/users', {

@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { webPorts } from './worktree-ports.ts';
 
-const { apiPort, webPort } = webPorts();
+const { apiPort, webPort, deliveryPort } = webPorts();
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -18,6 +18,12 @@ export default defineConfig({
     // effect on the production build.
     proxy: {
       '/v1': `http://127.0.0.1:${apiPort}`,
+      // Mirrors the production `/delivery/*` Pages Function, which strips the
+      // `/delivery` prefix before calling delivery-api.
+      '/delivery': {
+        target: `http://127.0.0.1:${deliveryPort}`,
+        rewrite: (path) => path.replace(/^\/delivery/, ''),
+      },
     },
   },
   test: {

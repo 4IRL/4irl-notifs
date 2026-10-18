@@ -16,6 +16,9 @@ import { jsonError } from './_http';
 export interface Env {
   PROVISIONING_API_URL: string;
   PERSON_SERVICE_URL: string;
+  /** Base URL of the delivery-api (served under the same-origin `/delivery/*`
+   *  Function, which strips the `/delivery` prefix). Runtime Pages plaintext var. */
+  DELIVERY_API_URL: string;
   PROXY_ACCESS_CLIENT_ID: string;
   PROXY_ACCESS_CLIENT_SECRET: string;
   /** Cloudflare Access team domain (e.g. `urls4irl.cloudflareaccess.com`) used
@@ -42,10 +45,14 @@ export async function proxyTo({
   request,
   upstreamBase,
   env,
+  stripPrefix,
 }: {
   request: Request;
   upstreamBase: string;
   env: Env;
+  /** Optional path prefix removed from the request pathname before building the
+   *  upstream URL (e.g. `/delivery`). Omitted: the pathname is forwarded verbatim. */
+  stripPrefix?: string;
 }): Promise<Response> {
   // Misconfiguration guard: without the service-token credentials every backend
   // call would be rejected by Access, so fail fast and never touch the network.
@@ -75,7 +82,11 @@ export async function proxyTo({
   // `PROVISIONING_API_URL` ending in `/`) can't produce a double-slash path
   // that 404s. Mirrors `personClient.ts`'s `baseUrl.replace(/\/+$/, '')`.
   const trimmedUpstreamBase = upstreamBase.replace(/\/+$/, '');
-  const upstreamUrl = `${trimmedUpstreamBase}${url.pathname}${url.search}`;
+  const upstreamPath =
+    stripPrefix !== undefined && url.pathname.startsWith(stripPrefix)
+      ? url.pathname.slice(stripPrefix.length)
+      : url.pathname;
+  const upstreamUrl = `${trimmedUpstreamBase}${upstreamPath}${url.search}`;
 
   // Build a fresh header set — do NOT forward the inbound Cookie (the admin
   // app's Access session cookie is not valid for the backend; the service token

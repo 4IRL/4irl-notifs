@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { webPorts } from './worktree-ports.ts';
 
-const DEFAULTS = { apiPort: 8091, webPort: 5173, e2ePort: 4173 };
+const DEFAULTS = { apiPort: 8091, webPort: 5173, e2ePort: 4173, deliveryPort: 8300 };
 
 describe('webPorts', () => {
   it('returns defaults with no file and empty env', () => {
@@ -14,7 +14,15 @@ describe('webPorts', () => {
       apiPort: 8100,
       webPort: 5300,
       e2ePort: 4173,
+      deliveryPort: 8300,
     });
+  });
+
+  it('resolves DELIVERY_PORT from file, with env overriding file', () => {
+    expect(webPorts({ fileText: 'DELIVERY_PORT=8310\n', env: {} }).deliveryPort).toBe(8310);
+    expect(
+      webPorts({ fileText: 'DELIVERY_PORT=8310\n', env: { DELIVERY_PORT: '8320' } }).deliveryPort,
+    ).toBe(8320);
   });
 
   it('env overrides file per key', () => {
@@ -23,6 +31,7 @@ describe('webPorts', () => {
       apiPort: 8100,
       webPort: 5400,
       e2ePort: 4300,
+      deliveryPort: 8300,
     });
   });
 
