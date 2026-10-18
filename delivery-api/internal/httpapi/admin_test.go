@@ -25,6 +25,10 @@ var adminTimestamp = time.Date(2026, time.October, 16, 12, 0, 0, 0, time.UTC)
 
 const adminTimestampJSON = "2026-10-16T12:00:00Z"
 
+// sampleRotatedSecret is a 43-character base64url secret the fake registry
+// returns from a rotation.
+const sampleRotatedSecret = "ROTATEDsecretROTATEDsecretROTATEDsecret1234"
+
 // fakeRegistry is a scripted Registry. Each method returns its <name>Result and
 // <name>Err and records its arguments in <name>Calls.
 type fakeRegistry struct {
@@ -47,6 +51,11 @@ type fakeRegistry struct {
 	deleteDestinationResult bool
 	deleteDestinationErr    error
 	deleteDestinationCalls  []string
+
+	rotateSecretResult registry.DestinationView
+	rotateSecretSecret string
+	rotateSecretErr    error
+	rotateSecretCalls  []rotateSecretCall
 
 	createRouteResult registry.RouteView
 	createRouteErr    error
@@ -72,6 +81,11 @@ type fakeRegistry struct {
 type updateDestinationCall struct {
 	name  string
 	patch registry.DestinationPatch
+}
+
+type rotateSecretCall struct {
+	name         string
+	overlapHours int
 }
 
 type updateRouteCall struct {
@@ -104,6 +118,11 @@ func (fake *fakeRegistry) DeleteDestination(_ context.Context, name string) (boo
 	return fake.deleteDestinationResult, fake.deleteDestinationErr
 }
 
+func (fake *fakeRegistry) RotateWebhookSecret(_ context.Context, name string, overlapHours int) (registry.DestinationView, string, error) {
+	fake.rotateSecretCalls = append(fake.rotateSecretCalls, rotateSecretCall{name: name, overlapHours: overlapHours})
+	return fake.rotateSecretResult, fake.rotateSecretSecret, fake.rotateSecretErr
+}
+
 func (fake *fakeRegistry) CreateRoute(_ context.Context, input registry.RouteInput) (registry.RouteView, error) {
 	fake.createRouteCalls = append(fake.createRouteCalls, input)
 	return fake.createRouteResult, fake.createRouteErr
@@ -134,7 +153,7 @@ func (fake *fakeRegistry) DeleteRoute(_ context.Context, id int64) (bool, error)
 func (fake *fakeRegistry) totalCalls() int {
 	return len(fake.createDestinationCalls) + fake.listDestinationsCalls +
 		len(fake.getDestinationCalls) + len(fake.updateDestinationCalls) +
-		len(fake.deleteDestinationCalls) + len(fake.createRouteCalls) +
+		len(fake.deleteDestinationCalls) + len(fake.rotateSecretCalls) + len(fake.createRouteCalls) +
 		fake.listRoutesCalls + len(fake.getRouteCalls) +
 		len(fake.updateRouteCalls) + len(fake.deleteRouteCalls)
 }
@@ -147,6 +166,7 @@ func failingRegistry(err error) *fakeRegistry {
 		getDestinationErr:    err,
 		updateDestinationErr: err,
 		deleteDestinationErr: err,
+		rotateSecretErr:      err,
 		createRouteErr:       err,
 		listRoutesErr:        err,
 		getRouteErr:          err,
@@ -197,6 +217,7 @@ type adminRoute struct {
 const (
 	validCreateDestinationBody = `{"name":"ops_ntfy","type":"ntfy","config":{"topic":"ops"},"secrets":{"token":"tk_secret"}}`
 	validPatchDestinationBody  = `{"enabled":false}`
+	validRotateSecretBody      = `{"overlap_hours":24}`
 	validCreateRouteBody       = `{"app_pattern":"*","channel_pattern":"backup_*","destinations":["ops_ntfy"]}`
 	validPatchRouteBody        = `{"enabled":false}`
 )
@@ -208,6 +229,7 @@ func allAdminRoutes() []adminRoute {
 		{name: "get destination", method: http.MethodGet, path: "/v1/admin/destinations/ops_ntfy"},
 		{name: "patch destination", method: http.MethodPatch, path: "/v1/admin/destinations/ops_ntfy", body: validPatchDestinationBody},
 		{name: "delete destination", method: http.MethodDelete, path: "/v1/admin/destinations/ops_ntfy"},
+		{name: "rotate secret", method: http.MethodPost, path: "/v1/admin/destinations/ops_ntfy/rotate-secret", body: validRotateSecretBody},
 		{name: "create route", method: http.MethodPost, path: "/v1/admin/routes", body: validCreateRouteBody},
 		{name: "list routes", method: http.MethodGet, path: "/v1/admin/routes"},
 		{name: "get route", method: http.MethodGet, path: "/v1/admin/routes/7"},
@@ -273,6 +295,11 @@ func TestAdminHappyPaths(testInstance *testing.T) {
 			wantStatus: http.StatusOK, wantBody: `{"name":"ops_ntfy","deleted":true}` + "\n",
 		},
 		{
+			name: "rotate secret", method: http.MethodPost, path: "/v1/admin/destinations/ops_ntfy/rotate-secret",
+			body: validRotateSecretBody, wantStatus: http.StatusOK,
+			wantBody: `{"destination":` + sampleDestinationJSON + `,"signing_secret":"` + sampleRotatedSecret + `"}` + "\n",
+		},
+		{
 			name: "create route", method: http.MethodPost, path: "/v1/admin/routes",
 			body: validCreateRouteBody, wantStatus: http.StatusCreated,
 			wantBody: `{"route":` + sampleRouteJSON + "}\n",
@@ -304,6 +331,8 @@ func TestAdminHappyPaths(testInstance *testing.T) {
 				getDestinationResult:    sampleDestinationView(),
 				updateDestinationResult: sampleDestinationView(),
 				deleteDestinationResult: true,
+				rotateSecretResult:      sampleDestinationView(),
+				rotateSecretSecret:      sampleRotatedSecret,
 				createRouteResult:       sampleRouteView(),
 				listRoutesResult:        []registry.RouteView{sampleRouteView()},
 				getRouteResult:          sampleRouteView(),
@@ -441,6 +470,7 @@ func TestAdminRejectsBadBodies(testInstance *testing.T) {
 	bodyRoutes := []adminRoute{
 		{name: "create destination", method: http.MethodPost, path: "/v1/admin/destinations", body: validCreateDestinationBody},
 		{name: "patch destination", method: http.MethodPatch, path: "/v1/admin/destinations/ops_ntfy", body: validPatchDestinationBody},
+		{name: "rotate secret", method: http.MethodPost, path: "/v1/admin/destinations/ops_ntfy/rotate-secret", body: validRotateSecretBody},
 		{name: "create route", method: http.MethodPost, path: "/v1/admin/routes", body: validCreateRouteBody},
 		{name: "patch route", method: http.MethodPatch, path: "/v1/admin/routes/7", body: validPatchRouteBody},
 	}
@@ -478,6 +508,7 @@ func TestAdminRejectsOversizedBodiesWith413(testInstance *testing.T) {
 	bodyRoutes := []adminRoute{
 		{name: "create destination", method: http.MethodPost, path: "/v1/admin/destinations"},
 		{name: "patch destination", method: http.MethodPatch, path: "/v1/admin/destinations/ops_ntfy"},
+		{name: "rotate secret", method: http.MethodPost, path: "/v1/admin/destinations/ops_ntfy/rotate-secret"},
 		{name: "create route", method: http.MethodPost, path: "/v1/admin/routes"},
 		{name: "patch route", method: http.MethodPatch, path: "/v1/admin/routes/7"},
 	}
@@ -637,6 +668,10 @@ func TestAdminMapsServiceErrors(testInstance *testing.T) {
 		{
 			name: "unknown destination", err: registry.ErrUnknownDestination,
 			wantStatus: http.StatusBadRequest, wantBody: `{"error":"unknown destination"}` + "\n",
+		},
+		{
+			name: "rotation unsupported", err: registry.ErrRotationUnsupported,
+			wantStatus: http.StatusUnprocessableEntity, wantBody: `{"error":"destination type does not support rotation"}` + "\n",
 		},
 		{
 			name: "wrapped sentinel", err: fmt.Errorf("wrap: %w", registry.ErrRouteNotFound),

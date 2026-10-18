@@ -689,7 +689,7 @@ func TestUpdateDestinationRotationFieldsSetTogether(t *testing.T) {
 	}
 }
 
-func TestUpdateDestinationConfigReplaceDroppingExpiryIsRejected(t *testing.T) {
+func TestUpdateDestinationEmptyConfigPatchKeepsRotationPair(t *testing.T) {
 	fixture := newServiceFixture(t)
 	fixture.createWebhook(t, "hook")
 	if _, err := fixture.service.UpdateDestination(context.Background(), "hook", DestinationPatch{
@@ -700,21 +700,119 @@ func TestUpdateDestinationConfigReplaceDroppingExpiryIsRejected(t *testing.T) {
 	}
 	before := fixture.store.destinations["hook"]
 
-	_, err := fixture.service.UpdateDestination(context.Background(), "hook", DestinationPatch{
-		Config: map[string]string{},
-	})
+	for label, patchConfig := range map[string]map[string]string{"empty": {}, "nil": nil} {
+		view, err := fixture.service.UpdateDestination(context.Background(), "hook", DestinationPatch{
+			Config:  patchConfig,
+			Secrets: map[string]string{},
+		})
+		if err != nil {
+			t.Fatalf("%s config patch: %v", label, err)
+		}
+		after := fixture.store.destinations["hook"]
+		if !maps.Equal(before.Config, after.Config) || !bytes.Equal(before.SealedSecrets, after.SealedSecrets) {
+			t.Fatalf("%s config patch changed the stored row", label)
+		}
+		if view.Config["previous_secret_expires_at"] != "2026-10-20T12:00:00Z" {
+			t.Fatalf("%s config patch dropped the expiry: %v", label, view.Config)
+		}
+	}
+}
 
-	var validationErr *ValidationError
-	if !errors.As(err, &validationErr) {
-		t.Fatalf("want ValidationError, got %v", err)
+func TestUpdateDestinationConfigMergesPerKey(t *testing.T) {
+	expiry := "2026-10-20T12:00:00Z"
+	previous := strings.Repeat("p", 48)
+	tests := map[string]struct {
+		setup       func(t *testing.T, fixture serviceFixture)
+		name        string
+		patch       DestinationPatch
+		wantConfig  map[string]string
+		wantMessage string
+	}{
+		"partial config patch keeps the other keys": {
+			setup: func(t *testing.T, fixture serviceFixture) {
+				if _, err := fixture.service.CreateDestination(context.Background(), DestinationInput{
+					Name: "phone", Type: TypeNtfy, Config: map[string]string{"topic": "alerts"},
+				}); err != nil {
+					t.Fatalf("create: %v", err)
+				}
+			},
+			name:       "phone",
+			patch:      DestinationPatch{Config: map[string]string{"topic": "renamed"}},
+			wantConfig: map[string]string{"topic": "renamed"},
+		},
+		"webhook mid-rotation patched with the expiry key only keeps the previous secret": {
+			setup: func(t *testing.T, fixture serviceFixture) {
+				fixture.createWebhook(t, "hook")
+				if _, err := fixture.service.UpdateDestination(context.Background(), "hook", DestinationPatch{
+					Config:  map[string]string{"previous_secret_expires_at": expiry},
+					Secrets: map[string]string{"signing_secret_previous": previous},
+				}); err != nil {
+					t.Fatalf("set rotation pair: %v", err)
+				}
+			},
+			name:       "hook",
+			patch:      DestinationPatch{Config: map[string]string{"previous_secret_expires_at": "2026-10-21T12:00:00Z"}},
+			wantConfig: map[string]string{"previous_secret_expires_at": "2026-10-21T12:00:00Z"},
+		},
+		"unknown key is still rejected": {
+			setup:       func(t *testing.T, fixture serviceFixture) { fixture.createWebhook(t, "hook") },
+			name:        "hook",
+			patch:       DestinationPatch{Config: map[string]string{"bogus": "x"}},
+			wantMessage: "unknown field config.bogus",
+		},
+		"merged result breaking the pair rule is rejected": {
+			setup:       func(t *testing.T, fixture serviceFixture) { fixture.createWebhook(t, "hook") },
+			name:        "hook",
+			patch:       DestinationPatch{Config: map[string]string{"previous_secret_expires_at": expiry}},
+			wantMessage: "secrets.signing_secret_previous and config.previous_secret_expires_at must be set together",
+		},
 	}
-	wantMessage := "secrets.signing_secret_previous and config.previous_secret_expires_at must be set together"
-	if validationErr.Message != wantMessage {
-		t.Fatalf("message = %q, want %q", validationErr.Message, wantMessage)
+	for label, test := range tests {
+		t.Run(label, func(t *testing.T) {
+			fixture := newServiceFixture(t)
+			test.setup(t, fixture)
+			before := fixture.store.destinations[test.name]
+
+			view, err := fixture.service.UpdateDestination(context.Background(), test.name, test.patch)
+
+			after := fixture.store.destinations[test.name]
+			if test.wantMessage != "" {
+				var validationErr *ValidationError
+				if !errors.As(err, &validationErr) || validationErr.Message != test.wantMessage {
+					t.Fatalf("err = %v, want validation error %q", err, test.wantMessage)
+				}
+				if !maps.Equal(before.Config, after.Config) || !bytes.Equal(before.SealedSecrets, after.SealedSecrets) {
+					t.Fatal("a rejected patch changed the stored row")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			if !maps.Equal(view.Config, test.wantConfig) || !maps.Equal(after.Config, test.wantConfig) {
+				t.Fatalf("config = %v (stored %v), want %v", view.Config, after.Config, test.wantConfig)
+			}
+		})
 	}
-	after := fixture.store.destinations["hook"]
-	if !maps.Equal(before.Config, after.Config) || !bytes.Equal(before.SealedSecrets, after.SealedSecrets) || before.Enabled != after.Enabled {
-		t.Fatal("a rejected patch changed the stored row")
+}
+
+func TestUpdateDestinationConfigPatchKeepsUnpatchedKeys(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createWebhook(t, "hook")
+	if _, err := fixture.service.UpdateDestination(context.Background(), "hook", DestinationPatch{
+		Config:  map[string]string{"previous_secret_expires_at": "2026-10-20T12:00:00Z"},
+		Secrets: map[string]string{"signing_secret_previous": strings.Repeat("p", 48)},
+	}); err != nil {
+		t.Fatalf("set rotation pair: %v", err)
+	}
+	// An unrelated secrets-only patch must keep the config pair too.
+	if _, err := fixture.service.UpdateDestination(context.Background(), "hook", DestinationPatch{
+		Secrets: map[string]string{"url": "https://hooks.example.com/in/other"},
+	}); err != nil {
+		t.Fatalf("secrets patch: %v", err)
+	}
+	if got := fixture.store.destinations["hook"].Config["previous_secret_expires_at"]; got != "2026-10-20T12:00:00Z" {
+		t.Fatalf("expiry = %q after an unrelated patch", got)
 	}
 }
 

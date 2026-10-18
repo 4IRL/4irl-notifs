@@ -74,11 +74,11 @@ type Messages interface {
 	// attempted, and returns the last read.
 	Await(ctx context.Context, appID string, id string, timeout time.Duration) (message.StoredMessage, error)
 	// ListDeliveries returns up to limit deliveries in state.
-	ListDeliveries(ctx context.Context, state string, limit int) ([]message.Delivery, error)
+	ListDeliveries(ctx context.Context, state string, limit int) ([]message.AdminDelivery, error)
 	// ListAttempts returns a delivery's attempts in attempt order.
 	ListAttempts(ctx context.Context, deliveryID int64) ([]message.Attempt, error)
 	// Replay returns a dead delivery to the queue.
-	Replay(ctx context.Context, deliveryID int64) (message.Delivery, error)
+	Replay(ctx context.Context, deliveryID int64) (message.AdminDelivery, error)
 }
 
 // createMessageRequestBody is the POST /v1/messages body. Unknown top-level
@@ -127,6 +127,20 @@ type deliveryView struct {
 	DeliveredAt    *time.Time `json:"delivered_at"`
 }
 
+// adminDeliveryView is the operator JSON form of one delivery: the app-facing
+// deliveryView fields plus the parent message's identity and the delivery
+// timestamps. It is used only by the admin list and replay responses; app-facing
+// message responses keep deliveryView.
+type adminDeliveryView struct {
+	deliveryView
+	MessageID       string    `json:"message_id"`
+	AppID           string    `json:"app_id"`
+	Channel         string    `json:"channel"`
+	DestinationType string    `json:"destination_type"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
 // attemptView is the JSON form of one delivery-log row.
 type attemptView struct {
 	AttemptNumber   int       `json:"attempt_number"`
@@ -151,12 +165,12 @@ type messageResponseBody struct {
 
 // deliveriesResponseBody wraps the delivery list; the slice is never nil.
 type deliveriesResponseBody struct {
-	Deliveries []deliveryView `json:"deliveries"`
+	Deliveries []adminDeliveryView `json:"deliveries"`
 }
 
-// deliveryResponseBody wraps one delivery view.
+// deliveryResponseBody wraps one admin delivery view.
 type deliveryResponseBody struct {
-	Delivery deliveryView `json:"delivery"`
+	Delivery adminDeliveryView `json:"delivery"`
 }
 
 // attemptsResponseBody wraps the attempt list; the slice is never nil.
@@ -290,9 +304,9 @@ func (server *Server) handleListDeliveries(responseWriter http.ResponseWriter, r
 		server.writeMessageError(responseWriter, request, err)
 		return
 	}
-	views := make([]deliveryView, 0, len(deliveries))
+	views := make([]adminDeliveryView, 0, len(deliveries))
 	for _, delivery := range deliveries {
-		views = append(views, newDeliveryView(delivery))
+		views = append(views, newAdminDeliveryView(delivery))
 	}
 	writeJSON(responseWriter, http.StatusOK, deliveriesResponseBody{Deliveries: views})
 }
@@ -328,7 +342,7 @@ func (server *Server) handleReplayDelivery(responseWriter http.ResponseWriter, r
 		server.writeMessageError(responseWriter, request, err)
 		return
 	}
-	writeJSON(responseWriter, http.StatusOK, deliveryResponseBody{Delivery: newDeliveryView(replayed)})
+	writeJSON(responseWriter, http.StatusOK, deliveryResponseBody{Delivery: newAdminDeliveryView(replayed)})
 }
 
 // parseWait reads the optional ?wait= query as whole seconds. A missing value is
@@ -396,6 +410,19 @@ func newDeliveryView(delivery message.Delivery) deliveryView {
 		view.NextAttemptAt = &nextAttemptAt
 	}
 	return view
+}
+
+// newAdminDeliveryView converts an admin delivery into its JSON view; times are UTC.
+func newAdminDeliveryView(delivery message.AdminDelivery) adminDeliveryView {
+	return adminDeliveryView{
+		deliveryView:    newDeliveryView(delivery.Delivery),
+		MessageID:       delivery.MessageID,
+		AppID:           delivery.AppID,
+		Channel:         delivery.Channel,
+		DestinationType: delivery.DestinationType,
+		CreatedAt:       delivery.CreatedAt.UTC(),
+		UpdatedAt:       delivery.UpdatedAt.UTC(),
+	}
 }
 
 // newAttemptView converts a delivery-log row into its JSON view.

@@ -40,14 +40,14 @@ type fakeServiceStore struct {
 	getByKeyErr     error
 	getByKeyCalls   int
 
-	listResult []Delivery
+	listResult []AdminDelivery
 	listErr    error
 	listCalls  []listCall
 
 	attemptsResult []Attempt
 	attemptsErr    error
 
-	replayResult Delivery
+	replayResult AdminDelivery
 	replayErr    error
 	replayCalls  []replayCall
 }
@@ -101,7 +101,7 @@ func (fake *fakeServiceStore) GetMessageByKey(context.Context, string, string) (
 	return fake.getByKeyResult, nil
 }
 
-func (fake *fakeServiceStore) ListDeliveries(_ context.Context, state string, limit int) ([]Delivery, error) {
+func (fake *fakeServiceStore) ListDeliveries(_ context.Context, state string, limit int) ([]AdminDelivery, error) {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
 	fake.listCalls = append(fake.listCalls, listCall{state: state, limit: limit})
@@ -112,7 +112,7 @@ func (fake *fakeServiceStore) ListAttempts(context.Context, int64) ([]Attempt, e
 	return fake.attemptsResult, fake.attemptsErr
 }
 
-func (fake *fakeServiceStore) Replay(_ context.Context, deliveryID int64, now time.Time) (Delivery, error) {
+func (fake *fakeServiceStore) Replay(_ context.Context, deliveryID int64, now time.Time) (AdminDelivery, error) {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
 	fake.replayCalls = append(fake.replayCalls, replayCall{deliveryID: deliveryID, now: now})
@@ -1034,7 +1034,7 @@ func TestReplayWakesOnceWithTheServiceClock(testInstance *testing.T) {
 	fixture := newServiceFixture()
 	fixed := time.Date(2026, time.October, 16, 12, 0, 0, 0, time.UTC)
 	fixture.service.now = func() time.Time { return fixed }
-	fixture.store.replayResult = Delivery{ID: 9, State: StatePending}
+	fixture.store.replayResult = AdminDelivery{Delivery: Delivery{ID: 9, State: StatePending}}
 
 	replayed, err := fixture.service.Replay(context.Background(), 9)
 	if err != nil || replayed.ID != 9 {
