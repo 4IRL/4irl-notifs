@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -41,6 +42,21 @@ func DSN() string {
 // into it, and returns a pool whose search_path is that schema. The pool is
 // closed and the schema dropped when the test ends.
 func IsolatedPool(ctx context.Context, testInstance *testing.T) *pgxpool.Pool {
+	testInstance.Helper()
+	return newIsolatedPool(ctx, testInstance, 0)
+}
+
+// IsolatedPoolUpTo is IsolatedPool but applies only the embedded migrations up
+// to and including lastVersion, so a test can load rows in an older schema and
+// then run the remaining migrations (migrate.Run skips what is applied).
+func IsolatedPoolUpTo(ctx context.Context, testInstance *testing.T, lastVersion int) *pgxpool.Pool {
+	testInstance.Helper()
+	return newIsolatedPool(ctx, testInstance, lastVersion)
+}
+
+// newIsolatedPool builds the schema and pool; lastVersion <= 0 applies every
+// embedded migration.
+func newIsolatedPool(ctx context.Context, testInstance *testing.T, lastVersion int) *pgxpool.Pool {
 	testInstance.Helper()
 
 	adminConfig, parseErr := pgxpool.ParseConfig(DSN())
@@ -85,6 +101,11 @@ func IsolatedPool(ctx context.Context, testInstance *testing.T) *pgxpool.Pool {
 	loaded, loadErr := migrate.Load(migrations.FS)
 	if loadErr != nil {
 		testInstance.Fatalf("load embedded migrations: %v", loadErr)
+	}
+	if lastVersion > 0 {
+		loaded = slices.DeleteFunc(loaded, func(migration migrate.Migration) bool {
+			return migration.Version > lastVersion
+		})
 	}
 	discard := slog.New(slog.DiscardHandler)
 	if _, runErr := migrate.Run(ctx, migrate.NewPGStore(isolatedPool), loaded, discard); runErr != nil {
