@@ -723,6 +723,7 @@ describe('App Delivery tab', () => {
   it.each([
     ['destinationsEnabled', { destinationsEnabled: true }],
     ['deliveryLogEnabled', { deliveryLogEnabled: true }],
+    ['pendingSendsEnabled', { pendingSendsEnabled: true }],
   ])('renders the tab bar when only %s is on', (_name, flags) => {
     render(
       <App client={buildFakeClient()} deliveryClient={buildFakeDeliveryClient()} {...flags} />,
@@ -864,6 +865,53 @@ describe('App Delivery tab', () => {
     await screen.findByText(strings.destinationsEmpty);
 
     expect(deliveryClient.listDeliveries).not.toHaveBeenCalled();
+  });
+
+  it('lists pending sends only after the Delivery tab is first shown, gated by pendingSendsEnabled', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient();
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} pendingSendsEnabled />);
+
+    await screen.findByText(strings.usersEmpty);
+    expect(deliveryClient.listScheduledMessages).not.toHaveBeenCalled();
+
+    await user.click(tab(strings.tabDelivery));
+    expect(await screen.findByText(strings.pendingSendsEmpty)).toBeInTheDocument();
+    expect(deliveryClient.listScheduledMessages).toHaveBeenCalledTimes(1);
+    // Only this flag is on: the other Delivery sections and their requests stay away.
+    expect(deliveryClient.listDeliveries).not.toHaveBeenCalled();
+    expect(deliveryClient.listDestinations).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: strings.deliveryLogHeading })).toBeNull();
+  });
+
+  it('does not show or request Pending sends when its flag is off', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient();
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} deliveryLogEnabled />);
+
+    await user.click(tab(strings.tabDelivery));
+    await screen.findByText('No dead deliveries.');
+
+    expect(screen.queryByRole('heading', { name: strings.pendingSendsHeading })).toBeNull();
+    expect(deliveryClient.listScheduledMessages).not.toHaveBeenCalled();
+  });
+
+  it('mounts Pending sends directly before the Delivery Log', async () => {
+    const user = userEvent.setup();
+    render(
+      <App
+        client={buildFakeClient()}
+        deliveryClient={buildFakeDeliveryClient()}
+        deliveryLogEnabled
+        pendingSendsEnabled
+      />,
+    );
+
+    await user.click(tab(strings.tabDelivery));
+    const pending = await screen.findByRole('heading', { name: strings.pendingSendsHeading });
+    const log = await screen.findByRole('heading', { name: strings.deliveryLogHeading });
+
+    expect(pending.compareDocumentPosition(log) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('keeps a destinations load failure out of the shared provisioning error banner', async () => {

@@ -225,7 +225,10 @@ sequenceDiagram
     must be `Content-Type: application/json`, else `415 {"error":"unsupported media type"}`. The guard runs
     before auth, so an unauthenticated cross-site write is 403, not 401.
   - The Delivery tab is gated by `VITE_DESTINATIONS_ENABLED=true` (status card, Destinations, Routes) and
-    `VITE_DELIVERY_LOG_ENABLED=true` (Delivery Log).
+    `VITE_PENDING_SENDS_ENABLED=true` (Pending sends) and `VITE_DELIVERY_LOG_ENABLED=true` (Delivery Log).
+    The Pending sends section lists scheduled messages (soonest first) and cancels one through
+    `DELETE /delivery/v1/admin/scheduled-messages/{id}`, a non-GET that the existing `/delivery` Access
+    Bypass and the Pages Function allowlist already cover.
 
 **Pages project `notifs-admin` — runtime bindings** (set in dashboard, not committed):
 
@@ -241,7 +244,7 @@ sequenceDiagram
 | `DISABLE_ACCESS_AUTH`        | plaintext | **local dev only** (`true` disables JWT check). Never set in prod. |
 
 Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABLED=true`,
-`VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`.
+`VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`, `VITE_PENDING_SENDS_ENABLED=true`.
 
 ---
 

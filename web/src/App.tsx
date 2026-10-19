@@ -22,6 +22,7 @@ import { AppTabs } from './components/AppTabs';
 import { DeliveryStatusCard } from './components/DeliveryStatusCard';
 import { DeliveryLog } from './components/DeliveryLog';
 import { DeliveryRegistry } from './components/DeliveryRegistry';
+import { PendingSends } from './components/PendingSends';
 import { ProvisionForm } from './components/ProvisionForm';
 import { SendTestNotification } from './components/SendTestNotification';
 import { UsersTable } from './components/UsersTable';
@@ -50,6 +51,8 @@ interface AppProps {
   destinationsEnabled?: boolean;
   /** VITE_DELIVERY_LOG_ENABLED: the Delivery Log. */
   deliveryLogEnabled?: boolean;
+  /** VITE_PENDING_SENDS_ENABLED: the Pending sends (scheduled messages) section. */
+  pendingSendsEnabled?: boolean;
 }
 
 function App({
@@ -59,6 +62,7 @@ function App({
   deliveryClient,
   destinationsEnabled = false,
   deliveryLogEnabled = false,
+  pendingSendsEnabled = false,
 }: AppProps) {
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -364,7 +368,9 @@ function App({
     </>
   );
 
-  const tabsEnabled = deliveryClient !== undefined && (destinationsEnabled || deliveryLogEnabled);
+  const tabsEnabled =
+    deliveryClient !== undefined &&
+    (destinationsEnabled || deliveryLogEnabled || pendingSendsEnabled);
 
   return (
     <div className="app">
@@ -379,6 +385,7 @@ function App({
             <>
               {destinationsEnabled && <DeliveryStatusCard client={deliveryClient} />}
               {destinationsEnabled && <DeliveryRegistry client={deliveryClient} />}
+              {pendingSendsEnabled && <PendingSends client={deliveryClient} />}
               {deliveryLogEnabled && <DeliveryLog client={deliveryClient} />}
             </>
           }

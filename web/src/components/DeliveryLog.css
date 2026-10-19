@@ -65,6 +65,12 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* The main rows centre every cell so the State pill (and the Actions buttons)
+   sit mid-row beside multi-line cells; the nested attempts table stays top. */
+.delivery-log__table > tbody > tr > td {
+  vertical-align: middle;
+}
+
 .delivery-log__table th,
 .delivery-log__attempts th {
   color: var(--text);

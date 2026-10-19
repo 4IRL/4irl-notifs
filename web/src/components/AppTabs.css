@@ -3,7 +3,7 @@
   gap: var(--space-1);
   border-bottom: 1px solid var(--border);
   padding: 0 var(--space-4);
-  max-width: 60rem;
+  max-width: var(--content-max);
   margin: 0 auto;
 }
 

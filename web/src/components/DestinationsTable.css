@@ -34,7 +34,7 @@
 .destinations__table td {
   padding: var(--space-2) var(--space-3);
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
   border-bottom: 1px solid var(--border);
 }
 
