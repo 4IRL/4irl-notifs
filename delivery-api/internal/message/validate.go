@@ -129,11 +129,23 @@ func ValidateTo(toDestination string, toRecipient string) error {
 	return nil
 }
 
-// ValidateDeliverAt rejects any scheduled delivery time because scheduled
-// delivery is not yet supported; the column is reserved.
+// maxDeliverAt is the latest accepted deliver_at, compared in UTC. It is the
+// largest instant a four-digit year can name, and well inside Postgres
+// timestamptz range, so a stored deliver_at can never overflow.
+var maxDeliverAt = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
+
+// ValidateDeliverAt checks the optional deliver_at. Absent is valid (an
+// immediate send). The zero time is rejected, as is any instant whose UTC form
+// is before year 1 (it could not be marshalled as RFC3339 JSON later) or after
+// 9999-12-31T23:59:59Z; every other time is valid, past or future, with no
+// horizon. Whether the time is in the future is the Service's decision, made
+// with its injected clock, not this pure validator's.
 func ValidateDeliverAt(deliverAt *time.Time) error {
-	if deliverAt != nil {
-		return &ValidationError{Message: "deliver_at not yet supported"}
+	if deliverAt == nil {
+		return nil
+	}
+	if deliverAt.IsZero() || deliverAt.UTC().Year() < 1 || deliverAt.UTC().After(maxDeliverAt) {
+		return &ValidationError{Message: "invalid deliver_at"}
 	}
 	return nil
 }

@@ -3,7 +3,9 @@ package message
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
@@ -24,6 +26,26 @@ const (
 	// MaxListLimit is the largest accepted operator delivery list limit. The
 	// store has no upper bound of its own, so the service enforces it.
 	MaxListLimit = 200
+
+	// DefaultMaxScheduledPerApp is how many scheduled messages one app may hold
+	// when DELIVERY_MAX_SCHEDULED_PER_APP is unset. docker-compose.yml and
+	// docker-compose.prod.yml repeat it as the pass-through default.
+	DefaultMaxScheduledPerApp = 1000
+	// MaxScheduledPerAppLimit is the largest accepted DELIVERY_MAX_SCHEDULED_PER_APP.
+	MaxScheduledPerAppLimit = 100000
+	// MaxScheduledEnvVar names the optional environment variable that overrides
+	// the per-app scheduled-message cap.
+	MaxScheduledEnvVar = "DELIVERY_MAX_SCHEDULED_PER_APP"
+
+	// DefaultMaxScheduledTotal is how many scheduled messages all apps together
+	// may hold when DELIVERY_MAX_SCHEDULED_TOTAL is unset. docker-compose.yml and
+	// docker-compose.prod.yml repeat it as the pass-through default.
+	DefaultMaxScheduledTotal = 100000
+	// MaxScheduledTotalLimit is the largest accepted DELIVERY_MAX_SCHEDULED_TOTAL.
+	MaxScheduledTotalLimit = 10000000
+	// MaxScheduledTotalEnvVar names the optional environment variable that
+	// overrides the service-wide scheduled-message cap.
+	MaxScheduledTotalEnvVar = "DELIVERY_MAX_SCHEDULED_TOTAL"
 
 	// defaultPollInterval is how often Await re-reads the message.
 	defaultPollInterval = 100 * time.Millisecond
@@ -70,6 +92,44 @@ type ServiceConfig struct {
 	// defaults to 32. An Await that finds every slot taken returns its first read
 	// without polling.
 	MaxConcurrentAwaits int
+	// MaxScheduledPerApp caps how many scheduled messages one app may hold; a new
+	// scheduled submit over it fails with ErrTooManyScheduled. A value <= 0 takes
+	// DefaultMaxScheduledPerApp.
+	MaxScheduledPerApp int
+	// MaxScheduledTotal caps how many scheduled messages all apps may hold
+	// together; a new scheduled submit over it fails with
+	// ErrScheduledCapacityReached. A value <= 0 takes DefaultMaxScheduledTotal.
+	MaxScheduledTotal int
+}
+
+// MaxScheduledFromEnv reads DELIVERY_MAX_SCHEDULED_PER_APP through getenv. An
+// empty value gives DefaultMaxScheduledPerApp; anything else must be an integer
+// from 1 to MaxScheduledPerAppLimit. The error text never echoes the value.
+func MaxScheduledFromEnv(getenv func(string) string) (int, error) {
+	raw := getenv(MaxScheduledEnvVar)
+	if raw == "" {
+		return DefaultMaxScheduledPerApp, nil
+	}
+	maxScheduled, parseErr := strconv.Atoi(raw)
+	if parseErr != nil || maxScheduled < 1 || maxScheduled > MaxScheduledPerAppLimit {
+		return 0, fmt.Errorf("invalid %s", MaxScheduledEnvVar)
+	}
+	return maxScheduled, nil
+}
+
+// MaxScheduledTotalFromEnv reads DELIVERY_MAX_SCHEDULED_TOTAL through getenv. An
+// empty value gives DefaultMaxScheduledTotal; anything else must be an integer
+// from 1 to MaxScheduledTotalLimit. The error text never echoes the value.
+func MaxScheduledTotalFromEnv(getenv func(string) string) (int, error) {
+	raw := getenv(MaxScheduledTotalEnvVar)
+	if raw == "" {
+		return DefaultMaxScheduledTotal, nil
+	}
+	maxTotal, parseErr := strconv.Atoi(raw)
+	if parseErr != nil || maxTotal < 1 || maxTotal > MaxScheduledTotalLimit {
+		return 0, fmt.Errorf("invalid %s", MaxScheduledTotalEnvVar)
+	}
+	return maxTotal, nil
 }
 
 // Service is the message use-case layer behind the HTTP endpoints: it validates
@@ -85,6 +145,8 @@ type Service struct {
 	logger         *slog.Logger
 	pollInterval   time.Duration
 	now            func() time.Time
+	maxScheduled   int
+	maxTotal       int
 	// awaitSlots is a counting semaphore bounding concurrent Await pollers.
 	awaitSlots chan struct{}
 }
@@ -109,6 +171,8 @@ func NewService(config ServiceConfig) *Service {
 		logger:         config.Logger,
 		pollInterval:   config.PollInterval,
 		now:            config.Now,
+		maxScheduled:   config.MaxScheduledPerApp,
+		maxTotal:       config.MaxScheduledTotal,
 	}
 	for destinationType, supported := range config.SupportedTypes {
 		service.supportedTypes[destinationType] = supported
@@ -125,6 +189,12 @@ func NewService(config ServiceConfig) *Service {
 	if service.now == nil {
 		service.now = time.Now
 	}
+	if service.maxScheduled <= 0 {
+		service.maxScheduled = DefaultMaxScheduledPerApp
+	}
+	if service.maxTotal <= 0 {
+		service.maxTotal = DefaultMaxScheduledTotal
+	}
 	maxAwaits := config.MaxConcurrentAwaits
 	if maxAwaits <= 0 {
 		maxAwaits = defaultMaxConcurrentAwaits
@@ -134,48 +204,138 @@ func NewService(config ServiceConfig) *Service {
 }
 
 // Submit validates envelope, resolves its destinations and queues one delivery
-// per destination. The bool reports a duplicate: the same (app_id,
-// idempotency_key) returns the original message and ignores the new content. A
-// duplicate skips resolution entirely, so it succeeds even if the destination
-// has since been disabled. Resolution errors are returned unchanged
-// (registry.ErrUnknownDestination, registry.ErrDestinationDisabled) or as
-// ErrNoDestinationMatched / ErrUnsupportedDestinationType. The worker is woken
-// only when a new message was stored.
-func (service *Service) Submit(ctx context.Context, envelope Envelope) (StoredMessage, bool, error) {
+// per destination. A deliver_at after the service clock's now holds the message
+// (deliveries 'scheduled'); a missing, equal or past one sends it immediately.
+//
+// The same (app_id, idempotency_key) never creates a second message:
+//   - a scheduled message is replaced in place (same id, outcome Replaced) when
+//     the submitted content differs from the stored one, re-resolving targets;
+//     a failed resolution returns its error and leaves the original untouched;
+//   - everything else is a duplicate (outcome Duplicate) that returns the stored
+//     message and ignores the new content: a released or cancelled message, an
+//     identical retry of a scheduled one, a replace that lost the race to a
+//     release or cancel, and a concurrent insert of the same key. A duplicate
+//     skips resolution, so it succeeds even if a destination has since been
+//     disabled.
+//
+// A new scheduled message is refused with ErrTooManyScheduled when the app is
+// at its cap, or with ErrScheduledCapacityReached when all apps together are at
+// the service-wide cap (the app's own cap is reported first when both are full);
+// immediate submits and replaces are exempt. Resolution errors are
+// returned unchanged (registry.ErrUnknownDestination,
+// registry.ErrDestinationDisabled) or as ErrNoDestinationMatched /
+// ErrUnsupportedDestinationType. The worker is woken only when a message was
+// stored (or released by a replace) with work due now, never for a scheduled one.
+func (service *Service) Submit(ctx context.Context, envelope Envelope) (StoredMessage, SubmitOutcome, error) {
 	if validateErr := ValidateEnvelope(envelope); validateErr != nil {
-		return StoredMessage{}, false, validateErr
-	}
-
-	existing, findErr := service.store.GetMessageByKey(ctx, envelope.AppID, envelope.IdempotencyKey)
-	if findErr == nil {
-		return existing, true, nil
-	}
-	if !errors.Is(findErr, ErrMessageNotFound) {
-		return StoredMessage{}, false, findErr
+		return StoredMessage{}, SubmitOutcome{}, validateErr
 	}
 
 	// Only the hash is ever stored: an email recipient is replaced by its hash
-	// before it reaches resolution or the store.
+	// before it is compared, resolved or stored.
 	if envelope.ToRecipient != "" && !personhash.IsHash(envelope.ToRecipient) {
 		envelope.ToRecipient = personhash.Hash(envelope.ToRecipient)
+	}
+	now := service.now()
+
+	existing, findErr := service.store.GetMessageByKey(ctx, envelope.AppID, envelope.IdempotencyKey)
+	if findErr == nil {
+		stored, outcome, settled, existingErr := service.submitExisting(ctx, envelope, existing, now)
+		if existingErr != nil || settled {
+			return stored, outcome, existingErr
+		}
+		// The message vanished between the lookup and the replace (a retention
+		// sweep): submit it as a new one.
+	} else if !errors.Is(findErr, ErrMessageNotFound) {
+		return StoredMessage{}, SubmitOutcome{}, findErr
 	}
 
 	targets, resolveErr := service.resolveTargets(ctx, envelope)
 	if resolveErr != nil {
-		return StoredMessage{}, false, resolveErr
+		return StoredMessage{}, SubmitOutcome{}, resolveErr
 	}
 
-	stored, duplicate, insertErr := service.store.InsertMessage(ctx, envelope, targets)
-	if insertErr != nil {
-		return StoredMessage{}, false, insertErr
+	var stored StoredMessage
+	var duplicate bool
+	var insertErr error
+	if isFuture(envelope.DeliverAt, now) {
+		stored, duplicate, insertErr = service.store.InsertScheduledMessage(
+			ctx, envelope, targets, ScheduledCaps{PerApp: service.maxScheduled, Total: service.maxTotal})
+	} else {
+		stored, duplicate, insertErr = service.store.InsertMessage(ctx, envelope, targets)
 	}
+	if insertErr != nil {
+		return StoredMessage{}, SubmitOutcome{}, insertErr
+	}
+	outcome := newSubmitOutcome(stored, duplicate, false)
 	if !duplicate {
 		service.logger.Info("message accepted",
 			"message_id", stored.ID, "app_id", stored.Envelope.AppID,
-			"channel", stored.Envelope.Channel, "deliveries", len(stored.Deliveries))
-		service.wake()
+			"channel", stored.Envelope.Channel, "deliveries", len(stored.Deliveries),
+			"scheduled", outcome.Scheduled)
+		if !outcome.Scheduled {
+			service.wake()
+		}
 	}
-	return stored, duplicate, nil
+	return stored, outcome, nil
+}
+
+// submitExisting handles a submit whose key already exists. settled is false
+// only when the message disappeared before it could be replaced, in which case
+// the caller submits it as a new message.
+func (service *Service) submitExisting(
+	ctx context.Context, envelope Envelope, existing StoredMessage, now time.Time,
+) (StoredMessage, SubmitOutcome, bool, error) {
+	if DeriveStatus(existing.Deliveries) != StatusScheduled || sameContent(existing.Envelope, envelope) {
+		return existing, newSubmitOutcome(existing, true, false), true, nil
+	}
+
+	targets, resolveErr := service.resolveTargets(ctx, envelope)
+	if resolveErr != nil {
+		return StoredMessage{}, SubmitOutcome{}, true, resolveErr
+	}
+	stored, replaced, replaceErr := service.store.ReplaceScheduledMessage(ctx, envelope, targets, now)
+	if errors.Is(replaceErr, ErrMessageNotFound) {
+		// The row was not there to lock. Another submit may have inserted the key
+		// in the meantime; if so it is the stored message.
+		current, findErr := service.store.GetMessageByKey(ctx, envelope.AppID, envelope.IdempotencyKey)
+		if findErr == nil {
+			return current, newSubmitOutcome(current, true, false), true, nil
+		}
+		if errors.Is(findErr, ErrMessageNotFound) {
+			return StoredMessage{}, SubmitOutcome{}, false, nil
+		}
+		return StoredMessage{}, SubmitOutcome{}, true, findErr
+	}
+	if replaceErr != nil {
+		return StoredMessage{}, SubmitOutcome{}, true, replaceErr
+	}
+	outcome := newSubmitOutcome(stored, !replaced, replaced)
+	if replaced {
+		service.logger.Info("message replaced",
+			"message_id", stored.ID, "app_id", stored.Envelope.AppID,
+			"channel", stored.Envelope.Channel, "deliveries", len(stored.Deliveries),
+			"scheduled", outcome.Scheduled)
+		if !outcome.Scheduled {
+			service.wake()
+		}
+	}
+	return stored, outcome, true, nil
+}
+
+// isFuture reports whether deliverAt names an instant strictly after now.
+func isFuture(deliverAt *time.Time, now time.Time) bool {
+	return deliverAt != nil && deliverAt.After(now)
+}
+
+// newSubmitOutcome builds the outcome for stored, deriving Scheduled from its
+// deliveries.
+func newSubmitOutcome(stored StoredMessage, duplicate bool, replaced bool) SubmitOutcome {
+	return SubmitOutcome{
+		Duplicate: duplicate,
+		Replaced:  replaced,
+		Scheduled: DeriveStatus(stored.Deliveries) == StatusScheduled,
+	}
 }
 
 // resolveTargets resolves envelope's destinations and snapshots them as delivery
@@ -373,6 +533,88 @@ func (service *Service) ListAttempts(ctx context.Context, deliveryID int64) ([]A
 		attempts = []Attempt{}
 	}
 	return attempts, nil
+}
+
+// Cancel cancels app appID's scheduled message with the given id. It is scoped
+// to the app: another app's message, an unknown id and an id that is not a
+// canonical UUID all report StatusNotFound with Found false (the id is echoed
+// as MessageID), and a non-UUID id never reaches the store. An already
+// cancelled message reports Cancelled true; a released one reports Cancelled
+// false with its real status. A malformed appID is a *ValidationError.
+func (service *Service) Cancel(ctx context.Context, appID string, id string) (CancelOutcome, error) {
+	if validateErr := ValidateAppID(appID); validateErr != nil {
+		return CancelOutcome{}, validateErr
+	}
+	if !canonicalUUIDPattern.MatchString(id) {
+		return notFoundOutcome(id), nil
+	}
+	outcome, cancelErr := service.store.CancelMessage(ctx, id, appID, service.now())
+	return service.finishCancel(outcome, cancelErr, id)
+}
+
+// CancelByKey is Cancel for the message app appID submitted with idempotencyKey.
+// An unknown key reports StatusNotFound with an empty MessageID. Malformed
+// inputs are a *ValidationError and never reach the store.
+func (service *Service) CancelByKey(ctx context.Context, appID string, idempotencyKey string) (CancelOutcome, error) {
+	if validateErr := ValidateAppID(appID); validateErr != nil {
+		return CancelOutcome{}, validateErr
+	}
+	if validateErr := ValidateIdempotencyKey(idempotencyKey); validateErr != nil {
+		return CancelOutcome{}, validateErr
+	}
+	outcome, cancelErr := service.store.CancelMessageByKey(ctx, appID, idempotencyKey, service.now())
+	return service.finishCancel(outcome, cancelErr, "")
+}
+
+// AdminCancel is Cancel for the operator: it finds the message in any app.
+func (service *Service) AdminCancel(ctx context.Context, id string) (CancelOutcome, error) {
+	if !canonicalUUIDPattern.MatchString(id) {
+		return notFoundOutcome(id), nil
+	}
+	outcome, cancelErr := service.store.AdminCancelMessage(ctx, id, service.now())
+	return service.finishCancel(outcome, cancelErr, id)
+}
+
+// finishCancel turns a store result into the service's: a miss becomes the
+// not_found outcome echoing requestedID, and a message this call newly
+// cancelled is logged (an idempotent repeat is not).
+func (service *Service) finishCancel(
+	outcome CancelOutcome, cancelErr error, requestedID string,
+) (CancelOutcome, error) {
+	if cancelErr != nil {
+		return CancelOutcome{}, cancelErr
+	}
+	if !outcome.Found {
+		return notFoundOutcome(requestedID), nil
+	}
+	if outcome.Transitioned {
+		service.logger.Info("message cancel", "message_id", outcome.MessageID)
+	}
+	return outcome, nil
+}
+
+// notFoundOutcome is the cancel result for a message that does not exist (or
+// that the caller may not see), echoing the requested id.
+func notFoundOutcome(requestedID string) CancelOutcome {
+	return CancelOutcome{MessageID: requestedID, Status: StatusNotFound}
+}
+
+// ListScheduled returns up to limit scheduled messages, soonest deliver_at
+// first, and the total number of scheduled messages. limit must be in [1,
+// MaxListLimit], else a *ValidationError. The slice is never nil without an
+// error.
+func (service *Service) ListScheduled(ctx context.Context, limit int) ([]ScheduledMessage, int, error) {
+	if limit < 1 || limit > MaxListLimit {
+		return nil, 0, &ValidationError{Message: "invalid limit"}
+	}
+	scheduled, total, listErr := service.store.ListScheduled(ctx, limit)
+	if listErr != nil {
+		return nil, 0, listErr
+	}
+	if scheduled == nil {
+		scheduled = []ScheduledMessage{}
+	}
+	return scheduled, total, nil
 }
 
 // Replay returns a dead delivery to the queue with a fresh retry budget and

@@ -48,9 +48,9 @@ const (
 	// 10 s a ?wait request can hold Shutdown (httpapi.MaxWait) plus the 16 s an in-flight delivery attempt can
 	// need to finish and be recorded (dispatch.MaxInFlightShutdown), so a SIGTERM never abandons either.
 	shutdownTimeout = httpapi.MaxWait + dispatch.MaxInFlightShutdown
-	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker and sweeper to unwind.
+	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker, sweeper and releaser to unwind.
 	backgroundStopMargin = 4 * time.Second
-	// backgroundStopTimeout bounds how long runServe waits for the worker and sweeper after HTTP has drained.
+	// backgroundStopTimeout bounds how long runServe waits for the worker, sweeper and releaser after HTTP has drained.
 	// Worst-case total shutdown is shutdownTimeout + backgroundStopTimeout (46 s), which the compose
 	// stop_grace_period must exceed (docker-compose.yml and docker-compose.prod.yml; pinned by
 	// TestComposeStopGracePeriodCoversShutdown).
@@ -140,7 +140,7 @@ func openDatabase(ctx context.Context) (*pgxpool.Pool, []migrate.Migration, erro
 
 // runServe loads the (mandatory) database config, master key and retention
 // window first, so a missing or invalid value fails before any port is bound,
-// then serves HTTP and runs the delivery worker and retention sweeper until ctx
+// then serves HTTP and runs the delivery worker and retention sweeper and scheduled-message releaser until ctx
 // is canceled. The pool is opened and closed here, around serve and the
 // background work: the deferred Close runs only after both have stopped.
 func runServe(ctx context.Context, logger *slog.Logger) error {
@@ -159,6 +159,14 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	retention, retentionErr := dispatch.RetentionFromEnv(os.Getenv)
 	if retentionErr != nil {
 		return retentionErr
+	}
+	maxScheduled, maxScheduledErr := message.MaxScheduledFromEnv(os.Getenv)
+	if maxScheduledErr != nil {
+		return maxScheduledErr
+	}
+	maxScheduledTotal, maxScheduledTotalErr := message.MaxScheduledTotalFromEnv(os.Getenv)
+	if maxScheduledTotalErr != nil {
+		return maxScheduledTotalErr
 	}
 
 	checker := readiness.NewChecker(pool, migrate.NewPGStore(pool), migrate.ExpectedVersion(loaded))
@@ -194,12 +202,14 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Logger:     logger,
 	})
 	messageService := message.NewService(message.ServiceConfig{
-		Store:          messageStore,
-		Resolver:       registryService,
-		Publishers:     publisherService,
-		SupportedTypes: supportedTypes,
-		Wake:           worker.Wake,
-		Logger:         logger,
+		Store:              messageStore,
+		Resolver:           registryService,
+		Publishers:         publisherService,
+		SupportedTypes:     supportedTypes,
+		Wake:               worker.Wake,
+		Logger:             logger,
+		MaxScheduledPerApp: maxScheduled,
+		MaxScheduledTotal:  maxScheduledTotal,
 	})
 	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
@@ -226,11 +236,19 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 				Logger:    logger,
 			})
 		},
+		func(backgroundCtx context.Context) {
+			dispatch.RunReleaser(backgroundCtx, dispatch.ReleaserConfig{
+				Releaser: messageStore,
+				Interval: dispatch.DefaultReleaseInterval,
+				Wake:     worker.Wake,
+				Logger:   logger,
+			})
+		},
 	)
 
 	logger.Info("delivery-api listening", "address", listener.Addr().String())
 	serveErr := serve(ctx, logger, listener, handler, shutdownTimeout)
-	// Stop the worker and sweeper whether serve returned on cancellation or on a listener failure, and wait
+	// Stop the worker, sweeper and releaser whether serve returned on cancellation or on a listener failure, and wait
 	// for them before the deferred pool.Close so an in-flight attempt can still record its outcome.
 	background.stop(logger, backgroundStopTimeout)
 	return serveErr

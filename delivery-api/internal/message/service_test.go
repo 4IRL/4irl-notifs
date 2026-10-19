@@ -50,6 +50,8 @@ type fakeServiceStore struct {
 	replayResult AdminDelivery
 	replayErr    error
 	replayCalls  []replayCall
+
+	scheduledStoreScript
 }
 
 type insertCall struct {
@@ -119,6 +121,130 @@ func (fake *fakeServiceStore) Replay(_ context.Context, deliveryID int64, now ti
 	return fake.replayResult, fake.replayErr
 }
 
+// Scripted scheduled-send Store methods.
+
+// scheduledInsertCall records one InsertScheduledMessage call.
+type scheduledInsertCall struct {
+	envelope Envelope
+	targets  []DeliveryTarget
+	caps     ScheduledCaps
+}
+
+// replaceCall records one ReplaceScheduledMessage call.
+type replaceCall struct {
+	envelope Envelope
+	targets  []DeliveryTarget
+	now      time.Time
+}
+
+// cancelCall records one cancel call of any form; unused fields stay empty.
+type cancelCall struct {
+	kind  string
+	id    string
+	appID string
+	key   string
+	now   time.Time
+}
+
+// scheduledStoreScript holds the scripted results of the scheduled-send Store
+// methods; it is embedded in fakeServiceStore.
+type scheduledStoreScript struct {
+	scheduledInsertCalls []scheduledInsertCall
+	scheduledInsertErr   error
+	// scheduledInsertDuplicate makes InsertScheduledMessage report a lost insert race.
+	scheduledInsertDuplicate bool
+
+	replaceCalls []replaceCall
+	replaceErr   error
+	// replaceResult is returned by ReplaceScheduledMessage; nil returns the
+	// submitted envelope as a message with one scheduled delivery.
+	replaceResult *StoredMessage
+	// replaceReplaced is whether ReplaceScheduledMessage reports it replaced.
+	replaceReplaced bool
+
+	cancelCalls  []cancelCall
+	cancelResult CancelOutcome
+	cancelErr    error
+
+	listScheduledResult []ScheduledMessage
+	listScheduledTotal  int
+	listScheduledErr    error
+	listScheduledCalls  []int
+}
+
+// scheduledMessageFor builds a stored message with one delivery in state.
+func scheduledMessageFor(envelope Envelope, state string) StoredMessage {
+	return StoredMessage{
+		ID:         "11111111-1111-1111-1111-111111111111",
+		Envelope:   envelope,
+		Deliveries: []Delivery{{State: state}},
+	}
+}
+
+func (fake *fakeServiceStore) InsertScheduledMessage(
+	_ context.Context, envelope Envelope, targets []DeliveryTarget, caps ScheduledCaps,
+) (StoredMessage, bool, error) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.scheduledInsertCalls = append(fake.scheduledInsertCalls,
+		scheduledInsertCall{envelope: envelope, targets: targets, caps: caps})
+	if fake.scheduledInsertErr != nil {
+		return StoredMessage{}, false, fake.scheduledInsertErr
+	}
+	return scheduledMessageFor(envelope, StateScheduled), fake.scheduledInsertDuplicate, nil
+}
+
+func (fake *fakeServiceStore) ReplaceScheduledMessage(
+	_ context.Context, envelope Envelope, targets []DeliveryTarget, now time.Time,
+) (StoredMessage, bool, error) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.replaceCalls = append(fake.replaceCalls, replaceCall{envelope: envelope, targets: targets, now: now})
+	if fake.replaceErr != nil {
+		return StoredMessage{}, false, fake.replaceErr
+	}
+	if fake.replaceResult != nil {
+		return *fake.replaceResult, fake.replaceReplaced, nil
+	}
+	return scheduledMessageFor(envelope, StateScheduled), fake.replaceReplaced, nil
+}
+
+func (fake *fakeServiceStore) CancelMessage(
+	_ context.Context, id string, appID string, now time.Time,
+) (CancelOutcome, error) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.cancelCalls = append(fake.cancelCalls, cancelCall{kind: "app", id: id, appID: appID, now: now})
+	return fake.cancelResult, fake.cancelErr
+}
+
+func (fake *fakeServiceStore) AdminCancelMessage(_ context.Context, id string, now time.Time) (CancelOutcome, error) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.cancelCalls = append(fake.cancelCalls, cancelCall{kind: "admin", id: id, now: now})
+	return fake.cancelResult, fake.cancelErr
+}
+
+func (fake *fakeServiceStore) CancelMessageByKey(
+	_ context.Context, appID string, idempotencyKey string, now time.Time,
+) (CancelOutcome, error) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.cancelCalls = append(fake.cancelCalls, cancelCall{kind: "key", appID: appID, key: idempotencyKey, now: now})
+	return fake.cancelResult, fake.cancelErr
+}
+
+func (fake *fakeServiceStore) ReleaseDue(context.Context, time.Time, int) (int64, error) {
+	return 0, nil
+}
+
+func (fake *fakeServiceStore) ListScheduled(_ context.Context, limit int) ([]ScheduledMessage, int, error) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	fake.listScheduledCalls = append(fake.listScheduledCalls, limit)
+	return fake.listScheduledResult, fake.listScheduledTotal, fake.listScheduledErr
+}
+
 // fakeResolver is a scripted Resolver.
 type fakeResolver struct {
 	result []registry.ResolvedDestination
@@ -160,6 +286,15 @@ var webhookDestination = registry.ResolvedDestination{
 	Secrets: map[string]string{"url": "https://hooks.example.com/secret"},
 }
 
+// fixtureNow is the pinned clock of newServiceFixture's service, and
+// fixtureMaxScheduled its per-app scheduled cap.
+var fixtureNow = time.Date(2026, time.October, 18, 12, 0, 0, 0, time.UTC)
+
+const (
+	fixtureMaxScheduled      = 7
+	fixtureMaxScheduledTotal = 11
+)
+
 type serviceFixture struct {
 	service  *Service
 	store    *fakeServiceStore
@@ -177,6 +312,10 @@ func newServiceFixture() serviceFixture {
 		SupportedTypes: map[string]bool{registry.TypeWebhook: true},
 		Wake:           wakes.wake,
 		PollInterval:   time.Millisecond,
+		Now:            func() time.Time { return fixtureNow },
+
+		MaxScheduledPerApp: fixtureMaxScheduled,
+		MaxScheduledTotal:  fixtureMaxScheduledTotal,
 	})
 	return serviceFixture{service: service, store: store, resolver: resolver, wakes: wakes}
 }
@@ -186,9 +325,9 @@ func TestSubmitStoresResolvedTargetsAndWakesOnce(testInstance *testing.T) {
 	envelope := validEnvelope()
 	envelope.ToDestination = "ops_webhook"
 
-	stored, duplicate, err := fixture.service.Submit(context.Background(), envelope)
-	if err != nil || duplicate {
-		testInstance.Fatalf("Submit = (%v, duplicate %v), want a new message", err, duplicate)
+	stored, outcome, err := fixture.service.Submit(context.Background(), envelope)
+	if err != nil || outcome.Duplicate || outcome.Replaced || outcome.Scheduled {
+		testInstance.Fatalf("Submit = (%v, outcome %+v), want a new immediate message", err, outcome)
 	}
 	if stored.ID == "" {
 		testInstance.Fatalf("stored id is empty")
@@ -243,9 +382,9 @@ func TestSubmitDuplicateReturnsOriginalWithoutResolveInsertOrWake(testInstance *
 
 	envelope := validEnvelope()
 	envelope.Channel = "changed"
-	stored, duplicate, err := fixture.service.Submit(context.Background(), envelope)
-	if err != nil || !duplicate {
-		testInstance.Fatalf("Submit = (%v, duplicate %v), want a duplicate", err, duplicate)
+	stored, outcome, err := fixture.service.Submit(context.Background(), envelope)
+	if err != nil || !outcome.Duplicate || outcome.Replaced {
+		testInstance.Fatalf("Submit = (%v, outcome %+v), want a duplicate", err, outcome)
 	}
 	if stored.ID != original.ID || stored.Envelope.Channel != "alerts" {
 		testInstance.Fatalf("stored = %+v, want the original message", stored)
@@ -260,9 +399,9 @@ func TestSubmitLostInsertRaceIsADuplicateWithoutWake(testInstance *testing.T) {
 	fixture := newServiceFixture()
 	fixture.store.insertDuplicate = true
 
-	_, duplicate, err := fixture.service.Submit(context.Background(), validEnvelope())
-	if err != nil || !duplicate {
-		testInstance.Fatalf("Submit = (%v, duplicate %v), want a duplicate", err, duplicate)
+	_, outcome, err := fixture.service.Submit(context.Background(), validEnvelope())
+	if err != nil || !outcome.Duplicate {
+		testInstance.Fatalf("Submit = (%v, outcome %+v), want a duplicate", err, outcome)
 	}
 	if fixture.wakes.calls() != 0 {
 		testInstance.Fatalf("Wake calls = %d, want 0", fixture.wakes.calls())
@@ -437,9 +576,9 @@ func recipientEnvelope(recipient string) Envelope {
 func TestSubmitRecipientEmailIsStoredAsItsHash(testInstance *testing.T) {
 	fixture := newRecipientFixture()
 
-	_, duplicate, err := fixture.service.Submit(context.Background(), recipientEnvelope(" Alice@Example.com "))
-	if err != nil || duplicate {
-		testInstance.Fatalf("Submit = (%v, duplicate %v), want a new message", err, duplicate)
+	_, outcome, err := fixture.service.Submit(context.Background(), recipientEnvelope(" Alice@Example.com "))
+	if err != nil || outcome.Duplicate {
+		testInstance.Fatalf("Submit = (%v, outcome %+v), want a new message", err, outcome)
 	}
 	if len(fixture.store.insertCalls) != 1 {
 		testInstance.Fatalf("insert calls = %d, want 1", len(fixture.store.insertCalls))
@@ -579,9 +718,9 @@ func TestSubmitDuplicateRecipientShortCircuitsBeforePublisherCheck(testInstance 
 	fixture.store.getByKeyPresent = true
 	fixture.store.getByKeyResult = StoredMessage{ID: "22222222-2222-2222-2222-222222222222", Envelope: validEnvelope()}
 
-	_, duplicate, err := fixture.service.Submit(context.Background(), recipientEnvelope("alice@example.com"))
-	if err != nil || !duplicate {
-		testInstance.Fatalf("Submit = (%v, duplicate %v), want a duplicate", err, duplicate)
+	_, outcome, err := fixture.service.Submit(context.Background(), recipientEnvelope("alice@example.com"))
+	if err != nil || !outcome.Duplicate {
+		testInstance.Fatalf("Submit = (%v, outcome %+v), want a duplicate", err, outcome)
 	}
 	if len(fixture.publishers.calls) != 0 || len(fixture.store.insertCalls) != 0 {
 		testInstance.Fatalf("publisher lookups/inserts = %d/%d, want none",
@@ -980,6 +1119,8 @@ func TestListDeliveriesValidatesStateAndLimit(testInstance *testing.T) {
 		{name: "bogus state", state: "bogus", limit: 10, wantMessage: "invalid state"},
 		{name: "empty state", state: "", limit: 10, wantMessage: "invalid state"},
 		{name: "uppercase state", state: "DEAD", limit: 10, wantMessage: "invalid state"},
+		{name: "scheduled is not a log state", state: StateScheduled, limit: 10, wantMessage: "invalid state"},
+		{name: "cancelled is not a log state", state: StateCancelled, limit: 10, wantMessage: "invalid state"},
 		{name: "zero limit", state: StateDead, limit: 0, wantMessage: "invalid limit"},
 		{name: "negative limit", state: StateDead, limit: -1, wantMessage: "invalid limit"},
 		{name: "limit one over", state: StateDead, limit: MaxListLimit + 1, wantMessage: "invalid limit"},

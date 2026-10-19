@@ -143,6 +143,14 @@ services:
       # (POST /v1/admin/apps/{app_id}/ntfy-publisher). Unset disables minting. LOCKSTEP: keep in sync
       # with docker-compose.prod.yml.
       - DELIVERY_PROVISIONING_URL=http://provisioning-api:8080
+      # Per-app cap on scheduled (deliver_at) messages; a new scheduled submit over it is a 429. The
+      # default must equal the code default (message.DefaultMaxScheduledPerApp). LOCKSTEP: keep in
+      # sync with docker-compose.prod.yml.
+      - DELIVERY_MAX_SCHEDULED_PER_APP=${DELIVERY_MAX_SCHEDULED_PER_APP:-1000}
+      # Service-wide cap on scheduled messages across all apps; a new scheduled submit over it is a 429
+      # ("scheduled message capacity reached"). The default must equal the code default
+      # (message.DefaultMaxScheduledTotal). LOCKSTEP: keep in sync with docker-compose.prod.yml.
+      - DELIVERY_MAX_SCHEDULED_TOTAL=${DELIVERY_MAX_SCHEDULED_TOTAL:-100000}
     depends_on:
       provisioning-api:
         condition: service_healthy
