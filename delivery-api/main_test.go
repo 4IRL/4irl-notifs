@@ -235,6 +235,58 @@ func TestRunServeFailsFastOnInvalidRetention(testInstance *testing.T) {
 	}
 }
 
+// TestRunServeFailsFastOnInvalidMaxScheduled verifies serve rejects an invalid
+// DELIVERY_MAX_SCHEDULED_PER_APP or DELIVERY_MAX_SCHEDULED_TOTAL (with a valid
+// database and master key) before binding its listen address, and that the error
+// never echoes the value.
+func TestRunServeFailsFastOnInvalidMaxScheduled(testInstance *testing.T) {
+	testCases := []struct {
+		name   string
+		envVar string
+		value  string
+	}{
+		{name: "per app zero", envVar: "DELIVERY_MAX_SCHEDULED_PER_APP", value: "0"},
+		{name: "per app negative", envVar: "DELIVERY_MAX_SCHEDULED_PER_APP", value: "-5"},
+		{name: "per app not a number", envVar: "DELIVERY_MAX_SCHEDULED_PER_APP", value: "secret-looking-value"},
+		{name: "per app above the maximum", envVar: "DELIVERY_MAX_SCHEDULED_PER_APP", value: "100001"},
+		{name: "total zero", envVar: "DELIVERY_MAX_SCHEDULED_TOTAL", value: "0"},
+		{name: "total negative", envVar: "DELIVERY_MAX_SCHEDULED_TOTAL", value: "-5"},
+		{name: "total not a number", envVar: "DELIVERY_MAX_SCHEDULED_TOTAL", value: "secret-looking-value"},
+		{name: "total above the maximum", envVar: "DELIVERY_MAX_SCHEDULED_TOTAL", value: "10000001"},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			setDatabaseEnv(subTest)
+			subTest.Setenv("DELIVERY_MASTER_KEY", strings.Repeat("ab", 32))
+			subTest.Setenv("DELIVERY_MASTER_KEY_FILE", "")
+			subTest.Setenv(testCase.envVar, testCase.value)
+			address := reserveFreeAddress(subTest)
+			subTest.Setenv("LISTEN_ADDRESS", address)
+
+			ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+			defer cancel()
+			err := run(ctx, newTestLogger(), nil)
+
+			if err == nil {
+				subTest.Fatal("run returned nil, want an error")
+			}
+			if !strings.Contains(err.Error(), testCase.envVar) {
+				subTest.Fatalf("run error = %q, want it to mention %s", err, testCase.envVar)
+			}
+			if strings.Contains(err.Error(), testCase.value) {
+				subTest.Fatalf("run error = %q, must not contain the value", err)
+			}
+
+			connection, dialErr := net.Dial("tcp", address)
+			if dialErr == nil {
+				_ = connection.Close()
+				subTest.Fatalf("dial %s succeeded, want connection refused (run must not bind before the cap check)", address)
+			}
+		})
+	}
+}
+
 // TestShutdownBudgetCoversWorkerAndWaitingRequests pins the shutdown constants
 // to the delivery worker's worst case: a SIGTERM must leave an in-flight attempt
 // time to be recorded and a ?wait request time to finish.

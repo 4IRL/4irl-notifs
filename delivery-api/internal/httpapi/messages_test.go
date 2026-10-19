@@ -31,6 +31,8 @@ const (
 type fakeMessages struct {
 	submitResult    message.StoredMessage
 	submitDuplicate bool
+	submitReplaced  bool
+	submitScheduled bool
 	submitErr       error
 	submitCalls     []message.Envelope
 
@@ -75,9 +77,14 @@ type listDeliveriesCall struct {
 	limit int
 }
 
-func (fake *fakeMessages) Submit(_ context.Context, envelope message.Envelope) (message.StoredMessage, bool, error) {
+func (fake *fakeMessages) Submit(
+	_ context.Context, envelope message.Envelope,
+) (message.StoredMessage, message.SubmitOutcome, error) {
 	fake.submitCalls = append(fake.submitCalls, envelope)
-	return fake.submitResult, fake.submitDuplicate, fake.submitErr
+	outcome := message.SubmitOutcome{
+		Duplicate: fake.submitDuplicate, Replaced: fake.submitReplaced, Scheduled: fake.submitScheduled,
+	}
+	return fake.submitResult, outcome, fake.submitErr
 }
 
 func (fake *fakeMessages) Get(_ context.Context, appID string, id string) (message.StoredMessage, error) {
@@ -669,6 +676,9 @@ func TestWriteMessageErrorBranches(testInstance *testing.T) {
 		{name: "message not found", err: message.ErrMessageNotFound, wantStatus: 404, wantBody: `{"error":"message not found"}`},
 		{name: "delivery not found", err: message.ErrDeliveryNotFound, wantStatus: 404, wantBody: `{"error":"delivery not found"}`},
 		{name: "delivery not dead", err: message.ErrDeliveryNotDead, wantStatus: 409, wantBody: `{"error":"delivery not dead"}`},
+		{name: "too many scheduled", err: message.ErrTooManyScheduled, wantStatus: 429, wantBody: `{"error":"too many scheduled messages"}`},
+		{name: "wrapped too many scheduled", err: fmt.Errorf("insert: %w", message.ErrTooManyScheduled), wantStatus: 429, wantBody: `{"error":"too many scheduled messages"}`},
+		{name: "scheduled capacity reached", err: message.ErrScheduledCapacityReached, wantStatus: 429, wantBody: `{"error":"scheduled message capacity reached"}`},
 		{name: "wrapped sentinel", err: fmt.Errorf("replay: %w", message.ErrDeliveryNotDead), wantStatus: 409, wantBody: `{"error":"delivery not dead"}`},
 		{name: "anything else", err: errors.New("boom"), wantStatus: 500, wantBody: `{"error":"internal error"}`},
 	}

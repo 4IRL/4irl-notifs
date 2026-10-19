@@ -48,9 +48,9 @@ func TestServiceReadsAreScopedToTheCallingApp(testInstance *testing.T) {
 	ctx, service, _ := newRealService(testInstance)
 	envelope := sampleEnvelope("scoped-key")
 
-	stored, duplicate, submitErr := service.Submit(ctx, envelope)
-	if submitErr != nil || duplicate {
-		testInstance.Fatalf("Submit = (%v, duplicate %v)", submitErr, duplicate)
+	stored, outcome, submitErr := service.Submit(ctx, envelope)
+	if submitErr != nil || outcome.Duplicate {
+		testInstance.Fatalf("Submit = (%v, outcome %+v)", submitErr, outcome)
 	}
 
 	if own, err := service.Get(ctx, "u4i", stored.ID); err != nil || own.ID != stored.ID {
@@ -78,9 +78,9 @@ func TestServiceReadsAreScopedToTheCallingApp(testInstance *testing.T) {
 	// The same key submitted by another app is its own message, not a duplicate.
 	otherEnvelope := sampleEnvelope("scoped-key")
 	otherEnvelope.AppID = "other_app"
-	other, otherDuplicate, otherErr := service.Submit(ctx, otherEnvelope)
-	if otherErr != nil || otherDuplicate || other.ID == stored.ID {
-		testInstance.Fatalf("Submit as another app = (%+v, duplicate %v, %v), want a distinct new message", other, otherDuplicate, otherErr)
+	other, otherOutcome, otherErr := service.Submit(ctx, otherEnvelope)
+	if otherErr != nil || otherOutcome.Duplicate || other.ID == stored.ID {
+		testInstance.Fatalf("Submit as another app = (%+v, outcome %+v, %v), want a distinct new message", other, otherOutcome, otherErr)
 	}
 }
 
@@ -97,9 +97,9 @@ func TestServiceResubmitReturnsTheOriginalAndIgnoresNewContent(testInstance *tes
 	changed.Channel = "changed"
 	changed.Critical = false
 	changed.Payload = json.RawMessage(`{"different":true}`)
-	second, duplicate, secondErr := service.Submit(ctx, changed)
-	if secondErr != nil || !duplicate {
-		testInstance.Fatalf("second Submit = (%v, duplicate %v), want a duplicate", secondErr, duplicate)
+	second, secondOutcome, secondErr := service.Submit(ctx, changed)
+	if secondErr != nil || !secondOutcome.Duplicate {
+		testInstance.Fatalf("second Submit = (%v, outcome %+v), want a duplicate", secondErr, secondOutcome)
 	}
 	if second.ID != first.ID || second.Envelope.Channel != "alerts" || !second.Envelope.Critical {
 		testInstance.Fatalf("second = %+v, want the original %+v", second.Envelope, first.Envelope)

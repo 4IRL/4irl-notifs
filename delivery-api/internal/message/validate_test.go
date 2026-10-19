@@ -159,15 +159,41 @@ func TestValidateTo(testInstance *testing.T) {
 
 func TestValidateDeliverAt(testInstance *testing.T) {
 	someTime := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	pastTime := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	farFuture := time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
 	zeroTime := time.Time{}
+	// The same instant as the zero time, written with an offset.
+	zeroWithOffset := time.Date(1, 1, 1, 1, 0, 0, 0, time.FixedZone("plus1", 3600))
+	// 9999-12-31T23:59:59-01:00 is 10000-01-01T00:59:59Z, after the upper bound;
+	// it is the only way to reach the bound (a 5-digit year does not parse).
+	overBoundViaOffset := time.Date(9999, 12, 31, 23, 59, 59, 0, time.FixedZone("minus1", -3600))
+	// 9999-12-31T22:59:59-01:00 is exactly 9999-12-31T23:59:59Z.
+	atBoundViaOffset := time.Date(9999, 12, 31, 22, 59, 59, 0, time.FixedZone("minus1", -3600))
+	overBoundNanos := farFuture.Add(time.Nanosecond)
+	// 0000-01-01T00:00:00+05:00 parses as RFC3339 but its UTC form is in year -1.
+	yearZeroWithOffset := time.Date(0, 1, 1, 0, 0, 0, 0, time.FixedZone("plus5", 5*3600))
+	yearZeroUTC := time.Date(0, 12, 31, 23, 59, 59, 0, time.UTC)
+	justBeforeYearOne := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC).Add(-time.Nanosecond)
+	// The first instant after the zero time is accepted.
+	justAfterZero := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Nanosecond)
 	testCases := []struct {
 		name        string
 		deliverAt   *time.Time
 		wantMessage string
 	}{
 		{name: "absent"},
-		{name: "future time rejected", deliverAt: &someTime, wantMessage: "deliver_at not yet supported"},
-		{name: "zero time rejected", deliverAt: &zeroTime, wantMessage: "deliver_at not yet supported"},
+		{name: "future time accepted", deliverAt: &someTime},
+		{name: "past time accepted", deliverAt: &pastTime},
+		{name: "latest accepted instant", deliverAt: &farFuture},
+		{name: "latest accepted instant via an offset", deliverAt: &atBoundViaOffset},
+		{name: "zero time rejected", deliverAt: &zeroTime, wantMessage: "invalid deliver_at"},
+		{name: "zero instant with an offset rejected", deliverAt: &zeroWithOffset, wantMessage: "invalid deliver_at"},
+		{name: "after the upper bound via an offset rejected", deliverAt: &overBoundViaOffset, wantMessage: "invalid deliver_at"},
+		{name: "a nanosecond after the upper bound rejected", deliverAt: &overBoundNanos, wantMessage: "invalid deliver_at"},
+		{name: "year 0 UTC rejected", deliverAt: &yearZeroUTC, wantMessage: "invalid deliver_at"},
+		{name: "UTC year -1 via an offset rejected", deliverAt: &yearZeroWithOffset, wantMessage: "invalid deliver_at"},
+		{name: "a nanosecond before year 1 rejected", deliverAt: &justBeforeYearOne, wantMessage: "invalid deliver_at"},
+		{name: "a nanosecond after the zero time accepted", deliverAt: &justAfterZero},
 	}
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
@@ -392,6 +418,7 @@ func TestValidateEnvelopeAcceptsAdminSendTest(testInstance *testing.T) {
 
 func TestValidateEnvelopeEachRule(testInstance *testing.T) {
 	someTime := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	zeroTime := time.Time{}
 	testCases := []struct {
 		name        string
 		mutate      func(envelope *Envelope)
@@ -406,7 +433,8 @@ func TestValidateEnvelopeEachRule(testInstance *testing.T) {
 			mutate:      func(envelope *Envelope) { envelope.ToRecipient = "someone" },
 			wantMessage: invalidRecipientMessage,
 		},
-		{name: "deliver_at", mutate: func(envelope *Envelope) { envelope.DeliverAt = &someTime }, wantMessage: "deliver_at not yet supported"},
+		{name: "deliver_at", mutate: func(envelope *Envelope) { envelope.DeliverAt = &zeroTime }, wantMessage: "invalid deliver_at"},
+		{name: "valid deliver_at", mutate: func(envelope *Envelope) { envelope.DeliverAt = &someTime }},
 		{name: "bad payload", mutate: func(envelope *Envelope) { envelope.Payload = json.RawMessage(`[]`) }, wantMessage: "invalid payload"},
 		{
 			name:        "bad display",
@@ -427,6 +455,7 @@ func TestValidateEnvelopeEachRule(testInstance *testing.T) {
 // the failure of the next rule and checks the earlier one is reported.
 func TestValidateEnvelopeEarlierRuleWins(testInstance *testing.T) {
 	someTime := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	zeroTime := time.Time{}
 	testCases := []struct {
 		name        string
 		envelope    Envelope
@@ -459,9 +488,9 @@ func TestValidateEnvelopeEarlierRuleWins(testInstance *testing.T) {
 			name: "deliver_at before payload",
 			envelope: Envelope{
 				AppID: "urls4irl", Channel: "alerts", IdempotencyKey: "key-1",
-				DeliverAt: &someTime, Payload: json.RawMessage(`[]`),
+				DeliverAt: &zeroTime, Payload: json.RawMessage(`[]`),
 			},
-			wantMessage: "deliver_at not yet supported",
+			wantMessage: "invalid deliver_at",
 		},
 		{
 			name: "payload before display",

@@ -38,6 +38,8 @@ const (
 	errMsgMessageNotFound            = "message not found"
 	errMsgDeliveryNotFound           = "delivery not found"
 	errMsgDeliveryNotDead            = "delivery not dead"
+	errMsgTooManyScheduled           = "too many scheduled messages"
+	errMsgScheduledCapacityReached   = "scheduled message capacity reached"
 )
 
 // Query parameter and path value names, and list defaults.
@@ -63,9 +65,10 @@ const (
 // and must treat another app's message exactly like an absent one. The
 // delivery methods are operator-only and span apps by design.
 type Messages interface {
-	// Submit validates, resolves and queues envelope. The bool reports a
-	// duplicate of an earlier submission, whose original message is returned.
-	Submit(ctx context.Context, envelope message.Envelope) (message.StoredMessage, bool, error)
+	// Submit validates, resolves and queues envelope. The outcome reports a
+	// duplicate of an earlier submission (whose original message is returned), a
+	// replace of a scheduled message, and whether the result is scheduled.
+	Submit(ctx context.Context, envelope message.Envelope) (message.StoredMessage, message.SubmitOutcome, error)
 	// Get returns app appID's message with the given id.
 	Get(ctx context.Context, appID string, id string) (message.StoredMessage, error)
 	// GetByKey returns the message app appID submitted with idempotencyKey.
@@ -222,14 +225,16 @@ func (server *Server) handleCreateMessage(responseWriter http.ResponseWriter, re
 		envelope.ToRecipient = body.To.Recipient
 	}
 
-	stored, duplicate, err := server.messages.Submit(request.Context(), envelope)
+	stored, outcome, err := server.messages.Submit(request.Context(), envelope)
 	if err != nil {
 		server.writeMessageError(responseWriter, request, err)
 		return
 	}
-	if wait > 0 && !duplicate {
+	duplicate := outcome.Duplicate
+	if wait > 0 && !duplicate && !outcome.Scheduled {
 		// The message is already committed, so a failed wait is not a failed
-		// submit: answer with the freshest view available.
+		// submit: answer with the freshest view available. A scheduled message has
+		// no attempt to wait for, so it answers at once.
 		awaited, awaitErr := server.messages.Await(request.Context(), stored.Envelope.AppID, stored.ID, wait)
 		if awaitErr != nil {
 			server.logger.Warn("message wait failed", "error", awaitErr, "path", request.URL.Path)
@@ -473,6 +478,10 @@ func (server *Server) writeMessageError(responseWriter http.ResponseWriter, requ
 		writeError(responseWriter, http.StatusNotFound, errMsgDeliveryNotFound)
 	case errors.Is(err, message.ErrDeliveryNotDead):
 		writeError(responseWriter, http.StatusConflict, errMsgDeliveryNotDead)
+	case errors.Is(err, message.ErrTooManyScheduled):
+		writeError(responseWriter, http.StatusTooManyRequests, errMsgTooManyScheduled)
+	case errors.Is(err, message.ErrScheduledCapacityReached):
+		writeError(responseWriter, http.StatusTooManyRequests, errMsgScheduledCapacityReached)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		// The client went away or the request ran out of time: not a server fault,
 		// and a client that can disconnect at will must not be able to flood the

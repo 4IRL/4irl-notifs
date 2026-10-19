@@ -59,4 +59,52 @@ type Store interface {
 	// deliver_at, so a long-scheduled message keeps its full retention after it
 	// is released; a cancelled message ages from cancelled_at instead.
 	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)
+
+	// InsertScheduledMessage is InsertMessage for a message held until
+	// envelope.DeliverAt (which must be set): the deliveries are inserted
+	// 'scheduled' with next_attempt_at = deliver_at (stored as UTC). A new
+	// message is refused, storing nothing, when a cap in caps is full: with
+	// ErrTooManyScheduled when the app already holds caps.PerApp scheduled
+	// messages, else with ErrScheduledCapacityReached when all apps together hold
+	// caps.Total. Neither cap is ever exceeded under concurrent submits. A
+	// duplicate key returns the existing message without a cap check. Both caps
+	// must be positive.
+	InsertScheduledMessage(
+		ctx context.Context, envelope Envelope, targets []DeliveryTarget, caps ScheduledCaps,
+	) (StoredMessage, bool, error)
+	// ReplaceScheduledMessage swaps the content and deliveries of the message at
+	// (envelope.AppID, envelope.IdempotencyKey) for the submitted ones, under the
+	// message row lock, but only while the message is still scheduled. It keeps
+	// the message id and created_at. When envelope.DeliverAt is nil or not after
+	// now the message is released at once (deliveries 'pending', due and
+	// budgeted from now); otherwise it stays scheduled for the new time. The bool
+	// reports whether it replaced: a message already released or cancelled is
+	// left untouched and returned as stored with false. An unknown key is
+	// ErrMessageNotFound. targets must not be empty.
+	ReplaceScheduledMessage(
+		ctx context.Context, envelope Envelope, targets []DeliveryTarget, now time.Time,
+	) (StoredMessage, bool, error)
+	// CancelMessage cancels the scheduled message with the id, or reports its
+	// real status when it is not scheduled. The lookup is scoped to appID
+	// (another app's message is not found), and an empty appID is not found, so
+	// a missing app id can never become an unscoped cancel; the operator's
+	// unscoped cancel is AdminCancelMessage. now stamps cancelled_at.
+	CancelMessage(ctx context.Context, id string, appID string, now time.Time) (CancelOutcome, error)
+	// AdminCancelMessage is CancelMessage for the operator: it finds the message
+	// in any app.
+	AdminCancelMessage(ctx context.Context, id string, now time.Time) (CancelOutcome, error)
+	// CancelMessageByKey is CancelMessage for the message at (appID,
+	// idempotencyKey).
+	CancelMessageByKey(ctx context.Context, appID string, idempotencyKey string, now time.Time) (CancelOutcome, error)
+	// ReleaseDue releases up to limit messages that have scheduled deliveries
+	// with next_attempt_at at or before now, oldest first: their deliveries
+	// become 'pending' with next_attempt_at and budget_started_at set to now. It
+	// locks each message row first (SKIP LOCKED) so it serializes with cancel and
+	// replace, and returns how many messages it released. limit must be
+	// positive.
+	ReleaseDue(ctx context.Context, now time.Time, limit int) (int64, error)
+	// ListScheduled returns up to limit scheduled messages ordered by deliver_at
+	// then id, plus the total number of scheduled messages. limit must be
+	// positive.
+	ListScheduled(ctx context.Context, limit int) ([]ScheduledMessage, int, error)
 }

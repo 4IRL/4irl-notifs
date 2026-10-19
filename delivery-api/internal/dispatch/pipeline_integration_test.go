@@ -132,6 +132,7 @@ type pipeline struct {
 	ctx             context.Context
 	registryService *registry.Service
 	messages        *message.Service
+	store           *message.PGStore
 	receiver        *receiver
 	worker          *dispatch.Worker
 	clock           *shiftedClock
@@ -212,7 +213,7 @@ func startPipeline(testInstance *testing.T, respond func(requestNumber int) int,
 	})
 
 	return &pipeline{
-		ctx: ctx, registryService: registryService, messages: messageService,
+		ctx: ctx, registryService: registryService, messages: messageService, store: store,
 		receiver: webhook, worker: worker, clock: clock, appID: pipelineAppID,
 	}
 }
@@ -220,7 +221,7 @@ func startPipeline(testInstance *testing.T, respond func(requestNumber int) int,
 // submit queues one message through the real service.
 func (live *pipeline) submit(testInstance *testing.T, idempotencyKey string) message.StoredMessage {
 	testInstance.Helper()
-	stored, duplicate, submitErr := live.messages.Submit(live.ctx, message.Envelope{
+	stored, outcome, submitErr := live.messages.Submit(live.ctx, message.Envelope{
 		AppID:          pipelineAppID,
 		Channel:        pipelineChannel,
 		IdempotencyKey: idempotencyKey,
@@ -228,8 +229,8 @@ func (live *pipeline) submit(testInstance *testing.T, idempotencyKey string) mes
 		Payload:        json.RawMessage(`{"order":42}`),
 		Display:        &message.Display{Title: "Hello", Priority: "high"},
 	})
-	if submitErr != nil || duplicate {
-		testInstance.Fatalf("Submit = (duplicate %v, %v), want a new message", duplicate, submitErr)
+	if submitErr != nil || outcome.Duplicate {
+		testInstance.Fatalf("Submit = (outcome %+v, %v), want a new message", outcome, submitErr)
 	}
 	if len(stored.Deliveries) != 1 {
 		testInstance.Fatalf("Submit queued %d deliveries, want 1", len(stored.Deliveries))
@@ -596,7 +597,7 @@ func TestPipelineDeliversARecipientMessageToTheNtfyTopic(testInstance *testing.T
 		}
 	})
 
-	stored, duplicate, submitErr := messageService.Submit(ctx, message.Envelope{
+	stored, outcome, submitErr := messageService.Submit(ctx, message.Envelope{
 		AppID:          recipientAppID,
 		Channel:        pipelineChannel,
 		IdempotencyKey: "recipient-1",
@@ -604,8 +605,8 @@ func TestPipelineDeliversARecipientMessageToTheNtfyTopic(testInstance *testing.T
 		Payload:        json.RawMessage(`{"order":42}`),
 		Display:        &message.Display{Title: "Hello", Body: "Body"},
 	})
-	if submitErr != nil || duplicate {
-		testInstance.Fatalf("Submit = (duplicate %v, %v), want a new message", duplicate, submitErr)
+	if submitErr != nil || outcome.Duplicate {
+		testInstance.Fatalf("Submit = (outcome %+v, %v), want a new message", outcome, submitErr)
 	}
 	wantHash := personhash.Hash(recipientEmail)
 	if stored.Envelope.ToRecipient != wantHash {
@@ -677,4 +678,120 @@ func TestPipelineRefusesADestinationTypeWithNoSinkAt422(testInstance *testing.T)
 	if recorder.Code != wantStatus || recorder.Body.String() != wantErrorBody {
 		testInstance.Fatalf("POST /v1/messages = %d %q, want %d %q", recorder.Code, recorder.Body.String(), wantStatus, wantErrorBody)
 	}
+}
+
+// callSignalingReleaser reports every finished ReleaseDue call, so a test can
+// tell when a releaser run has done its work.
+type callSignalingReleaser struct {
+	inner    dispatch.DueReleaser
+	finished chan struct{}
+}
+
+func (releaser *callSignalingReleaser) ReleaseDue(ctx context.Context, now time.Time, limit int) (int64, error) {
+	released, releaseErr := releaser.inner.ReleaseDue(ctx, now, limit)
+	select {
+	case releaser.finished <- struct{}{}:
+	default:
+	}
+	return released, releaseErr
+}
+
+// runReleaserOnce starts the real releaser on the pipeline's shifted clock and
+// worker wake, waits for its immediate first run to finish, then stops it and
+// waits for it to return, so the run's wake has happened when this returns.
+func (live *pipeline) runReleaserOnce(testInstance *testing.T) {
+	testInstance.Helper()
+	signaling := &callSignalingReleaser{inner: live.store, finished: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(live.ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// A long interval keeps this to the immediate first run.
+		dispatch.RunReleaser(ctx, dispatch.ReleaserConfig{
+			Releaser: signaling, Interval: time.Hour, BatchSize: dispatch.DefaultReleaseBatchSize,
+			Now: live.clock.Now, Wake: live.worker.Wake, Logger: slog.New(slog.DiscardHandler),
+		})
+	}()
+	select {
+	case <-signaling.finished:
+	case <-time.After(pipelineWaitTimeout):
+		testInstance.Fatal("the releaser did not run")
+	}
+	// A short batch ends the run, so no further call follows; cancel only after
+	// the run has wound down (done is closed when RunReleaser returns).
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(pipelineWaitTimeout):
+		testInstance.Fatal("the releaser did not stop")
+	}
+}
+
+// submitScheduled queues one message held until deliverAt.
+func (live *pipeline) submitScheduled(testInstance *testing.T, idempotencyKey string, deliverAt time.Time) message.StoredMessage {
+	testInstance.Helper()
+	stored, outcome, submitErr := live.messages.Submit(live.ctx, message.Envelope{
+		AppID:          pipelineAppID,
+		Channel:        pipelineChannel,
+		IdempotencyKey: idempotencyKey,
+		DeliverAt:      &deliverAt,
+		Payload:        json.RawMessage(`{"order":42}`),
+		Display:        &message.Display{Title: "Hello", Priority: "high"},
+	})
+	if submitErr != nil || outcome.Duplicate {
+		testInstance.Fatalf("Submit = (outcome %+v, %v), want a new scheduled message", outcome, submitErr)
+	}
+	if len(stored.Deliveries) != 1 || stored.Deliveries[0].State != message.StateScheduled {
+		testInstance.Fatalf("Submit stored deliveries %+v, want one scheduled delivery", stored.Deliveries)
+	}
+	return stored
+}
+
+func TestPipelineDeliversAScheduledMessageOnceTheClockPassesDeliverAt(testInstance *testing.T) {
+	live := startPipeline(testInstance, func(int) int { return http.StatusOK }, false)
+	stored := live.submitScheduled(testInstance, "scheduled-1", time.Now().Add(time.Hour))
+
+	// Not due yet: a releaser run must leave it scheduled, and nothing is sent.
+	live.runReleaserOnce(testInstance)
+	time.Sleep(pipelineQuietPeriod)
+	if got := len(live.receiver.received()); got != 0 {
+		testInstance.Fatalf("receiver saw %d requests before deliver_at, want 0", got)
+	}
+	live.waitForDelivery(testInstance, stored.ID, "still scheduled", stateIs(message.StateScheduled))
+
+	live.clock.Advance(2 * time.Hour)
+	live.runReleaserOnce(testInstance)
+	live.waitForDelivery(testInstance, stored.ID, "delivered after deliver_at", deliveredAfterAttempts(1))
+
+	// A second run finds nothing due, so the message is delivered exactly once.
+	live.runReleaserOnce(testInstance)
+	live.worker.Wake()
+	time.Sleep(pipelineQuietPeriod)
+	requests := live.receiver.received()
+	if len(requests) != 1 {
+		testInstance.Fatalf("receiver saw %d requests, want exactly 1", len(requests))
+	}
+	if got := requests[0].header.Get("X-Delivery-Message-Id"); got != stored.ID {
+		testInstance.Fatalf("request message id = %q, want %q", got, stored.ID)
+	}
+}
+
+func TestPipelineNeverSendsAScheduledMessageCancelledBeforeDeliverAt(testInstance *testing.T) {
+	live := startPipeline(testInstance, func(int) int { return http.StatusOK }, false)
+	stored := live.submitScheduled(testInstance, "scheduled-cancel-1", time.Now().Add(time.Hour))
+
+	outcome, cancelErr := live.messages.Cancel(live.ctx, pipelineAppID, stored.ID)
+	if cancelErr != nil || !outcome.Cancelled || !outcome.Transitioned {
+		testInstance.Fatalf("Cancel = (%+v, %v), want a cancelled transition", outcome, cancelErr)
+	}
+
+	live.clock.Advance(2 * time.Hour)
+	live.runReleaserOnce(testInstance)
+	live.worker.Wake()
+	time.Sleep(pipelineQuietPeriod)
+	if got := len(live.receiver.received()); got != 0 {
+		testInstance.Fatalf("receiver saw %d requests for a cancelled message, want 0", got)
+	}
+	live.waitForDelivery(testInstance, stored.ID, "still cancelled", stateIs(message.StateCancelled))
 }
