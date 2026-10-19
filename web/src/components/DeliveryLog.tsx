@@ -11,6 +11,7 @@ import { useFocusRegistry } from '../hooks/useFocusRegistry';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { strings } from '../strings';
 import { ConfirmButton } from './ConfirmButton';
+import { formatMinute } from './formatUtc';
 import { messageOf, withoutKey } from './rowState';
 import './DeliveryLog.css';
 
@@ -46,11 +47,6 @@ function spaced(text: string): string {
 function capitalised(text: string): string {
   const spacedText = spaced(text);
   return spacedText.charAt(0).toUpperCase() + spacedText.slice(1);
-}
-
-/** "2026-10-17T08:12:44Z" to "2026-10-17 08:12" (UTC, as the server sends it). */
-function formatMinute(timestamp: string): string {
-  return timestamp.replace('T', ' ').slice(0, 16);
 }
 
 function formatClock(timestamp: string): string {
