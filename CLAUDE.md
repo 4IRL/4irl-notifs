@@ -31,6 +31,7 @@ Guidance for Claude Code when working in this repository.
   | JS/unit tests | `make web-test` (`npm test` in `web/`, Vitest) |
   | Build | `make web-build` (`tsc -b` + Vite → `dist/`) |
   | Lint / format | `make go-lint` / `make go-fmt` (Go); `make web-lint` / `make web-format` (frontend); `make scripts-lint` / `make scripts-format` (`scripts/`); `make delivery-lint` / `make delivery-fmt` (delivery-api Go) |
+  | Setup page (`setup-web/`) | `make setup-web-dev` (dev server) / `make setup-web-test` (Vitest) / `make setup-web-e2e` (Playwright) / `make setup-web-build` / `make setup-web-lint` / `make setup-web-format` / `make setup-web-pages-dev` (wrangler Pages parity) |
   | Workflow YAML lint | `make workflows-lint` (actionlint, pinned; part of `make lint`) |
   | Admin UI dev server | `make dev-web` (foreground) / `make dev-web-bg` + `make dev-web-stop` (detached) |
   | End-to-end smoke test | `make notif-smoke-test` |
@@ -46,6 +47,7 @@ Guidance for Claude Code when working in this repository.
   | `delivery-api/**`                                                  | `make delivery-test`   |
   | `web/**`                                                           | `make web-test`        |
   | `person-service/**`                                                | `make worker-test`     |
+  | `setup-web/**`                                                     | `make setup-web-test`  |
   | `scripts/**`                                                       | `make scripts-test`    |
   | `docs/** *.md .claude/** .gitignore`                               | na docs and config only |
   | `**`                                                               | `make test`            |
@@ -54,9 +56,9 @@ Guidance for Claude Code when working in this repository.
 - **PR reviewer:** `GPropersi`   <!-- always request as reviewer on every PR -->
 - **Worktree policy:** `full`
 - **Worktree link:** `web/.dev.vars`
-- **Worktree setup:** `n/a` <!-- informational; the owned worktree-new target runs npm ci in web/ and person-service/ itself -->
+- **Worktree setup:** `n/a` <!-- informational; the owned worktree-new target runs npm ci in web/, setup-web/ and person-service/ itself -->
 - **Worktree teardown:** `n/a`
-- **Worktree ports:** `NTFY_PORT=8090,API_PORT=8091,WEB_PORT=5173,E2E_PORT=4173,DELIVERY_PORT=8300` <!-- informational: slot-0 / primary defaults; scripts/ports.mjs owns the per-worktree values (8090+2s, 8091+2s, 5273+s, 4273+s, 8300+s) -->
+- **Worktree ports:** `NTFY_PORT=8090,API_PORT=8091,WEB_PORT=5173,E2E_PORT=4173,DELIVERY_PORT=8300,SETUP_WEB_PORT=5473,SETUP_E2E_PORT=4473` <!-- informational: slot-0 / primary defaults; scripts/ports.mjs owns the per-worktree values (8090+2s, 8091+2s, 5273+s, 4273+s, 8300+s, 5573+s, 4573+s) -->
 - **Worktree allowed targets:** `n/a`
 - **Worktree guarded targets:** `n/a`
 
@@ -82,6 +84,10 @@ Components:
   and the retention sweeper in-process.
 - **web** — React/Vite admin UI, deployed to Cloudflare Pages behind Cloudflare Access
   (Google/GitHub OAuth).
+- **setup-web** — public static ntfy setup page (React/Vite, `qrcode.react`) deployed to its own
+  Cloudflare Pages project `notifs-setup` at `notifs-setup.4irl.app`, with no Access application and no
+  API calls. Every 4IRL app links users to it; see `ARCHITECTURE.md` "Setup page" and
+  `docs/app-integration-guide.md`.
 
 ## Environments
 
@@ -110,10 +116,15 @@ shown for reference only.
 | `make web-build` (`npm run build`) | Production build (`tsc -b` + Vite → `dist/`) |
 | `make web-lint` / `make web-format` (`npx eslint` / `npx prettier`) | Lint / format the frontend |
 | `make dev-web` / `make dev-web-bg` + `make dev-web-stop` | Admin UI dev server (foreground / detached) |
+| `make setup-web-dev` / `make setup-web-pages-dev` | Setup page dev server on `SETUP_WEB_PORT` / build + `wrangler pages dev` for local Pages parity (headers, routing) |
+| `make setup-web-test` (`npm test` in `setup-web/`) | Run setup page unit tests (Vitest) |
+| `make setup-web-e2e` (`npx playwright test` in `setup-web/`) | Run setup page e2e tests (Playwright; iPhone/Android/desktop projects) |
+| `make setup-web-build` (`npm run build`) | Production build of the setup page (`tsc -b` + Vite → `dist/`) |
+| `make setup-web-lint` / `make setup-web-format` (`npx eslint` + `npx prettier`) | Lint and format-check / auto-format the setup page |
 | `make notif-smoke-test` | End-to-end provision → publish → deliver smoke test |
 | `make help` | List all targets |
-| `make lint` | Run all linters (both Go modules, frontend, scripts, workflow YAML) |
-| `make test` | Run all unit tests (both Go modules, web Vitest, worker Vitest, scripts) |
+| `make lint` | Run all linters (both Go modules, both frontends, scripts, workflow YAML) |
+| `make test` | Run all unit tests (both Go modules, web + setup-web Vitest, worker Vitest, scripts) |
 | `make scripts-test` (`node --test "scripts/*.test.mjs"`) | Run the `scripts/` unit tests |
 | `make scripts-lint` / `make scripts-format` (`npx prettier` with `web/.prettierrc`) | Check / format `scripts/*.mjs` |
 | `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` | Create an isolated worktree with its own compose project and ports (see [`docs/worktrees.md`](docs/worktrees.md)) |
@@ -140,6 +151,7 @@ All versions in any language must be pinned to exact versions — no ranges, no 
 |---|---|---|
 | `go.mod` | `require pkg v1.2.3` (Go modules pin exact versions by default via `go.sum`) | N/A — verify no `// indirect` drift left unpinned after `go mod tidy` |
 | `web/package.json` direct deps & devDeps | `"pkg": "1.2.3"` | `^1.2.3`, `~1.2.3`, `>=`, `*`, `latest` |
+| `setup-web/package.json` direct deps & devDeps | `"pkg": "1.2.3"` | `^1.2.3`, `~1.2.3`, `>=`, `*`, `latest` |
 
 ## `.claude/`, `CLAUDE.md`, and `.gitignore`
 

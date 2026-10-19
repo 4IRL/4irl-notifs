@@ -167,8 +167,9 @@ mobile/desktop apps. Two delivery models:
   must never reach the client (your backend then owns reconnection/offline delivery that ntfy would
   otherwise handle).
 
-> **iOS clients need one extra step:** the ntfy iOS app's **Default Server** must be set to exactly
-> `https://notifs.4irl.app`, or notifications silently never arrive. See **Usage recommendations** below.
+> **iOS clients need one extra step:** the ntfy iOS app's **Default server** must be set to exactly
+> `https://notifs.4irl.app`, or notifications silently never arrive. Link iOS users to the shared setup
+> page (see **Link your users to the setup page** below) rather than documenting this yourself.
 
 ### Step 5 — Deprovision (when the user disables notifications or leaves)
 
@@ -487,7 +488,8 @@ The subscriber token (Step 2/Step 4) is what a **programmatic or Android** clien
 the ntfy app with a **username + password**, not a token. The username is the derived ntfy user id
 `u_<person_hash>` (the `user_id` from `/v1/provision`); the password is one **your app sets for them** via
 `POST /v1/set-password`. So for any user who will subscribe on iOS, provision them first, then let them
-choose a password and call this endpoint.
+choose a password and call this endpoint. (The shared setup page also asks Android users for this
+username and password, so set one for anyone you link to it; see "Link your users to the setup page".)
 
 ```
 POST https://notifs-api.4irl.app/v1/set-password
@@ -509,7 +511,7 @@ Response:
 ```
 
 The user then logs into the ntfy iOS app with **username `u_v4sf4e5teivpe3zi` + that password** (after
-setting the Default Server to `https://notifs.4irl.app`, see below), and their existing read ACL lets
+setting the Default server to `https://notifs.4irl.app`; the setup page below walks them through it), and their existing read ACL lets
 them subscribe to their own `{app_id}-{person_hash}-*` topics and `{app_id}-broadcast`.
 
 **Rules:**
@@ -526,6 +528,40 @@ them subscribe to their own `{app_id}-{person_hash}-*` topics and `{app_id}-broa
 
 ---
 
+## Link your users to the setup page
+
+Do not write your own ntfy install or subscribe instructions. Send users to the shared, public setup
+page at `https://notifs-setup.4irl.app`. It detects iPhone or Android, walks them through installing
+and configuring the ntfy app (iOS Default server, login, subscribing), shows each topic with a copy
+button, and offers one-tap `ntfy://` subscribe buttons on Android. It makes no API calls.
+
+**Link format** (all three values are query parameters):
+
+```
+https://notifs-setup.4irl.app/?app=tasktracker&user=u_v4sf4e5teivpe3zi&name=Task%20Tracker
+```
+
+| Param  | Required | Rule                                                                                                                                                                                                                     |
+| ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `app`  | yes      | Your `app_id`: `^[a-z0-9][a-z0-9_]{0,62}$`, and not the reserved word `everyone`.                                                                                                                                        |
+| `user` | yes      | The `user_id` from `POST /v1/provision`: `^u_[a-z2-7]{16}$`. This is the user's ntfy **username**.                                                                                                                       |
+| `name` | no       | Display name shown on the page, URL-encoded. After trimming, 1-64 characters with no control or format characters (such as bidi overrides); otherwise (missing, blank, too long or containing any) the page shows `app`. |
+
+- The page derives the topics itself from `app` and `user`: `{app}-{hash}-all` (where `hash` is `user`
+  without its `u_` prefix) and `{app}-broadcast`, on the constant server `https://notifs.4irl.app`.
+  Never put topics or a server in the link; unknown parameters are ignored.
+- If `app` or `user` is missing or invalid, the page shows an "incomplete link" message and nothing
+  else. It never echoes the bad value.
+- **The password is never in the URL.** The page shows the username and tells the user to type the
+  password they set via `POST /v1/set-password` (see above) into the ntfy app. This applies to iPhone
+  **and** Android users who follow the page, so call `POST /v1/set-password` before you link anyone to
+  it. Never put the password, or any token, in the link.
+- Pass the `user_id` from `POST /v1/provision` as the `user` parameter (it is the ntfy username), so
+  the username the page shows is the one your user logs in with.
+- The page requires JavaScript.
+
+---
+
 ## Usage recommendations (this deployment)
 
 The 5 steps above are the mechanics; this is how to use them well against `notifs.4irl.app`.
@@ -534,11 +570,13 @@ The 5 steps above are the mechanics; this is how to use them well against `notif
 device subscribes to ntfy itself. Reach for backend-relay only when a token must never live on the
 client; it makes your backend own the reconnection/offline story ntfy otherwise handles for free.
 
-**iOS (ntfy app) — the Default Server gotcha.** iOS can't hold a background connection, so iOS delivery
+**iOS (ntfy app) — the Default server gotcha.** iOS can't hold a background connection, so iOS delivery
 goes through APNs bridged via ntfy.sh. Two consequences for you:
-- The user's ntfy iOS app **Default Server** (or per-subscription server) must equal
+- The user's ntfy iOS app **Default server** (or per-subscription server) must equal
   `https://notifs.4irl.app` **exactly** — https, no trailing slash. Any mismatch and the wake-up can't
-  be matched, so notifications **silently never arrive**. Put this in your iOS onboarding steps.
+  be matched, so notifications **silently never arrive**. The shared setup page walks iOS users
+  through this; link them to it (see "Link your users to the setup page") and do not write your own
+  Default server instructions.
 - Expect a short APNs wake latency on iOS; Android/desktop/web are instant. Don't design flows that
   assume sub-second iOS delivery.
 
@@ -626,9 +664,11 @@ Notes:
 - [ ] (Optional) Site-wide announcements: publish to `{app_id}-broadcast` with the publisher token;
       clients subscribe to `{app_id}-broadcast` (read grant added automatically at provision, returned as `broadcast_topic`).
 - [ ] On opt-out / account deletion: call `POST /v1/deprovision`.
-- [ ] iOS users: call `POST /v1/set-password` (after provisioning) so they have a username+password to log
-      into the ntfy iOS app with (`u_<person_hash>` + the password) — the iOS app has no token field.
-- [ ] iOS users: ntfy app **Default Server** set to exactly `https://notifs.4irl.app` (else silent no-delivery).
+- [ ] After a user sets a password via `POST /v1/set-password` (iPhone and Android users both type it into
+      the ntfy app), link them to the shared setup page (see "Link your users to the setup page"); do not
+      write your own Default server instructions.
+- [ ] Link users to `https://notifs-setup.4irl.app/?app=<app_id>&user=<user_id>&name=<display name>` instead of
+      writing your own ntfy install instructions.
 - [ ] Bulk/periodic sender: publisher rate-limit raised/exempted by operator; many-per-user sends coalesced into a digest.
 - [ ] All mint responses (`token`) are captured on first response — they are never re-shown.
 
