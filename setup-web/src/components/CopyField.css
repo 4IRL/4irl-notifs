@@ -1,0 +1,64 @@
+.setup-page__copy-field {
+  position: relative; /* anchors the absolutely positioned sr-only live region */
+}
+
+.setup-page__label {
+  font-size: 12px;
+  color: var(--text);
+  margin: var(--space-2) 0 var(--space-1);
+  display: block;
+}
+
+.setup-page__field {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.setup-page__value {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-h);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: var(--space-2);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.setup-page__copy {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: 0;
+  border-radius: 6px;
+  padding: var(--space-2) 12px;
+  font-weight: 600;
+  font-size: 13px;
+  min-height: 2.75rem;
+  min-width: 5.5rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.setup-page__copy:hover {
+  background: var(--accent-hover);
+}
+
+.setup-page__copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.setup-page__copy--done,
+.setup-page__copy--done:hover {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.setup-page__copy-error {
+  color: var(--danger);
+  font-size: 12px;
+  margin: var(--space-1) 0 0;
+}
