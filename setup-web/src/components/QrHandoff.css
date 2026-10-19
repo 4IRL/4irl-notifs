@@ -1,0 +1,34 @@
+.setup-page__qr-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  margin-bottom: var(--space-2);
+  text-align: center;
+}
+
+.setup-page__qr-heading {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 var(--space-1);
+}
+
+.setup-page__qr-card p {
+  font-size: 13px;
+  margin: var(--space-1) 0 0;
+}
+
+.setup-page__qr {
+  width: 168px;
+  height: 168px;
+  margin: 0.75rem auto;
+  background: #fff;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.setup-page__qr svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
