@@ -21,6 +21,8 @@ describe('DEFAULT_PORTS', () => {
       WEB_PORT: 5173,
       E2E_PORT: 4173,
       DELIVERY_PORT: 8300,
+      SETUP_WEB_PORT: 5473,
+      SETUP_E2E_PORT: 4473,
     });
   });
 });
@@ -43,6 +45,8 @@ describe('slotPorts', () => {
       WEB_PORT: 5274,
       E2E_PORT: 4274,
       DELIVERY_PORT: 8301,
+      SETUP_WEB_PORT: 5574,
+      SETUP_E2E_PORT: 4574,
     });
     assert.deepEqual(slotPorts(99), {
       NTFY_PORT: 8288,
@@ -50,7 +54,27 @@ describe('slotPorts', () => {
       WEB_PORT: 5372,
       E2E_PORT: 4372,
       DELIVERY_PORT: 8399,
+      SETUP_WEB_PORT: 5672,
+      SETUP_E2E_PORT: 4672,
     });
+  });
+
+  it('keeps the setup-web ports in their own disjoint ranges', () => {
+    const ranges = {
+      NTFY_PORT: [8092, 8288],
+      API_PORT: [8093, 8289],
+      WEB_PORT: [5274, 5372],
+      E2E_PORT: [4274, 4372],
+      DELIVERY_PORT: [8301, 8399],
+      SETUP_WEB_PORT: [5574, 5672],
+      SETUP_E2E_PORT: [4574, 4672],
+    };
+    for (let slot = 1; slot <= 99; slot += 1) {
+      const ports = slotPorts(slot);
+      for (const [key, [low, high]] of Object.entries(ranges)) {
+        assert.ok(ports[key] >= low && ports[key] <= high, `slot ${slot} ${key}=${ports[key]}`);
+      }
+    }
   });
 
   it('never repeats a port across slots 1..99 or keys, and never equals a default', () => {
@@ -61,7 +85,7 @@ describe('slotPorts', () => {
         seen.add(port);
       }
     }
-    assert.equal(seen.size, 5 + 99 * 5);
+    assert.equal(seen.size, 7 + 99 * 7);
   });
 });
 
@@ -81,6 +105,8 @@ describe('resolvePorts', () => {
       WEB_PORT: result.WEB_PORT,
       E2E_PORT: result.E2E_PORT,
       DELIVERY_PORT: result.DELIVERY_PORT,
+      SETUP_WEB_PORT: result.SETUP_WEB_PORT,
+      SETUP_E2E_PORT: result.SETUP_E2E_PORT,
     });
   });
 
@@ -112,6 +138,16 @@ describe('resolvePorts', () => {
     assert.equal(result.NOTIFS_SLOT, (first % 99) + 1);
   });
 
+  it('skips a slot when the probe reports its SETUP_WEB_PORT or SETUP_E2E_PORT busy', async () => {
+    const slug = 'proof-a';
+    const first = firstCandidate(slug);
+    for (const key of ['SETUP_WEB_PORT', 'SETUP_E2E_PORT']) {
+      const busy = new Set([slotPorts(first)[key]]);
+      const result = await resolvePorts({ slug, env: {}, probe: async (port) => !busy.has(port) });
+      assert.equal(result.NOTIFS_SLOT, (first % 99) + 1, key);
+    }
+  });
+
   it('lets an explicit DELIVERY_PORT env override that key only', async () => {
     const result = await resolvePorts({
       slug: 'proof-a',
@@ -137,7 +173,7 @@ describe('resolvePorts', () => {
   it('throws when every slot is unavailable', async () => {
     await assert.rejects(
       resolvePorts({ slug: 'x', env: {}, probe: async () => false }),
-      /no free port slot.*DELIVERY_PORT/,
+      /no free port slot.*DELIVERY_PORT.*SETUP_WEB_PORT.*SETUP_E2E_PORT/,
     );
   });
 
@@ -162,13 +198,15 @@ describe('resolvePorts', () => {
     );
   });
 
-  it('skips the walk when all five keys are explicit', async () => {
+  it('skips the walk when all seven keys are explicit', async () => {
     const env = {
       NTFY_PORT: '1001',
       API_PORT: '1002',
       WEB_PORT: '1003',
       E2E_PORT: '1004',
       DELIVERY_PORT: '1005',
+      SETUP_WEB_PORT: '1006',
+      SETUP_E2E_PORT: '1007',
     };
     const result = await resolvePorts({
       slug: 'a',
@@ -183,6 +221,8 @@ describe('resolvePorts', () => {
       WEB_PORT: 1003,
       E2E_PORT: 1004,
       DELIVERY_PORT: 1005,
+      SETUP_WEB_PORT: 1006,
+      SETUP_E2E_PORT: 1007,
       NOTIFS_SLOT: 0,
     });
   });
@@ -226,6 +266,17 @@ describe('loadPorts', () => {
     assert.equal(loadPorts({ cwd, env: {} }).ports.DELIVERY_PORT, 8300);
     fs.writeFileSync(path.join(cwd, '.worktree.env'), 'DELIVERY_PORT=8394\n');
     assert.equal(loadPorts({ cwd, env: {} }).ports.DELIVERY_PORT, 8394);
+  });
+
+  it('reads the setup-web ports from the file and defaults them to 5473 and 4473', () => {
+    const cwd = tmpDir();
+    const defaults = loadPorts({ cwd, env: {} }).ports;
+    assert.equal(defaults.SETUP_WEB_PORT, 5473);
+    assert.equal(defaults.SETUP_E2E_PORT, 4473);
+    fs.writeFileSync(path.join(cwd, '.worktree.env'), 'SETUP_WEB_PORT=5594\nSETUP_E2E_PORT=4594\n');
+    const { ports } = loadPorts({ cwd, env: {} });
+    assert.equal(ports.SETUP_WEB_PORT, 5594);
+    assert.equal(ports.SETUP_E2E_PORT, 4594);
   });
 
   it('env beats file', () => {

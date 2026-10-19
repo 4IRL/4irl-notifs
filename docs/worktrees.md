@@ -9,7 +9,7 @@ The tooling is standalone (no stronghold needed): `make worktree-new` and `make 
 
 Keep the primary clone (`4irl-notifs/`) set up first. It uses the default compose project
 `4irl-notifs` and the default ports (ntfy 8090, API 8091, Vite 5173, Playwright preview 4173,
-delivery 8300), and it holds the one untracked config file that is symlinked into every worktree:
+delivery 8300, setup page Vite 5473 and Playwright preview 4473), and it holds the one untracked config file that is symlinked into every worktree:
 
 - `web/.dev.vars` (copy from `web/.dev.vars.example`)
 
@@ -34,35 +34,40 @@ make worktree-new name=<slug> [b=<branch>] [base=<ref>]
   instead. A missing base ref fails before anything is created; run `git fetch origin` or pass an
   existing `base=`.
 - After creation the target links `web/.dev.vars`, claims a port slot (below), writes
-  `.worktree.env`, then runs `npm ci` in `web/` and `person-service/`. It does not start a stack.
+  `.worktree.env`, then runs `npm ci` in `web/`, `setup-web/` and `person-service/`. It does not start
+  a stack.
 
 If setup fails, the worktree is left in place for recovery. The error prints the exact commands:
 
 ```sh
-npm --prefix <path>/web ci && npm --prefix <path>/person-service ci   # retry setup
-make -C <path> worktree-rm                                            # discard it
+npm --prefix <path>/web ci && npm --prefix <path>/setup-web ci && npm --prefix <path>/person-service ci   # retry setup
+make -C <path> worktree-rm                                                                              # discard it
 ```
 
 ## How ports are chosen
 
 The primary clone is slot 0 and keeps the defaults: ntfy `8090`, API `8091`, Vite `5173`, Playwright
-preview `4173`, delivery `8300`.
+preview `4173`, delivery `8300`, setup page Vite `5473`, setup page Playwright preview `4473`.
 
 Each worktree gets one slot `s` in `1..99`, and its ports are:
 
-| Key             | Formula (slots 1..99) | Range      |
-| --------------- | --------------------- | ---------- |
-| `NTFY_PORT`     | `8090 + 2s`           | 8092..8288 |
-| `API_PORT`      | `8091 + 2s`           | 8093..8289 |
-| `WEB_PORT`      | `5273 + s`            | 5274..5372 |
-| `E2E_PORT`      | `4273 + s`            | 4274..4372 |
-| `DELIVERY_PORT` | `8300 + s`            | 8301..8399 |
+| Key              | Formula (slots 1..99) | Range      |
+| ---------------- | --------------------- | ---------- |
+| `NTFY_PORT`      | `8090 + 2s`           | 8092..8288 |
+| `API_PORT`       | `8091 + 2s`           | 8093..8289 |
+| `WEB_PORT`       | `5273 + s`            | 5274..5372 |
+| `E2E_PORT`       | `4273 + s`            | 4274..4372 |
+| `DELIVERY_PORT`  | `8300 + s`            | 8301..8399 |
+| `SETUP_WEB_PORT` | `5573 + s`            | 5574..5672 |
+| `SETUP_E2E_PORT` | `4573 + s`            | 4574..4672 |
 
 - The ntfy and API ports are adjacent (8090 and 8091), so a step of 1 per slot would make slot `s`'s
   API port equal slot `s+1`'s ntfy port. A step of 2 cannot overlap by construction.
 - The web pair is offset by 100 from the defaults so worktree ports stay out of the 5173/4173
   defaults and out of the 5174+/4174+ range that other Vite apps (and the primary's own neighbouring
-  dev servers) auto-increment into.
+  dev servers) auto-increment into. The setup page pair (`setup-web/`) follows the same +100 pattern
+  from its own defaults 5473/4473, so its worktree ranges (5574..5672, 4574..4672) stay clear of the
+  admin UI's (5274..5372, 4274..4372).
 - The delivery range `8300..8399` sits clear of the ntfy/API range (8090..8289) by construction.
   `delivery-postgres` also publishes a local-only test port on `127.0.0.1` at `DELIVERY_PORT + 10000`
   (derived by the Makefile as `DELIVERY_DB_PORT_HOST`, not a `.worktree.env` key; 18301..18399 for
@@ -97,17 +102,21 @@ API_PORT=<port>
 WEB_PORT=<port>
 E2E_PORT=<port>
 DELIVERY_PORT=<port>
+SETUP_WEB_PORT=<port>
+SETUP_E2E_PORT=<port>
 ```
 
 Precedence is defaults < `.worktree.env` < environment < `make VAR=...` on the command line:
 
 - The Makefile applies it with `ifndef` guards (it reads single keys from `.worktree.env`, never
   `-include`s it, so an environment value always beats the file) and exports `COMPOSE_PROJECT_NAME`,
-  `NTFY_PORT`, `API_PORT`, `WEB_PORT`, `E2E_PORT`, `DELIVERY_PORT` and `DELIVERY_DB_PORT_HOST` to
-  compose and child processes.
+  `NTFY_PORT`, `API_PORT`, `WEB_PORT`, `E2E_PORT`, `DELIVERY_PORT`, `SETUP_WEB_PORT`, `SETUP_E2E_PORT`
+  and `DELIVERY_DB_PORT_HOST` to compose and child processes.
 - `web/vite.config.ts` and `web/playwright.config.ts` read `../.worktree.env` through
   `web/worktree-ports.ts` (defaults < file < env, same order), so a bare `npm run dev` or
-  `npx playwright test` in a worktree also gets the right ports.
+  `npx playwright test` in a worktree also gets the right ports. `setup-web/vite.config.ts` and
+  `setup-web/playwright.config.ts` do the same through `setup-web/worktree-ports.ts` for
+  `SETUP_WEB_PORT` / `SETUP_E2E_PORT`.
 
 To see what a checkout resolves to:
 
@@ -125,15 +134,26 @@ gives `DELIVERY_PORT=8394`), then confirm with `make worktree-ports`. If the `.w
 `NOTIFS_SLOT` line, pick an unused value in 8301..8399 (check the sibling worktrees' `.worktree.env`
 files) rather than computing it. Worktrees created afterwards get it automatically.
 
+**Backfilling `SETUP_WEB_PORT` / `SETUP_E2E_PORT` into a pre-existing worktree.** A worktree created
+before the setup page has neither line in its `.worktree.env`, so `setup-web/` falls back to the
+primary's defaults `5473` / `4473` and collides with the primary (or with any other un-backfilled
+worktree). Append `SETUP_WEB_PORT=<5573 + NOTIFS_SLOT>` and `SETUP_E2E_PORT=<4573 + NOTIFS_SLOT>` using
+that worktree's own `NOTIFS_SLOT` (slot 94 gives 5667 and 4667), run `npm ci` in its `setup-web/`, then
+confirm with `make worktree-ports`. If there is no `NOTIFS_SLOT` line, pick unused values in
+5574..5672 / 4574..4672 rather than computing them. The primary clone and every existing worktree
+must also run `npm --prefix setup-web ci` once, because `make lint` and `make test` now include the
+setup-web targets.
+
 ## What each worktree isolates
 
 - Compose project `4irl-notifs-<slug>`: its own containers (no `container_name`), named volumes
   (`ntfy-auth`, `ntfy-cache`, `delivery-pgdata`) and locally built provisioning-api and delivery-api
   images. The primary's project `4irl-notifs` and its existing volumes are untouched.
-- Host ports (above): ntfy, API, Vite dev server, Playwright preview, delivery.
+- Host ports (above): ntfy, API, Vite dev server, Playwright preview, delivery, and the setup page's
+  Vite dev server and Playwright preview.
 - The detached dev server's pid and log live in the worktree's own `.dev/` (`.dev/vite-dev.pid`,
   `.dev/vite-dev.log`), not in a shared `/tmp/claude`.
-- `node_modules` in `web/` and `person-service/` (installed per worktree).
+- `node_modules` in `web/`, `setup-web/` and `person-service/` (installed per worktree).
 
 In a worktree, start and stop the stack only through `make local-up` and `make local-down`. Raw
 `docker compose` without `--env-file .worktree.env` would use the project `<slug>` (the directory

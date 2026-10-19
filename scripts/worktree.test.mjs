@@ -62,12 +62,14 @@ describe('formatCreatedSummary', () => {
       WEB_PORT: 5276,
       E2E_PORT: 4276,
       DELIVERY_PORT: 8303,
+      SETUP_WEB_PORT: 5576,
+      SETUP_E2E_PORT: 4576,
     };
 
     assert.equal(
       formatCreatedSummary({ path: '/repo/.claude/worktrees/proof', branch: 'feat/proof', ports }),
       'worktree: created /repo/.claude/worktrees/proof on branch feat/proof ' +
-        '(slot=3 ntfy=8096 api=8097 web=5276 e2e=4276 delivery=8303)',
+        '(slot=3 ntfy=8096 api=8097 web=5276 e2e=4276 delivery=8303 setup-web=5576 setup-e2e=4576)',
     );
   });
 });
@@ -233,6 +235,8 @@ describe('resolvePorts with an empty env', () => {
       WEB_PORT: '5173',
       E2E_PORT: '4173',
       DELIVERY_PORT: '8300',
+      SETUP_WEB_PORT: '5473',
+      SETUP_E2E_PORT: '4473',
     });
     try {
       const ports = await resolvePorts({
@@ -284,6 +288,8 @@ describe('writeWorktreeEnv', () => {
       WEB_PORT: 5276,
       E2E_PORT: 4276,
       DELIVERY_PORT: 8303,
+      SETUP_WEB_PORT: 5576,
+      SETUP_E2E_PORT: 4576,
     };
     writeWorktreeEnv({ dir, slug: 'proof-a', primaryRoot: '/primary', ports });
     const file = path.join(dir, '.worktree.env');
@@ -300,6 +306,8 @@ describe('writeWorktreeEnv', () => {
         'WEB_PORT=5276',
         'E2E_PORT=4276',
         'DELIVERY_PORT=8303',
+        'SETUP_WEB_PORT=5576',
+        'SETUP_E2E_PORT=4576',
         '',
       ].join('\n'),
     );
@@ -788,7 +796,11 @@ describe('newWorktree', () => {
         },
         warn: () => {},
       }),
-      /worktree-rm/,
+      (err) => {
+        assert.match(err.message, /worktree-rm/);
+        assert.match(err.message, /npm --prefix .*setup-web.* ci/);
+        return true;
+      },
     );
   });
 });

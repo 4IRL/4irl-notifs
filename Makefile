@@ -2,6 +2,7 @@
 	go-test go-integration-test go-lint go-fmt \
 	delivery-test delivery-integration-test delivery-lint delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
+	setup-web-dev setup-web-test setup-web-e2e setup-web-build setup-web-lint setup-web-format setup-web-pages-dev \
 	worker-test worker-build worker-deploy scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm
 
 .DEFAULT_GOAL := help
@@ -29,9 +30,15 @@ endif
 ifndef DELIVERY_PORT
 DELIVERY_PORT := $(or $(call wtenv,DELIVERY_PORT),8300)
 endif
+ifndef SETUP_WEB_PORT
+SETUP_WEB_PORT := $(or $(call wtenv,SETUP_WEB_PORT),5473)
+endif
+ifndef SETUP_E2E_PORT
+SETUP_E2E_PORT := $(or $(call wtenv,SETUP_E2E_PORT),4473)
+endif
 # Derived, not a scripts/ports.mjs key: tracks DELIVERY_PORT per worktree (local-only test port of delivery-postgres).
 DELIVERY_DB_PORT_HOST := $(shell echo $$(($(DELIVERY_PORT) + 10000)))
-export COMPOSE_PROJECT_NAME NTFY_PORT API_PORT WEB_PORT E2E_PORT DELIVERY_PORT DELIVERY_DB_PORT_HOST
+export COMPOSE_PROJECT_NAME NTFY_PORT API_PORT WEB_PORT E2E_PORT DELIVERY_PORT SETUP_WEB_PORT SETUP_E2E_PORT DELIVERY_DB_PORT_HOST
 
 DEV_DIR := $(CURDIR)/.dev
 COMPOSE := docker compose -p $(COMPOSE_PROJECT_NAME) --project-directory . -f docker-compose.yml
@@ -44,9 +51,9 @@ SMOKE_EMAIL := smoketest@example.com
 help: ## Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-lint: go-lint delivery-lint web-lint scripts-lint workflows-lint ## Run all linters (Go + frontend + scripts + workflows)
+lint: go-lint delivery-lint web-lint setup-web-lint scripts-lint workflows-lint ## Run all linters (Go + frontends + scripts + workflows)
 
-test: go-test delivery-test web-test worker-test scripts-test ## Run all unit tests (Go, web Vitest, worker Vitest, scripts)
+test: go-test delivery-test web-test setup-web-test worker-test scripts-test ## Run all unit tests (Go, web + setup-web Vitest, worker Vitest, scripts)
 
 scripts-test: ## Run scripts/ unit tests
 	node --test "scripts/*.test.mjs"
@@ -62,7 +69,7 @@ worktree-ports: ## Print this checkout's resolved ports
 
 # `env -u` drops the exported primary ports so the resolver picks fresh ones (target-specific `unexport` fails to parse on make 4.3).
 worktree-new: ## Create a worktree: make worktree-new name=<slug> [b=<branch>] [base=<ref>]
-	@env -u NTFY_PORT -u API_PORT -u WEB_PORT -u E2E_PORT -u DELIVERY_PORT WT_NAME='$(subst ','\'',$(name))' WT_BRANCH='$(subst ','\'',$(b))' WT_BASE='$(subst ','\'',$(base))' node scripts/worktree.mjs new
+	@env -u NTFY_PORT -u API_PORT -u WEB_PORT -u E2E_PORT -u DELIVERY_PORT -u SETUP_WEB_PORT -u SETUP_E2E_PORT WT_NAME='$(subst ','\'',$(name))' WT_BRANCH='$(subst ','\'',$(b))' WT_BASE='$(subst ','\'',$(base))' node scripts/worktree.mjs new
 
 worktree-rm: ## Remove this worktree (run inside it)
 	@node scripts/worktree.mjs rm
@@ -210,6 +217,29 @@ web-format: ## Auto-format the frontend
 
 dev-pages: ## Build + serve the admin UI via wrangler pages dev to exercise the Pages Functions proxies locally (copy web/.dev.vars.example -> web/.dev.vars first)
 	cd web && npm run pages-dev
+
+## Setup page (setup-web: public static ntfy setup page, no API calls)
+
+setup-web-dev: ## Run the setup page dev server in the foreground on SETUP_WEB_PORT
+	cd setup-web && npm run dev -- --host 127.0.0.1 --port $(SETUP_WEB_PORT) --strictPort
+
+setup-web-test: ## Run setup page unit tests (Vitest)
+	cd setup-web && npm test
+
+setup-web-e2e: ## Run setup page e2e tests (Playwright)
+	cd setup-web && npx playwright test
+
+setup-web-build: ## Production build of the setup page (tsc -b + Vite)
+	cd setup-web && npm run build
+
+setup-web-lint: ## Lint and format-check the setup page
+	cd setup-web && npx eslint . && npx prettier --check .
+
+setup-web-format: ## Auto-format the setup page
+	cd setup-web && npx prettier --write .
+
+setup-web-pages-dev: ## Build + serve the setup page via wrangler pages dev for local Pages parity (headers, routing)
+	cd setup-web && npm run pages-dev
 
 ## Worker (person-service)
 
