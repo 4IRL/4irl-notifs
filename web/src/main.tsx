@@ -23,12 +23,16 @@ const appsEnabled = import.meta.env.VITE_APPS_ENABLED === 'true';
 const personClient = peopleEnabled || appsEnabled ? createPersonApiClient({}) : undefined;
 
 // The Delivery tab reaches delivery-api through the same-origin `/delivery/*`
-// Pages Function. Its status card + Destinations/Routes and its Delivery Log are
-// gated on their own build flags; the client exists only when either is on.
+// Pages Function. Its status card + Destinations/Routes, its Pending sends and
+// its Delivery Log are gated on their own build flags; the client exists only
+// when any is on.
 const destinationsEnabled = import.meta.env.VITE_DESTINATIONS_ENABLED === 'true';
 const deliveryLogEnabled = import.meta.env.VITE_DELIVERY_LOG_ENABLED === 'true';
+const pendingSendsEnabled = import.meta.env.VITE_PENDING_SENDS_ENABLED === 'true';
 const deliveryClient =
-  destinationsEnabled || deliveryLogEnabled ? createDeliveryApiClient({}) : undefined;
+  destinationsEnabled || deliveryLogEnabled || pendingSendsEnabled
+    ? createDeliveryApiClient({})
+    : undefined;
 
 const rootElement = document.getElementById('root');
 if (rootElement === null) {
@@ -44,6 +48,7 @@ createRoot(rootElement).render(
       deliveryClient={deliveryClient}
       destinationsEnabled={destinationsEnabled}
       deliveryLogEnabled={deliveryLogEnabled}
+      pendingSendsEnabled={pendingSendsEnabled}
     />
   </StrictMode>,
 );

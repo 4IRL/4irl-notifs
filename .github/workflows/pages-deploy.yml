@@ -17,8 +17,8 @@ env:
   # web/functions/ to the backends — so no backend hostnames are baked in at build time. The
   # build-time flags VITE_PEOPLE_ENABLED and VITE_APPS_ENABLED turn on the People and Apps views
   # for prod (local dev omits them via unset flags). VITE_DESTINATIONS_ENABLED and
-  # VITE_DELIVERY_LOG_ENABLED turn on the Delivery tab (status card, destinations and routes; delivery
-  # log). The backend hostnames + service-token secrets
+  # VITE_DELIVERY_LOG_ENABLED and VITE_PENDING_SENDS_ENABLED turn on the Delivery tab (status card,
+  # destinations and routes; delivery log; pending sends). The backend hostnames + service-token secrets
   # are RUNTIME Pages Function bindings (PROVISIONING_API_URL, PERSON_SERVICE_URL, DELIVERY_API_URL,
   # PROXY_ACCESS_CLIENT_ID, PROXY_ACCESS_CLIENT_SECRET), set on the Pages project — see
   # ARCHITECTURE.md ("Admin-UI same-origin proxy").
@@ -26,6 +26,7 @@ env:
   VITE_APPS_ENABLED: 'true'
   VITE_DESTINATIONS_ENABLED: 'true'
   VITE_DELIVERY_LOG_ENABLED: 'true'
+  VITE_PENDING_SENDS_ENABLED: 'true'
 
 jobs:
   PagesDeploy:

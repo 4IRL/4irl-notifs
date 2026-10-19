@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import type { Page, Route } from '@playwright/test';
+import type { Locator, Page, Route } from '@playwright/test';
 
 // The real provisioning API is Cloudflare Access-gated, so these critical-flow
 // e2e tests run against the production build (vite preview) with the API mocked
@@ -402,6 +402,10 @@ interface DeliveryMockSeed {
   /** Deliveries by state, as the admin list returns them. */
   deliveries?: Record<string, Json[]>;
   attempts?: Record<number, Json[]>;
+  /** Scheduled messages, as the admin list returns them (soonest first). */
+  scheduled?: Json[];
+  /** When set, DELETE of a scheduled message fails with this status and message. */
+  cancelError?: { status: number; message: string };
 }
 
 interface DeliveryMock {
@@ -465,6 +469,80 @@ function deliveryWire({ id, state = 'dead' }: { id: number; state?: string }): J
   };
 }
 
+function scheduledWire({
+  id,
+  key,
+  deliverAt = '2099-01-01T08:00:00Z',
+}: {
+  id: string;
+  key: string;
+  deliverAt?: string;
+}): Json {
+  return {
+    message_id: id,
+    app_id: 'urls4irl',
+    channel: 'digest',
+    idempotency_key: key,
+    deliver_at: deliverAt,
+    created_at: TIMESTAMP,
+    recipient: false,
+    destinations: [{ name: 'hook1', type: 'webhook' }],
+  };
+}
+
+/**
+ * The largest number of rendered lines of any single text node under `root`
+ * (the elements matching `skip` are left out): 1 means nothing wraps.
+ */
+async function maxRenderedLines({
+  root,
+  skip = ':not(*)',
+}: {
+  root: Locator;
+  skip?: string;
+}): Promise<number> {
+  return root.evaluate((element, skipSelector) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let most = 0;
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      if (
+        (node.textContent ?? '').trim() === '' ||
+        node.parentElement?.closest(skipSelector) != null
+      ) {
+        continue;
+      }
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const tops = new Set(Array.from(range.getClientRects(), (rect) => Math.round(rect.top)));
+      most = Math.max(most, tops.size);
+    }
+    return most;
+  }, skip);
+}
+
+/**
+ * Asserts a status badge sits at the vertical middle of its table row (within
+ * 2px), and that the row is taller than the badge so the check can fail.
+ */
+async function expectCenteredInRow({
+  badge,
+  row,
+}: {
+  badge: Locator;
+  row: Locator;
+}): Promise<void> {
+  await expect(badge).toBeVisible();
+  const badgeBox = await badge.boundingBox();
+  const rowBox = await row.boundingBox();
+  if (badgeBox === null || rowBox === null) {
+    throw new Error('badge or row has no bounding box');
+  }
+  expect(rowBox.height).toBeGreaterThan(badgeBox.height + 8);
+  const badgeCentre = badgeBox.y + badgeBox.height / 2;
+  const rowCentre = rowBox.y + rowBox.height / 2;
+  expect(Math.abs(badgeCentre - rowCentre)).toBeLessThanOrEqual(2);
+}
+
 async function mockProvisioning(page: Page): Promise<void> {
   await page.route('**/v1/users', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"users":[]}' });
@@ -487,6 +565,7 @@ async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<De
     delivered: [],
     ...seed.deliveries,
   };
+  let scheduled = [...(seed.scheduled ?? [])];
   let nextRouteId = 100;
 
   async function reply({
@@ -621,6 +700,31 @@ async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<De
             next_attempt_at: '2026-10-17T08:15:00Z',
           },
         },
+      });
+      return;
+    }
+    if (method === 'GET' && pathname === '/delivery/v1/admin/scheduled-messages') {
+      await reply({ route, body: { scheduled_messages: scheduled, total: scheduled.length } });
+      return;
+    }
+    const scheduledMatch = /^\/delivery\/v1\/admin\/scheduled-messages\/([^/]+)$/.exec(pathname);
+    if (method === 'DELETE' && scheduledMatch !== null) {
+      if (seed.cancelError !== undefined) {
+        await reply({
+          route,
+          status: seed.cancelError.status,
+          body: { error: seed.cancelError.message },
+        });
+        return;
+      }
+      const id = scheduledMatch[1];
+      const found = scheduled.some((message) => message.message_id === id);
+      scheduled = scheduled.filter((message) => message.message_id !== id);
+      await reply({
+        route,
+        body: found
+          ? { message_id: id, cancelled: true, status: 'cancelled' }
+          : { message_id: id, cancelled: false, status: 'not_found' },
       });
       return;
     }
@@ -818,6 +922,244 @@ test.describe('admin UI Delivery tab', () => {
     expect(mock.unmocked).toEqual([]);
   });
 
+  test('pending sends: keep sends nothing, cancel needs two activations and reloads in place', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      scheduled: [
+        scheduledWire({ id: 'msg-1', key: 'digest-1' }),
+        scheduledWire({ id: 'msg-2', key: 'digest-2', deliverAt: '2099-02-01T08:00:00Z' }),
+      ],
+    });
+
+    await page.goto('/#delivery');
+    const pending = page.getByRole('region', { name: 'Pending sends' });
+    await expect(pending.getByText('digest-1', { exact: true })).toBeVisible();
+    await expect(pending.getByText('digest-2', { exact: true })).toBeVisible();
+
+    const trigger = pending.getByRole('button', { name: 'Cancel send digest-1', exact: true });
+    const refresh = pending.getByRole('button', { name: 'Refresh pending sends', exact: true });
+    for (const button of [trigger, refresh]) {
+      expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+    }
+
+    // Keep restores the trigger and sends no request.
+    await trigger.click();
+    const confirm = pending.getByRole('button', {
+      name: 'Confirm cancel send digest-1',
+      exact: true,
+    });
+    const keep = pending.getByRole('button', { name: 'Keep', exact: true });
+    await expect(confirm).toBeVisible();
+    for (const button of [confirm, keep]) {
+      expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+    }
+    // The sticky Actions cell is opaque (alpha 1) so scrolled content never shows through.
+    const actionsCell = pending.locator('td.pending-sends__actions-cell').first();
+    const alpha = await actionsCell.evaluate((element) => {
+      const color = getComputedStyle(element).backgroundColor;
+      const channels = /rgba?\(([^)]+)\)/.exec(color)?.[1].split(',') ?? [];
+      return channels.length === 4 ? Number(channels[3]) : 1;
+    });
+    expect(alpha).toBe(1);
+    await keep.click();
+    await expect(trigger).toBeFocused();
+    expect(mock.mutations).toEqual([]);
+
+    // Cancel: trigger, then confirm.
+    await trigger.click();
+    await confirm.click();
+    await expect(
+      pending.getByText('Cancelled send digest-1. It will not be delivered.'),
+    ).toBeVisible();
+    await expect(pending.getByText('digest-1', { exact: true })).toBeHidden();
+    await expect(pending.getByText('digest-2', { exact: true })).toBeVisible();
+    await expect(
+      pending.getByRole('button', { name: 'Cancel send digest-2', exact: true }),
+    ).toBeFocused();
+
+    expect(mock.mutations).toHaveLength(1);
+    expect(mock.mutations[0].method).toBe('DELETE');
+    expect(mock.mutations[0].pathname).toBe('/delivery/v1/admin/scheduled-messages/msg-1');
+    expect(mock.mutations[0].body).toBeNull();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('pending sends: a long cancel error wraps inside the capped Actions cell', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      scheduled: [scheduledWire({ id: 'msg-1', key: 'digest-1' })],
+      cancelError: { status: 503, message: 'delivery-service-unavailable-'.repeat(12) },
+    });
+
+    await page.goto('/#delivery');
+    const pending = page.getByRole('region', { name: 'Pending sends' });
+    await pending.getByRole('button', { name: 'Cancel send digest-1', exact: true }).click();
+    await pending
+      .getByRole('button', { name: 'Confirm cancel send digest-1', exact: true })
+      .click();
+
+    const rowError = pending.getByRole('alert');
+    await expect(rowError).toContainText('Could not cancel: delivery-service-unavailable-');
+    // 14rem cap (224px) plus the cell padding; an uncapped cell would take the spare width.
+    const cellBox = await pending.locator('td.pending-sends__actions-cell').first().boundingBox();
+    expect(cellBox?.width ?? Infinity).toBeLessThanOrEqual(272);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('pending sends: the page is wide and no cell wraps at 1280px', async ({ page }) => {
+    const mock = await mockDelivery(page, {
+      scheduled: [
+        scheduledWire({ id: 'msg-1', key: 'digest-weekly-2099-01-01' }),
+        scheduledWire({ id: 'msg-2', key: 'digest-weekly-2099-02-01' }),
+      ],
+    });
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/#delivery');
+    const pending = page.getByRole('region', { name: 'Pending sends' });
+    const wrapper = pending.locator('.pending-sends__scroll');
+    await expect(wrapper).toBeVisible();
+
+    // Wider than the old 60rem (960px) content column.
+    expect((await pending.boundingBox())?.width ?? 0).toBeGreaterThan(1100);
+    const wrapperBox = await wrapper.evaluate((element) => ({
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }));
+    expect(wrapperBox.scrollWidth).toBeLessThanOrEqual(wrapperBox.clientWidth);
+    expect(await maxRenderedLines({ root: pending.locator('table') })).toBe(1);
+
+    // Each row is as tall as its two-line cells (name plus sub-line), not taller.
+    const rowHeights = await pending
+      .locator('tbody tr')
+      .evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
+    for (const height of rowHeights) {
+      expect(height).toBeLessThan(90);
+    }
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('pending sends: the State pill is vertically centred in its multi-line row', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      scheduled: [scheduledWire({ id: 'msg-1', key: 'digest-weekly-2099-01-01' })],
+    });
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/#delivery');
+    const pending = page.getByRole('region', { name: 'Pending sends' });
+    const row = pending.locator('tbody tr').first();
+    await expectCenteredInRow({ badge: row.locator('.pending-sends__pill'), row });
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('delivery log: the status pill is vertically centred in its multi-line row', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      deliveries: { delivered: [deliveryWire({ id: 8, state: 'delivered' })] },
+    });
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/#delivery');
+    const log = page.getByRole('region', { name: 'Delivery log' });
+    await log.getByRole('button', { name: 'Delivered', exact: true }).click();
+    const row = log.locator('.delivery-log__table > tbody > tr').first();
+    await expectCenteredInRow({ badge: row.locator('.delivery-log__pill'), row });
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('destinations and routes: the status pills are vertically centred in their rows', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [
+        destinationWire({
+          name: 'hook1',
+          type: 'webhook',
+          secrets: { url: 'https://hooks.example.com/****', signing_secret: '****' },
+        }),
+      ],
+      routes: [
+        {
+          id: 1,
+          app_pattern: 'urls4irl',
+          channel_pattern: 'alerts*',
+          destinations: ['hook1'],
+          enabled: true,
+          created_at: TIMESTAMP,
+          updated_at: TIMESTAMP,
+        },
+      ],
+    });
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/#delivery');
+    const destinationRow = page.locator('.destinations__table tbody tr').first();
+    await expectCenteredInRow({
+      badge: destinationRow.locator('.destinations__pill'),
+      row: destinationRow,
+    });
+    const routeRow = page.locator('.routes__table tbody tr').first();
+    await expectCenteredInRow({ badge: routeRow.locator('.routes__pill'), row: routeRow });
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('pending sends: cells stay on one line and the wrapper scrolls at 390px', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      scheduled: [
+        scheduledWire({ id: 'msg-1', key: 'digest-weekly-2099-01-01' }),
+        scheduledWire({ id: 'msg-2', key: 'digest-weekly-2099-02-01' }),
+      ],
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+    const pending = page.getByRole('region', { name: 'Pending sends' });
+    const wrapper = pending.locator('.pending-sends__scroll');
+    await expect(wrapper).toBeVisible();
+
+    expect(await maxRenderedLines({ root: pending.locator('table') })).toBe(1);
+    const wrapperBox = await wrapper.evaluate((element) => ({
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }));
+    expect(wrapperBox.scrollWidth).toBeGreaterThan(wrapperBox.clientWidth);
+    const documentBox = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(documentBox.scrollWidth).toBeLessThanOrEqual(documentBox.clientWidth);
+
+    // Cancel send keeps its one-line label and stays inside the viewport (sticky cell).
+    const trigger = pending.getByRole('button', { name: 'Cancel send digest-weekly-2099-01-01' });
+    const triggerBox = await trigger.boundingBox();
+    expect(triggerBox?.height ?? Infinity).toBeLessThan(60);
+    expect((triggerBox?.x ?? -1) + (triggerBox?.width ?? 0)).toBeLessThanOrEqual(390);
+
+    // The open confirm keeps both labels on one line too.
+    await trigger.click();
+    await expect(pending.getByRole('button', { name: /^Confirm cancel send/ })).toBeVisible();
+    // (The confirm notice is a sentence that wraps inside the capped Actions cell by design.)
+    expect(
+      await maxRenderedLines({ root: pending.locator('table'), skip: '.confirm-button__notice' }),
+    ).toBe(1);
+
+    // Scrolling the wrapper to its end moves the content; the page itself stays put.
+    await wrapper.evaluate((element) => {
+      element.scrollLeft = element.scrollWidth;
+    });
+    expect(await wrapper.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    const after = await page.evaluate(() => document.documentElement.scrollLeft);
+    expect(after).toBe(0);
+    expect(mock.unmocked).toEqual([]);
+  });
+
   test('shows the schema-mismatch status card on a 503', async ({ page }) => {
     const mock = await mockDelivery(page, {
       readiness: {
@@ -878,6 +1220,8 @@ test.describe('admin UI Delivery tab', () => {
         },
       ],
       deliveries: { dead: [deliveryWire({ id: 7 })] },
+      scheduled: [scheduledWire({ id: 'msg-1', key: `digest-${'x'.repeat(40)}` })],
+      cancelError: { status: 503, message: 'delivery-service-unavailable-'.repeat(12) },
       attempts: {
         7: [
           {
@@ -913,6 +1257,50 @@ test.describe('admin UI Delivery tab', () => {
       clientWidth: element.clientWidth,
     }));
     expect(wrapper.scrollWidth).toBeGreaterThan(wrapper.clientWidth);
+
+    // Pending sends scrolls inside its own wrapper too, and its sticky Actions
+    // cell keeps Cancel send reachable without scrolling that wrapper.
+    const pending = page.getByRole('region', { name: 'Pending sends' });
+    const pendingWrapper = pending.locator('.pending-sends__scroll');
+    await expect(pendingWrapper).toBeVisible();
+    const pendingBox = await pendingWrapper.evaluate((element) => ({
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+      scrollLeft: element.scrollLeft,
+    }));
+    expect(pendingBox.scrollWidth).toBeGreaterThan(pendingBox.clientWidth);
+    expect(pendingBox.scrollLeft).toBe(0);
+    const trigger = pending.getByRole('button', { name: /^Cancel send digest-/ });
+    await expect(trigger).toBeVisible();
+    const triggerBox = await trigger.boundingBox();
+    expect(triggerBox).not.toBeNull();
+    expect(triggerBox?.x).toBeGreaterThanOrEqual(0);
+    expect((triggerBox?.x ?? 0) + (triggerBox?.width ?? 0)).toBeLessThanOrEqual(390);
+    await trigger.click();
+    const confirmCancel = pending.getByRole('button', { name: /^Confirm cancel send digest-/ });
+    await expect(confirmCancel).toBeVisible();
+    expect(await pendingWrapper.evaluate((element) => element.scrollLeft)).toBe(0);
+    const confirmBox = await confirmCancel.boundingBox();
+    expect((confirmBox?.x ?? 0) + (confirmBox?.width ?? 0)).toBeLessThanOrEqual(390);
+
+    // A long server error stays inside the capped Actions cell: the cell keeps
+    // its 14rem width and Cancel send stays reachable without scrolling.
+    await confirmCancel.click();
+    const rowError = pending.getByRole('alert');
+    await expect(rowError).toContainText('Could not cancel: delivery-service-unavailable-');
+    const actionsCell = pending.locator('td.pending-sends__actions-cell').first();
+    const cellBox = await actionsCell.boundingBox();
+    expect(cellBox?.width ?? Infinity).toBeLessThanOrEqual(272);
+    const errorBox = await rowError.boundingBox();
+    expect((errorBox?.x ?? 0) + (errorBox?.width ?? 0)).toBeLessThanOrEqual(390);
+    expect(await pendingWrapper.evaluate((element) => element.scrollLeft)).toBe(0);
+    const retryBox = await trigger.boundingBox();
+    expect((retryBox?.x ?? 0) + (retryBox?.width ?? 0)).toBeLessThanOrEqual(390);
+    const after = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(after.scrollWidth).toBeLessThanOrEqual(after.clientWidth);
     expect(mock.unmocked).toEqual([]);
   });
 });

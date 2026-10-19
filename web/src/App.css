@@ -31,7 +31,7 @@
 .app__main {
   display: grid;
   gap: var(--space-5);
-  max-width: 60rem;
+  max-width: var(--content-max);
   margin: 0 auto;
   padding: var(--space-5) var(--space-4);
 }
