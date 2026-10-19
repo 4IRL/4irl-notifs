@@ -383,5 +383,51 @@ export const strings = {
     next === null ? 'Replay queued' : `Replay queued — next attempt ${next}`,
   destinationWasDeleted: 'destination was deleted',
 
+  // Pending sends section.
+  pendingSendsHeading: 'Pending sends',
+  pendingSendsRefresh: 'Refresh pending sends',
+  pendingSendsHint: ({ limit }: { limit: number }): string =>
+    `Messages scheduled with deliver_at, soonest first (up to ${limit} shown). Times are UTC. Once released they leave this list and appear in the Delivery log.`,
+  pendingSendsTruncated: ({ shown, total }: { shown: number; total: number }): string =>
+    `Showing the ${shown} soonest of ${total} pending sends.`,
+  pendingSendsLoading: 'Loading pending sends…',
+  pendingSendsLoadError: 'Could not load pending sends.',
+  pendingSendsEmpty: 'No pending sends.',
+  columnPendingState: 'State',
+  columnPendingDestinations: 'Destinations',
+  columnPendingDeliverAt: 'Deliver at',
+  columnPendingCreated: 'Created',
+  columnPendingActions: 'Actions',
+  pendingStateScheduled: 'Scheduled',
+  pendingStateDue: 'Due',
+  pendingReleasing: 'releasing',
+  pendingRecipientName: 'recipient',
+  pendingRecipientDetail: 'ntfy · personal topic',
+  cancelSend: 'Cancel send',
+  cancelSendNamed: ({ key }: { key: string }): string => `Cancel send ${key}`,
+  confirmCancelSend: 'Confirm cancel',
+  confirmCancelSendNamed: ({ key }: { key: string }): string => `Confirm cancel send ${key}`,
+  keepSend: 'Keep',
+  cancellingSend: 'Cancelling…',
+  cancellingSendNamed: ({ key }: { key: string }): string => `Cancelling send ${key}`,
+  cancelSendNotice: ({ key }: { key: string }): string =>
+    `${key}: The app is not told. Re-posting this idempotency key will not reschedule it.`,
+  cancelSendFailed: ({ message }: { message: string }): string => `Could not cancel: ${message}`,
+  cancelSendDone: ({ key }: { key: string }): string =>
+    `Cancelled send ${key}. It will not be delivered.`,
+  cancelSendGone: ({ key }: { key: string }): string =>
+    `Already gone ${key}: it was released or removed.`,
+  cancelSendReleased: ({ key }: { key: string }): string =>
+    `Already released ${key}: this message is now in the Delivery log.`,
+  pendingSendReleased: ({ key }: { key: string }): string =>
+    `Released ${key}: it is no longer pending.`,
+  relativeDueNow: 'due now',
+  relativeUnderMinute: 'in <1 min',
+  relativeMinutes: ({ minutes }: { minutes: number }): string => `in ${minutes} min`,
+  relativeHoursMinutes: ({ hours, minutes }: { hours: number; minutes: number }): string =>
+    minutes === 0 ? `in ${hours} h` : `in ${hours} h ${minutes} min`,
+  relativeDays: ({ days }: { days: number }): string =>
+    days === 1 ? 'in 1 day' : `in ${days} days`,
+
   genericError: 'Something went wrong. Please try again.',
 } as const;

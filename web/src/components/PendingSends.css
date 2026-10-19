@@ -1,0 +1,229 @@
+.pending-sends {
+  min-width: 0;
+}
+
+.pending-sends__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.pending-sends__head h2 {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.pending-sends__hint {
+  color: var(--text);
+  font-size: 0.8125rem;
+  margin: 0 0 var(--space-3);
+  overflow-wrap: anywhere;
+}
+
+.pending-sends__result {
+  color: var(--ok);
+  font-size: 0.8125rem;
+  margin: 0 0 var(--space-3);
+  overflow-wrap: anywhere;
+}
+
+/* Always rendered so the live region exists before it is first written; an
+   empty line takes no space (display: none would drop it from the a11y tree). */
+.pending-sends__result:empty {
+  margin: 0;
+}
+
+.pending-sends__status {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* The wrapper scrolls horizontally when the table is wider than the space it
+   has. The left-edge fade (`local` attachment) appears only once scrolled away
+   from the start; the end edge is signalled by the Actions cell's shadow. */
+.pending-sends__scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  background:
+    linear-gradient(to right, var(--bg) 30%, transparent) left center / 2rem 100% no-repeat local,
+    radial-gradient(
+        farthest-side at 0 50%,
+        color-mix(in srgb, var(--text) 35%, transparent),
+        transparent
+      )
+      left center / 0.75rem 100% no-repeat scroll;
+}
+
+/* `separate` (not `collapse`) so the sticky Actions cell keeps its row
+   separator: collapsed borders drop out from under sticky cells. Cells never
+   wrap: the table is as wide as its content (filling the wrapper when there is
+   room) and the wrapper scrolls when there is not. */
+.pending-sends__table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.pending-sends__table th,
+.pending-sends__table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+
+.pending-sends__table th {
+  color: var(--text);
+  font-size: 0.75rem;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* The App / channel column takes the spare width when the table is wider than
+   its content, so the other columns (the Actions cell above all) keep their
+   content width instead of each growing a share of it. */
+.pending-sends__fill {
+  width: 100%;
+}
+
+/* The Actions cell stays at the inline end of the scroll wrapper (no @media) so
+   Cancel is reachable without horizontal scrolling; opaque so scrolled content
+   never shows through. */
+.pending-sends__actions-cell {
+  position: sticky;
+  inset-inline-end: 0;
+  background: var(--surface);
+  /* Soft edge on the scrolled-under side: shows there is more to scroll to. */
+  box-shadow: -0.5rem 0 0.5rem -0.5rem color-mix(in srgb, var(--text) 45%, transparent);
+}
+
+/* Re-enables wrapping for the row error and the confirm notice inside the
+   capped cell; the buttons keep their labels on one line. */
+.pending-sends__actions {
+  white-space: normal;
+  /* Content width up to the cap, also as the cell's minimum, so the fill column
+     never squeezes a confirm or an error into a narrow strip. */
+  width: max-content;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 14rem;
+}
+
+.pending-sends time {
+  white-space: nowrap;
+}
+
+.pending-sends__mono {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+.pending-sends__name {
+  display: block;
+  color: var(--text-h);
+}
+
+.pending-sends__sub {
+  display: block;
+  color: var(--text);
+  font-size: 0.75rem;
+}
+
+.pending-sends__pill {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.pending-sends__pill--scheduled {
+  color: var(--accent-2);
+  background: var(--accent-2-bg);
+  border: 1px solid var(--accent-2-border);
+}
+
+.pending-sends__pill--due {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+}
+
+.pending-sends__button,
+.pending-sends .confirm-button__cancel {
+  min-height: 2.75rem;
+  white-space: nowrap;
+}
+
+.pending-sends__button {
+  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  border: 1px solid var(--accent-2-border);
+  background: var(--accent-2-bg);
+  color: var(--accent-2);
+}
+
+.pending-sends__button:hover {
+  border-color: var(--accent-2-hover);
+  color: var(--accent-2-hover);
+}
+
+.pending-sends__button--ghost {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.pending-sends__button--ghost:hover {
+  border-color: var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.pending-sends__button--danger {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.pending-sends__button--danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.pending-sends__button[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.pending-sends__button:focus-visible,
+.pending-sends .confirm-button__cancel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Inside the width-capped actions wrapper (full-width flex line) so a long
+   server message wraps there instead of widening the sticky Actions cell. */
+.pending-sends__row-error {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--danger);
+  background: var(--danger-bg);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  color: var(--danger);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
