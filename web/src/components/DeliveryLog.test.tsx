@@ -68,6 +68,8 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     listDeliveries: vi.fn().mockResolvedValue([]),
     listAttempts: vi.fn().mockResolvedValue([]),
     replayDelivery: vi.fn(),
+    listScheduledMessages: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+    cancelScheduledMessage: vi.fn(),
     ...overrides,
   };
 }

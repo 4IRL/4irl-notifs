@@ -110,6 +110,27 @@ describe('delivery proxy route', () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it('forwards GET /delivery/v1/admin/scheduled-messages with its query string', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+      await call({ path: '/delivery/v1/admin/scheduled-messages?limit=50' });
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`${UPSTREAM}/v1/admin/scheduled-messages?limit=50`);
+      expect(init.method).toBe('GET');
+    });
+
+    it('forwards a body-less DELETE /delivery/v1/admin/scheduled-messages/{id}', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+      await call({
+        path: '/delivery/v1/admin/scheduled-messages/0b1f6c2e-7a4d-4f4e-9c1a-2d5e8f3a9b10',
+        init: { method: 'DELETE', headers: { 'X-Requested-With': 'admin-ui' } },
+      });
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(
+        `${UPSTREAM}/v1/admin/scheduled-messages/0b1f6c2e-7a4d-4f4e-9c1a-2d5e8f3a9b10`,
+      );
+      expect(init.method).toBe('DELETE');
+    });
+
     it('accepts X-Requested-With in place of Sec-Fetch-Site', async () => {
       fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
       await call({

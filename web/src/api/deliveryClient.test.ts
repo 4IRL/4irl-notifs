@@ -356,6 +356,91 @@ describe('delivery api client', () => {
     expect(replayed.state).toBe('pending');
   });
 
+  it('listScheduledMessages maps the wire shape and coerces a null list to []', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        body: {
+          scheduled_messages: [
+            {
+              message_id: 'msg-9',
+              app_id: 'chores4irl',
+              channel: 'reminder',
+              idempotency_key: 'chore-1',
+              deliver_at: '2026-10-18T19:00:00Z',
+              created_at: '2026-10-17T21:30:00Z',
+              recipient: false,
+              destinations: [{ name: 'ops_discord', type: 'discord' }],
+            },
+            {
+              message_id: 'msg-10',
+              app_id: 'chores4irl',
+              channel: 'reminder',
+              idempotency_key: 'chore-2',
+              deliver_at: '2026-10-19T19:00:00Z',
+              created_at: '2026-10-17T21:31:00Z',
+              recipient: true,
+              destinations: null,
+            },
+          ],
+          total: 312,
+        },
+      }),
+    );
+
+    const list = await makeClient().listScheduledMessages({ limit: 50 });
+
+    const { url, init } = lastCall();
+    expect(url).toBe('https://admin.test/delivery/v1/admin/scheduled-messages?limit=50');
+    expect(init.method).toBe('GET');
+    expect(list.total).toBe(312);
+    expect(list.items[0]).toEqual({
+      messageId: 'msg-9',
+      appId: 'chores4irl',
+      channel: 'reminder',
+      idempotencyKey: 'chore-1',
+      deliverAt: '2026-10-18T19:00:00Z',
+      createdAt: '2026-10-17T21:30:00Z',
+      recipient: false,
+      destinations: [{ name: 'ops_discord', type: 'discord' }],
+    });
+    expect(list.items[1].recipient).toBe(true);
+    expect(list.items[1].destinations).toEqual([]);
+  });
+
+  it('listScheduledMessages defaults the limit and coerces a null list', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ body: { scheduled_messages: null, total: 0 } }));
+
+    const list = await makeClient().listScheduledMessages({});
+
+    expect(lastCall().url).toContain('/v1/admin/scheduled-messages?limit=50');
+    expect(list).toEqual({ items: [], total: 0 });
+  });
+
+  it('cancelScheduledMessage sends DELETE and maps the outcome', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ body: { message_id: 'msg-9', cancelled: true, status: 'cancelled' } }),
+    );
+
+    const result = await makeClient().cancelScheduledMessage({ id: 'msg-9' });
+
+    const { url, init, headers } = lastCall();
+    expect(url).toBe('https://admin.test/delivery/v1/admin/scheduled-messages/msg-9');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+    expect(headers['X-Requested-With']).toBeTruthy();
+    expect(result).toEqual({ messageId: 'msg-9', cancelled: true, status: 'cancelled' });
+  });
+
+  it('cancelScheduledMessage surfaces a rejected request as ApiError', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 502, body: { error: 'upstream down' } }));
+
+    await expect(makeClient().cancelScheduledMessage({ id: 'msg-9' })).rejects.toMatchObject({
+      constructor: ApiError,
+      status: 502,
+      message: 'upstream down',
+    });
+  });
+
   it('throws ApiError with the server message on failure', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({ status: 409, body: { error: 'destination already exists' } }),
