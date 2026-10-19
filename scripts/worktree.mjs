@@ -32,7 +32,7 @@ const PROJECT_PREFIX = `${REPO_NAME}-`;
 const LOCK_NAME = 'notifs-worktree-slot.lock';
 const LOCK_GRACE_MS = 5000;
 const EXCLUDES = ['/.worktree.env', '/.dev/'];
-const NPM_DIRS = ['web', 'person-service'];
+const NPM_DIRS = ['web', 'setup-web', 'person-service'];
 
 function runGit(cwd, args) {
   return execFileSync('git', args, {
@@ -248,6 +248,8 @@ export function writeWorktreeEnv({ dir, slug, primaryRoot, ports }) {
     WEB_PORT: ports.WEB_PORT,
     E2E_PORT: ports.E2E_PORT,
     DELIVERY_PORT: ports.DELIVERY_PORT,
+    SETUP_WEB_PORT: ports.SETUP_WEB_PORT,
+    SETUP_E2E_PORT: ports.SETUP_E2E_PORT,
   });
   writeFileSync(tmp, content, { mode: 0o600 });
   renameSync(tmp, file);
@@ -469,7 +471,7 @@ export async function newWorktree({
   } catch (err) {
     throw new Error(
       `worktree created at ${plan.path} but setup failed: ${err.message}\n` +
-        `  retry setup:  npm --prefix ${path.join(plan.path, 'web')} ci && npm --prefix ${path.join(plan.path, 'person-service')} ci\n` +
+        `  retry setup:  npm --prefix ${path.join(plan.path, 'web')} ci && npm --prefix ${path.join(plan.path, 'setup-web')} ci && npm --prefix ${path.join(plan.path, 'person-service')} ci\n` +
         `  discard it:   make -C ${plan.path} worktree-rm`,
       { cause: err },
     );
@@ -479,11 +481,20 @@ export async function newWorktree({
 
 /** The one-line summary printed after `worktree new`. */
 export function formatCreatedSummary({ path: worktreePath, branch, ports }) {
-  const { NOTIFS_SLOT, NTFY_PORT, API_PORT, WEB_PORT, E2E_PORT, DELIVERY_PORT } = ports;
+  const {
+    NOTIFS_SLOT,
+    NTFY_PORT,
+    API_PORT,
+    WEB_PORT,
+    E2E_PORT,
+    DELIVERY_PORT,
+    SETUP_WEB_PORT,
+    SETUP_E2E_PORT,
+  } = ports;
   return (
     `worktree: created ${worktreePath} on branch ${branch} ` +
     `(slot=${NOTIFS_SLOT} ntfy=${NTFY_PORT} api=${API_PORT} web=${WEB_PORT} e2e=${E2E_PORT} ` +
-    `delivery=${DELIVERY_PORT})`
+    `delivery=${DELIVERY_PORT} setup-web=${SETUP_WEB_PORT} setup-e2e=${SETUP_E2E_PORT})`
   );
 }
 
