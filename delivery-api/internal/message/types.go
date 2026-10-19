@@ -22,6 +22,12 @@ const (
 	// StateDead marks a delivery that will not be attempted again unless an
 	// operator replays it.
 	StateDead = "dead"
+	// StateScheduled marks a delivery held until its message's deliver_at. A
+	// release moves it to StatePending; the worker never claims it.
+	StateScheduled = "scheduled"
+	// StateCancelled marks a delivery whose scheduled message was cancelled
+	// before release. It is final.
+	StateCancelled = "cancelled"
 )
 
 // Message-level statuses returned by DeriveStatus. They are derived from the
@@ -36,6 +42,13 @@ const (
 	// StatusPartial marks a message whose deliveries ended in a mix of delivered
 	// and dead.
 	StatusPartial = "partial"
+	// StatusScheduled marks a message whose deliveries are all scheduled.
+	StatusScheduled = "scheduled"
+	// StatusCancelled marks a message whose deliveries are all cancelled.
+	StatusCancelled = "cancelled"
+	// StatusNotFound is the status a cancel reports when no message matched. It
+	// is never a DeriveStatus result.
+	StatusNotFound = "not_found"
 )
 
 // Dead-letter reasons, stored in message_deliveries.dead_reason.
@@ -90,6 +103,14 @@ var (
 	// ErrUnsupportedDestinationType reports a resolved destination whose type
 	// has no sink yet.
 	ErrUnsupportedDestinationType = errors.New("destination type not yet supported")
+	// ErrTooManyScheduled reports a new scheduled submit by an app that already
+	// holds its maximum number of scheduled messages.
+	ErrTooManyScheduled = errors.New("too many scheduled messages")
+	// ErrScheduledCapacityReached reports a new scheduled submit while the whole
+	// service already holds its maximum number of scheduled messages, across all
+	// apps. It is distinct from ErrTooManyScheduled so an app can tell its own cap
+	// from the shared one.
+	ErrScheduledCapacityReached = errors.New("scheduled message capacity reached")
 )
 
 // ValidationError reports an envelope field that failed validation. Message is
@@ -176,10 +197,64 @@ type AdminDelivery struct {
 // StoredMessage is a message as persisted, with its deliveries ordered by
 // destination name.
 type StoredMessage struct {
-	ID         string
-	Envelope   Envelope
-	CreatedAt  time.Time
-	Deliveries []Delivery
+	ID        string
+	Envelope  Envelope
+	CreatedAt time.Time
+	// CancelledAt is when a scheduled message was cancelled; nil otherwise.
+	CancelledAt *time.Time
+	Deliveries  []Delivery
+}
+
+// ScheduledDestination is one destination a scheduled message will fan out to,
+// as the delivery's snapshotted name and type.
+type ScheduledDestination struct {
+	Name string
+	Type string
+}
+
+// ScheduledMessage is the operator read model of a message still waiting for
+// its deliver_at. Recipient is true for a to.recipient message, whose
+// Destinations is then empty: the synthetic recipient delivery is never listed
+// and the person hash is never exposed.
+type ScheduledMessage struct {
+	MessageID      string
+	AppID          string
+	Channel        string
+	IdempotencyKey string
+	DeliverAt      time.Time
+	CreatedAt      time.Time
+	Recipient      bool
+	Destinations   []ScheduledDestination
+}
+
+// SubmitOutcome reports how Service.Submit treated an envelope. Duplicate and
+// Replaced are never both true. Scheduled reports whether the returned message
+// is (still) held for a future deliver_at.
+type SubmitOutcome struct {
+	// Duplicate is true when the key already existed and the stored message is
+	// returned unchanged: a released or cancelled message, an identical retry of
+	// a scheduled one, or a replace that lost its race.
+	Duplicate bool
+	// Replaced is true when an existing scheduled message was updated in place.
+	Replaced bool
+	// Scheduled is true when the returned message is scheduled.
+	Scheduled bool
+}
+
+// CancelOutcome is the result of a cancel request. Found is false when no
+// message matched (unknown id, non-UUID id, another app's message); Status is
+// then empty from the store, and StatusNotFound from the Service. Otherwise
+// Status is the message's status after the call and Cancelled is true when it
+// is (now) cancelled. Transitioned is true only when this very call performed
+// the cancel (a repeat on an already cancelled message is Cancelled but not
+// Transitioned). MessageID is the matched message's id, empty when nothing
+// matched; the Service fills in the requested id for a by-id cancel.
+type CancelOutcome struct {
+	MessageID    string
+	Status       string
+	Cancelled    bool
+	Transitioned bool
+	Found        bool
 }
 
 // Claim is a due delivery a worker has leased, with its parent message. The
@@ -222,22 +297,38 @@ type Attempt struct {
 
 // DeriveStatus returns the message-level status: StatusPending when any delivery
 // is pending (or there are none, which cannot happen for a stored message),
-// StatusDelivered when all are delivered, StatusDead when all are dead, and
-// StatusPartial for a mix of delivered and dead.
+// StatusScheduled when all are scheduled, StatusCancelled when all are
+// cancelled, StatusDelivered when all are delivered, StatusDead when all are
+// dead, and StatusPartial for a mix of delivered and dead. Scheduled and
+// cancelled deliveries only ever change message-atomically, so a mix of either
+// with another state cannot happen; if one ever did, it reads as StatusPending
+// (not final) rather than as a terminal status.
 func DeriveStatus(deliveries []Delivery) string {
 	if len(deliveries) == 0 {
 		return StatusPending
 	}
-	delivered, dead := 0, 0
+	delivered, dead, scheduled, cancelled := 0, 0, 0, 0
 	for _, delivery := range deliveries {
 		switch delivery.State {
 		case StateDelivered:
 			delivered++
 		case StateDead:
 			dead++
+		case StateScheduled:
+			scheduled++
+		case StateCancelled:
+			cancelled++
 		default:
 			return StatusPending
 		}
+	}
+	switch {
+	case scheduled == len(deliveries):
+		return StatusScheduled
+	case cancelled == len(deliveries):
+		return StatusCancelled
+	case scheduled > 0 || cancelled > 0:
+		return StatusPending
 	}
 	switch {
 	case dead == 0:

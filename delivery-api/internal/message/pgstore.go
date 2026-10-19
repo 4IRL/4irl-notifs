@@ -30,6 +30,16 @@ const DeleteExpiredBatchSize = 500
 // cannot keep a single call (and its database load) running unbounded.
 const DeleteExpiredMaxBatches = 200
 
+// deleteExpiredSQL deletes one batch of expired messages (see DeleteExpired for
+// the retention rules). The created_at < $1 bound is kept redundantly so the
+// planner can use messages_created_at_idx.
+const deleteExpiredSQL = `DELETE FROM messages WHERE id IN (
+  SELECT m.id FROM messages m WHERE m.created_at < $1
+  AND ((m.cancelled_at IS NULL AND greatest(m.created_at, COALESCE(m.deliver_at, m.created_at)) < $1)
+    OR m.cancelled_at < $1)
+  AND NOT EXISTS (SELECT 1 FROM message_deliveries d WHERE d.message_id = m.id AND d.state IN ('pending', 'scheduled'))
+  ORDER BY m.created_at, m.id LIMIT $2)`
+
 // Attempt text caps, matching the delivery_attempts CHECK constraints: the error
 // is capped in runes (char_length) and the response snippet in bytes
 // (octet_length).
@@ -46,7 +56,7 @@ var readSnapshotOptions = pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode
 // plain-string Envelope fields read back as "" when omitted.
 const (
 	messageColumns = `id::text, app_id, channel, idempotency_key,
-	COALESCE(to_destination, ''), COALESCE(to_recipient, ''), deliver_at, critical, payload, display, created_at`
+	COALESCE(to_destination, ''), COALESCE(to_recipient, ''), deliver_at, critical, payload, display, created_at, cancelled_at`
 
 	deliveryColumns = `id, message_id::text, destination_id, destination_name, destination_type, state, dead_reason,
 	attempt_count, budget_attempts, budget_started_at, next_attempt_at, last_status_code, delivered_at,
@@ -98,6 +108,42 @@ func NewPGStore(pool *pgxpool.Pool) *PGStore {
 func (store *PGStore) InsertMessage(
 	ctx context.Context, envelope Envelope, targets []DeliveryTarget,
 ) (StoredMessage, bool, error) {
+	return store.insertWithRetry(ctx, envelope, targets, pendingNow, ScheduledCaps{})
+}
+
+// InsertScheduledMessage is InsertMessage for a message held until
+// envelope.DeliverAt. The deliveries are inserted 'scheduled' with
+// next_attempt_at = deliver_at. Before the new message is stored, the app's
+// scheduled counts are checked under two advisory locks held to the end of the
+// transaction (the global one first, then the app's, always in that order), so
+// concurrent scheduled submits can never exceed caps.Total across apps or
+// caps.PerApp for one app. When both caps are full the per-app one is reported
+// (ErrTooManyScheduled), as the more specific. A duplicate key is returned as
+// is, without a cap check.
+func (store *PGStore) InsertScheduledMessage(
+	ctx context.Context, envelope Envelope, targets []DeliveryTarget, caps ScheduledCaps,
+) (StoredMessage, bool, error) {
+	if envelope.DeliverAt == nil {
+		return StoredMessage{}, false, errors.New("insert scheduled message: deliver_at must be set")
+	}
+	if caps.PerApp < 1 {
+		return StoredMessage{}, false, errors.New("insert scheduled message: max scheduled per app must be positive")
+	}
+	if caps.Total < 1 {
+		return StoredMessage{}, false, errors.New("insert scheduled message: max scheduled total must be positive")
+	}
+	deliverAt := envelope.DeliverAt.UTC()
+	envelope.DeliverAt = &deliverAt
+	schedule := deliverySchedule{state: StateScheduled, nextAttemptAt: &deliverAt}
+	return store.insertWithRetry(ctx, envelope, targets, schedule, caps)
+}
+
+// insertWithRetry runs insertOnce, retrying once when the conflicting row is
+// deleted between the conflict and the re-select. A non-zero caps.PerApp
+// enforces the scheduled caps.
+func (store *PGStore) insertWithRetry(
+	ctx context.Context, envelope Envelope, targets []DeliveryTarget, schedule deliverySchedule, caps ScheduledCaps,
+) (StoredMessage, bool, error) {
 	if len(targets) == 0 {
 		return StoredMessage{}, false, errors.New("insert message: no delivery targets")
 	}
@@ -108,7 +154,7 @@ func (store *PGStore) InsertMessage(
 	}
 
 	for range maxInsertAttempts {
-		stored, duplicate, insertErr := store.insertOnce(ctx, envelope, targets, payload, displayJSON)
+		stored, duplicate, insertErr := store.insertOnce(ctx, envelope, targets, schedule, caps, payload, displayJSON)
 		if errors.Is(insertErr, ErrMessageNotFound) {
 			continue
 		}
@@ -121,11 +167,22 @@ func (store *PGStore) InsertMessage(
 // when the insert hit a conflict and the conflicting row was gone by the
 // re-select.
 func (store *PGStore) insertOnce(
-	ctx context.Context, envelope Envelope, targets []DeliveryTarget, payload []byte, displayJSON []byte,
+	ctx context.Context, envelope Envelope, targets []DeliveryTarget, schedule deliverySchedule, caps ScheduledCaps,
+	payload []byte, displayJSON []byte,
 ) (StoredMessage, bool, error) {
 	var stored StoredMessage
 	var duplicate bool
+	capped := caps.PerApp > 0
 	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if capped {
+			// Fixed order (global, then app) so two submits can never deadlock.
+			if lockErr := lockGlobalScheduleCap(ctx, tx); lockErr != nil {
+				return lockErr
+			}
+			if lockErr := lockAppScheduleCap(ctx, tx, envelope.AppID); lockErr != nil {
+				return lockErr
+			}
+		}
 		var messageID string
 		insertErr := tx.QueryRow(ctx,
 			`INSERT INTO messages (app_id, channel, idempotency_key, to_destination, to_recipient, deliver_at, critical, payload, display)
@@ -150,8 +207,26 @@ RETURNING id::text`,
 			return pgutil.WrapDBError("insert message", insertErr)
 		}
 
-		if deliveriesErr := insertDeliveries(ctx, tx, messageID, targets); deliveriesErr != nil {
+		if deliveriesErr := insertDeliveries(ctx, tx, messageID, targets, schedule); deliveriesErr != nil {
 			return deliveriesErr
+		}
+		if capped {
+			// The counts include the message just inserted. The per-app cap is
+			// checked first: when both are full it is the more specific answer.
+			appCount, countErr := countScheduledForApp(ctx, tx, envelope.AppID)
+			if countErr != nil {
+				return countErr
+			}
+			if appCount > caps.PerApp {
+				return ErrTooManyScheduled
+			}
+			totalCount, totalErr := countScheduledTotal(ctx, tx)
+			if totalErr != nil {
+				return totalErr
+			}
+			if totalCount > caps.Total {
+				return ErrScheduledCapacityReached
+			}
 		}
 		inserted, loadErr := queryMessage(ctx, tx, `id = $1::text::uuid`, messageID)
 		if loadErr != nil {
@@ -403,8 +478,14 @@ WHERE id = $1`, current.ID, now); updateErr != nil {
 	return replayed, nil
 }
 
-// DeleteExpired deletes messages older than cutoff that have no pending
-// delivery. Deliveries and attempts cascade.
+// DeleteExpired deletes messages older than cutoff that have no pending or
+// scheduled delivery. Deliveries and attempts cascade.
+//
+// A message's age counts from the later of created_at and deliver_at, so a
+// long-scheduled message keeps its full retention after it is released. A
+// cancelled message ages from cancelled_at instead, so a far-future deliver_at
+// does not keep it. The sargable created_at < cutoff bound stays in the
+// predicate so messages_created_at_idx remains usable.
 //
 // Known, accepted race: a Replay of a dead delivery on a message sitting right
 // at the retention cutoff can commit between this statement's snapshot and its
@@ -433,11 +514,7 @@ func (store *PGStore) DeleteExpiredInBatches(ctx context.Context, cutoff time.Ti
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return total, fmt.Errorf("delete expired messages: %w", ctxErr)
 		}
-		tag, execErr := store.pool.Exec(ctx,
-			`DELETE FROM messages WHERE id IN (
-  SELECT m.id FROM messages m WHERE m.created_at < $1
-  AND NOT EXISTS (SELECT 1 FROM message_deliveries d WHERE d.message_id = m.id AND d.state = 'pending')
-  ORDER BY m.created_at, m.id LIMIT $2)`, cutoff, batchSize)
+		tag, execErr := store.pool.Exec(ctx, deleteExpiredSQL, cutoff, batchSize)
 		if execErr != nil {
 			return total, pgutil.WrapDBError("delete expired messages", execErr)
 		}
@@ -492,7 +569,8 @@ func validateAttemptResult(result AttemptResult) error {
 	return nil
 }
 
-// isDeliveryState reports whether state is one of the State* constants.
+// isDeliveryState reports whether state is a Delivery Log state. The scheduled
+// and cancelled states are deliberately not in the Log, so they are rejected.
 func isDeliveryState(state string) bool {
 	return state == StatePending || state == StateDelivered || state == StateDead
 }
@@ -541,8 +619,22 @@ func truncateBytes(text string, limit int) string {
 	return text[:cut]
 }
 
-// insertDeliveries bulk-inserts one pending delivery per target.
-func insertDeliveries(ctx context.Context, tx pgx.Tx, messageID string, targets []DeliveryTarget) error {
+// deliverySchedule is the initial state a batch of new deliveries is inserted
+// in. A nil time takes the column default (the transaction's now()).
+type deliverySchedule struct {
+	state           string
+	nextAttemptAt   *time.Time
+	budgetStartedAt *time.Time
+}
+
+// pendingNow queues deliveries immediately, due at the transaction's now().
+var pendingNow = deliverySchedule{state: StatePending}
+
+// insertDeliveries bulk-inserts one delivery per target in the given initial
+// state.
+func insertDeliveries(
+	ctx context.Context, tx pgx.Tx, messageID string, targets []DeliveryTarget, schedule deliverySchedule,
+) error {
 	// A *int64 slice encodes a nil entry (a recipient target) as SQL NULL.
 	destinationIDs := make([]*int64, 0, len(targets))
 	destinationNames := make([]string, 0, len(targets))
@@ -553,10 +645,13 @@ func insertDeliveries(ctx context.Context, tx pgx.Tx, messageID string, targets 
 		destinationTypes = append(destinationTypes, target.DestinationType)
 	}
 	if _, execErr := tx.Exec(ctx,
-		`INSERT INTO message_deliveries (message_id, destination_id, destination_name, destination_type)
-SELECT $1::text::uuid, destination_id, destination_name, destination_type
+		`INSERT INTO message_deliveries
+  (message_id, destination_id, destination_name, destination_type, state, next_attempt_at, budget_started_at)
+SELECT $1::text::uuid, destination_id, destination_name, destination_type,
+  $5::text, COALESCE($6::timestamptz, now()), COALESCE($7::timestamptz, now())
 FROM unnest($2::bigint[], $3::text[], $4::text[]) AS target(destination_id, destination_name, destination_type)`,
-		messageID, destinationIDs, destinationNames, destinationTypes); execErr != nil {
+		messageID, destinationIDs, destinationNames, destinationTypes,
+		schedule.state, schedule.nextAttemptAt, schedule.budgetStartedAt); execErr != nil {
 		return pgutil.WrapDBError("insert deliveries", execErr)
 	}
 	return nil
@@ -604,7 +699,7 @@ func scanMessage(row pgutil.RowScanner) (StoredMessage, error) {
 	if scanErr := row.Scan(
 		&stored.ID, &stored.Envelope.AppID, &stored.Envelope.Channel, &stored.Envelope.IdempotencyKey,
 		&stored.Envelope.ToDestination, &stored.Envelope.ToRecipient, &stored.Envelope.DeliverAt,
-		&stored.Envelope.Critical, &payload, &displayJSON, &stored.CreatedAt,
+		&stored.Envelope.Critical, &payload, &displayJSON, &stored.CreatedAt, &stored.CancelledAt,
 	); scanErr != nil {
 		return StoredMessage{}, scanErr
 	}

@@ -28,8 +28,10 @@ const (
 // Expirer deletes messages that have outlived the retention window. It is
 // satisfied by *message.PGStore.
 type Expirer interface {
-	// DeleteExpired deletes messages created before cutoff that have no pending
-	// delivery and returns how many.
+	// DeleteExpired deletes messages older than cutoff that have no pending or
+	// scheduled delivery and returns how many. A message's age counts from the
+	// later of created_at and deliver_at, or from cancelled_at for a cancelled
+	// message.
 	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
@@ -61,8 +63,10 @@ type SweeperConfig struct {
 }
 
 // RunSweeper deletes expired messages immediately and then every
-// config.Interval until ctx is done. A sweep removes messages created more
-// than config.Retention before now that have no pending delivery. It logs the
+// config.Interval until ctx is done. A sweep removes messages older than
+// config.Retention that have no pending or scheduled delivery; age counts from
+// the later of created_at and deliver_at, or from cancelled_at for a cancelled
+// message (see message.PGStore.DeleteExpired). It logs the
 // deleted count at Info when it is above 0 and a failure at Error; a failed
 // sweep never stops the loop. It returns at once, after logging an error, when
 // Retention or Interval is not positive or Expirer is nil.
