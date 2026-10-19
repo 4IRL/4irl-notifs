@@ -59,6 +59,14 @@ func TestDeriveStatus(testInstance *testing.T) {
 		{"pending beats dead", deliveriesIn(message.StateDead, message.StatePending), message.StatusPending},
 		{"pending beats a partial mix", deliveriesIn(message.StateDelivered, message.StateDead, message.StatePending), message.StatusPending},
 		{"an unknown state is not terminal", deliveriesIn(message.StateDelivered, "bogus"), message.StatusPending},
+		{"one scheduled", deliveriesIn(message.StateScheduled), message.StatusScheduled},
+		{"all scheduled", deliveriesIn(message.StateScheduled, message.StateScheduled), message.StatusScheduled},
+		{"one cancelled", deliveriesIn(message.StateCancelled), message.StatusCancelled},
+		{"all cancelled", deliveriesIn(message.StateCancelled, message.StateCancelled), message.StatusCancelled},
+		{"scheduled mixed with pending is pending", deliveriesIn(message.StateScheduled, message.StatePending), message.StatusPending},
+		{"scheduled mixed with delivered is not terminal", deliveriesIn(message.StateScheduled, message.StateDelivered), message.StatusPending},
+		{"cancelled mixed with dead is not terminal", deliveriesIn(message.StateCancelled, message.StateDead), message.StatusPending},
+		{"scheduled mixed with cancelled is not terminal", deliveriesIn(message.StateScheduled, message.StateCancelled), message.StatusPending},
 	}
 	for _, testCase := range cases {
 		testInstance.Run(testCase.name, func(testInstance *testing.T) {

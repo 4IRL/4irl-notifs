@@ -5,6 +5,14 @@ import (
 	"time"
 )
 
+// ScheduledCaps bounds how many messages may sit in the scheduled state.
+type ScheduledCaps struct {
+	// PerApp is the most scheduled messages one app may hold.
+	PerApp int
+	// Total is the most scheduled messages all apps may hold together.
+	Total int
+}
+
 // Store persists messages and their delivery fan-out.
 type Store interface {
 	// InsertMessage persists envelope and one delivery per target in a single
@@ -45,7 +53,10 @@ type Store interface {
 	// ErrDeliveryNotFound for an unknown delivery and ErrDeliveryNotDead unless
 	// the delivery is dead.
 	Replay(ctx context.Context, deliveryID int64, now time.Time) (AdminDelivery, error)
-	// DeleteExpired deletes messages created before cutoff that have no pending
-	// delivery (their deliveries and attempts cascade) and returns how many.
+	// DeleteExpired deletes messages past the retention cutoff that have no
+	// pending or scheduled delivery (their deliveries and attempts cascade) and
+	// returns how many. A message's age counts from the later of created_at and
+	// deliver_at, so a long-scheduled message keeps its full retention after it
+	// is released; a cancelled message ages from cancelled_at instead.
 	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)
 }
