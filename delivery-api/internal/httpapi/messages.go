@@ -61,9 +61,10 @@ const (
 // Messages is the message surface the /v1/messages and /v1/admin/deliveries
 // endpoints call. *message.Service satisfies it.
 //
-// Reads that an app can make (Get, GetByKey, Await) take the calling app's id
-// and must treat another app's message exactly like an absent one. The
-// delivery methods are operator-only and span apps by design.
+// Reads and cancels that an app can make (Get, GetByKey, Await, Cancel,
+// CancelByKey) take the calling app's id and must treat another app's message
+// exactly like an absent one. The delivery, scheduled-list and AdminCancel
+// methods are operator-only and span apps by design.
 type Messages interface {
 	// Submit validates, resolves and queues envelope. The outcome reports a
 	// duplicate of an earlier submission (whose original message is returned), a
@@ -82,6 +83,16 @@ type Messages interface {
 	ListAttempts(ctx context.Context, deliveryID int64) ([]message.Attempt, error)
 	// Replay returns a dead delivery to the queue.
 	Replay(ctx context.Context, deliveryID int64) (message.AdminDelivery, error)
+	// Cancel cancels app appID's scheduled message with the given id. A miss
+	// (unknown id, another app's message) is a StatusNotFound outcome, not an error.
+	Cancel(ctx context.Context, appID string, id string) (message.CancelOutcome, error)
+	// CancelByKey is Cancel for the message app appID submitted with idempotencyKey.
+	CancelByKey(ctx context.Context, appID string, idempotencyKey string) (message.CancelOutcome, error)
+	// AdminCancel is Cancel across every app, for the operator.
+	AdminCancel(ctx context.Context, id string) (message.CancelOutcome, error)
+	// ListScheduled returns up to limit scheduled messages, soonest first, and the
+	// total number of scheduled messages.
+	ListScheduled(ctx context.Context, limit int) ([]message.ScheduledMessage, int, error)
 }
 
 // createMessageRequestBody is the POST /v1/messages body. Unknown top-level
@@ -106,6 +117,10 @@ type messageToRequestBody struct {
 
 // messageView is the JSON form of a stored message. It deliberately omits the
 // payload and display, which an app already has and a status read never needs.
+// DeliverAt is echoed as submitted, except that a replace which releases the
+// message at once reports the release time. It is null when none was given (a
+// past value is returned non-null). CancelledAt is null unless the message was
+// cancelled; both are UTC.
 type messageView struct {
 	MessageID      string         `json:"message_id"`
 	AppID          string         `json:"app_id"`
@@ -113,12 +128,15 @@ type messageView struct {
 	IdempotencyKey string         `json:"idempotency_key"`
 	Critical       bool           `json:"critical"`
 	Status         string         `json:"status"`
+	DeliverAt      *time.Time     `json:"deliver_at"`
 	CreatedAt      time.Time      `json:"created_at"`
+	CancelledAt    *time.Time     `json:"cancelled_at"`
 	Deliveries     []deliveryView `json:"deliveries"`
 }
 
 // deliveryView is the JSON form of one delivery. NextAttemptAt is set only
-// while the delivery is pending: for any other state it is meaningless.
+// while the delivery is pending: for any other state (including scheduled and
+// cancelled) it is meaningless.
 type deliveryView struct {
 	ID             int64      `json:"id"`
 	Destination    string     `json:"destination"`
@@ -159,6 +177,41 @@ type attemptView struct {
 type submitResponseBody struct {
 	Message   messageView `json:"message"`
 	Duplicate bool        `json:"duplicate"`
+	Replaced  bool        `json:"replaced"`
+}
+
+// cancelMessageResponseBody is the 200 body of every cancel outcome, including a
+// miss (Status "not_found", Cancelled false).
+type cancelMessageResponseBody struct {
+	MessageID string `json:"message_id"`
+	Cancelled bool   `json:"cancelled"`
+	Status    string `json:"status"`
+}
+
+// scheduledDestinationView is one destination a scheduled message targets.
+type scheduledDestinationView struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// scheduledMessageView is the operator JSON form of one scheduled message. It
+// carries no payload, display or person hash; Destinations is never null.
+type scheduledMessageView struct {
+	MessageID      string                     `json:"message_id"`
+	AppID          string                     `json:"app_id"`
+	Channel        string                     `json:"channel"`
+	IdempotencyKey string                     `json:"idempotency_key"`
+	DeliverAt      time.Time                  `json:"deliver_at"`
+	CreatedAt      time.Time                  `json:"created_at"`
+	Recipient      bool                       `json:"recipient"`
+	Destinations   []scheduledDestinationView `json:"destinations"`
+}
+
+// scheduledMessagesResponseBody wraps the scheduled list (never nil) and the
+// total number of scheduled messages, which may exceed the list's length.
+type scheduledMessagesResponseBody struct {
+	ScheduledMessages []scheduledMessageView `json:"scheduled_messages"`
+	Total             int                    `json:"total"`
 }
 
 // messageResponseBody wraps one message view.
@@ -246,6 +299,7 @@ func (server *Server) handleCreateMessage(responseWriter http.ResponseWriter, re
 	writeJSON(responseWriter, http.StatusAccepted, submitResponseBody{
 		Message:   newMessageView(stored),
 		Duplicate: duplicate,
+		Replaced:  outcome.Replaced,
 	})
 }
 
@@ -253,9 +307,8 @@ func (server *Server) handleCreateMessage(responseWriter http.ResponseWriter, re
 // calling app: a message that belongs to another app is a 404, exactly like an
 // absent one.
 func (server *Server) handleGetMessage(responseWriter http.ResponseWriter, request *http.Request) {
-	appID := request.URL.Query().Get(queryAppID)
-	if appID == "" {
-		writeError(responseWriter, http.StatusBadRequest, errMsgAppIDRequired)
+	appID, ok := parseAppID(responseWriter, request)
+	if !ok {
 		return
 	}
 
@@ -269,11 +322,8 @@ func (server *Server) handleGetMessage(responseWriter http.ResponseWriter, reque
 
 // handleGetMessageByKey serves GET /v1/messages?app_id=&idempotency_key=.
 func (server *Server) handleGetMessageByKey(responseWriter http.ResponseWriter, request *http.Request) {
-	query := request.URL.Query()
-	appID := query.Get(queryAppID)
-	idempotencyKey := query.Get(queryIdempotencyKey)
-	if appID == "" || idempotencyKey == "" {
-		writeError(responseWriter, http.StatusBadRequest, errMsgKeyLookupRequired)
+	appID, idempotencyKey, ok := parseKeyLookup(responseWriter, request)
+	if !ok {
 		return
 	}
 
@@ -283,6 +333,68 @@ func (server *Server) handleGetMessageByKey(responseWriter http.ResponseWriter, 
 		return
 	}
 	writeJSON(responseWriter, http.StatusOK, messageResponseBody{Message: newMessageView(stored)})
+}
+
+// handleCancelMessage serves DELETE /v1/messages/{id}?app_id=. Every outcome
+// including a miss is a 200 (the cancel is idempotent); only a missing or
+// malformed app_id is a 400.
+func (server *Server) handleCancelMessage(responseWriter http.ResponseWriter, request *http.Request) {
+	appID, ok := parseAppID(responseWriter, request)
+	if !ok {
+		return
+	}
+
+	outcome, err := server.messages.Cancel(request.Context(), appID, request.PathValue(pathValueID))
+	server.writeCancelOutcome(responseWriter, request, outcome, err)
+}
+
+// handleCancelMessageByKey serves DELETE /v1/messages?app_id=&idempotency_key=.
+func (server *Server) handleCancelMessageByKey(responseWriter http.ResponseWriter, request *http.Request) {
+	appID, idempotencyKey, ok := parseKeyLookup(responseWriter, request)
+	if !ok {
+		return
+	}
+
+	outcome, err := server.messages.CancelByKey(request.Context(), appID, idempotencyKey)
+	server.writeCancelOutcome(responseWriter, request, outcome, err)
+}
+
+// handleAdminCancelMessage serves DELETE /v1/admin/scheduled-messages/{id}: the
+// app cancel without the app scoping.
+func (server *Server) handleAdminCancelMessage(responseWriter http.ResponseWriter, request *http.Request) {
+	outcome, err := server.messages.AdminCancel(request.Context(), request.PathValue(pathValueID))
+	server.writeCancelOutcome(responseWriter, request, outcome, err)
+}
+
+// writeCancelOutcome answers a cancel with its 200 body, or maps err.
+func (server *Server) writeCancelOutcome(
+	responseWriter http.ResponseWriter, request *http.Request, outcome message.CancelOutcome, err error,
+) {
+	if err != nil {
+		server.writeMessageError(responseWriter, request, err)
+		return
+	}
+	writeJSON(responseWriter, http.StatusOK, cancelMessageResponseBody{
+		MessageID: outcome.MessageID,
+		Cancelled: outcome.Cancelled,
+		Status:    outcome.Status,
+	})
+}
+
+// handleListScheduledMessages serves GET /v1/admin/scheduled-messages?limit=.
+// The limit is parsed like the delivery list's: a non-integer is passed on as an
+// out-of-range value so the service's range check is the single source of the 400.
+func (server *Server) handleListScheduledMessages(responseWriter http.ResponseWriter, request *http.Request) {
+	scheduled, total, err := server.messages.ListScheduled(request.Context(), parseListLimit(request))
+	if err != nil {
+		server.writeMessageError(responseWriter, request, err)
+		return
+	}
+	views := make([]scheduledMessageView, 0, len(scheduled))
+	for _, scheduledMessage := range scheduled {
+		views = append(views, newScheduledMessageView(scheduledMessage))
+	}
+	writeJSON(responseWriter, http.StatusOK, scheduledMessagesResponseBody{ScheduledMessages: views, Total: total})
 }
 
 // handleListDeliveries serves GET /v1/admin/deliveries?state=&limit=. The state
@@ -295,16 +407,8 @@ func (server *Server) handleListDeliveries(responseWriter http.ResponseWriter, r
 	if state == "" {
 		state = defaultListState
 	}
-	limit := message.DefaultListLimit
-	if rawLimit := query.Get(queryLimit); rawLimit != "" {
-		parsed, parseErr := strconv.Atoi(rawLimit)
-		if parseErr != nil {
-			parsed = invalidListLimit
-		}
-		limit = parsed
-	}
 
-	deliveries, err := server.messages.ListDeliveries(request.Context(), state, limit)
+	deliveries, err := server.messages.ListDeliveries(request.Context(), state, parseListLimit(request))
 	if err != nil {
 		server.writeMessageError(responseWriter, request, err)
 		return
@@ -350,6 +454,46 @@ func (server *Server) handleReplayDelivery(responseWriter http.ResponseWriter, r
 	writeJSON(responseWriter, http.StatusOK, deliveryResponseBody{Delivery: newAdminDeliveryView(replayed)})
 }
 
+// parseListLimit reads the optional ?limit= query: a missing value is the
+// default, and a value that is not an integer becomes an out-of-range one, so the
+// service's range check is the single source of the 400.
+func parseListLimit(request *http.Request) int {
+	rawLimit := request.URL.Query().Get(queryLimit)
+	if rawLimit == "" {
+		return message.DefaultListLimit
+	}
+	parsed, err := strconv.Atoi(rawLimit)
+	if err != nil {
+		return invalidListLimit
+	}
+	return parsed
+}
+
+// parseAppID reads the required ?app_id= query. A missing value writes 400
+// "app_id is required" and returns false; a present but malformed one is left
+// for the service to reject.
+func parseAppID(responseWriter http.ResponseWriter, request *http.Request) (string, bool) {
+	appID := request.URL.Query().Get(queryAppID)
+	if appID == "" {
+		writeError(responseWriter, http.StatusBadRequest, errMsgAppIDRequired)
+		return "", false
+	}
+	return appID, true
+}
+
+// parseKeyLookup reads the required ?app_id= and ?idempotency_key= queries of a
+// by-key request. Either missing writes 400 and returns false.
+func parseKeyLookup(responseWriter http.ResponseWriter, request *http.Request) (string, string, bool) {
+	query := request.URL.Query()
+	appID := query.Get(queryAppID)
+	idempotencyKey := query.Get(queryIdempotencyKey)
+	if appID == "" || idempotencyKey == "" {
+		writeError(responseWriter, http.StatusBadRequest, errMsgKeyLookupRequired)
+		return "", "", false
+	}
+	return appID, idempotencyKey, true
+}
+
 // parseWait reads the optional ?wait= query as whole seconds. A missing value is
 // 0, a value above maxWaitSeconds is clamped to it, and a negative or
 // non-integer value writes 400 "invalid wait" and returns false.
@@ -393,8 +537,29 @@ func newMessageView(stored message.StoredMessage) messageView {
 		IdempotencyKey: stored.Envelope.IdempotencyKey,
 		Critical:       stored.Envelope.Critical,
 		Status:         message.DeriveStatus(stored.Deliveries),
+		DeliverAt:      utcOrNil(stored.Envelope.DeliverAt),
 		CreatedAt:      stored.CreatedAt.UTC(),
+		CancelledAt:    utcOrNil(stored.CancelledAt),
 		Deliveries:     deliveries,
+	}
+}
+
+// newScheduledMessageView converts a scheduled-message read model into its JSON
+// view; times are UTC and the destinations slice is never nil.
+func newScheduledMessageView(scheduled message.ScheduledMessage) scheduledMessageView {
+	destinations := make([]scheduledDestinationView, 0, len(scheduled.Destinations))
+	for _, destination := range scheduled.Destinations {
+		destinations = append(destinations, scheduledDestinationView{Name: destination.Name, Type: destination.Type})
+	}
+	return scheduledMessageView{
+		MessageID:      scheduled.MessageID,
+		AppID:          scheduled.AppID,
+		Channel:        scheduled.Channel,
+		IdempotencyKey: scheduled.IdempotencyKey,
+		DeliverAt:      scheduled.DeliverAt.UTC(),
+		CreatedAt:      scheduled.CreatedAt.UTC(),
+		Recipient:      scheduled.Recipient,
+		Destinations:   destinations,
 	}
 }
 

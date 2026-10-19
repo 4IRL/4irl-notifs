@@ -59,6 +59,23 @@ type fakeMessages struct {
 	replayResult message.AdminDelivery
 	replayErr    error
 	replayCalls  []int64
+
+	cancelResult message.CancelOutcome
+	cancelErr    error
+	cancelCalls  []appAndID
+
+	cancelByKeyResult message.CancelOutcome
+	cancelByKeyErr    error
+	cancelByKeyCalls  []appAndID
+
+	adminCancelResult message.CancelOutcome
+	adminCancelErr    error
+	adminCancelCalls  []string
+
+	listScheduledResult []message.ScheduledMessage
+	listScheduledTotal  int
+	listScheduledErr    error
+	listScheduledCalls  []int
 }
 
 type appAndID struct {
@@ -117,15 +134,37 @@ func (fake *fakeMessages) Replay(_ context.Context, deliveryID int64) (message.A
 	return fake.replayResult, fake.replayErr
 }
 
+func (fake *fakeMessages) Cancel(_ context.Context, appID string, id string) (message.CancelOutcome, error) {
+	fake.cancelCalls = append(fake.cancelCalls, appAndID{appID: appID, id: id})
+	return fake.cancelResult, fake.cancelErr
+}
+
+func (fake *fakeMessages) CancelByKey(_ context.Context, appID string, idempotencyKey string) (message.CancelOutcome, error) {
+	fake.cancelByKeyCalls = append(fake.cancelByKeyCalls, appAndID{appID: appID, id: idempotencyKey})
+	return fake.cancelByKeyResult, fake.cancelByKeyErr
+}
+
+func (fake *fakeMessages) AdminCancel(_ context.Context, id string) (message.CancelOutcome, error) {
+	fake.adminCancelCalls = append(fake.adminCancelCalls, id)
+	return fake.adminCancelResult, fake.adminCancelErr
+}
+
+func (fake *fakeMessages) ListScheduled(_ context.Context, limit int) ([]message.ScheduledMessage, int, error) {
+	fake.listScheduledCalls = append(fake.listScheduledCalls, limit)
+	return fake.listScheduledResult, fake.listScheduledTotal, fake.listScheduledErr
+}
+
 func (fake *fakeMessages) totalCalls() int {
 	return len(fake.submitCalls) + len(fake.getCalls) + len(fake.getByKeyCalls) + len(fake.awaitCalls) +
-		len(fake.listDeliveriesCalls) + len(fake.listAttemptsCalls) + len(fake.replayCalls)
+		len(fake.listDeliveriesCalls) + len(fake.listAttemptsCalls) + len(fake.replayCalls) +
+		len(fake.cancelCalls) + len(fake.cancelByKeyCalls) + len(fake.adminCancelCalls) + len(fake.listScheduledCalls)
 }
 
 func failingMessages(err error) *fakeMessages {
 	return &fakeMessages{
 		submitErr: err, getErr: err, getByKeyErr: err, awaitErr: err,
 		listDeliveriesErr: err, listAttemptsErr: err, replayErr: err,
+		cancelErr: err, cancelByKeyErr: err, adminCancelErr: err, listScheduledErr: err,
 	}
 }
 
@@ -182,7 +221,8 @@ const (
 	deliveredDeliveryJSON = `{"id":13,"destination":"c_hook","state":"delivered","dead_reason":null,"attempt_count":1,` +
 		`"last_status_code":200,"next_attempt_at":null,"delivered_at":"` + adminTimestampJSON + `"}`
 	sampleMessageJSON = `{"message_id":"` + sampleMessageID + `","app_id":"urls4irl","channel":"alerts",` +
-		`"idempotency_key":"key-1","critical":true,"status":"pending","created_at":"` + adminTimestampJSON + `",` +
+		`"idempotency_key":"key-1","critical":true,"status":"pending","deliver_at":null,` +
+		`"created_at":"` + adminTimestampJSON + `","cancelled_at":null,` +
 		`"deliveries":[` + pendingDeliveryJSON + `,` + deadDeliveryJSON + `,` + deliveredDeliveryJSON + `]}`
 )
 
@@ -191,7 +231,7 @@ func TestSubmitReturns202WithTheMessageView(testInstance *testing.T) {
 
 	recorder := serveMessages(fake, nil, http.MethodPost, "/v1/messages", validSubmitBody)
 
-	assertResponse(testInstance, recorder, http.StatusAccepted, `{"message":`+sampleMessageJSON+`,"duplicate":false}`+"\n")
+	assertResponse(testInstance, recorder, http.StatusAccepted, `{"message":`+sampleMessageJSON+`,"duplicate":false,"replaced":false}`+"\n")
 	if len(fake.awaitCalls) != 0 {
 		testInstance.Fatalf("Await calls = %d, want 0 without ?wait", len(fake.awaitCalls))
 	}
@@ -202,7 +242,7 @@ func TestSubmitReportsDuplicate(testInstance *testing.T) {
 
 	recorder := serveMessages(fake, nil, http.MethodPost, "/v1/messages?wait=5", validSubmitBody)
 
-	assertResponse(testInstance, recorder, http.StatusAccepted, `{"message":`+sampleMessageJSON+`,"duplicate":true}`+"\n")
+	assertResponse(testInstance, recorder, http.StatusAccepted, `{"message":`+sampleMessageJSON+`,"duplicate":true,"replaced":false}`+"\n")
 	if len(fake.awaitCalls) != 0 {
 		testInstance.Fatalf("Await calls = %d, want 0 for a duplicate", len(fake.awaitCalls))
 	}
@@ -314,7 +354,7 @@ func TestSubmitWaitFailureStillAnswersWithTheCommittedMessage(testInstance *test
 
 	recorder := serveMessages(fake, logger, http.MethodPost, "/v1/messages?wait=2", validSubmitBody)
 
-	assertResponse(testInstance, recorder, http.StatusAccepted, `{"message":`+sampleMessageJSON+`,"duplicate":false}`+"\n")
+	assertResponse(testInstance, recorder, http.StatusAccepted, `{"message":`+sampleMessageJSON+`,"duplicate":false,"replaced":false}`+"\n")
 }
 
 func TestSubmitRejectsBadWait(testInstance *testing.T) {
@@ -694,6 +734,10 @@ func TestWriteMessageErrorBranches(testInstance *testing.T) {
 		{name: "list deliveries", method: http.MethodGet, path: "/v1/admin/deliveries"},
 		{name: "attempts", method: http.MethodGet, path: "/v1/admin/deliveries/1/attempts"},
 		{name: "replay", method: http.MethodPost, path: "/v1/admin/deliveries/1/replay"},
+		{name: "cancel", method: http.MethodDelete, path: "/v1/messages/" + sampleMessageID + "?app_id=urls4irl"},
+		{name: "cancel by key", method: http.MethodDelete, path: "/v1/messages?app_id=urls4irl&idempotency_key=k"},
+		{name: "list scheduled", method: http.MethodGet, path: "/v1/admin/scheduled-messages"},
+		{name: "admin cancel", method: http.MethodDelete, path: "/v1/admin/scheduled-messages/" + sampleMessageID},
 	}
 	for _, testCase := range testCases {
 		for _, route := range routes {
@@ -720,6 +764,10 @@ func TestInternalErrorsAreLoggedButNeverReturned(testInstance *testing.T) {
 		{name: "list deliveries", method: http.MethodGet, path: "/v1/admin/deliveries"},
 		{name: "attempts", method: http.MethodGet, path: "/v1/admin/deliveries/1/attempts"},
 		{name: "replay", method: http.MethodPost, path: "/v1/admin/deliveries/1/replay"},
+		{name: "cancel", method: http.MethodDelete, path: "/v1/messages/" + sampleMessageID + "?app_id=urls4irl"},
+		{name: "cancel by key", method: http.MethodDelete, path: "/v1/messages?app_id=urls4irl&idempotency_key=k"},
+		{name: "list scheduled", method: http.MethodGet, path: "/v1/admin/scheduled-messages"},
+		{name: "admin cancel", method: http.MethodDelete, path: "/v1/admin/scheduled-messages/" + sampleMessageID},
 	}
 	for _, route := range routes {
 		testInstance.Run(route.name, func(subTest *testing.T) {
@@ -835,6 +883,10 @@ func TestNilMessagesFailsClosed(testInstance *testing.T) {
 		{name: "list deliveries", method: http.MethodGet, path: "/v1/admin/deliveries"},
 		{name: "attempts", method: http.MethodGet, path: "/v1/admin/deliveries/1/attempts"},
 		{name: "replay", method: http.MethodPost, path: "/v1/admin/deliveries/1/replay"},
+		{name: "cancel", method: http.MethodDelete, path: "/v1/messages/" + sampleMessageID + "?app_id=urls4irl"},
+		{name: "cancel by key", method: http.MethodDelete, path: "/v1/messages?app_id=urls4irl&idempotency_key=k"},
+		{name: "list scheduled", method: http.MethodGet, path: "/v1/admin/scheduled-messages"},
+		{name: "admin cancel", method: http.MethodDelete, path: "/v1/admin/scheduled-messages/" + sampleMessageID},
 	}
 	for _, route := range routes {
 		testInstance.Run(route.name, func(subTest *testing.T) {
@@ -898,7 +950,11 @@ func TestMessageRoutesRejectUnsupportedRequests(testInstance *testing.T) {
 		wantStatus int
 	}{
 		{name: "PUT messages", method: http.MethodPut, path: "/v1/messages", wantStatus: http.StatusMethodNotAllowed},
-		{name: "DELETE message", method: http.MethodDelete, path: "/v1/messages/" + sampleMessageID, wantStatus: http.StatusMethodNotAllowed},
+		{name: "PUT scheduled messages", method: http.MethodPut, path: "/v1/admin/scheduled-messages", wantStatus: http.StatusMethodNotAllowed},
+		{name: "POST scheduled messages", method: http.MethodPost, path: "/v1/admin/scheduled-messages", wantStatus: http.StatusMethodNotAllowed},
+		{name: "GET scheduled message by id", method: http.MethodGet, path: "/v1/admin/scheduled-messages/" + sampleMessageID, wantStatus: http.StatusMethodNotAllowed},
+		{name: "DELETE scheduled messages list", method: http.MethodDelete, path: "/v1/admin/scheduled-messages", wantStatus: http.StatusMethodNotAllowed},
+		{name: "scheduled messages outside admin", method: http.MethodGet, path: "/v1/scheduled-messages", wantStatus: http.StatusNotFound},
 		{name: "POST message by id", method: http.MethodPost, path: "/v1/messages/" + sampleMessageID, wantStatus: http.StatusMethodNotAllowed},
 		{name: "POST deliveries list", method: http.MethodPost, path: "/v1/admin/deliveries", wantStatus: http.StatusMethodNotAllowed},
 		{name: "GET replay", method: http.MethodGet, path: "/v1/admin/deliveries/1/replay", wantStatus: http.StatusMethodNotAllowed},

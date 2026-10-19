@@ -74,10 +74,12 @@ Components:
   individual consuming apps, each authenticated via its own Cloudflare Access Service Token.
 - **delivery-api** — generic delivery service (Go + Postgres, with a one-shot `delivery-migrate`
   container); serves the operator registry (destinations and routes) under `/v1/admin`, the
-  app message envelope API (`/v1/messages`) and the operator delivery log and replay endpoints
-  (`/v1/admin/deliveries`), alongside `/healthz` and `/readyz`. It runs the delivery
-  worker (webhook, Discord and ntfy sinks, including `to.recipient` delivery through each app's
-  ntfy publisher token) and the retention sweeper in-process.
+  app message envelope API (`/v1/messages`, including `DELETE /v1/messages` cancel of scheduled
+  messages), the operator delivery log and replay endpoints (`/v1/admin/deliveries`) and the operator
+  scheduled-message list and cancel (`/v1/admin/scheduled-messages`), alongside `/healthz` and
+  `/readyz`. It runs the delivery worker (webhook, Discord and ntfy sinks, including `to.recipient`
+  delivery through each app's ntfy publisher token), the scheduled-message releaser (`RunReleaser`)
+  and the retention sweeper in-process.
 - **web** — React/Vite admin UI, deployed to Cloudflare Pages behind Cloudflare Access
   (Google/GitHub OAuth).
 
