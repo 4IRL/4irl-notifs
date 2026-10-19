@@ -171,8 +171,11 @@ delivery-test: ## Run delivery-api Go unit tests
 
 # -p 1 runs the integration packages one at a time: they share one database, and
 # pgstore_integration_test.go briefly writes a failure row that /readyz would report.
+# NOTIFS_DELIVERY_MAX_SCHEDULED forwards the stack's per-app scheduled cap (set the same
+# DELIVERY_MAX_SCHEDULED_PER_APP for `make local-up` and this target) so the live 429 test
+# can fill a small cap; it skips when the cap is not small.
 delivery-integration-test: ## Run delivery-api integration tests (local stack must be up)
-	@C="$$($(COMPOSE) ps -q delivery-api)"; D="$$($(COMPOSE) ps -q delivery-postgres)"; cd delivery-api && NOTIFS_DELIVERY_CONTAINER="$$C" NOTIFS_DELIVERY_DB_CONTAINER="$$D" NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_NTFY_URL=$(NTFY_URL) NOTIFS_API_URL=$(API_URL) NOTIFS_DELIVERY_TEST_DSN="postgres://delivery:delivery-local-dev@127.0.0.1:$(DELIVERY_DB_PORT_HOST)/delivery?sslmode=disable" go test -p 1 -tags integration ./...
+	@C="$$($(COMPOSE) ps -q delivery-api)"; D="$$($(COMPOSE) ps -q delivery-postgres)"; cd delivery-api && NOTIFS_DELIVERY_CONTAINER="$$C" NOTIFS_DELIVERY_DB_CONTAINER="$$D" NOTIFS_DELIVERY_MAX_SCHEDULED="$${DELIVERY_MAX_SCHEDULED_PER_APP:-1000}" NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_NTFY_URL=$(NTFY_URL) NOTIFS_API_URL=$(API_URL) NOTIFS_DELIVERY_TEST_DSN="postgres://delivery:delivery-local-dev@127.0.0.1:$(DELIVERY_DB_PORT_HOST)/delivery?sslmode=disable" go test -p 1 -tags integration ./...
 
 delivery-lint: ## Check delivery-api Go formatting and lint
 	@UNFORMATTED="$$(cd delivery-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }

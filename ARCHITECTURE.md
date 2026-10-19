@@ -12,7 +12,7 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API and `/v1/messages`. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery) and retention sweeper. Has no auth of its own; reachable only behind the path-scoped Access apps below. |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel) and the operator `/v1/admin/scheduled-messages` list and cancel. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`) and a retention sweeper. Has no auth of its own; reachable only behind the path-scoped Access apps below. |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*`, `/people`, `/apps` and `/delivery/*` proxy Functions. |
 
@@ -44,7 +44,20 @@ the VPS; person-service + admin UI are Cloudflare-native.
   closed until a re-mint. It does not revoke the token in ntfy.
 
 - `POST /v1/messages` (submit, optional `?wait=N`), `GET /v1/messages/{id}?app_id=` and
-  `GET /v1/messages?app_id=&idempotency_key=` — the app envelope API.
+  `GET /v1/messages?app_id=&idempotency_key=` — the app envelope API. A future `deliver_at` holds the
+  message (status `scheduled`) until a release poller (1s interval, batches of 100) moves it into the
+  queue; the app cancels or replaces it until then with `DELETE /v1/messages/{id}?app_id=` and
+  `DELETE /v1/messages?app_id=&idempotency_key=` (idempotent 200; replace is a re-post of the same
+  idempotency key with different content). An app may hold at most `DELIVERY_MAX_SCHEDULED_PER_APP`
+  scheduled messages (default 1000, range 1-100000; an invalid value fails startup), else `429`
+  `too many scheduled messages`. All apps together may hold at most `DELIVERY_MAX_SCHEDULED_TOTAL`
+  (default 100000, range 1-10000000; an invalid value fails startup), else `429`
+  `scheduled message capacity reached`; this bounds table growth across `app_id`s. Both caps are
+  checked in the insert transaction under advisory locks taken in a fixed order (global, then app), the
+  per-app cap first when both are full, and a replace never grows either count so it is never refused.
+  The operator **Pending sends** list and cancel are `GET /v1/admin/scheduled-messages` (optional
+  `limit`, default 50, max 200; returns `scheduled_messages` and `total`) and
+  `DELETE /v1/admin/scheduled-messages/{id}` (the app cancel without the app scoping).
   The in-process worker delivers each queued message to its webhook, Discord or ntfy destination (or,
   for `to.recipient`, to the person's ntfy topic) with retries. The operator delivery log lives under
   `/v1/admin/deliveries` (`GET`, optional `state` and `limit`), `GET /v1/admin/deliveries/{id}/attempts`
@@ -52,8 +65,10 @@ the VPS; person-service + admin UI are Cloudflare-native.
   (the app-facing fields plus `message_id`, `app_id`, `channel`, `destination_type`, `created_at`,
   `updated_at`). The full envelope contract is in `docs/app-integration-guide.md`.
 - Retention sweeper: an in-process sweeper deletes messages older than `DELIVERY_RETENTION_DAYS`
-  (default 30, integer 1-3650; an invalid value fails startup). A message with a pending delivery is
-  never deleted.
+  (default 30, integer 1-3650; an invalid value fails startup). A message with a `pending` or
+  `scheduled` delivery is never deleted. A message's age counts from the later of `created_at` and
+  `deliver_at`, so a long-scheduled message keeps its full retention after release; a cancelled message
+  ages from `cancelled_at` instead.
 
 **Exposure and authentication.** delivery-api has no authentication of its own and stays bound to
 `127.0.0.1:8300`; Cloudflare Access is its only boundary. It is published through the shared Tunnel as
@@ -68,8 +83,9 @@ path first: `notifs-delivery.4irl.app/v1/admin` (proxy token only, so an app tok
 `/v1/messages`, `/readyz` and `/healthz`). Never add an app token to a policy that covers `/v1/admin`.
 
 `app_id` on `/v1/messages` is still caller-asserted: any holder of an authorized token can submit as, or
-read the status of, any app, so per-app tokens are an operator-trust boundary, not isolation between
-apps. Never publish the hostname before its Access app exists. Operator runbook: create the Access app
+read the status of, any app (and can cancel or replace any app's scheduled messages through
+`DELETE /v1/messages` and replace-by-repost), so per-app tokens are an operator-trust boundary, not
+isolation between apps. Never publish the hostname before its Access app exists. Operator runbook: create the Access app
 and add the proxy token, add the Tunnel public hostname, then set the Pages `DELIVERY_API_URL` binding and
 add `/delivery` to the `notifs-admin` Bypass app.
 
@@ -307,8 +323,13 @@ contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
 ### Scheduling & time-based notifications are app-owned — notifs stays a dumb pipe
 
 > **Superseded in part:** delivery-api now provides delivery retries, backoff and a delivery log for
-> envelopes submitted to `/v1/messages`. The scheduling decision below still stands: `deliver_at` is
-> rejected (`deliver_at not yet supported`), and 4irl-notifs still never learns an app's domain.
+> envelopes submitted to `/v1/messages`, and a one-shot **deferred send**: an app may set `deliver_at` to
+> have delivery-api hold an already-composed message and release it into the queue when due (cancel or
+> replace until then; see `docs/app-integration-guide.md`). Targets are validated at submit and
+> re-checked at release: a destination disabled or deleted before `deliver_at` ends as a dead delivery
+> (`destination_disabled` / `destination_deleted`), visible in the Delivery log. The rest of the
+> scheduling decision below still stands: no cron, recurring schedules or decision logic here (the app
+> owns staleness and what to send), and 4irl-notifs still never learns an app's domain.
 
 **Decision:** 4irl-notifs does **not** schedule notifications and holds **no** cron, timer, or
 schedule registry. Each consuming app **implements its own scheduler and its own decision logic**,

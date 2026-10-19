@@ -67,6 +67,43 @@ func TestRoutesRejectUnsupportedRequests(testInstance *testing.T) {
 	}
 }
 
+// TestCancelAndScheduledRoutesFailClosedWithoutMessages pins that a server built
+// with no Messages answers 503 on the cancel and scheduled-list routes, before it
+// looks at the parameters, exactly like the other message routes.
+func TestCancelAndScheduledRoutesFailClosedWithoutMessages(testInstance *testing.T) {
+	const messageID = "5a3e0f0c-9d1b-4c3a-8f2e-0123456789ab"
+	testCases := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "cancel by id", method: http.MethodDelete, path: "/v1/messages/" + messageID + "?app_id=urls4irl"},
+		{name: "cancel by id without app_id", method: http.MethodDelete, path: "/v1/messages/" + messageID},
+		{name: "cancel by key", method: http.MethodDelete, path: "/v1/messages?app_id=urls4irl&idempotency_key=key-1"},
+		{name: "cancel by key without params", method: http.MethodDelete, path: "/v1/messages"},
+		{name: "admin list", method: http.MethodGet, path: "/v1/admin/scheduled-messages"},
+		{name: "admin list with a bad limit", method: http.MethodGet, path: "/v1/admin/scheduled-messages?limit=0"},
+		{name: "admin cancel", method: http.MethodDelete, path: "/v1/admin/scheduled-messages/" + messageID},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			server := NewServer(ServerConfig{})
+
+			request := httptest.NewRequest(testCase.method, testCase.path, nil)
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusServiceUnavailable {
+				subTest.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
+			}
+			if body := recorder.Body.String(); body != `{"error":"messages unavailable"}`+"\n" {
+				subTest.Fatalf("body = %q, want the messages unavailable error", body)
+			}
+		})
+	}
+}
+
 // fakeReadinessChecker returns a scripted Readiness and error.
 type fakeReadinessChecker struct {
 	readiness Readiness

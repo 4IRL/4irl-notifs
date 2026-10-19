@@ -23,6 +23,11 @@ jobs:
             delivery-api/go.sum
 
       - name: Start local stack
+        env:
+          # A cap of 2 lets the live per-app 429 test run (it skips on a larger cap). Keep in sync
+          # with NOTIFS_DELIVERY_MAX_SCHEDULED below; the other live scheduled tests hold at most 2
+          # scheduled messages per app at once.
+          DELIVERY_MAX_SCHEDULED_PER_APP: "2"
         run: docker compose --project-directory . -f docker-compose.yml up -d --build
 
       - name: Wait for provisioning-api to be healthy
@@ -68,6 +73,8 @@ jobs:
         working-directory: delivery-api
         env:
           NOTIFS_DELIVERY_URL: http://127.0.0.1:8300
+          # Must equal DELIVERY_MAX_SCHEDULED_PER_APP on the stack started above.
+          NOTIFS_DELIVERY_MAX_SCHEDULED: "2"
           NOTIFS_DELIVERY_TEST_DSN: postgres://delivery:delivery-local-dev@127.0.0.1:18300/delivery?sslmode=disable
         # -p 1: the packages share one database, and the pgstore test writes a transient failure row that /readyz would report
         run: go test -p 1 -tags integration ./...

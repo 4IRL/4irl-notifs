@@ -8,9 +8,11 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
 - **provisioning-api** — barebones Go service for parametric user/topic provisioning across apps
 - **delivery-api** — generic delivery service (Go) backed by its own Postgres (`delivery-postgres`,
   schema applied by the one-shot `delivery-migrate`); serves `/healthz`, `/readyz`, the app message
-  API (`/v1/messages`), the operator `/v1/admin` registry API (destinations and routes, AES-256-GCM
-  sealed secrets, masked reads) and the operator delivery log and replay
-  (`/v1/admin/deliveries`); delivers webhook, Discord and ntfy messages through an in-process delivery worker and prunes old
+  API (`/v1/messages`, including `DELETE /v1/messages` cancel of scheduled messages), the operator
+  `/v1/admin` registry API (destinations and routes, AES-256-GCM sealed secrets, masked reads), the
+  operator delivery log and replay (`/v1/admin/deliveries`) and the operator scheduled-message list
+  and cancel (`/v1/admin/scheduled-messages`); delivers webhook, Discord and ntfy messages through an
+  in-process delivery worker, releases scheduled messages with an in-process releaser and prunes old
   messages with a retention sweeper; see
   [`ARCHITECTURE.md`](ARCHITECTURE.md#delivery-api-endpoints)
 - **web** — admin UI (Cloudflare Pages, behind Cloudflare Access)
@@ -40,7 +42,15 @@ delivery-api runtime configuration (environment):
 | `LISTEN_ADDRESS` | `:8080` | HTTP listen address |
 | `DELIVERY_NTFY_URL` | unset | Internal ntfy origin, e.g. `http://ntfy:80`; unset disables the ntfy sink and `to.recipient` delivery |
 | `DELIVERY_PROVISIONING_URL` | unset | Internal provisioning-api origin, e.g. `http://provisioning-api:8080`; unset makes `POST /v1/admin/apps/{app_id}/ntfy-publisher` answer 503 |
-| `DELIVERY_RETENTION_DAYS` | `30` | Days a message is kept before the retention sweeper deletes it (integer 1-3650; a message with a pending delivery is never deleted; an invalid value fails startup) |
+| `DELIVERY_RETENTION_DAYS` | `30` | Days a message is kept before the retention sweeper deletes it (integer 1-3650; a message with a `pending` or `scheduled` delivery is never deleted; age counts from the later of `created_at` and `deliver_at`, and a cancelled message ages from `cancelled_at`; an invalid value fails startup) |
+| `DELIVERY_MAX_SCHEDULED_PER_APP` | `1000` | Most scheduled (`deliver_at`) messages one app may hold; a new scheduled submit over it is a `429` (integer 1-100000; an invalid value fails startup) |
+| `DELIVERY_MAX_SCHEDULED_TOTAL` | `100000` | Most scheduled messages all apps may hold together; a new scheduled submit over it is a `429` `scheduled message capacity reached`, distinct from the per-app `too many scheduled messages` (integer 1-10000000; an invalid value fails startup; the per-app cap is checked first) |
+
+The live per-app cap (`429`) integration case needs a small cap (2 to 5) on the stack, and skips otherwise.
+Start the stack and run the suite with the same value:
+`make local-up DELIVERY_MAX_SCHEDULED_PER_APP=2`, then
+`make delivery-integration-test DELIVERY_MAX_SCHEDULED_PER_APP=2`.
+The CI integration job starts its stack with a cap of 2, so the case runs there.
 
 Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own
 compose project and ports; see [`docs/worktrees.md`](docs/worktrees.md). In a worktree, start the

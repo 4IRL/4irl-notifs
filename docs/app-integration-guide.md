@@ -244,6 +244,10 @@ delivery-api is reachable at `https://notifs-delivery.4irl.app`, behind Cloudfla
 operator has authorized on the `notifs-delivery` Access application (see the operator runbook below). Your
 app token reaches `/v1/messages`, `/readyz` and `/healthz`; `/v1/admin/*` returns 403 to it.
 
+`app_id` is caller-asserted, so per-app tokens are an operator-trust boundary, not isolation between
+apps: a token holder can submit as, read the status of, cancel (`DELETE /v1/messages`) or replace
+(re-post with the same idempotency key) any app's scheduled messages.
+
 ### Envelope contract
 
 `POST /v1/messages` takes one JSON object. An unknown field, a wrong JSON type or trailing data is
@@ -258,28 +262,34 @@ app token reaches `/v1/messages`, `/readyz` and `/healthz`; `/v1/admin/*` return
 | `critical`        | no       | boolean, recorded only (see `critical` below)                                              |
 | `payload`         | yes      | a single JSON object, at most 128 KiB, storable in Postgres jsonb                         |
 | `display`         | no       | `title` (max 250 bytes), `body` (max 4096), `url` (max 2048, https), `priority` (`min` `low` `default` `high` `urgent`) |
-| `deliver_at`      | no       | not supported: any value is rejected                                                       |
+| `deliver_at`      | no       | RFC3339 timestamp; a future time holds the message until then (see Deferred send below); absent, `null` or a past time sends at once |
 
 Validation is checked in a fixed order (`app_id`, `channel`, `idempotency_key`, `to`, `deliver_at`,
 `payload`, `display`) and the first failure is returned as `400 {"error":"<message>"}`, for example
 `invalid app_id`, `invalid channel`, `invalid idempotency_key`, `invalid to.destination`,
 `to.destination and to.recipient cannot both be set`, `to.recipient must be an email or person_hash`,
-`deliver_at not yet supported`, `invalid payload`, `invalid display.title`, `invalid display.body`,
+`invalid deliver_at`, `invalid payload`, `invalid display.title`, `invalid display.body`,
 `invalid display.url`, `invalid display.priority`.
 
-A successful submit is `202 {"message": {...}, "duplicate": false}`. The message carries `message_id`,
-`app_id`, `channel`, `idempotency_key`, `critical`, `status` (`pending`, `delivered`, `dead` or
-`partial`), `created_at` and `deliveries[]` (`id`, `destination`, `state`, `dead_reason`,
-`attempt_count`, `last_status_code`, `next_attempt_at`, `delivered_at`).
+A successful submit is `202 {"message": {...}, "duplicate": false, "replaced": false}`. The message
+carries `message_id`, `app_id`, `channel`, `idempotency_key`, `critical`, `status` (`pending`,
+`delivered`, `dead`, `partial`, `scheduled` or `cancelled`), `deliver_at` (RFC3339 UTC as submitted, except that a replace which releases the message at once
+reports the release time, or `null` when none was given), `created_at`, `cancelled_at` (RFC3339 UTC, or `null` unless cancelled) and `deliveries[]`
+(`id`, `destination`, `state`, `dead_reason`, `attempt_count`, `last_status_code`, `next_attempt_at`,
+`delivered_at`). A delivery `state` is `pending`, `delivered`, `dead`, `scheduled` or `cancelled`;
+`next_attempt_at` is set only while the delivery is `pending`.
 
 ### Idempotency and `wait`
 
 - **Idempotency:** `(app_id, idempotency_key)` identifies a message. Re-submitting it returns the
-  original message with `"duplicate": true` and never waits, so retrying after a timeout is safe.
+  original message with `"duplicate": true` and never waits, so retrying after a timeout is safe. The
+  one exception is a message still held by `deliver_at`, which a re-post with different content
+  **replaces** (see Deferred send below).
 - **`wait`:** `?wait=N` (whole seconds, 0-10, a larger value is clamped to 10) holds the response until
   every delivery has had a first attempt or the wait elapses. The message is already committed when the
   wait ends, so a short wait is not a failure: read the returned `deliveries[].state`. A non-integer or
-  negative `wait` is `400 {"error":"invalid wait"}`.
+  negative `wait` is `400 {"error":"invalid wait"}`. `wait` is ignored (an immediate `202`) when the
+  resulting message is `scheduled`.
 
 ### Status endpoints
 
@@ -287,6 +297,74 @@ A successful submit is `202 {"message": {...}, "duplicate": false}`. The message
   (`400 app_id is required`) and another app's message is `404 message not found`.
 - `GET /v1/messages?app_id=<app>&idempotency_key=<key>` looks a message up by key
   (`400 app_id and idempotency_key are required`).
+- Both return a held message with `status` `scheduled` and a cancelled one with `status` `cancelled`;
+  neither status is ever mixed with another, because a message moves between states as a whole.
+
+### Deferred send (`deliver_at`)
+
+Set `deliver_at` to have delivery-api hold the message and release it into the delivery queue when it is
+due, instead of sending at once.
+
+- **Format:** an RFC3339 timestamp with any offset; it is stored and returned in UTC. A malformed value is
+  `400 invalid JSON body`. The zero time (`0001-01-01T00:00:00Z`), a time whose UTC form is before year 1,
+  and a time after `9999-12-31T23:59:59Z` (reachable only through an offset, e.g.
+  `9999-12-31T23:59:59-01:00`) are `400 {"error":"invalid deliver_at"}`.
+- **Past or absent means immediate:** `deliver_at` absent, `null`, or at or before the server's current time
+  sends immediately, exactly like a message without it (`status` `pending`). There is no upper horizon:
+  any other future time is accepted.
+- **Scheduled:** a future `deliver_at` answers `202` at once with `status` `scheduled`, every delivery in
+  state `scheduled`, `deliver_at` set and `?wait=` ignored. Targets are resolved at submit, so a bad
+  destination or route still fails fast with the same `400`/`409`/`422` as an immediate send. A release
+  poller (about once a second) flips every due message to `pending` in batches of 100 messages, then the
+  normal worker delivers it with the usual retries.
+- **Destinations are re-checked at release:** a destination that is disabled or deleted between submit and
+  `deliver_at` does not fail the submit retroactively. The delivery ends as a dead delivery with
+  `dead_reason` `destination_disabled` or `destination_deleted`, visible in the operator Delivery log.
+- **Per-app cap:** an app may hold at most 1000 scheduled messages (the operator can change this with
+  `DELIVERY_MAX_SCHEDULED_PER_APP`, 1 to 100000). Scheduling one more is
+  `429 {"error":"too many scheduled messages"}` and nothing is stored. A replace does not change the count,
+  so it is never refused by the cap, and cancelling or releasing a message frees a slot.
+- **Service-wide cap:** all apps together may hold at most 100000 scheduled messages (the operator can
+  change this with `DELIVERY_MAX_SCHEDULED_TOTAL`, 1 to 10000000). Scheduling one more is
+  `429 {"error":"scheduled message capacity reached"}` and nothing is stored; unlike the per-app cap, this
+  is not something the app can fix by cancelling its own messages. If the app is also at its own cap,
+  the per-app `too many scheduled messages` is reported. A replace is never refused by it either.
+- **Replace until release:** re-posting the key of a `scheduled` message with different content (any of
+  `channel`, `to`, `critical`, `deliver_at`, `payload` or `display`) replaces it in place: same
+  `message_id` and `created_at`, targets re-resolved, response `202` with `"duplicate": false,
+  "replaced": true`. If the new `deliver_at` is absent or not in the future, the message is released
+  immediately (and `?wait=` then applies). If re-resolution fails the error is returned as for a new
+  message and the original stays scheduled and unchanged. Re-posting **identical** content is
+  `"duplicate": true, "replaced": false` without resolving targets, so a retry is safe even if a
+  destination was disabled since. A replace that loses the race to a release or a cancel, and a
+  concurrent insert of the same key, also return `"duplicate": true, "replaced": false` with the stored
+  message.
+- **Cancel is final:** re-posting the key of a `cancelled` message returns `"duplicate": true` with
+  `status` `cancelled` and ignores the new content. A released message (`pending`, `delivered`, `dead` or
+  `partial`) behaves the same way: `"duplicate": true`, content ignored.
+- **Cancel:** `DELETE /v1/messages/{id}?app_id=<app>` or
+  `DELETE /v1/messages?app_id=<app>&idempotency_key=<key>`. A missing parameter is
+  `400 app_id is required` / `400 app_id and idempotency_key are required`, and a malformed `app_id` or
+  `idempotency_key` is `400 invalid app_id` / `400 invalid idempotency_key`. Every other outcome is
+  `200 {"message_id": "<id>", "cancelled": <bool>, "status": "<status>"}`, so the call is idempotent:
+
+  | Situation                                            | `cancelled` | `status`        | `message_id`     |
+  | ---------------------------------------------------- | ----------- | --------------- | ---------------- |
+  | Message was `scheduled` (now cancelled)              | `true`      | `cancelled`     | the message id   |
+  | Message already `cancelled`                          | `true`      | `cancelled`     | the message id   |
+  | Already released (pending, delivered, dead, partial) | `false`     | its real status | the message id   |
+  | Unknown id, non-UUID id, or another app's message    | `false`     | `not_found`     | the requested id |
+  | By-key cancel with an unknown key                    | `false`     | `not_found`     | `""`             |
+
+  Cancel and release serialize on the message, so exactly one wins, and a cancel never stops a delivery
+  that was already released.
+- **Staleness is the app's job:** delivery-api never re-evaluates a message's content when it releases it.
+  If what the message says can become wrong before `deliver_at` (a due date that moved, a task that was
+  completed), the app must cancel or replace it.
+- **Retention:** a message that is `scheduled` or has a `pending` delivery is never deleted by the retention
+  sweeper. A released message's retention age counts from the later of its `created_at` and `deliver_at`
+  (a replace that releases it immediately sets `deliver_at` to the release time), and a cancelled
+  message's from the time it was cancelled.
 
 ### Errors
 
@@ -296,6 +374,8 @@ A successful submit is `202 {"message": {...}, "duplicate": false}`. The message
 | 409    | `destination disabled`                                                       | `to.destination` is disabled                               |
 | 413    | `request body too large`                                                     | Body over 256 KiB                                          |
 | 422    | `no destination matched`, `app has no ntfy publisher`, `destination type not yet supported` | No route/destination/publisher can take it |
+| 429    | `too many scheduled messages`                                                | The app already holds the maximum scheduled messages (see Deferred send) |
+| 429    | `scheduled message capacity reached`                                         | All apps together hold the maximum scheduled messages (see Deferred send) |
 | 503    | `messages unavailable`                                                       | delivery-api is up but cannot accept messages              |
 | 500    | `internal error`                                                             | Retry later; the cause is logged server-side               |
 

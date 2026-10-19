@@ -49,18 +49,23 @@ type deliveryJSON struct {
 	State        string  `json:"state"`
 	DeadReason   *string `json:"dead_reason"`
 	AttemptCount int     `json:"attempt_count"`
+	// NextAttemptAt is null unless the delivery is pending.
+	NextAttemptAt *string `json:"next_attempt_at"`
 }
 
 type messageJSON struct {
-	MessageID  string         `json:"message_id"`
-	AppID      string         `json:"app_id"`
-	Status     string         `json:"status"`
-	Deliveries []deliveryJSON `json:"deliveries"`
+	MessageID   string         `json:"message_id"`
+	AppID       string         `json:"app_id"`
+	Status      string         `json:"status"`
+	DeliverAt   *string        `json:"deliver_at"`
+	CancelledAt *string        `json:"cancelled_at"`
+	Deliveries  []deliveryJSON `json:"deliveries"`
 }
 
 type submitResponse struct {
 	Message   messageJSON `json:"message"`
 	Duplicate bool        `json:"duplicate"`
+	Replaced  bool        `json:"replaced"`
 }
 
 type messageResponse struct {
