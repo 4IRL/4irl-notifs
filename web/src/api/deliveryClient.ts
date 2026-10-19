@@ -162,6 +162,40 @@ export interface DeliveryIdParam {
   deliveryId: number;
 }
 
+/** A scheduled (not yet released) message in the operator Pending sends list. */
+export interface ScheduledMessageSummary {
+  messageId: string;
+  appId: string;
+  channel: string;
+  idempotencyKey: string;
+  deliverAt: string;
+  createdAt: string;
+  /** True when the message targets `to.recipient`; `destinations` is then empty. */
+  recipient: boolean;
+  destinations: { name: string; type: DestinationType }[];
+}
+
+export interface ListScheduledMessagesParams {
+  limit?: number;
+}
+
+export interface ScheduledMessagesList {
+  items: ScheduledMessageSummary[];
+  /** Every scheduled message, so the UI can say the list is truncated. */
+  total: number;
+}
+
+export interface CancelScheduledMessageParams {
+  id: string;
+}
+
+export interface CancelScheduledMessageResult {
+  messageId: string;
+  cancelled: boolean;
+  /** The message status, or `not_found`. */
+  status: string;
+}
+
 /** Configuration for createDeliveryApiClient. */
 export interface DeliveryApiClientConfig {
   baseUrl?: string;
@@ -184,6 +218,10 @@ export interface DeliveryApiClient {
   listDeliveries(params: ListDeliveriesParams): Promise<DeliverySummary[]>;
   listAttempts(param: DeliveryIdParam): Promise<AttemptSummary[]>;
   replayDelivery(param: DeliveryIdParam): Promise<DeliverySummary>;
+  listScheduledMessages(params: ListScheduledMessagesParams): Promise<ScheduledMessagesList>;
+  cancelScheduledMessage(
+    params: CancelScheduledMessageParams,
+  ): Promise<CancelScheduledMessageResult>;
 }
 
 interface DestinationWire {
@@ -222,6 +260,23 @@ interface DeliveryWire {
   delivered_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface ScheduledMessageWire {
+  message_id: string;
+  app_id: string;
+  channel: string;
+  idempotency_key: string;
+  deliver_at: string;
+  created_at: string;
+  recipient: boolean;
+  destinations: { name: string; type: DestinationType }[] | null;
+}
+
+interface CancelWire {
+  message_id: string;
+  cancelled: boolean;
+  status: string;
 }
 
 interface AttemptWire {
@@ -302,6 +357,19 @@ function mapDelivery(wire: DeliveryWire): DeliverySummary {
   };
 }
 
+function mapScheduledMessage(wire: ScheduledMessageWire): ScheduledMessageSummary {
+  return {
+    messageId: wire.message_id,
+    appId: wire.app_id,
+    channel: wire.channel,
+    idempotencyKey: wire.idempotency_key,
+    deliverAt: wire.deliver_at,
+    createdAt: wire.created_at,
+    recipient: wire.recipient,
+    destinations: (wire.destinations ?? []).map(({ name, type }) => ({ name, type })),
+  };
+}
+
 function mapAttempt(wire: AttemptWire): AttemptSummary {
   return {
     attemptNumber: wire.attempt_number,
@@ -334,6 +402,7 @@ function mapMessage(wire: MessageWire): MessageSummary {
 const DEFAULT_BASE_URL = '';
 const DELIVERY_PREFIX = '/delivery';
 const DEFAULT_DELIVERIES_LIMIT = 50;
+const DEFAULT_SCHEDULED_LIMIT = 50;
 const SEND_TEST_WAIT_SECONDS = 10;
 const SEND_TEST_APP_ID = 'admin_test';
 const SEND_TEST_CHANNEL = 'test';
@@ -612,6 +681,29 @@ export function createDeliveryApiClient({
         method: 'POST',
       })) as { delivery: DeliveryWire };
       return mapDelivery(wire.delivery);
+    },
+
+    async listScheduledMessages({
+      limit = DEFAULT_SCHEDULED_LIMIT,
+    }: ListScheduledMessagesParams): Promise<ScheduledMessagesList> {
+      const wire = (await request({
+        path: `/v1/admin/scheduled-messages?limit=${limit}`,
+        method: 'GET',
+      })) as { scheduled_messages: ScheduledMessageWire[] | null; total: number };
+      return {
+        items: (wire.scheduled_messages ?? []).map(mapScheduledMessage),
+        total: wire.total,
+      };
+    },
+
+    async cancelScheduledMessage({
+      id,
+    }: CancelScheduledMessageParams): Promise<CancelScheduledMessageResult> {
+      const wire = (await request({
+        path: `/v1/admin/scheduled-messages/${encodeURIComponent(id)}`,
+        method: 'DELETE',
+      })) as CancelWire;
+      return { messageId: wire.message_id, cancelled: wire.cancelled, status: wire.status };
     },
   };
 }

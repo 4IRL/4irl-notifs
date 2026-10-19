@@ -169,4 +169,130 @@ describe('ConfirmButton', () => {
     expect(screen.queryByRole('button', { name: 'Confirm remove foo' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove foo' })).not.toHaveAttribute('aria-disabled');
   });
+
+  it('omitting the optional props leaves the default output unchanged', async () => {
+    const user = userEvent.setup();
+    render(
+      <ConfirmButton
+        triggerLabel="Remove foo"
+        confirmLabel="Confirm remove foo"
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Remove foo' })).not.toHaveAttribute('aria-label');
+    await user.click(screen.getByRole('button', { name: 'Remove foo' }));
+    expect(screen.getByRole('button', { name: 'Confirm remove foo' })).not.toHaveAttribute(
+      'aria-label',
+    );
+    expect(screen.getByRole('button', { name: strings.cancelAction })).toBeInTheDocument();
+  });
+
+  it('uses dismissLabel for the dismiss button', async () => {
+    const user = userEvent.setup();
+    render(
+      <ConfirmButton
+        triggerLabel="Remove foo"
+        confirmLabel="Confirm remove foo"
+        dismissLabel="Keep"
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Remove foo' }));
+
+    expect(screen.getByRole('button', { name: 'Keep' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: strings.cancelAction })).not.toBeInTheDocument();
+  });
+
+  it('applies triggerAriaLabel and confirmAriaLabel as accessible names', async () => {
+    const user = userEvent.setup();
+    render(
+      <ConfirmButton
+        triggerLabel="Remove"
+        triggerAriaLabel="Remove foo"
+        confirmLabel="Confirm"
+        confirmAriaLabel="Confirm remove foo"
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Remove foo' });
+    expect(trigger).toHaveTextContent('Remove');
+    await user.click(trigger);
+
+    const confirm = screen.getByRole('button', { name: 'Confirm remove foo' });
+    expect(confirm).toHaveTextContent('Confirm');
+  });
+
+  it('applies busyAriaLabel only while busy', () => {
+    const { rerender } = render(
+      <ConfirmButton
+        triggerLabel="Remove"
+        triggerAriaLabel="Remove foo"
+        confirmLabel="Confirm"
+        busy
+        busyLabel="Removing…"
+        busyAriaLabel="Removing foo"
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    const busyTrigger = screen.getByRole('button', { name: 'Removing foo' });
+    expect(busyTrigger).toHaveTextContent('Removing…');
+    expect(busyTrigger).toHaveAttribute('aria-disabled', 'true');
+
+    rerender(
+      <ConfirmButton
+        triggerLabel="Remove"
+        triggerAriaLabel="Remove foo"
+        confirmLabel="Confirm"
+        busyLabel="Removing…"
+        busyAriaLabel="Removing foo"
+        onConfirm={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Removing foo' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove foo' })).toBeInTheDocument();
+  });
+
+  it('keeps the visible text as the busy name when busyAriaLabel is omitted', () => {
+    render(
+      <ConfirmButton
+        triggerLabel="Remove"
+        triggerAriaLabel="Remove foo"
+        confirmLabel="Confirm"
+        busy
+        busyLabel="Removing…"
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    const busyTrigger = screen.getByRole('button', { name: 'Removing…' });
+    expect(busyTrigger).not.toHaveAttribute('aria-label');
+  });
+
+  it('registerTrigger gets the trigger on mount and null while the pair shows', async () => {
+    const user = userEvent.setup();
+    const registerTrigger = vi.fn();
+    render(
+      <ConfirmButton
+        triggerLabel="Remove foo"
+        confirmLabel="Confirm remove foo"
+        registerTrigger={registerTrigger}
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Remove foo' });
+    expect(registerTrigger).toHaveBeenLastCalledWith(trigger);
+
+    await user.click(trigger);
+    expect(registerTrigger).toHaveBeenLastCalledWith(null);
+
+    await user.click(screen.getByRole('button', { name: strings.cancelAction }));
+    expect(registerTrigger).toHaveBeenLastCalledWith(
+      screen.getByRole('button', { name: 'Remove foo' }),
+    );
+  });
 });

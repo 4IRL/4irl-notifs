@@ -81,6 +81,8 @@ function buildFakeDeliveryClient(overrides: Partial<DeliveryApiClient> = {}): De
     listDeliveries: vi.fn().mockResolvedValue([]),
     listAttempts: vi.fn().mockResolvedValue([]),
     replayDelivery: vi.fn(),
+    listScheduledMessages: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+    cancelScheduledMessage: vi.fn(),
     ...overrides,
   };
 }

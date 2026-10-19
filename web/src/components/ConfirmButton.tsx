@@ -7,7 +7,8 @@ import './ConfirmButton.css';
 /**
  * Props for ConfirmButton. `triggerLabel`/`confirmLabel` are BOTH the visible
  * text and the accessible name of their button, so callers control exact
- * button names (used by tests and screen readers).
+ * button names (used by tests and screen readers). The optional `*AriaLabel`
+ * props give a button a longer accessible name that starts with its visible text.
  */
 interface ConfirmButtonProps {
   triggerLabel: string;
@@ -20,6 +21,20 @@ interface ConfirmButtonProps {
   /** While true the trigger is aria-disabled, shows `busyLabel`, and never opens the pair. */
   busy?: boolean;
   busyLabel?: string;
+  /** Label of the dismiss button; defaults to `strings.cancelAction`. */
+  dismissLabel?: string;
+  /** `aria-label` of the trigger (its visible text must be a prefix of it). */
+  triggerAriaLabel?: string;
+  /** `aria-label` of the confirm button (its visible text must be a prefix of it). */
+  confirmAriaLabel?: string;
+  /** `aria-label` of the trigger only while `busy` (the visible busy text must be a prefix). */
+  busyAriaLabel?: string;
+  /**
+   * Ref callback for the trigger button: called with the element when it
+   * mounts and with `null` when it unmounts (e.g. while the pair is showing),
+   * so a parent can focus a row's trigger.
+   */
+  registerTrigger?: (element: HTMLButtonElement | null) => void;
 }
 
 /**
@@ -42,6 +57,11 @@ export function ConfirmButton({
   confirmNotice,
   busy = false,
   busyLabel,
+  dismissLabel = strings.cancelAction,
+  triggerAriaLabel,
+  confirmAriaLabel,
+  busyAriaLabel,
+  registerTrigger,
 }: ConfirmButtonProps): JSX.Element {
   const [confirming, setConfirming] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -66,9 +86,13 @@ export function ConfirmButton({
   if (!confirming) {
     return (
       <button
-        ref={triggerRef}
+        ref={(element) => {
+          triggerRef.current = element;
+          registerTrigger?.(element);
+        }}
         type="button"
         className={className}
+        aria-label={busy ? busyAriaLabel : triggerAriaLabel}
         aria-disabled={busy ? 'true' : undefined}
         onClick={() => {
           if (busy) {
@@ -88,6 +112,7 @@ export function ConfirmButton({
         ref={confirmRef}
         type="button"
         className={className}
+        aria-label={confirmAriaLabel}
         onClick={() => {
           restoreTriggerFocus.current = true;
           setConfirming(false);
@@ -104,7 +129,7 @@ export function ConfirmButton({
           setConfirming(false);
         }}
       >
-        {strings.cancelAction}
+        {dismissLabel}
       </button>
       {confirmNotice !== undefined && (
         <span className="confirm-button__notice">{confirmNotice}</span>
