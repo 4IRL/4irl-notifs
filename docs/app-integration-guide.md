@@ -242,11 +242,14 @@ apply to that path.
 delivery-api is reachable at `https://notifs-delivery.4irl.app`, behind Cloudflare Access. Send the same
 `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers as for `notifs-api`, using a service token the
 operator has authorized on the `notifs-delivery` Access application (see the operator runbook below). Your
-app token reaches `/v1/messages`, `/readyz` and `/healthz`; `/v1/admin/*` returns 403 to it.
+app token reaches `/v1/messages`, `/v1/heartbeats/*` (see Heartbeats below), `/readyz` and `/healthz`;
+`/v1/admin/*` returns 403 to it.
 
 `app_id` is caller-asserted, so per-app tokens are an operator-trust boundary, not isolation between
 apps: a token holder can submit as, read the status of, cancel (`DELETE /v1/messages`) or replace
-(re-post with the same idempotency key) any app's scheduled messages.
+(re-post with the same idempotency key) any app's scheduled messages. A token holder can also ping or
+fail any app's heartbeat check (`POST /v1/heartbeats/<app_id>/<name>[/fail]`), which can mask an outage
+or raise a false alert.
 
 ### Envelope contract
 
@@ -438,6 +441,93 @@ and one with the previous secret, until the overlap expires. Verify by accepting
 the new secret to the receiver before the overlap ends; after it ends only the new signature is sent.
 A second rotation during an open overlap replaces the previous secret at once, so the earlier rotation's
 secret stops being signed immediately.
+
+### Heartbeats (dead-man's-switch checks)
+
+A heartbeat check watches a recurring job (a cron entry, a systemd timer, a worker loop). The job pings
+delivery-api each time it runs; if no ping arrives within `period + grace`, delivery-api marks the check
+down and sends **one** down alert, then **one** recovery alert when the next ping arrives. Alerts go
+through the normal message pipeline to the check's own destinations (1 to 20 of them, set when the
+operator creates the check), as `channel: "heartbeat"` messages.
+
+**The operator creates the check first** (Heartbeats section of the Delivery tab, or
+`POST /v1/admin/heartbeats` with the proxy token), giving it your `app_id`, a `name`, a `period_seconds`,
+a `grace_seconds` and its destinations. A ping for a check that does not exist is a `404`; pings never
+create one.
+
+**Ping (success).** `POST https://notifs-delivery.4irl.app/v1/heartbeats/<app_id>/<name>`, with your app's
+`CF-Access-Client-Id` / `CF-Access-Client-Secret` headers (the same service token as `POST /v1/messages`;
+pings sit outside `/v1/admin`). The body is ignored, so a bare `POST` works:
+
+```bash
+curl -fsS -m 10 --retry 3 -X POST \
+  -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" \
+  https://notifs-delivery.4irl.app/v1/heartbeats/myapp/nightly_backup
+```
+
+**Fail ping.** `POST .../v1/heartbeats/<app_id>/<name>/fail` reports that the job ran and failed. It marks
+the check down at once (reason `fail`) instead of waiting out the deadline:
+
+```bash
+curl -fsS -m 10 --retry 3 -X POST \
+  -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" \
+  https://notifs-delivery.4irl.app/v1/heartbeats/myapp/nightly_backup/fail
+```
+
+Both return `200` with the check's state after the ping:
+`{"app_id":"myapp","name":"nightly_backup","state":"up"}`: `up` after a success ping, `down` after a fail
+ping (a ping on a paused check is still recorded and answers `200`). Other answers: `400` for a
+malformed `app_id` or `name` (`name` matches `^[a-z0-9][a-z0-9_]{0,62}$`), `404` `check not found`,
+`503` `heartbeats unavailable`.
+
+Wire it to a job so a success ping is sent only when the job succeeds, and a fail ping when it fails:
+
+```bash
+# cron: success ping when the job exits 0, /fail ping otherwise (put the ping logic in a wrapper script)
+0 3 * * * /opt/myapp/backup-and-ping.sh
+
+# backup-and-ping.sh
+BASE=https://notifs-delivery.4irl.app/v1/heartbeats/myapp/nightly_backup
+if /opt/myapp/backup.sh; then SUFFIX=""; else SUFFIX="/fail"; fi
+curl -fsS -m 10 --retry 3 -X POST -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" "$BASE$SUFFIX"
+```
+
+If the job cannot run at all (the host is down, cron stopped), no ping arrives and the check goes down when
+`period + grace` has passed; `/fail` only makes a job that ran and failed immediate.
+
+```ini
+# systemd (needs systemd 249+): in backup.service, run by backup.timer
+[Unit]
+OnSuccess=ping-ok@nightly_backup.service
+OnFailure=ping-fail@nightly_backup.service
+```
+
+```ini
+# ping-ok@.service (ping-fail@.service is the same with /fail appended to the URL); %i is the check name
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -fsS -m 10 --retry 3 -X POST -H "CF-Access-Client-Id: ..." -H "CF-Access-Client-Secret: ..." https://notifs-delivery.4irl.app/v1/heartbeats/myapp/%i
+```
+
+**State model.** A check is `new` until its first ping, then `up`. It goes `down` when `now` passes
+`anchor_at + period + grace` (the anchor is the last ping, or creation, or the last resume), or
+immediately on a `/fail` ping. `late` is only a display state: the check is `up` but has passed its
+`period`, still inside the grace window, and sends no alert. A `down` check that receives a success ping
+goes `up` and sends the recovery alert; a missed deadline or a fail ping on a check that is already down
+sends nothing more. A pause stops all alerts while it lasts (pings are still recorded, silently; an alert already being sent at the instant of the pause may still go out once) and a resume
+restarts the deadline from the resume time.
+
+**Choosing period and grace.** `period_seconds` is the interval between pings (60 s to 31 days);
+`grace_seconds` is the slack added to it (60 s to 7 days). Set the period to the job's schedule and the
+grace to the longest the job may reasonably run or slip. For a **daily** job use a grace of **at least 1
+hour**: the schedule is period + grace only (no cron or timezone), so a daylight-saving shift or a
+long run would otherwise raise a false down alert. After a delivery-api restart the checker waits one
+minute before it marks anything down, so pings that the outage blocked can still arrive.
+
+**A new check alerts if it is never pinged.** Creating a check starts its deadline immediately, so an
+app that is never wired up (or pings the wrong `name`) goes `down` after `period + grace`. This is
+deliberate: it is how a broken integration gets noticed. Remove or pause a check for a job that does not
+run yet.
 
 ### Operator runbook: ntfy publisher for an app
 

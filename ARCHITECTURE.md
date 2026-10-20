@@ -12,9 +12,10 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel) and the operator `/v1/admin/scheduled-messages` list and cancel. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`) and a retention sweeper. Has no auth of its own; reachable only behind the path-scoped Access apps below. |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel) and the operator `/v1/admin/scheduled-messages` list and cancel. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`), a retention sweeper and the heartbeat checker (30 s tick). Has no auth of its own; reachable only behind the path-scoped Access apps below. |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*`, `/people`, `/apps` and `/delivery/*` proxy Functions. |
+| **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor, deliberately off the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`), provisioning-api `/healthz` and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes plus a daily summary (16:00 UTC) to a dedicated Discord webhook. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
 
 Two live environments: **local** (docker-compose: ntfy + provisioning-api + delivery-api + Postgres) and
 **production** (the VPS + Cloudflare). ntfy + provisioning-api + delivery-api (with its Postgres) run on
@@ -23,6 +24,21 @@ the VPS; person-service + admin UI are Cloudflare-native.
 ### delivery-api endpoints
 
 - `GET /healthz`, `GET /readyz` — liveness and readiness (database reachable, migrations current).
+  `/readyz` also carries `heartbeat_checker: {last_tick_at, stale}` (`stale` when the checker has not
+  ticked for 90 s). Staleness never changes the status or the HTTP code, because the prod compose
+  healthcheck probes `/readyz` and a stalled checker must not mark the container unhealthy; the watchdog
+  and the admin status card interpret the field instead.
+- `POST /v1/heartbeats/{app_id}/{name}` and `POST /v1/heartbeats/{app_id}/{name}/fail` — the app-facing
+  pings (outside `/v1/admin`, so an app token may call them). `200 {"app_id","name","state"}`; `404` for an
+  unknown check. `/v1/admin/heartbeats` (`POST`, `GET`) and `/v1/admin/heartbeats/{id}` (`GET`, `PATCH`,
+  `DELETE`) plus `POST /v1/admin/heartbeats/{id}/pause` and `/resume` — the operator check CRUD (Heartbeats
+  section of the Delivery tab). A check holds 1-20 destinations (a destination a check uses cannot be
+  deleted); a `down` or `recovered` alert is one message per destination through the normal pipeline.
+  The ping routes do not bind `app_id` to the caller's identity: authentication is the Cloudflare Access
+  whole-host policy shared by all app service tokens (the same model as `/v1/messages`), so any
+  authorized app token can ping or fail any app's check. Accepted for trusted first-party apps; per-check
+  ping secrets or per-app Access path policies are the future options.
+  Contract and client examples are in `docs/app-integration-guide.md` ("Heartbeats").
 - `/v1/admin/destinations` (`POST`, `GET`) and `/v1/admin/destinations/{name}` (`GET`, `PATCH`, `DELETE`) —
   the destination registry. Destination secrets are sealed with AES-256-GCM before they are stored and
   are masked on every read. `PATCH` merges both `config` and `secrets` per key (keys not in the patch are
@@ -76,7 +92,8 @@ the VPS; person-service + admin UI are Cloudflare-native.
 application** for the whole hostname, whose policy allows the admin proxy token only. App tokens are not
 authorized yet, so apps cannot reach `/v1/messages` until the operator adds them.
 
-**Before the first app is onboarded**, split the hostname into two path-scoped Access apps, most specific
+**Before the first app is onboarded, or the `notifs-watchdog` token is authorized** (the watchdog is a
+non-proxy token on this host too), split the hostname into two path-scoped Access apps, most specific
 path first: `notifs-delivery.4irl.app/v1/admin` (proxy token only, so an app token gets 403 on the
 `ntfy-publisher` mint, which makes provisioning-api create an ntfy publisher user and token for any
 `app_id`, and on rotate-secret) and the whole hostname (the proxy token plus the per-app tokens, for
@@ -102,6 +119,7 @@ graph TD
     WORKER["person-service Worker"]
     D1["D1: person(hash→email)"]
     TUN["Cloudflare Tunnel"]
+    WD["watchdog Worker<br/>cron */5 + KV state"]
   end
   subgraph VPS["VPS (docker compose)"]
     API["provisioning-api :8091"]
@@ -119,6 +137,8 @@ graph TD
   APPS -->|service token| TUN
   APPS -->|per-app service token, POST /v1/messages| TUN
   APPS -->|publish/subscribe, ntfy token| NTFY
+  WD -->|probes: notifs-watchdog token, ntfy anonymous| TUN
+  WD -->|state change + daily summary| DISCORD["Discord webhook"]
 ```
 
 ## Hosts & DNS (all under the `4irl.app` Cloudflare zone)
@@ -149,7 +169,7 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 | ------------------------- | ---------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------ |
 | `notifs-admin`            | `notifs-admin.4irl.app`                        | `907dc277…575f`   | `U4I Dev Policy` — **Allow**, GitHub org `4IRL` (human login)                        |
 | `notifs-admin` API bypass | `notifs-admin.4irl.app/v1`, `/people`, `/apps`, `/delivery` | —                 | **Bypass** (Everyone) — Access does NOT gate these paths; the Function authenticates |
-| `notifs-delivery`         | `notifs-delivery.4irl.app`                     | (dashboard)       | **Service Auth** (proxy token only; per-app tokens and a `/v1/admin` split come with the first onboarded app) |
+| `notifs-delivery`         | `notifs-delivery.4irl.app`                     | (dashboard)       | **Service Auth** (proxy token only; per-app tokens, the `notifs-watchdog` token and a `/v1/admin` split come with the first onboarded app or the watchdog) |
 | `notifs-api`              | `notifs-api.4irl.app`                          | `91ad97d9…694150` | **Service Auth** (proxy token) only                                                  |
 | `notifs-people`           | `notifs-people.4irl.app`                       | `5a270164…658f5a` | **Service Auth** (VPS dual-write token + proxy token) only                           |
 
@@ -169,6 +189,7 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 | `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`)         | `notifs-api` + `notifs-people` + `notifs-delivery` Service Auth apps |
 | VPS dual-write token            | provisioning-api (Go)                                 | `notifs-people` Service Auth                |
 | per-consuming-app tokens        | tasktracker backend (live); urls4irl backend (future) | `notifs-api` Service Auth; the whole-host `notifs-delivery` app once split from `/v1/admin` (never the `/v1/admin` app) |
+| `notifs-watchdog`               | watchdog Worker (secrets `CF_ACCESS_CLIENT_ID/SECRET`) | `notifs-api` Service Auth; the whole-host `notifs-delivery` app **excluding `/v1/admin`** (only after the `/v1/admin` split exists) |
 
 ### Admin-UI request flow (the important one)
 
@@ -225,7 +246,8 @@ sequenceDiagram
     must be `Content-Type: application/json`, else `415 {"error":"unsupported media type"}`. The guard runs
     before auth, so an unauthenticated cross-site write is 403, not 401.
   - The Delivery tab is gated by `VITE_DESTINATIONS_ENABLED=true` (status card, Destinations, Routes) and
-    `VITE_PENDING_SENDS_ENABLED=true` (Pending sends) and `VITE_DELIVERY_LOG_ENABLED=true` (Delivery Log).
+    `VITE_PENDING_SENDS_ENABLED=true` (Pending sends) and `VITE_DELIVERY_LOG_ENABLED=true` (Delivery Log)
+    and `VITE_HEARTBEATS_ENABLED=true` (Heartbeats; requires `VITE_DESTINATIONS_ENABLED`).
     The Pending sends section lists scheduled messages (soonest first) and cancels one through
     `DELETE /delivery/v1/admin/scheduled-messages/{id}`, a non-GET that the existing `/delivery` Access
     Bypass and the Pages Function allowlist already cover.
@@ -244,7 +266,7 @@ sequenceDiagram
 | `DISABLE_ACCESS_AUTH`        | plaintext | **local dev only** (`true` disables JWT check). Never set in prod. |
 
 Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABLED=true`,
-`VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`, `VITE_PENDING_SENDS_ENABLED=true`.
+`VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`, `VITE_PENDING_SENDS_ENABLED=true`, `VITE_HEARTBEATS_ENABLED=true`.
 
 ---
 
@@ -416,6 +438,7 @@ graph TD
   B --> D1J["deploy-prod<br/>SSH → VPS docker compose up<br/>(ntfy + provisioning-api + delivery-api + Postgres)"]
   M --> D2["deploy-admin-ui<br/>wrangler pages deploy (notifs-admin)"]
   M --> D3["deploy-person-service<br/>wrangler d1 migrations apply → wrangler deploy Worker"]
+  M --> D4["deploy-watchdog<br/>wrangler deploy Worker (no D1)"]
 ```
 
 - **VPS deploy** (`prod-deploy.yml`): SSH via `cloudflared access ssh` (own SSH key + deploy service
@@ -440,11 +463,42 @@ graph TD
   person-service --remote` **before** `wrangler deploy`, so a new Worker code path never hits a table its
   migration hasn't created (idempotent — applied migrations are skipped). Adding a table = add a
   `person-service/migrations/NNNN_*.sql` file; no workflow change needed.
+- **watchdog deploy** (`watchdog-deploy.yml`, job `deploy-watchdog`): `wrangler deploy` of `watchdog/`
+  in parallel with the VPS deploy, so it survives a VPS or deploy failure. Only `CLOUDFLARE_API_TOKEN` /
+  `CLOUDFLARE_ACCOUNT_ID` reach CI; the Worker's runtime secrets are set by the operator, never by CI.
+  While `watchdog/wrangler.toml` still holds the placeholder KV namespace id the job skips the deploy
+  with a `::notice::` (merges stay green); it deploys once the real id replaces the placeholder (runbook
+  below).
 - **Pages/Worker deploys**: `wrangler`, auth via repo secrets `CLOUDFLARE_API_TOKEN` (Pages-Edit +
   Workers-Scripts + D1) + `CLOUDFLARE_ACCOUNT_ID`. Worker custom domain is managed **out-of-band** in
   the dashboard (keeps the CI token account-scoped, no zone perms).
 - Access apps, policies, service tokens, and Pages bindings are **dashboard-managed** (no Terraform,
   not in CI).
+
+### Operator runbook: heartbeat watchdog (one-time, manual)
+
+Every value below is account-specific and lives only in the Cloudflare dashboard, `wrangler` secrets or
+the operator's shell; never commit one (the KV namespace id needs the repo owner's approval first).
+
+1. **Split `notifs-delivery` first.** Create the path-scoped Service Auth app
+   `notifs-delivery.4irl.app/v1/admin` (admin proxy token only) *before* authorizing any other token on the
+   host, so the watchdog token never reaches `/v1/admin`.
+2. Create the service token `notifs-watchdog`. Add it to the whole-host `notifs-delivery` app (not the
+   `/v1/admin` one) and to `notifs-api`. ntfy needs no token (`/v1/health` is anonymous).
+3. In `watchdog/`: `npx wrangler kv namespace create WATCHDOG_STATE`, put the returned id in
+   `watchdog/wrangler.toml` in place of the all-zero placeholder, and commit that change only after the
+   repo owner approves. The `deploy-watchdog` job skips the deploy until this is done and deploys the
+   Worker on the first merge after the real id lands.
+4. Create a Discord webhook in a channel dedicated to the watchdog (it must not depend on delivery-api).
+5. In `watchdog/`, set the secrets (each prompts for the value): `npx wrangler secret put DISCORD_WEBHOOK_URL`,
+   `npx wrangler secret put CF_ACCESS_CLIENT_ID`, `npx wrangler secret put CF_ACCESS_CLIENT_SECRET`.
+6. Verify: `npx wrangler tail notifs-watchdog` shows one scheduled run within 5 minutes (the Worker
+   skips the run and logs an error if `DISCORD_WEBHOOK_URL` is unset). To force a down, stop ntfy on the
+   VPS (or remove the token from `notifs-api`) and expect a Discord "down" post within about 5 minutes
+   and a "recovered" post after restoring it.
+
+The Heartbeats admin section ships with its backend: `VITE_HEARTBEATS_ENABLED=true` is set in
+`pages-deploy.yml` in the same change as the backend. The watchdog goes live separately, once this runbook is done.
 
 ## Debugging quick reference
 
@@ -458,7 +512,10 @@ graph TD
 | `/delivery` `502 {"error":"upstream auth failed"}`    | Proxy token not on the `notifs-delivery` Service Auth policy, or `DELIVERY_API_URL` points at the wrong host.                                                             |
 | `/delivery` non-GET → 302 login / 405                 | `/delivery` is missing from the `notifs-admin` Access **Bypass** app (GETs still work, writes fail).                                                                                                 |
 | `/delivery/readyz` shows `schema_mismatch`            | The delivery-api binary and database schema differ: `schema_version` ≠ `expected_schema_version` (a migration not applied, or an old binary). Check `delivery-migrate` logs and the `last_migration_failure` the status card shows. |
+| Delivery status card shows "Stalled" / watchdog says "heartbeat checker stale" | The heartbeat checker has not ticked for 90 s (`/readyz` `heartbeat_checker.stale: true`): delivery-api is wedged or its checker loop died, or the process just started. Check `docker compose logs delivery-api`; a restart fixes a wedged loop. `/readyz` still answers 200, so the container stays healthy. |
+| Watchdog reports delivery-api (or another target) down | Read the Discord detail: `access denied (HTTP 403/3xx)` = `notifs-watchdog` token missing from that Access app or expired; `timeout`, `request failed` or `HTTP 5xx` (e.g. 502/530) = VPS, Tunnel or the service is down (the watchdog runs off the VPS, so this is a real outage); `readiness status …` = a `/readyz` problem. Nothing posts at all = the Worker is not running: `npx wrangler tail notifs-watchdog`, then check the cron trigger and the three secrets. |
 | Rotate secret → 404 right after a deploy              | The Pages UI deploys in parallel with the backend; an old `delivery-api` binary has no `rotate-secret` route. Wait for the `deploy-prod` job, then retry (not "destination does not exist"). |
+| "Stalled" status card or Heartbeats load error right after the first heartbeats deploy | The Pages UI deployed before the VPS: the old `delivery-api` binary has no `/v1/admin/heartbeats` routes or `heartbeat_checker` field, and migration 0006 may not be applied yet. Wait for the `deploy-prod` job to finish, then refresh. |
 | Admin API `500` "no such table: app"                  | person-service Worker deployed without applying D1 migration 0002 — run `wrangler d1 migrations apply person-service --remote` (CI does this automatically before deploy).                           |
 | Direct browser visit to a backend → 403               | Expected post-lockdown (service-token-only). Rollback = re-add `U4I Dev Policy`.                                                                                                                     |
 | ntfy publish/subscribe 403                            | Wrong ntfy token, or topic outside the token's ACL (`{app_id}-*` publisher / `{app_id}-{hash}-*` subscriber).                                                                                        |
