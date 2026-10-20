@@ -34,13 +34,13 @@ make worktree-new name=<slug> [b=<branch>] [base=<ref>]
   instead. A missing base ref fails before anything is created; run `git fetch origin` or pass an
   existing `base=`.
 - After creation the target links `web/.dev.vars`, claims a port slot (below), writes
-  `.worktree.env`, then runs `npm ci` in `web/`, `setup-web/` and `person-service/`. It does not start
-  a stack.
+  `.worktree.env`, then runs `npm ci` in `web/`, `setup-web/`, `person-service/` and `watchdog/`. It does
+  not start a stack.
 
 If setup fails, the worktree is left in place for recovery. The error prints the exact commands:
 
 ```sh
-npm --prefix <path>/web ci && npm --prefix <path>/setup-web ci && npm --prefix <path>/person-service ci   # retry setup
+npm --prefix <path>/web ci && npm --prefix <path>/setup-web ci && npm --prefix <path>/person-service ci && npm --prefix <path>/watchdog ci   # retry setup
 make -C <path> worktree-rm                                                                              # discard it
 ```
 
@@ -153,7 +153,7 @@ setup-web targets.
   Vite dev server and Playwright preview.
 - The detached dev server's pid and log live in the worktree's own `.dev/` (`.dev/vite-dev.pid`,
   `.dev/vite-dev.log`), not in a shared `/tmp/claude`.
-- `node_modules` in `web/`, `setup-web/` and `person-service/` (installed per worktree).
+- `node_modules` in `web/`, `setup-web/`, `person-service/` and `watchdog/` (installed per worktree).
 
 In a worktree, start and stop the stack only through `make local-up` and `make local-down`. Raw
 `docker compose` without `--env-file .worktree.env` would use the project `<slug>` (the directory

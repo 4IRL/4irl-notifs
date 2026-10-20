@@ -1,0 +1,25 @@
+name = "notifs-watchdog"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+
+# Cron-only Worker: no fetch handler, no routes, and NOT reachable at a public
+# *.workers.dev URL. Its whole job is the outbound probes plus the Discord post.
+workers_dev = false
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Last-known state of every probe target lives in one KV key (`state`).
+# PLACEHOLDER ID: the real namespace id is account-specific. The operator creates the
+# namespace (`wrangler kv namespace create WATCHDOG_STATE`) and fills the id in before
+# the first deploy; see the ARCHITECTURE.md "Operator runbook: heartbeat watchdog"
+# section. Never commit the real id without asking the repo owner first. While this is the
+# placeholder, the deploy-watchdog CI job skips the deploy with a notice instead of failing.
+[[kv_namespaces]]
+binding = "WATCHDOG_STATE"
+id = "00000000000000000000000000000000"
+
+# Secrets (set with `wrangler secret put`, never in [vars]):
+#   DISCORD_WEBHOOK_URL       dedicated watchdog Discord webhook
+#   CF_ACCESS_CLIENT_ID       Cloudflare Access service token id (notifs-delivery / notifs-api)
+#   CF_ACCESS_CLIENT_SECRET   Cloudflare Access service token secret
