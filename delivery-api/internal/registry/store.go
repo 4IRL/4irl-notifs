@@ -22,7 +22,7 @@ type Store interface {
 		ctx context.Context, name string, mutate func(StoredDestination) (StoredDestination, error),
 	) (StoredDestination, error)
 	// DeleteDestination removes the named destination and reports whether a row
-	// existed. A destination a route still references returns ErrDestinationInUse.
+	// existed. A destination a route or heartbeat check still references returns ErrDestinationInUse.
 	DeleteDestination(ctx context.Context, name string) (bool, error)
 	// InsertRoute persists a route, resolving route.DestinationNames to ids. An
 	// unknown name returns ErrUnknownDestination and inserts nothing.
