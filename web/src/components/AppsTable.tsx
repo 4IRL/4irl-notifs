@@ -85,6 +85,9 @@ export function AppsTable({
                         <ConfirmButton
                           triggerLabel={`${strings.removeAction} ${app.displayName}`}
                           confirmLabel={`${strings.confirmRemoveAction} ${app.displayName}`}
+                          dismissAriaLabel={strings.cancelActionNamed({
+                            subject: `${strings.removeAction} ${app.displayName}`,
+                          })}
                           className="apps-table__button apps-table__button--danger"
                           onConfirm={() => onRemoveApp({ appId: app.appId })}
                         />

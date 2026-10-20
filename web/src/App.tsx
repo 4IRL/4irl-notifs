@@ -22,7 +22,9 @@ import { AppTabs } from './components/AppTabs';
 import { DeliveryStatusCard } from './components/DeliveryStatusCard';
 import { DeliveryLog } from './components/DeliveryLog';
 import { DeliveryRegistry } from './components/DeliveryRegistry';
+import { Heartbeats } from './components/Heartbeats';
 import { PendingSends } from './components/PendingSends';
+import type { DestinationsLoadState } from './components/RoutesSection';
 import { ProvisionForm } from './components/ProvisionForm';
 import { SendTestNotification } from './components/SendTestNotification';
 import { UsersTable } from './components/UsersTable';
@@ -53,6 +55,8 @@ interface AppProps {
   deliveryLogEnabled?: boolean;
   /** VITE_PENDING_SENDS_ENABLED: the Pending sends (scheduled messages) section. */
   pendingSendsEnabled?: boolean;
+  /** VITE_HEARTBEATS_ENABLED (and destinationsEnabled): the Heartbeats section. */
+  heartbeatsEnabled?: boolean;
 }
 
 function App({
@@ -63,7 +67,14 @@ function App({
   destinationsEnabled = false,
   deliveryLogEnabled = false,
   pendingSendsEnabled = false,
+  heartbeatsEnabled = false,
 }: AppProps) {
+  // The destinations list as the Destinations section last reported it. Lifted
+  // here so DeliveryRegistry (Routes) and Heartbeats share the one fetch.
+  const [destinationsState, setDestinationsState] = useState<DestinationsLoadState>({
+    status: 'loading',
+    destinations: [],
+  });
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -368,9 +379,12 @@ function App({
     </>
   );
 
+  // Heartbeats alert through registered destinations, so it never mounts without
+  // the Destinations section (mirrors appsSectionEnabled's gating above).
+  const heartbeatsSectionEnabled = destinationsEnabled && heartbeatsEnabled;
   const tabsEnabled =
     deliveryClient !== undefined &&
-    (destinationsEnabled || deliveryLogEnabled || pendingSendsEnabled);
+    (destinationsEnabled || deliveryLogEnabled || pendingSendsEnabled || heartbeatsSectionEnabled);
 
   return (
     <div className="app">
@@ -384,7 +398,16 @@ function App({
           delivery={
             <>
               {destinationsEnabled && <DeliveryStatusCard client={deliveryClient} />}
-              {destinationsEnabled && <DeliveryRegistry client={deliveryClient} />}
+              {destinationsEnabled && (
+                <DeliveryRegistry
+                  client={deliveryClient}
+                  destinationsState={destinationsState}
+                  onDestinationsStateChange={setDestinationsState}
+                />
+              )}
+              {heartbeatsSectionEnabled && (
+                <Heartbeats client={deliveryClient} destinationsState={destinationsState} />
+              )}
               {pendingSendsEnabled && <PendingSends client={deliveryClient} />}
               {deliveryLogEnabled && <DeliveryLog client={deliveryClient} />}
             </>

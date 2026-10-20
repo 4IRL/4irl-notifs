@@ -62,6 +62,9 @@ export const strings = {
 
   provisionAction: 'Provision',
   deprovisionAction: 'Deprovision',
+  /** Row identifier for a deprovision dismiss name: the app alone repeats across users. */
+  deprovisionAppForUser: ({ app, user }: { app: string; user: string }): string =>
+    `Deprovision ${app} for ${user}`,
   deleteAction: 'Delete',
   provisioning: 'Provisioning…',
 
@@ -121,6 +124,8 @@ export const strings = {
   // Inline two-step confirmation (no modal): every destructive action first
   // shows a Confirm/Cancel pair before firing.
   cancelAction: 'Cancel',
+  /** Accessible name of a per-row dismiss button: "Cancel" plus the row's trigger label. */
+  cancelActionNamed: ({ subject }: { subject: string }): string => `Cancel ${subject}`,
   confirmDeleteAction: 'Confirm delete',
   confirmDeprovisionAction: 'Confirm deprovision',
   confirmRemoveAction: 'Confirm remove',
@@ -408,6 +413,7 @@ export const strings = {
   confirmCancelSend: 'Confirm cancel',
   confirmCancelSendNamed: ({ key }: { key: string }): string => `Confirm cancel send ${key}`,
   keepSend: 'Keep',
+  keepSendNamed: ({ key }: { key: string }): string => `Keep send ${key}`,
   cancellingSend: 'Cancelling…',
   cancellingSendNamed: ({ key }: { key: string }): string => `Cancelling send ${key}`,
   cancelSendNotice: ({ key }: { key: string }): string =>
@@ -428,6 +434,134 @@ export const strings = {
     minutes === 0 ? `in ${hours} h` : `in ${hours} h ${minutes} min`,
   relativeDays: ({ days }: { days: number }): string =>
     days === 1 ? 'in 1 day' : `in ${days} days`,
+
+  relativeJustNow: 'just now',
+  relativeSecondsAgo: ({ seconds }: { seconds: number }): string => `${seconds} s ago`,
+  relativeMinutesAgo: ({ minutes }: { minutes: number }): string => `${minutes} min ago`,
+  relativeHoursAgo: ({ hours }: { hours: number }): string => `${hours} h ago`,
+  relativeDaysAgo: ({ days }: { days: number }): string =>
+    days === 1 ? '1 day ago' : `${days} days ago`,
+  durationSeconds: ({ value }: { value: number }): string => `${value} s`,
+  durationMinutes: ({ value }: { value: number }): string => `${value} min`,
+  durationHours: ({ value }: { value: number }): string => `${value} h`,
+  durationDays: ({ value }: { value: number }): string => `${value} d`,
+
+  // Delivery tab: heartbeat checker fact on the status card.
+  heartbeatCheckerLabel: 'Heartbeat checker',
+  heartbeatCheckerNever: 'never',
+  heartbeatCheckerRunning: ({ lastRun }: { lastRun: string }): string =>
+    `Running · last run ${lastRun}`,
+  heartbeatCheckerStalled: ({ lastRun }: { lastRun: string }): string =>
+    `Stalled · last run ${lastRun}`,
+  heartbeatCheckerStalledWarning:
+    'The heartbeat checker has not run recently, so missed check-ins are not being alerted. The external watchdog also reports this. Check delivery-api logs.',
+
+  // Heartbeats section.
+  heartbeatsHeading: 'Heartbeats',
+  heartbeatsRefresh: 'Refresh heartbeats',
+  heartbeatsHint:
+    'Apps ping POST /v1/heartbeats/{app_id}/{name}. A check is late after its period and down after period + grace, which sends one down alert, then one recovery alert on the next ping. Times are UTC.',
+  heartbeatsLoading: 'Loading heartbeat checks…',
+  heartbeatsLoadError: 'Could not load heartbeat checks.',
+  heartbeatsEmpty: 'No heartbeat checks yet.',
+  heartbeatsDownSummary: ({ down, total }: { down: number; total: number }): string =>
+    `${down} of ${total} ${total === 1 ? 'check' : 'checks'} down`,
+  columnHeartbeatState: 'State',
+  columnHeartbeatCheck: 'Check',
+  columnHeartbeatLastPing: 'Last ping',
+  columnHeartbeatSchedule: 'Schedule',
+  columnHeartbeatAlertsTo: 'Alerts to',
+  columnHeartbeatActions: 'Actions',
+  heartbeatCheckSeparator: ' / ',
+  heartbeatStateUp: 'Up',
+  heartbeatStateLate: 'Late',
+  heartbeatStateDown: 'Down',
+  heartbeatStatePaused: 'Paused',
+  heartbeatStateWaiting: 'Waiting',
+  heartbeatLateSub: ({ relative }: { relative: string }): string => `down ${relative}`,
+  heartbeatDownSince: ({ time }: { time: string }): string => `since ${time}`,
+  heartbeatReportedFailure: 'reported failure',
+  heartbeatPausedWas: ({ was }: { was: string }): string => `was ${was}`,
+  heartbeatWasUp: 'up',
+  heartbeatWasLate: 'late',
+  heartbeatWasDown: 'down',
+  heartbeatWasWaiting: 'waiting',
+  heartbeatWaitingSub: 'for first ping',
+  heartbeatWaitingDeadline: ({ deadline }: { deadline: string }): string =>
+    `down if none by ${deadline}`,
+  heartbeatFailPing: ({ relative }: { relative: string }): string => `fail ping · ${relative}`,
+  heartbeatEvery: ({ period }: { period: string }): string => `every ${period}`,
+  heartbeatGrace: ({ grace }: { grace: string }): string => `grace ${grace}`,
+  pauseHeartbeat: 'Pause',
+  pauseHeartbeatNamed: ({ check }: { check: string }): string => `Pause ${check}`,
+  confirmPauseHeartbeat: 'Confirm pause',
+  confirmPauseHeartbeatNamed: ({ check }: { check: string }): string => `Confirm pause ${check}`,
+  keepHeartbeatRunning: 'Keep running',
+  keepHeartbeatRunningNamed: ({ check }: { check: string }): string => `Keep running ${check}`,
+  pausingHeartbeat: 'Pausing…',
+  pausingHeartbeatNamed: ({ check }: { check: string }): string => `Pausing ${check}`,
+  pauseHeartbeatNotice: 'No alerts are sent while paused. Pings are still recorded.',
+  resumeHeartbeat: 'Resume',
+  resumeHeartbeatNamed: ({ check }: { check: string }): string => `Resume ${check}`,
+  resumingHeartbeat: 'Resuming…',
+  resumingHeartbeatNamed: ({ check }: { check: string }): string => `Resuming ${check}`,
+  deleteHeartbeat: 'Delete',
+  deleteHeartbeatNamed: ({ check }: { check: string }): string => `Delete ${check}`,
+  confirmDeleteHeartbeat: 'Confirm delete',
+  confirmDeleteHeartbeatNamed: ({ check }: { check: string }): string => `Confirm delete ${check}`,
+  deletingHeartbeat: 'Deleting…',
+  deletingHeartbeatNamed: ({ check }: { check: string }): string => `Deleting ${check}`,
+  heartbeatPaused: ({ check }: { check: string }): string =>
+    `Paused ${check}. Its alerts are suppressed until you resume it.`,
+  heartbeatResumed: ({ check }: { check: string }): string =>
+    `Resumed ${check}. Its deadline restarts now.`,
+  heartbeatDeleted: ({ check }: { check: string }): string => `Deleted ${check}.`,
+  heartbeatPauseFailed: ({ message }: { message: string }): string => `Could not pause: ${message}`,
+  heartbeatResumeFailed: ({ message }: { message: string }): string =>
+    `Could not resume: ${message}`,
+  heartbeatDeleteFailed: ({ message }: { message: string }): string =>
+    `Could not delete: ${message}`,
+  heartbeatAddedResult: ({ check }: { check: string }): string =>
+    `Added ${check}. It is waiting for its first ping.`,
+  heartbeatSavedResult: ({ check }: { check: string }): string => `Saved ${check}.`,
+
+  // Heartbeats add / edit form.
+  addHeartbeatAction: 'Add check',
+  addHeartbeatHeading: 'Add check',
+  addingHeartbeat: 'Adding…',
+  addHeartbeatHintLoading: 'Loading destinations…',
+  addHeartbeatHintError: 'Could not load destinations.',
+  addHeartbeatHintEmpty: 'Add a destination first. Checks alert through registered destinations.',
+  editHeartbeatNamed: ({ check }: { check: string }): string => `Edit ${check}`,
+  closeHeartbeatNamed: ({ check }: { check: string }): string => `Close ${check}`,
+  editHeartbeatTrigger: 'Edit',
+  closeHeartbeatTrigger: 'Close',
+  saveHeartbeat: 'Save',
+  savingHeartbeat: 'Saving…',
+  heartbeatEditingNotice: ({ check }: { check: string }): string =>
+    `Editing ${check}. The app ID and name cannot change.`,
+  heartbeatAppIdLabel: 'App ID',
+  heartbeatNameLabel: 'Check name',
+  heartbeatPeriodLabel: 'Period',
+  heartbeatGraceLabel: 'Grace',
+  heartbeatPeriodUnitLabel: 'Period unit',
+  heartbeatGraceUnitLabel: 'Grace unit',
+  heartbeatUnitMinutes: 'minutes',
+  heartbeatUnitHours: 'hours',
+  heartbeatUnitDays: 'days',
+  heartbeatPeriodHint: 'Expected time between pings (1 min – 31 days).',
+  heartbeatGraceHint:
+    'Extra wait before “down” (1 min – 7 days). Use ≥ 1 h for daily jobs to absorb DST shifts.',
+  heartbeatDestinationsLegend: 'Alert destinations',
+  heartbeatDestinationNotFoundMark: '(not found)',
+  invalidHeartbeatAppId:
+    'App ID must be lowercase letters, digits or underscores, starting with a letter or digit (up to 63 characters).',
+  invalidHeartbeatName:
+    'Check name must be lowercase letters, digits or underscores, starting with a letter or digit (up to 63 characters).',
+  invalidHeartbeatPeriod: 'Period must be between 1 minute and 31 days.',
+  invalidHeartbeatGrace: 'Grace must be between 1 minute and 7 days.',
+  heartbeatNeedsDestination: 'Select at least one alert destination.',
+  heartbeatTooManyDestinations: 'Select at most 20 alert destinations.',
 
   genericError: 'Something went wrong. Please try again.',
 } as const;

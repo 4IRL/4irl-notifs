@@ -248,6 +248,9 @@ export function DestinationsTable({
                         <ConfirmButton
                           triggerLabel={strings.disableDestination({ name })}
                           confirmLabel={strings.confirmDisableDestination({ name })}
+                          dismissAriaLabel={strings.cancelActionNamed({
+                            subject: strings.disableDestination({ name }),
+                          })}
                           className="destinations__button destinations__button--danger"
                           busy={toggleBusy}
                           busyLabel={strings.disablingDestination}
@@ -274,6 +277,9 @@ export function DestinationsTable({
                       <ConfirmButton
                         triggerLabel={strings.deleteDestination({ name })}
                         confirmLabel={strings.confirmDeleteDestination({ name })}
+                        dismissAriaLabel={strings.cancelActionNamed({
+                          subject: strings.deleteDestination({ name }),
+                        })}
                         className="destinations__button destinations__button--danger"
                         busy={isBusy({ action: 'delete', name })}
                         busyLabel={strings.deletingDestination}

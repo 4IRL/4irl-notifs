@@ -464,8 +464,237 @@ describe('delivery api client', () => {
     });
   });
 
+  describe('heartbeats', () => {
+    const checkWire = {
+      id: 12,
+      app_id: 'minecrafting',
+      name: 'daily_report',
+      period_seconds: 86400,
+      grace_seconds: 7200,
+      paused: false,
+      state: 'late',
+      last_ping_at: '2026-10-18T18:02:00Z',
+      last_ping_kind: 'fail',
+      down_since: null,
+      deadline_at: '2026-10-19T20:02:00Z',
+      destinations: [{ name: 'ops_discord', type: 'discord', enabled: true }],
+      created_at: '2026-10-17T10:00:00Z',
+      updated_at: '2026-10-18T18:02:00Z',
+    };
+
+    const checkSummary = {
+      id: 12,
+      appId: 'minecrafting',
+      name: 'daily_report',
+      periodSeconds: 86400,
+      graceSeconds: 7200,
+      paused: false,
+      state: 'late',
+      lastPingAt: '2026-10-18T18:02:00Z',
+      lastPingKind: 'fail',
+      downSince: null,
+      deadlineAt: '2026-10-19T20:02:00Z',
+      destinations: [{ name: 'ops_discord', type: 'discord', enabled: true }],
+      createdAt: '2026-10-17T10:00:00Z',
+      updatedAt: '2026-10-18T18:02:00Z',
+    };
+
+    it('listHeartbeats GETs the admin list and maps snake_case to camelCase', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: { checks: [checkWire] } }));
+
+      const checks = await makeClient().listHeartbeats();
+
+      const { url, init, headers } = lastCall();
+      expect(url).toBe('https://admin.test/delivery/v1/admin/heartbeats');
+      expect(init.method).toBe('GET');
+      expect(headers['X-Requested-With']).toBeUndefined();
+      expect(checks).toEqual([checkSummary]);
+    });
+
+    it('listHeartbeats maps a null list and null destinations to empty arrays', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: { checks: null } }));
+      expect(await makeClient().listHeartbeats()).toEqual([]);
+
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ body: { checks: [{ ...checkWire, destinations: null }] } }),
+      );
+      const [check] = await makeClient().listHeartbeats();
+      expect(check.destinations).toEqual([]);
+    });
+
+    it('createHeartbeat POSTs the snake_case body with the CSRF header', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ status: 201, body: { check: checkWire } }));
+
+      const created = await makeClient().createHeartbeat({
+        appId: 'minecrafting',
+        name: 'daily_report',
+        periodSeconds: 86400,
+        graceSeconds: 7200,
+        destinations: ['ops_discord'],
+      });
+
+      const { url, init, headers } = lastCall();
+      expect(url).toBe('https://admin.test/delivery/v1/admin/heartbeats');
+      expect(init.method).toBe('POST');
+      expect(headers['X-Requested-With']).toBe('admin-ui');
+      expect(JSON.parse(init.body as string)).toEqual({
+        app_id: 'minecrafting',
+        name: 'daily_report',
+        period_seconds: 86400,
+        grace_seconds: 7200,
+        destinations: ['ops_discord'],
+      });
+      expect(created).toEqual(checkSummary);
+    });
+
+    it('updateHeartbeat PATCHes only the provided fields and never sends app_id or name', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(jsonResponse({ body: { check: checkWire } })),
+      );
+
+      await makeClient().updateHeartbeat({ id: 12, graceSeconds: 3600 });
+
+      const { url, init } = lastCall();
+      expect(url).toBe('https://admin.test/delivery/v1/admin/heartbeats/12');
+      expect(init.method).toBe('PATCH');
+      expect(lastCall().headers['X-Requested-With']).toBe('admin-ui');
+      expect(JSON.parse(init.body as string)).toEqual({ grace_seconds: 3600 });
+
+      await makeClient().updateHeartbeat({
+        id: 12,
+        periodSeconds: 60,
+        graceSeconds: 120,
+        destinations: ['a', 'b'],
+      });
+      expect(JSON.parse(lastCall().init.body as string)).toEqual({
+        period_seconds: 60,
+        grace_seconds: 120,
+        destinations: ['a', 'b'],
+      });
+    });
+
+    it('deleteHeartbeat DELETEs by id', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: { id: 12, deleted: true } }));
+
+      await makeClient().deleteHeartbeat({ id: 12 });
+
+      const { url, init, headers } = lastCall();
+      expect(url).toBe('https://admin.test/delivery/v1/admin/heartbeats/12');
+      expect(init.method).toBe('DELETE');
+      expect(headers['X-Requested-With']).toBe('admin-ui');
+      expect(init.body).toBeUndefined();
+    });
+
+    it('pauseHeartbeat and resumeHeartbeat POST the action path and map the check', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ body: { check: { ...checkWire, paused: true } } }),
+      );
+      const paused = await makeClient().pauseHeartbeat({ id: 12 });
+      expect(lastCall().url).toBe('https://admin.test/delivery/v1/admin/heartbeats/12/pause');
+      expect(lastCall().init.method).toBe('POST');
+      expect(lastCall().headers['X-Requested-With']).toBe('admin-ui');
+      expect(paused.paused).toBe(true);
+
+      fetchMock.mockResolvedValue(jsonResponse({ body: { check: checkWire } }));
+      const resumed = await makeClient().resumeHeartbeat({ id: 12 });
+      expect(lastCall().url).toBe('https://admin.test/delivery/v1/admin/heartbeats/12/resume');
+      expect(lastCall().init.method).toBe('POST');
+      expect(resumed.paused).toBe(false);
+    });
+
+    it('throws ApiError with the server message on a heartbeat failure', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ status: 404, body: { error: 'heartbeat check not found' } }),
+      );
+
+      await expect(makeClient().pauseHeartbeat({ id: 99 })).rejects.toMatchObject({
+        constructor: ApiError,
+        status: 404,
+        message: 'heartbeat check not found',
+      });
+    });
+  });
+
   describe('getReadiness', () => {
     it('maps 200 ok', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          body: {
+            status: 'ok',
+            schema_version: 5,
+            expected_schema_version: 5,
+            last_migration_failure: null,
+            heartbeat_checker: { last_tick_at: '2026-10-19T09:00:00Z', stale: false },
+          },
+        }),
+      );
+
+      expect(await makeClient().getReadiness()).toEqual({
+        kind: 'ok',
+        schemaVersion: 5,
+        expectedSchemaVersion: 5,
+        lastMigrationFailure: null,
+        heartbeatChecker: { lastTickAt: '2026-10-19T09:00:00Z', stale: false },
+      });
+      expect(lastCall().url).toBe('https://admin.test/delivery/readyz');
+    });
+
+    it('maps a stale heartbeat checker with a last tick', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          body: {
+            status: 'ok',
+            schema_version: 5,
+            expected_schema_version: 5,
+            last_migration_failure: null,
+            heartbeat_checker: { last_tick_at: '2026-10-19T08:50:00Z', stale: true },
+          },
+        }),
+      );
+
+      expect(await makeClient().getReadiness()).toMatchObject({
+        kind: 'ok',
+        heartbeatChecker: { lastTickAt: '2026-10-19T08:50:00Z', stale: true },
+      });
+    });
+
+    it('maps a never-ticked heartbeat checker (null last tick, stale)', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          body: {
+            status: 'ok',
+            schema_version: 5,
+            expected_schema_version: 5,
+            last_migration_failure: null,
+            heartbeat_checker: { last_tick_at: null, stale: true },
+          },
+        }),
+      );
+
+      expect(await makeClient().getReadiness()).toMatchObject({
+        heartbeatChecker: { lastTickAt: null, stale: true },
+      });
+    });
+
+    it('treats stale:false without a last tick as stale (fail closed)', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          body: {
+            status: 'ok',
+            schema_version: 5,
+            expected_schema_version: 5,
+            last_migration_failure: null,
+            heartbeat_checker: { last_tick_at: null, stale: false },
+          },
+        }),
+      );
+
+      expect(await makeClient().getReadiness()).toMatchObject({
+        heartbeatChecker: { lastTickAt: null, stale: true },
+      });
+    });
+
+    it('treats an absent heartbeat_checker as stale instead of throwing', async () => {
       fetchMock.mockResolvedValue(
         jsonResponse({
           body: {
@@ -477,13 +706,28 @@ describe('delivery api client', () => {
         }),
       );
 
-      expect(await makeClient().getReadiness()).toEqual({
+      expect(await makeClient().getReadiness()).toMatchObject({
         kind: 'ok',
-        schemaVersion: 5,
-        expectedSchemaVersion: 5,
-        lastMigrationFailure: null,
+        heartbeatChecker: { lastTickAt: null, stale: true },
       });
-      expect(lastCall().url).toBe('https://admin.test/delivery/readyz');
+    });
+
+    it('treats a malformed heartbeat_checker as stale', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          body: {
+            status: 'ok',
+            schema_version: 5,
+            expected_schema_version: 5,
+            last_migration_failure: null,
+            heartbeat_checker: { last_tick_at: 12, stale: 'no' },
+          },
+        }),
+      );
+
+      expect(await makeClient().getReadiness()).toMatchObject({
+        heartbeatChecker: { lastTickAt: null, stale: true },
+      });
     });
 
     it('maps a recorded migration failure on a 200', async () => {
@@ -519,6 +763,7 @@ describe('delivery api client', () => {
             schema_version: 4,
             expected_schema_version: 5,
             last_migration_failure: null,
+            heartbeat_checker: { last_tick_at: null, stale: true },
           },
         }),
       );
@@ -528,6 +773,7 @@ describe('delivery api client', () => {
         schemaVersion: 4,
         expectedSchemaVersion: 5,
         lastMigrationFailure: null,
+        heartbeatChecker: { lastTickAt: null, stale: true },
       });
     });
 

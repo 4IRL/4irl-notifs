@@ -406,6 +406,8 @@ interface DeliveryMockSeed {
   scheduled?: Json[];
   /** When set, DELETE of a scheduled message fails with this status and message. */
   cancelError?: { status: number; message: string };
+  /** Heartbeat checks, as the admin list returns them. */
+  heartbeats?: Json[];
 }
 
 interface DeliveryMock {
@@ -423,6 +425,7 @@ const READY_BODY: Json = {
   schema_version: 5,
   expected_schema_version: 5,
   last_migration_failure: null,
+  heartbeat_checker: { last_tick_at: '2026-10-17T08:12:30Z', stale: false },
 };
 
 function destinationWire({
@@ -487,6 +490,51 @@ function scheduledWire({
     created_at: TIMESTAMP,
     recipient: false,
     destinations: [{ name: 'hook1', type: 'webhook' }],
+  };
+}
+
+function heartbeatWire({
+  id,
+  appId = 'urls4irl',
+  name,
+  state = 'up',
+  paused = false,
+  lastPingAt = '2099-01-01T07:00:00Z',
+  lastPingKind = 'success',
+  downSince = null,
+  periodSeconds = 86400,
+  graceSeconds = 3600,
+  deadlineAt = '2099-01-02T08:00:00Z',
+  destinations = [{ name: 'hook1', type: 'webhook', enabled: true }],
+}: {
+  id: number;
+  appId?: string;
+  name: string;
+  state?: string;
+  paused?: boolean;
+  lastPingAt?: string | null;
+  lastPingKind?: string | null;
+  downSince?: string | null;
+  periodSeconds?: number;
+  graceSeconds?: number;
+  deadlineAt?: string;
+  destinations?: Array<{ name: string; type: string; enabled: boolean }>;
+}): Json {
+  return {
+    id,
+    app_id: appId,
+    name,
+    period_seconds: periodSeconds,
+    grace_seconds: graceSeconds,
+    paused,
+    state,
+    last_ping_at: lastPingAt,
+    last_ping_kind: lastPingKind,
+    down_since: downSince,
+    deadline_at: deadlineAt,
+    destinations,
+    created_at: TIMESTAMP,
+    updated_at: TIMESTAMP,
   };
 }
 
@@ -566,7 +614,28 @@ async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<De
     ...seed.deliveries,
   };
   let scheduled = [...(seed.scheduled ?? [])];
+  let heartbeats = [...(seed.heartbeats ?? [])];
   let nextRouteId = 100;
+  let nextHeartbeatId = 100;
+
+  /** The check view's embedded destinations for a list of names, or null when one is unknown. */
+  function embeddedDestinations(
+    names: string[],
+  ): Array<{ name: string; type: string; enabled: boolean }> | null {
+    const embedded: Array<{ name: string; type: string; enabled: boolean }> = [];
+    for (const name of names) {
+      const found = destinations.find((destination) => destination.name === name);
+      if (found === undefined) {
+        return null;
+      }
+      embedded.push({
+        name,
+        type: found.type as string,
+        enabled: found.enabled as boolean,
+      });
+    }
+    return embedded;
+  }
 
   async function reply({
     route,
@@ -727,6 +796,109 @@ async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<De
           : { message_id: id, cancelled: false, status: 'not_found' },
       });
       return;
+    }
+    if (method === 'GET' && pathname === '/delivery/v1/admin/heartbeats') {
+      await reply({ route, body: { checks: heartbeats } });
+      return;
+    }
+    if (method === 'POST' && pathname === '/delivery/v1/admin/heartbeats') {
+      const body = recorded.body as {
+        app_id: string;
+        name: string;
+        period_seconds: number;
+        grace_seconds: number;
+        destinations: string[];
+      };
+      if (heartbeats.some((check) => check.app_id === body.app_id && check.name === body.name)) {
+        await reply({ route, status: 409, body: { error: 'check already exists' } });
+        return;
+      }
+      const embedded = embeddedDestinations(body.destinations);
+      if (embedded === null) {
+        await reply({ route, status: 400, body: { error: 'unknown destination' } });
+        return;
+      }
+      // A new check has not been pinged: it waits, with its first deadline ahead.
+      const created = heartbeatWire({
+        id: nextHeartbeatId,
+        appId: body.app_id,
+        name: body.name,
+        state: 'new',
+        lastPingAt: null,
+        lastPingKind: null,
+        periodSeconds: body.period_seconds,
+        graceSeconds: body.grace_seconds,
+        destinations: embedded,
+      });
+      nextHeartbeatId += 1;
+      // The real list is ordered by app_id, then name.
+      heartbeats = [...heartbeats, created].sort((left, right) =>
+        `${left.app_id as string}/${left.name as string}`.localeCompare(
+          `${right.app_id as string}/${right.name as string}`,
+        ),
+      );
+      await reply({ route, status: 201, body: { check: created } });
+      return;
+    }
+    const heartbeatMatch = /^\/delivery\/v1\/admin\/heartbeats\/(\d+)(?:\/(pause|resume))?$/.exec(
+      pathname,
+    );
+    if (heartbeatMatch !== null) {
+      const id = Number(heartbeatMatch[1]);
+      const action = heartbeatMatch[2] as string | undefined;
+      if (method === 'DELETE' && action === undefined) {
+        const found = heartbeats.some((check) => check.id === id);
+        heartbeats = heartbeats.filter((check) => check.id !== id);
+        await reply({ route, body: { id, deleted: found } });
+        return;
+      }
+      if (method === 'PATCH' && action === undefined) {
+        const body = recorded.body as {
+          app_id?: string;
+          name?: string;
+          period_seconds?: number;
+          grace_seconds?: number;
+          destinations?: string[];
+        };
+        const existing = heartbeats.find((check) => check.id === id);
+        if (existing === undefined) {
+          await reply({ route, status: 404, body: { error: 'check not found' } });
+          return;
+        }
+        // The identity is immutable: the real endpoint rejects any attempt to send it.
+        if (body.app_id !== undefined || body.name !== undefined) {
+          await reply({ route, status: 400, body: { error: 'app_id and name are immutable' } });
+          return;
+        }
+        const embedded =
+          body.destinations === undefined ? undefined : embeddedDestinations(body.destinations);
+        if (embedded === null) {
+          await reply({ route, status: 400, body: { error: 'unknown destination' } });
+          return;
+        }
+        // An omitted field is left unchanged, as on the real endpoint.
+        const updated: Json = {
+          ...existing,
+          ...(body.period_seconds === undefined ? {} : { period_seconds: body.period_seconds }),
+          ...(body.grace_seconds === undefined ? {} : { grace_seconds: body.grace_seconds }),
+          ...(embedded === undefined ? {} : { destinations: embedded }),
+        };
+        heartbeats = heartbeats.map((check) => (check.id === id ? updated : check));
+        await reply({ route, body: { check: updated } });
+        return;
+      }
+      if (method === 'POST' && action !== undefined) {
+        heartbeats = heartbeats.map((check) =>
+          check.id === id ? { ...check, paused: action === 'pause' } : check,
+        );
+        const updated = heartbeats.find((check) => check.id === id);
+        if (updated === undefined) {
+          await reply({ route, status: 404, body: { error: 'check not found' } });
+          return;
+        }
+        await reply({ route, body: { check: updated } });
+        return;
+      }
     }
     if (method === 'POST' && pathname === '/delivery/v1/messages') {
       await reply({
@@ -949,7 +1121,7 @@ test.describe('admin UI Delivery tab', () => {
       name: 'Confirm cancel send digest-1',
       exact: true,
     });
-    const keep = pending.getByRole('button', { name: 'Keep', exact: true });
+    const keep = pending.getByRole('button', { name: 'Keep send digest-1', exact: true });
     await expect(confirm).toBeVisible();
     for (const button of [confirm, keep]) {
       expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(44);
@@ -982,6 +1154,389 @@ test.describe('admin UI Delivery tab', () => {
     expect(mock.mutations[0].method).toBe('DELETE');
     expect(mock.mutations[0].pathname).toBe('/delivery/v1/admin/scheduled-messages/msg-1');
     expect(mock.mutations[0].body).toBeNull();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats: pause is two-step, resume one click, delete hands focus to a neighbour', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      heartbeats: [
+        heartbeatWire({ id: 1, name: 'nightly_backup' }),
+        heartbeatWire({
+          id: 2,
+          name: 'hourly_gauge',
+          state: 'down',
+          lastPingKind: 'fail',
+          downSince: '2026-10-18T14:00:00Z',
+        }),
+        heartbeatWire({
+          id: 3,
+          name: 'reaper',
+          state: 'new',
+          lastPingAt: null,
+          lastPingKind: null,
+        }),
+      ],
+    });
+
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Heartbeats' });
+    await expect(section.getByText('1 of 3 checks down')).toBeVisible();
+    await expect(section.getByText('Waiting', { exact: true })).toBeVisible();
+    await expect(section.getByText('reported failure')).toBeVisible();
+
+    const pause = section.getByRole('button', {
+      name: 'Pause urls4irl/nightly_backup',
+      exact: true,
+    });
+    expect((await pause.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+
+    // Keep running sends nothing.
+    await pause.click();
+    await section.getByRole('button', { name: 'Keep running urls4irl/nightly_backup' }).click();
+    await expect(pause).toBeFocused();
+    expect(mock.mutations).toEqual([]);
+
+    // Pause needs a confirm, then focus lands on the row's Resume.
+    await pause.click();
+    await section.getByRole('button', { name: 'Confirm pause urls4irl/nightly_backup' }).click();
+    const resume = section.getByRole('button', {
+      name: 'Resume urls4irl/nightly_backup',
+      exact: true,
+    });
+    await expect(resume).toBeFocused();
+    await expect(
+      section.getByText(
+        'Paused urls4irl/nightly_backup. Its alerts are suppressed until you resume it.',
+      ),
+    ).toBeVisible();
+
+    // Resume is one click and focus returns to Pause.
+    await resume.click();
+    await expect(pause).toBeFocused();
+    expect(mock.mutations.map((request) => request.pathname)).toEqual([
+      '/delivery/v1/admin/heartbeats/1/pause',
+      '/delivery/v1/admin/heartbeats/1/resume',
+    ]);
+
+    // Delete the last row: focus lands on the neighbour's first control.
+    await section.getByRole('button', { name: 'Delete urls4irl/reaper', exact: true }).click();
+    await section.getByRole('button', { name: 'Confirm delete urls4irl/reaper' }).click();
+    await expect(section.getByText('Deleted urls4irl/reaper.')).toBeVisible();
+    await expect(
+      section.getByRole('button', { name: 'Pause urls4irl/hourly_gauge', exact: true }),
+    ).toBeFocused();
+    expect(mock.mutations[2].method).toBe('DELETE');
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats: a stalled checker shows on the status card without changing its pill', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      readiness: {
+        status: 200,
+        body: {
+          ...READY_BODY,
+          heartbeat_checker: { last_tick_at: '2026-10-17T08:00:00Z', stale: true },
+        },
+      },
+    });
+
+    await page.goto('/#delivery');
+    const statusCard = page.getByRole('region', { name: 'delivery-api' });
+    await expect(statusCard.getByText('Ready', { exact: true })).toBeVisible();
+    await expect(statusCard.getByText(/^Stalled · last run /)).toBeVisible();
+    await expect(statusCard.getByText(/heartbeat checker has not run recently/)).toBeVisible();
+    await expect(page.getByText('No heartbeat checks yet.')).toBeVisible();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats: Add check is blocked without destinations', async ({ page }) => {
+    // No destinations seeded: Add check stays blocked with its hint.
+    const mock = await mockDelivery(page);
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Heartbeats' });
+    await expect(section.getByText('No heartbeat checks yet.')).toBeVisible();
+    const add = section.getByRole('button', { name: 'Add check', exact: true });
+    await expect(add).toBeDisabled();
+    await expect(add).toHaveAttribute('aria-disabled', 'true');
+    await expect(section.getByText(/^Add a destination first\./)).toBeVisible();
+    // Playwright would wait forever on an aria-disabled button; force the click.
+    await add.click({ force: true });
+    await expect(page.getByRole('form', { name: 'Add check' })).toHaveCount(0);
+    expect(mock.mutations).toEqual([]);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats: a failed list load shows an error, and Refresh recovers', async ({ page }) => {
+    const mock = await mockDelivery(page, {
+      heartbeats: [heartbeatWire({ id: 1, name: 'nightly_backup' })],
+    });
+    let failNext = true;
+    // Registered after mockDelivery's catch-all, so it wins for this one URL.
+    await page.route('**/delivery/v1/admin/heartbeats', async (route) => {
+      if (failNext && route.request().method() === 'GET') {
+        failNext = false;
+        await route.fulfill({
+          status: 502,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'upstream down' }),
+        });
+        return;
+      }
+      await route.fallback();
+    });
+
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Heartbeats' });
+    await expect(section.getByRole('alert')).toContainText('upstream down');
+    await section.getByRole('button', { name: 'Refresh heartbeats' }).click();
+    await expect(
+      section.getByRole('cell', { name: 'urls4irl / nightly_backup', exact: true }),
+    ).toBeVisible();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats: add validates on submit, creates a Waiting row, then pause and delete it', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [
+        destinationWire({ name: 'hook1', type: 'webhook' }),
+        destinationWire({ name: 'ops_discord', type: 'discord', enabled: false }),
+      ],
+      heartbeats: [heartbeatWire({ id: 1, name: 'nightly_backup' })],
+    });
+
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Heartbeats' });
+    const add = section.getByRole('button', { name: 'Add check', exact: true });
+    await expect(add).toBeEnabled();
+    expect((await add.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+    await add.click();
+
+    const form = section.getByRole('form', { name: 'Add check' });
+    await expect(form.getByLabel('App ID')).toBeFocused();
+    await expect(form.getByLabel('Period unit')).toHaveValue('hours');
+    await expect(form.getByLabel('Grace unit')).toHaveValue('hours');
+    await expect(form.getByLabel('Period', { exact: true })).toHaveValue('24');
+    await expect(form.getByLabel('Grace', { exact: true })).toHaveValue('2');
+    await expect(form.locator('label', { hasText: 'ops_discord' })).toContainText('(disabled)');
+
+    // Submit-time validation: nothing is sent while it fails.
+    await form.getByLabel('App ID').fill('minecrafting');
+    await form.getByLabel('Check name').fill('daily_report');
+    await form.getByRole('button', { name: 'Add check', exact: true }).click();
+    await expect(form.getByRole('alert')).toHaveText('Select at least one alert destination.');
+    expect(mock.mutations).toEqual([]);
+
+    // A duplicate surfaces the server's message and keeps the form open.
+    await form.getByLabel('App ID').fill('urls4irl');
+    await form.getByLabel('Check name').fill('nightly_backup');
+    await form.getByRole('checkbox', { name: /^hook1/ }).check();
+    await form.getByRole('button', { name: 'Add check', exact: true }).click();
+    await expect(form.getByRole('alert')).toHaveText('check already exists');
+
+    await form.getByLabel('App ID').fill('minecrafting');
+    await form.getByLabel('Check name').fill('daily_report');
+    await form.getByRole('button', { name: 'Add check', exact: true }).click();
+
+    await expect(section.getByText('Added minecrafting/daily_report.')).toBeVisible();
+    await expect(form).toHaveCount(0);
+    await expect(add).toBeFocused();
+    const createdRow = section.getByRole('row', { name: /minecrafting\s*\/\s*daily_report/ });
+    await expect(createdRow.getByText('Waiting', { exact: true })).toBeVisible();
+    const creates = mock.mutations.filter((request) => request.method === 'POST');
+    expect(creates[creates.length - 1].body).toEqual({
+      app_id: 'minecrafting',
+      name: 'daily_report',
+      period_seconds: 86400,
+      grace_seconds: 7200,
+      destinations: ['hook1'],
+    });
+
+    // Pause the new check: Paused pill, Resume button.
+    await section
+      .getByRole('button', { name: 'Pause minecrafting/daily_report', exact: true })
+      .click();
+    await section.getByRole('button', { name: 'Confirm pause minecrafting/daily_report' }).click();
+    await expect(createdRow.getByText('Paused', { exact: true })).toBeVisible();
+    await expect(
+      section.getByRole('button', { name: 'Resume minecrafting/daily_report', exact: true }),
+    ).toBeFocused();
+
+    // Delete it: the row goes and focus lands on the neighbour's first control.
+    await section
+      .getByRole('button', { name: 'Delete minecrafting/daily_report', exact: true })
+      .click();
+    await section.getByRole('button', { name: 'Confirm delete minecrafting/daily_report' }).click();
+    await expect(section.getByText('Deleted minecrafting/daily_report.')).toBeVisible();
+    await expect(createdRow).toHaveCount(0);
+    await expect(
+      section.getByRole('button', { name: 'Pause urls4irl/nightly_backup', exact: true }),
+    ).toBeFocused();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats: edit sends only the changed fields and keeps a stale destination', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [
+        destinationWire({ name: 'hook1', type: 'webhook' }),
+        destinationWire({ name: 'family_ntfy', type: 'ntfy' }),
+      ],
+      heartbeats: [
+        heartbeatWire({
+          id: 1,
+          name: 'nightly_backup',
+          destinations: [
+            { name: 'hook1', type: 'webhook', enabled: true },
+            { name: 'old_hook', type: 'webhook', enabled: true },
+          ],
+        }),
+        heartbeatWire({ id: 2, name: 'reaper' }),
+      ],
+    });
+
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Heartbeats' });
+    const edit = section.getByRole('button', {
+      name: 'Edit urls4irl/nightly_backup',
+      exact: true,
+    });
+    await edit.click();
+
+    const form = section.getByRole('form', { name: 'Edit urls4irl/nightly_backup' });
+    await expect(form.getByLabel('Period', { exact: true })).toBeFocused();
+    await expect(form.getByLabel('Period', { exact: true })).toHaveValue('24');
+    await expect(form.getByLabel('Period unit')).toHaveValue('hours');
+    await expect(form.getByLabel('Grace', { exact: true })).toHaveValue('1');
+    await expect(form.getByText(/The app ID and name cannot change\./)).toBeVisible();
+    await expect(form.getByLabel('App ID')).toHaveCount(0);
+    const stale = form.getByRole('checkbox', { name: /^old_hook/ });
+    await expect(stale).toBeChecked();
+    await expect(stale).toBeVisible();
+    await expect(form.locator('label', { hasText: 'old_hook' })).toContainText('(not found)');
+
+    // One editor at a time: opening another row's editor closes this one.
+    await section.getByRole('button', { name: 'Edit urls4irl/reaper', exact: true }).click();
+    await expect(form).toHaveCount(0);
+    await edit.click();
+
+    // Changing only the grace sends only the grace.
+    await form.getByLabel('Grace', { exact: true }).fill('3');
+    await form.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(section.getByText('Saved urls4irl/nightly_backup.')).toBeVisible();
+    await expect(form).toHaveCount(0);
+    await expect(edit).toBeFocused();
+    const patches = mock.mutations.filter((request) => request.method === 'PATCH');
+    expect(patches).toHaveLength(1);
+    expect(patches[0].pathname).toBe('/delivery/v1/admin/heartbeats/1');
+    expect(patches[0].body).toEqual({ grace_seconds: 10800 });
+
+    // Changing the destinations sends the full set, stale name included.
+    await edit.click();
+    await form.getByRole('checkbox', { name: /^family_ntfy/ }).check();
+    await form.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(form.getByRole('alert')).toHaveText('unknown destination');
+    await form.getByRole('checkbox', { name: /^old_hook/ }).uncheck();
+    await form.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(form).toHaveCount(0);
+    const allPatches = mock.mutations.filter((request) => request.method === 'PATCH');
+    expect(allPatches[1].body).toEqual({ destinations: ['hook1', 'family_ntfy', 'old_hook'] });
+    expect(allPatches[2].body).toEqual({ destinations: ['hook1', 'family_ntfy'] });
+
+    // Close without saving sends nothing and refocuses the trigger.
+    await edit.click();
+    await form.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(edit).toBeFocused();
+    expect(mock.mutations.filter((request) => request.method === 'PATCH')).toHaveLength(3);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats: the forms fit at 390px with 44px controls and a reachable Actions cell', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [
+        destinationWire({ name: 'hook1', type: 'webhook' }),
+        destinationWire({ name: 'ops_discord', type: 'discord' }),
+        destinationWire({ name: 'family_ntfy', type: 'ntfy' }),
+      ],
+      heartbeats: [
+        heartbeatWire({ id: 1, name: 'nightly_backup' }),
+        heartbeatWire({ id: 2, name: 'reaper', paused: true }),
+      ],
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Heartbeats' });
+    const noOverflow = async () => {
+      const overflow = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth);
+    };
+    const wrapper = section.locator('.heartbeats__scroll');
+    await expect(wrapper).toBeVisible();
+    await noOverflow();
+
+    // The Actions cell stays reachable without scrolling the wrapper.
+    for (const name of [
+      'Edit urls4irl/nightly_backup',
+      'Pause urls4irl/nightly_backup',
+      'Delete urls4irl/nightly_backup',
+    ]) {
+      const box = await section.getByRole('button', { name, exact: true }).boundingBox();
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    }
+    expect(await wrapper.evaluate((element) => element.scrollLeft)).toBe(0);
+
+    // The add card: no page overflow, 44px fields and buttons.
+    await section.getByRole('button', { name: 'Add check', exact: true }).click();
+    const addForm = section.getByRole('form', { name: 'Add check' });
+    await expect(addForm).toBeVisible();
+    await noOverflow();
+    for (const control of [
+      addForm.getByLabel('App ID'),
+      addForm.getByLabel('Period', { exact: true }),
+      addForm.getByLabel('Period unit'),
+      addForm.getByLabel('Grace unit'),
+      addForm.getByRole('button', { name: 'Add check', exact: true }),
+      addForm.getByRole('button', { name: 'Cancel', exact: true }),
+    ]) {
+      const box = await control.boundingBox();
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    }
+
+    // The inline editor is sized to the visible width and does not scroll the page.
+    await section
+      .getByRole('button', { name: 'Edit urls4irl/nightly_backup', exact: true })
+      .click();
+    const editForm = section.getByRole('form', { name: 'Edit urls4irl/nightly_backup' });
+    await expect(editForm).toBeVisible();
+    await noOverflow();
+    const editBox = await editForm.boundingBox();
+    expect(editBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((editBox?.x ?? 0) + (editBox?.width ?? 0)).toBeLessThanOrEqual(390);
+    for (const control of [
+      editForm.getByLabel('Period', { exact: true }),
+      editForm.getByRole('button', { name: 'Save', exact: true }),
+      editForm.getByRole('button', { name: 'Close', exact: true }),
+    ]) {
+      const box = await control.boundingBox();
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    }
+    // Opening the editor leaves the table's own Actions reachable.
+    expect(await wrapper.evaluate((element) => element.scrollLeft)).toBe(0);
     expect(mock.unmocked).toEqual([]);
   });
 

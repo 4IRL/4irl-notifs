@@ -78,6 +78,25 @@ export function isValidRouteChannelPattern(pattern: string): boolean {
   );
 }
 
+const HEARTBEAT_ID_PATTERN = /^[a-z0-9][a-z0-9_]{0,62}$/;
+
+/** Mirrors delivery-api's heartbeat check app_id rule (no reserved names). A UX pre-check only. */
+export function isValidHeartbeatAppId(appId: string): boolean {
+  return HEARTBEAT_ID_PATTERN.test(appId);
+}
+
+/** Mirrors delivery-api's heartbeat check name rule. A UX pre-check only. */
+export function isValidHeartbeatName(name: string): boolean {
+  return HEARTBEAT_ID_PATTERN.test(name);
+}
+
+/** Heartbeat period bounds in seconds, mirroring delivery-api (1 minute to 31 days). */
+export const HEARTBEAT_PERIOD_RANGE_SECONDS = { min: 60, max: 2_678_400 } as const;
+/** Heartbeat grace bounds in seconds, mirroring delivery-api (1 minute to 7 days). */
+export const HEARTBEAT_GRACE_RANGE_SECONDS = { min: 60, max: 604_800 } as const;
+/** The most alert destinations one check may have. */
+export const MAX_HEARTBEAT_DESTINATIONS = 20;
+
 /** Mirrors delivery-api's ntfy topic rule. A UX pre-check only. */
 export function isValidNtfyTopic(topic: string): boolean {
   return NTFY_TOPIC_PATTERN.test(topic);

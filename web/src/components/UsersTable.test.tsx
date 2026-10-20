@@ -54,6 +54,50 @@ describe('UsersTable', () => {
     expect(screen.queryAllByRole('row')).toHaveLength(0);
   });
 
+  it('gives each open deprovision and delete confirm a per-row dismiss name', async () => {
+    const user = userEvent.setup();
+    const users = [
+      { userId: 'alice', apps: ['urls4irl'], topicPatterns: ['u4i-alice'] },
+      { userId: 'bob', apps: ['urls4irl'], topicPatterns: ['u4i-bob'] },
+    ];
+    render(
+      <UsersTable
+        users={users}
+        loading={false}
+        emailByPersonHash={new Map()}
+        onDeprovision={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    // Both users hold urls4irl, so the two deprovision triggers share one name.
+    const deprovisionTriggers = screen.getAllByRole('button', {
+      name: `${strings.deprovisionAction} urls4irl`,
+    });
+    expect(deprovisionTriggers).toHaveLength(2);
+    for (const trigger of deprovisionTriggers) {
+      await user.click(trigger);
+    }
+    await user.click(screen.getByRole('button', { name: `${strings.deleteAction} alice` }));
+    await user.click(screen.getByRole('button', { name: `${strings.deleteAction} bob` }));
+
+    const dismissNames = [
+      strings.cancelActionNamed({
+        subject: strings.deprovisionAppForUser({ app: 'urls4irl', user: 'alice' }),
+      }),
+      strings.cancelActionNamed({
+        subject: strings.deprovisionAppForUser({ app: 'urls4irl', user: 'bob' }),
+      }),
+      strings.cancelActionNamed({ subject: `${strings.deleteAction} alice` }),
+      strings.cancelActionNamed({ subject: `${strings.deleteAction} bob` }),
+    ];
+    expect(new Set(dismissNames).size).toBe(4);
+    for (const name of dismissNames) {
+      expect(screen.getByRole('button', { name })).toHaveTextContent(strings.cancelAction);
+    }
+    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
+  });
+
   it('renders a table with column headers and a row per user', () => {
     const users = [
       {

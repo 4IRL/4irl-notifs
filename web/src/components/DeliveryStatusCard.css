@@ -74,6 +74,11 @@
   font-size: 0.875rem;
 }
 
+/* A stalled heartbeat checker reads in the accent (warning) colour. */
+.status-card__facts dd.status-card__stalled {
+  color: var(--accent);
+}
+
 .status-card__refresh {
   min-height: 2.75rem;
   padding: 0 var(--space-3);
