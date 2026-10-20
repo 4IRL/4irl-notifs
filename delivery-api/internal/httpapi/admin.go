@@ -29,7 +29,7 @@ const (
 	errMsgRouteNotFound       = "route does not exist"
 	errMsgDestinationExists   = "destination already exists"
 	errMsgRouteExists         = "route already exists"
-	errMsgDestinationInUse    = "destination is used by a route"
+	errMsgDestinationInUse    = "destination is in use"
 	errMsgUnknownDestination  = "unknown destination"
 	errMsgInternalError       = "internal error"
 	errMsgInvalidOverlapHours = "invalid overlap_hours"
@@ -358,10 +358,17 @@ func (server *Server) pathDestinationName(responseWriter http.ResponseWriter, re
 // (no sign, no leading zeros, so each route has exactly one URL). On failure it
 // writes 400 "invalid route id" and returns false.
 func parseRouteID(responseWriter http.ResponseWriter, request *http.Request) (int64, bool) {
-	rawID := request.PathValue("id")
+	return parsePositiveID(responseWriter, request, errMsgInvalidRouteID)
+}
+
+// parsePositiveID reads the {id} path value as a canonical positive integer (no
+// sign, no leading zeros, so each resource has exactly one URL). On failure it
+// writes 400 with errorMessage and returns false.
+func parsePositiveID(responseWriter http.ResponseWriter, request *http.Request, errorMessage string) (int64, bool) {
+	rawID := request.PathValue(pathValueID)
 	id, err := strconv.ParseInt(rawID, 10, 64)
 	if err != nil || id < 1 || strconv.FormatInt(id, 10) != rawID {
-		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidRouteID)
+		writeError(responseWriter, http.StatusBadRequest, errorMessage)
 		return 0, false
 	}
 	return id, true

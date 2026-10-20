@@ -514,13 +514,7 @@ func parseWait(responseWriter http.ResponseWriter, request *http.Request) (time.
 // sign, no leading zeros, so each delivery has exactly one URL). On failure it
 // writes 400 "invalid delivery id" and returns false.
 func parseDeliveryID(responseWriter http.ResponseWriter, request *http.Request) (int64, bool) {
-	rawID := request.PathValue(pathValueID)
-	id, err := strconv.ParseInt(rawID, 10, 64)
-	if err != nil || id < 1 || strconv.FormatInt(id, 10) != rawID {
-		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidDeliveryID)
-		return 0, false
-	}
-	return id, true
+	return parsePositiveID(responseWriter, request, errMsgInvalidDeliveryID)
 }
 
 // newMessageView converts a stored message into its JSON view. Times are UTC and

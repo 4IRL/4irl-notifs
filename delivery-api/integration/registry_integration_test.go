@@ -216,7 +216,7 @@ func TestRegistryEncryptionAndLifecycle(testInstance *testing.T) {
 	// A destination a route still references cannot be deleted.
 	inUseStatus, inUseBody := adminRequest(testInstance, http.MethodDelete, "/destinations/"+name, nil)
 	requireStatus(testInstance, "DELETE in-use destination", inUseStatus, http.StatusConflict, inUseBody)
-	requireErrorMessage(testInstance, "DELETE in-use destination", inUseBody, "destination is used by a route")
+	requireErrorMessage(testInstance, "DELETE in-use destination", inUseBody, "destination is in use")
 
 	deleteRouteStatus, deleteRouteBody := adminRequest(testInstance, http.MethodDelete, routePath, nil)
 	requireStatus(testInstance, "DELETE route", deleteRouteStatus, http.StatusOK, deleteRouteBody)

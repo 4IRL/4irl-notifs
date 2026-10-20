@@ -5,16 +5,12 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/pgutil"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const (
-	sqlStateUniqueViolation     = "23505"
-	sqlStateForeignKeyViolation = "23503"
-)
+const sqlStateForeignKeyViolation = "23503"
 
 // Names sort bytewise (COLLATE "C") so ordering never depends on the database's
 // locale: destination names are [a-z0-9_] slugs, and glibc locales ignore
@@ -59,7 +55,7 @@ VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+destinationColumns,
 		destination.SealedSecrets, destination.Enabled, destination.DisabledReason)
 	inserted, scanErr := scanDestination(row)
 	if scanErr != nil {
-		if pgErrorCode(scanErr) == sqlStateUniqueViolation {
+		if pgutil.ErrorCode(scanErr) == pgutil.SQLStateUniqueViolation {
 			return StoredDestination{}, ErrDestinationExists
 		}
 		return StoredDestination{}, pgutil.WrapDBError("insert destination", scanErr)
@@ -154,12 +150,12 @@ WHERE id = $1 RETURNING `+destinationColumns,
 }
 
 // DeleteDestination removes the named destination and reports whether a row
-// existed. SQLSTATE 23503 (a route still references it) maps to
+// existed. SQLSTATE 23503 (a route or heartbeat check still references it) maps to
 // ErrDestinationInUse.
 func (store *PGStore) DeleteDestination(ctx context.Context, name string) (bool, error) {
 	tag, execErr := store.pool.Exec(ctx, `DELETE FROM destinations WHERE name = $1`, name)
 	if execErr != nil {
-		if pgErrorCode(execErr) == sqlStateForeignKeyViolation {
+		if pgutil.ErrorCode(execErr) == sqlStateForeignKeyViolation {
 			return false, ErrDestinationInUse
 		}
 		return false, pgutil.WrapDBError("delete destination", execErr)
@@ -183,7 +179,7 @@ func (store *PGStore) InsertRoute(ctx context.Context, route StoredRoute) (Store
 		if scanErr := tx.QueryRow(ctx,
 			`INSERT INTO routes (app_pattern, channel_pattern, enabled) VALUES ($1, $2, $3) RETURNING id`,
 			route.AppPattern, route.ChannelPattern, route.Enabled).Scan(&routeID); scanErr != nil {
-			if pgErrorCode(scanErr) == sqlStateUniqueViolation {
+			if pgutil.ErrorCode(scanErr) == pgutil.SQLStateUniqueViolation {
 				return ErrRouteExists
 			}
 			return pgutil.WrapDBError("insert route", scanErr)
@@ -248,7 +244,7 @@ func (store *PGStore) UpdateRoute(
 		if _, execErr := tx.Exec(ctx,
 			`UPDATE routes SET app_pattern = $2, channel_pattern = $3, enabled = $4, updated_at = now() WHERE id = $1`,
 			id, mutated.AppPattern, mutated.ChannelPattern, mutated.Enabled); execErr != nil {
-			if pgErrorCode(execErr) == sqlStateUniqueViolation {
+			if pgutil.ErrorCode(execErr) == pgutil.SQLStateUniqueViolation {
 				return ErrRouteExists
 			}
 			return pgutil.WrapDBError("update route", execErr)
@@ -293,7 +289,7 @@ func (store *PGStore) ListEnabledRoutes(ctx context.Context) ([]StoredRoute, err
 // with no row (a count mismatch against the distinct names) returns
 // ErrUnknownDestination.
 func resolveDestinationIDs(ctx context.Context, tx pgx.Tx, names []string) ([]int64, error) {
-	distinctNames := distinct(names)
+	distinctNames := pgutil.Distinct(names)
 	rows, queryErr := tx.Query(ctx,
 		`SELECT id, name FROM destinations WHERE name = ANY($1) FOR SHARE`, distinctNames)
 	if queryErr != nil {
@@ -422,27 +418,4 @@ func configOrEmpty(config map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return config
-}
-
-// distinct returns names with duplicates removed, never nil.
-func distinct(names []string) []string {
-	seen := make(map[string]bool, len(names))
-	unique := make([]string, 0, len(names))
-	for _, name := range names {
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		unique = append(unique, name)
-	}
-	return unique
-}
-
-// pgErrorCode returns the SQLSTATE of a Postgres error, or "" for any other.
-func pgErrorCode(err error) string {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code
-	}
-	return ""
 }

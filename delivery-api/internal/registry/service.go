@@ -259,7 +259,7 @@ func (service *Service) DisableDestination(
 }
 
 // DeleteDestination removes the named destination and reports whether it
-// existed. A destination a route still references returns ErrDestinationInUse.
+// existed. A destination a route or heartbeat check still references returns ErrDestinationInUse.
 func (service *Service) DeleteDestination(ctx context.Context, name string) (bool, error) {
 	return service.store.DeleteDestination(ctx, name)
 }

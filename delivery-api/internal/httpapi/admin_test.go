@@ -663,7 +663,7 @@ func TestAdminMapsServiceErrors(testInstance *testing.T) {
 		},
 		{
 			name: "destination in use", err: registry.ErrDestinationInUse,
-			wantStatus: http.StatusConflict, wantBody: `{"error":"destination is used by a route"}` + "\n",
+			wantStatus: http.StatusConflict, wantBody: `{"error":"destination is in use"}` + "\n",
 		},
 		{
 			name: "unknown destination", err: registry.ErrUnknownDestination,
