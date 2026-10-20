@@ -18,6 +18,7 @@ import (
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/database"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
@@ -48,9 +49,9 @@ const (
 	// 10 s a ?wait request can hold Shutdown (httpapi.MaxWait) plus the 16 s an in-flight delivery attempt can
 	// need to finish and be recorded (dispatch.MaxInFlightShutdown), so a SIGTERM never abandons either.
 	shutdownTimeout = httpapi.MaxWait + dispatch.MaxInFlightShutdown
-	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker, sweeper and releaser to unwind.
+	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker, sweeper, releaser and heartbeat checker to unwind.
 	backgroundStopMargin = 4 * time.Second
-	// backgroundStopTimeout bounds how long runServe waits for the worker, sweeper and releaser after HTTP has drained.
+	// backgroundStopTimeout bounds how long runServe waits for the worker, sweeper, releaser and heartbeat checker after HTTP has drained.
 	// Worst-case total shutdown is shutdownTimeout + backgroundStopTimeout (46 s), which the compose
 	// stop_grace_period must exceed (docker-compose.yml and docker-compose.prod.yml; pinned by
 	// TestComposeStopGracePeriodCoversShutdown).
@@ -140,7 +141,7 @@ func openDatabase(ctx context.Context) (*pgxpool.Pool, []migrate.Migration, erro
 
 // runServe loads the (mandatory) database config, master key and retention
 // window first, so a missing or invalid value fails before any port is bound,
-// then serves HTTP and runs the delivery worker and retention sweeper and scheduled-message releaser until ctx
+// then serves HTTP and runs the delivery worker and retention sweeper, scheduled-message releaser and heartbeat checker until ctx
 // is canceled. The pool is opened and closed here, around serve and the
 // background work: the deferred Close runs only after both have stopped.
 func runServe(ctx context.Context, logger *slog.Logger) error {
@@ -211,13 +212,22 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		MaxScheduledPerApp: maxScheduled,
 		MaxScheduledTotal:  maxScheduledTotal,
 	})
+	// The checker reads the message service as its alert sender, and its freshness tracker backs /readyz.
+	heartbeatFreshness := heartbeat.NewFreshness(time.Now)
+	heartbeatService := heartbeat.NewService(heartbeat.ServiceConfig{
+		Store:    heartbeat.NewPGStore(pool),
+		Messages: messageService,
+		Logger:   logger,
+	})
 	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
-		Logger:     logger,
-		Readiness:  checker,
-		Registry:   registryService,
-		Messages:   messageService,
-		Publishers: publisherService,
+		Logger:           logger,
+		Readiness:        checker,
+		HeartbeatChecker: heartbeatFreshness,
+		Registry:         registryService,
+		Messages:         messageService,
+		Publishers:       publisherService,
+		Heartbeats:       heartbeatService,
 	}).Handler()
 
 	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)
@@ -244,11 +254,19 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 				Logger:   logger,
 			})
 		},
+		func(backgroundCtx context.Context) {
+			heartbeat.RunChecker(backgroundCtx, heartbeat.CheckerConfig{
+				Service:   heartbeatService,
+				Interval:  heartbeat.DefaultCheckerInterval,
+				Logger:    logger,
+				Freshness: heartbeatFreshness,
+			})
+		},
 	)
 
 	logger.Info("delivery-api listening", "address", listener.Addr().String())
 	serveErr := serve(ctx, logger, listener, handler, shutdownTimeout)
-	// Stop the worker, sweeper and releaser whether serve returned on cancellation or on a listener failure, and wait
+	// Stop the worker, sweeper, releaser and heartbeat checker whether serve returned on cancellation or on a listener failure, and wait
 	// for them before the deferred pool.Close so an in-flight attempt can still record its outcome.
 	background.stop(logger, backgroundStopTimeout)
 	return serveErr
