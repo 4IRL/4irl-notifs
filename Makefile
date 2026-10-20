@@ -3,7 +3,7 @@
 	delivery-test delivery-integration-test delivery-lint delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	setup-web-dev setup-web-test setup-web-e2e setup-web-build setup-web-lint setup-web-format setup-web-pages-dev \
-	worker-test worker-build worker-deploy scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm
+	worker-test worker-build worker-deploy watchdog-test watchdog-build scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm
 
 .DEFAULT_GOAL := help
 
@@ -53,7 +53,7 @@ help: ## Show this help message
 
 lint: go-lint delivery-lint web-lint setup-web-lint scripts-lint workflows-lint ## Run all linters (Go + frontends + scripts + workflows)
 
-test: go-test delivery-test web-test setup-web-test worker-test scripts-test ## Run all unit tests (Go, web + setup-web Vitest, worker Vitest, scripts)
+test: go-test delivery-test web-test setup-web-test worker-test watchdog-test scripts-test ## Run all unit tests (Go, web + setup-web Vitest, worker Vitest, watchdog Vitest, scripts)
 
 scripts-test: ## Run scripts/ unit tests
 	node --test "scripts/*.test.mjs"
@@ -251,3 +251,11 @@ worker-build: ## Typecheck and dry-run bundle person-service (tsc --noEmit + wra
 
 worker-deploy: ## Deploy person-service to Cloudflare (operator-run post-merge; needs wrangler auth)
 	cd person-service && npx wrangler deploy
+
+## Worker (watchdog)
+
+watchdog-test: ## Run watchdog Worker tests (Vitest + workers pool)
+	cd watchdog && npm test
+
+watchdog-build: ## Typecheck and dry-run bundle the watchdog Worker (tsc --noEmit + wrangler deploy --dry-run)
+	cd watchdog && npm run build

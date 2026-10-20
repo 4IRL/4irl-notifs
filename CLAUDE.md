@@ -36,6 +36,7 @@ Guidance for Claude Code when working in this repository.
   | End-to-end smoke test | `make notif-smoke-test` |
   | Help / all lint / all unit tests | `make help` / `make lint` / `make test` |
   | Script tests | `make scripts-test` (`scripts/*.test.mjs`, node:test) |
+  | Watchdog Worker tests / build | `make watchdog-test` (`npm test` in `watchdog/`, Vitest + workers pool) / `make watchdog-build` (tsc + `wrangler deploy --dry-run`) |
   | New worktree | `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` |
   | Remove worktree | `make worktree-rm` (run inside the worktree) |
   | Resolved ports | `make worktree-ports` |
@@ -46,6 +47,7 @@ Guidance for Claude Code when working in this repository.
   | `delivery-api/**`                                                  | `make delivery-test`   |
   | `web/**`                                                           | `make web-test`        |
   | `person-service/**`                                                | `make worker-test`     |
+  | `watchdog/**`                                                      | `make watchdog-test`   |
   | `scripts/**`                                                       | `make scripts-test`    |
   | `docs/** *.md .claude/** .gitignore`                               | na docs and config only |
   | `**`                                                               | `make test`            |
@@ -54,7 +56,7 @@ Guidance for Claude Code when working in this repository.
 - **PR reviewer:** `GPropersi`   <!-- always request as reviewer on every PR -->
 - **Worktree policy:** `full`
 - **Worktree link:** `web/.dev.vars`
-- **Worktree setup:** `n/a` <!-- informational; the owned worktree-new target runs npm ci in web/ and person-service/ itself -->
+- **Worktree setup:** `n/a` <!-- informational; the owned worktree-new target runs npm ci in web/, person-service/ and watchdog/ itself -->
 - **Worktree teardown:** `n/a`
 - **Worktree ports:** `NTFY_PORT=8090,API_PORT=8091,WEB_PORT=5173,E2E_PORT=4173,DELIVERY_PORT=8300` <!-- informational: slot-0 / primary defaults; scripts/ports.mjs owns the per-worktree values (8090+2s, 8091+2s, 5273+s, 4273+s, 8300+s) -->
 - **Worktree allowed targets:** `n/a`
@@ -76,10 +78,13 @@ Components:
   container); serves the operator registry (destinations and routes) under `/v1/admin`, the
   app message envelope API (`/v1/messages`, including `DELETE /v1/messages` cancel of scheduled
   messages), the operator delivery log and replay endpoints (`/v1/admin/deliveries`) and the operator
-  scheduled-message list and cancel (`/v1/admin/scheduled-messages`), alongside `/healthz` and
+  scheduled-message list and cancel (`/v1/admin/scheduled-messages`), heartbeat pings
+  (`/v1/heartbeats`) and the operator heartbeat CRUD (`/v1/admin/heartbeats`), alongside `/healthz` and
   `/readyz`. It runs the delivery worker (webhook, Discord and ntfy sinks, including `to.recipient`
-  delivery through each app's ntfy publisher token), the scheduled-message releaser (`RunReleaser`)
-  and the retention sweeper in-process.
+  delivery through each app's ntfy publisher token), the scheduled-message releaser (`RunReleaser`),
+  the heartbeat checker and the retention sweeper in-process.
+- **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api and ntfy from outside
+  the VPS and posts state changes to Discord.
 - **web** — React/Vite admin UI, deployed to Cloudflare Pages behind Cloudflare Access
   (Google/GitHub OAuth).
 
@@ -113,8 +118,9 @@ shown for reference only.
 | `make notif-smoke-test` | End-to-end provision → publish → deliver smoke test |
 | `make help` | List all targets |
 | `make lint` | Run all linters (both Go modules, frontend, scripts, workflow YAML) |
-| `make test` | Run all unit tests (both Go modules, web Vitest, worker Vitest, scripts) |
+| `make test` | Run all unit tests (both Go modules, web Vitest, worker Vitest, watchdog Vitest, scripts) |
 | `make scripts-test` (`node --test "scripts/*.test.mjs"`) | Run the `scripts/` unit tests |
+| `make watchdog-test` / `make watchdog-build` | Run the watchdog Worker tests (Vitest + workers pool) / typecheck and dry-run bundle it |
 | `make scripts-lint` / `make scripts-format` (`npx prettier` with `web/.prettierrc`) | Check / format `scripts/*.mjs` |
 | `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` | Create an isolated worktree with its own compose project and ports (see [`docs/worktrees.md`](docs/worktrees.md)) |
 | `make worktree-rm` | Remove the current worktree (run inside it; branch kept) |

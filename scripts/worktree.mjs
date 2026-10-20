@@ -32,7 +32,7 @@ const PROJECT_PREFIX = `${REPO_NAME}-`;
 const LOCK_NAME = 'notifs-worktree-slot.lock';
 const LOCK_GRACE_MS = 5000;
 const EXCLUDES = ['/.worktree.env', '/.dev/'];
-const NPM_DIRS = ['web', 'setup-web', 'person-service'];
+const NPM_DIRS = ['web', 'setup-web', 'person-service', 'watchdog'];
 
 function runGit(cwd, args) {
   return execFileSync('git', args, {
@@ -471,7 +471,7 @@ export async function newWorktree({
   } catch (err) {
     throw new Error(
       `worktree created at ${plan.path} but setup failed: ${err.message}\n` +
-        `  retry setup:  npm --prefix ${path.join(plan.path, 'web')} ci && npm --prefix ${path.join(plan.path, 'setup-web')} ci && npm --prefix ${path.join(plan.path, 'person-service')} ci\n` +
+        `  retry setup:  npm --prefix ${path.join(plan.path, 'web')} ci && npm --prefix ${path.join(plan.path, 'setup-web')} ci && npm --prefix ${path.join(plan.path, 'person-service')} ci && npm --prefix ${path.join(plan.path, 'watchdog')} ci\n` +
         `  discard it:   make -C ${plan.path} worktree-rm`,
       { cause: err },
     );
