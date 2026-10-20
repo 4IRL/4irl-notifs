@@ -90,6 +90,9 @@ export function RoutesTable({
                       <ConfirmButton
                         triggerLabel={strings.deleteRoute({ id })}
                         confirmLabel={strings.confirmDeleteRoute({ id })}
+                        dismissAriaLabel={strings.cancelActionNamed({
+                          subject: strings.deleteRoute({ id }),
+                        })}
                         className="routes__button routes__button--danger"
                         busy={isBusy({ action: 'delete', id })}
                         busyLabel={strings.deletingRoute}

@@ -7,6 +7,8 @@ import {
   isValidChannel,
   isValidDestinationName,
   isValidEmail,
+  isValidHeartbeatAppId,
+  isValidHeartbeatName,
   isValidNtfyTopic,
   isValidRouteAppPattern,
   isValidRouteChannelPattern,
@@ -41,6 +43,25 @@ describe('route pattern validators', () => {
     ['', false],
   ])('isValidRouteChannelPattern(%j) === %s', (value, expected) => {
     expect(isValidRouteChannelPattern(value)).toBe(expected);
+  });
+});
+
+describe('heartbeat id validators', () => {
+  it.each([
+    ['minecrafting', true],
+    ['daily_report', true],
+    ['a', true],
+    ['a'.repeat(63), true],
+    ['a'.repeat(64), false],
+    // Unlike the provisioning app id, the heartbeat rule reserves no names.
+    ['everyone', true],
+    ['Minecrafting', false],
+    ['_x', false],
+    ['has-dash', false],
+    ['', false],
+  ])('isValidHeartbeatAppId and isValidHeartbeatName agree on %j === %s', (value, expected) => {
+    expect(isValidHeartbeatAppId(value)).toBe(expected);
+    expect(isValidHeartbeatName(value)).toBe(expected);
   });
 });
 

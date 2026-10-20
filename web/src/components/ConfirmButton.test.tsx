@@ -205,6 +205,34 @@ describe('ConfirmButton', () => {
     expect(screen.queryByRole('button', { name: strings.cancelAction })).not.toBeInTheDocument();
   });
 
+  it('applies dismissAriaLabel as the accessible name of the dismiss button, keeping its visible text', async () => {
+    const user = userEvent.setup();
+    render(
+      <ConfirmButton
+        triggerLabel="Pause"
+        confirmLabel="Confirm pause"
+        dismissLabel="Keep running"
+        dismissAriaLabel="Keep running app/check"
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Pause' }));
+
+    const dismiss = screen.getByRole('button', { name: 'Keep running app/check' });
+    expect(dismiss).toHaveTextContent('Keep running');
+    expect(screen.queryByRole('button', { name: 'Keep running' })).not.toBeInTheDocument();
+  });
+
+  it('leaves the dismiss button name as its visible text when dismissAriaLabel is omitted', async () => {
+    const user = userEvent.setup();
+    render(<ConfirmButton triggerLabel="Remove" confirmLabel="Confirm" onConfirm={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
+
+    expect(screen.getByText(strings.cancelAction)).not.toHaveAttribute('aria-label');
+  });
+
   it('applies triggerAriaLabel and confirmAriaLabel as accessible names', async () => {
     const user = userEvent.setup();
     render(

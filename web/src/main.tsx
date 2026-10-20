@@ -29,8 +29,11 @@ const personClient = peopleEnabled || appsEnabled ? createPersonApiClient({}) : 
 const destinationsEnabled = import.meta.env.VITE_DESTINATIONS_ENABLED === 'true';
 const deliveryLogEnabled = import.meta.env.VITE_DELIVERY_LOG_ENABLED === 'true';
 const pendingSendsEnabled = import.meta.env.VITE_PENDING_SENDS_ENABLED === 'true';
+// Heartbeats alert through registered destinations, so its flag only counts
+// together with the Destinations flag.
+const heartbeatsEnabled = destinationsEnabled && import.meta.env.VITE_HEARTBEATS_ENABLED === 'true';
 const deliveryClient =
-  destinationsEnabled || deliveryLogEnabled || pendingSendsEnabled
+  destinationsEnabled || deliveryLogEnabled || pendingSendsEnabled || heartbeatsEnabled
     ? createDeliveryApiClient({})
     : undefined;
 
@@ -49,6 +52,7 @@ createRoot(rootElement).render(
       destinationsEnabled={destinationsEnabled}
       deliveryLogEnabled={deliveryLogEnabled}
       pendingSendsEnabled={pendingSendsEnabled}
+      heartbeatsEnabled={heartbeatsEnabled}
     />
   </StrictMode>,
 );

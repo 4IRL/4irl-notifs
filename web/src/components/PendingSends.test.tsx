@@ -69,6 +69,12 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     replayDelivery: vi.fn(),
     listScheduledMessages: vi.fn().mockResolvedValue(listOf([])),
     cancelScheduledMessage: vi.fn(),
+    listHeartbeats: vi.fn().mockResolvedValue([]),
+    createHeartbeat: vi.fn(),
+    updateHeartbeat: vi.fn(),
+    deleteHeartbeat: vi.fn(),
+    pauseHeartbeat: vi.fn(),
+    resumeHeartbeat: vi.fn(),
     ...overrides,
   };
 }
@@ -280,11 +286,33 @@ describe('PendingSends', () => {
     // The notice names the idempotency key.
     expect(screen.getByText(strings.cancelSendNotice({ key: 'key-a' }))).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: strings.keepSend }));
+    const keep = screen.getByRole('button', { name: strings.keepSendNamed({ key: 'key-a' }) });
+    expect(keep).toHaveTextContent(strings.keepSend);
+    await user.click(keep);
 
     expect(trigger('key-a')).toHaveFocus();
     expect(trigger('key-a')).toHaveTextContent(strings.cancelSend);
     expect(client.cancelScheduledMessage).not.toHaveBeenCalled();
+  });
+
+  it('gives each open cancel confirm a per-row Keep name', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listScheduledMessages: vi.fn().mockResolvedValue(listOf([ROW_A, ROW_B])),
+    });
+    render(<PendingSends client={client} />);
+
+    for (const key of ['key-a', 'key-b']) {
+      await user.click(
+        await screen.findByRole('button', { name: strings.cancelSendNamed({ key }) }),
+      );
+    }
+
+    for (const key of ['key-a', 'key-b']) {
+      const keep = screen.getByRole('button', { name: strings.keepSendNamed({ key }) });
+      expect(keep).toHaveTextContent(strings.keepSend);
+    }
+    expect(screen.queryByRole('button', { name: strings.keepSend })).toBeNull();
   });
 
   it('cancels: sends the id, announces the outcome and reloads in place without the loading state', async () => {

@@ -70,6 +70,12 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     replayDelivery: vi.fn(),
     listScheduledMessages: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     cancelScheduledMessage: vi.fn(),
+    listHeartbeats: vi.fn().mockResolvedValue([]),
+    createHeartbeat: vi.fn(),
+    updateHeartbeat: vi.fn(),
+    deleteHeartbeat: vi.fn(),
+    pauseHeartbeat: vi.fn(),
+    resumeHeartbeat: vi.fn(),
     ...overrides,
   };
 }
@@ -261,6 +267,25 @@ describe('DeliveryLog', () => {
     await user.click(screen.getByRole('button', { name: strings.deliveryLogFilterPending }));
     await screen.findByRole('button', { name: strings.showAttempts({ id: 8 }) });
     expect(screen.queryByRole('button', { name: strings.replayDelivery({ id: 8 }) })).toBeNull();
+  });
+
+  it('gives each open replay confirm a per-row dismiss name', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({ listDeliveries: vi.fn().mockResolvedValue(TWO_DEAD) });
+    render(<DeliveryLog client={client} />);
+
+    const subjects = [strings.replayDelivery({ id: 412 }), strings.replayDelivery({ id: 409 })];
+    for (const subject of subjects) {
+      await user.click(await screen.findByRole('button', { name: subject }));
+    }
+
+    for (const subject of subjects) {
+      const dismiss = screen.getByRole('button', {
+        name: strings.cancelActionNamed({ subject }),
+      });
+      expect(dismiss).toHaveTextContent(strings.cancelAction);
+    }
+    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
   });
 
   it('replays: removes the row, announces above the table, focuses the next row', async () => {

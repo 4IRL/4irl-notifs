@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DeliveryApiClient, ReadinessResult } from '../api/deliveryClient';
 import { strings } from '../strings';
@@ -34,6 +34,7 @@ describe('DeliveryStatusCard', () => {
           kind: 'ok',
           schemaVersion: 4,
           expectedSchemaVersion: 4,
+          heartbeatChecker: { lastTickAt: '2026-10-19T09:00:00Z', stale: false },
           lastMigrationFailure: null,
         })}
       />,
@@ -46,6 +47,88 @@ describe('DeliveryStatusCard', () => {
     expect(screen.getByRole('button', { name: strings.deliveryStatusRefresh })).toBeEnabled();
   });
 
+  describe('heartbeat checker fact', () => {
+    function readyWith(heartbeatChecker: { lastTickAt: string | null; stale: boolean }) {
+      return clientWith({
+        kind: 'ok',
+        schemaVersion: 4,
+        expectedSchemaVersion: 4,
+        lastMigrationFailure: null,
+        heartbeatChecker,
+      });
+    }
+
+    const NOW = '2026-10-19T09:00:00Z';
+
+    // Only Date is faked (timers stay real), so the card's "last run" is exact.
+    function freezeClock() {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(NOW));
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('shows Running with the relative last run and no warning while fresh', async () => {
+      freezeClock();
+      render(
+        <DeliveryStatusCard
+          client={readyWith({ lastTickAt: '2026-10-19T08:59:48Z', stale: false })}
+        />,
+      );
+
+      expect(await screen.findByText(strings.heartbeatCheckerLabel)).toBeInTheDocument();
+      expect(screen.getByText('Running · last run 12 s ago')).toBeInTheDocument();
+      expect(screen.queryByText(strings.heartbeatCheckerStalledWarning)).not.toBeInTheDocument();
+    });
+
+    it('shows Stalled in the accent colour plus the warning, while the pill still says Ready', async () => {
+      freezeClock();
+      render(
+        <DeliveryStatusCard
+          client={readyWith({ lastTickAt: '2026-10-19T08:53:00Z', stale: true })}
+        />,
+      );
+
+      const fact = await screen.findByText('Stalled · last run 7 min ago');
+      expect(fact).toHaveClass('status-card__stalled');
+      expect(screen.getByText(strings.heartbeatCheckerStalledWarning)).toBeInTheDocument();
+      expect(screen.getByText(strings.deliveryStatusReady)).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('shows never for a checker that has not ticked', async () => {
+      render(<DeliveryStatusCard client={readyWith({ lastTickAt: null, stale: true })} />);
+
+      expect(await screen.findByText('Stalled · last run never')).toBeInTheDocument();
+      expect(screen.getByText(strings.heartbeatCheckerStalledWarning)).toBeInTheDocument();
+    });
+
+    it('shows the fact on a schema mismatch too', async () => {
+      render(
+        <DeliveryStatusCard
+          client={clientWith({
+            kind: 'schema_mismatch',
+            schemaVersion: 3,
+            expectedSchemaVersion: 4,
+            lastMigrationFailure: null,
+            heartbeatChecker: { lastTickAt: null, stale: true },
+          })}
+        />,
+      );
+
+      expect(await screen.findByText('Stalled · last run never')).toBeInTheDocument();
+    });
+
+    it('omits the fact when the service is unavailable', async () => {
+      render(<DeliveryStatusCard client={clientWith({ kind: 'unavailable' })} />);
+
+      await screen.findByText(strings.deliveryStatusUnavailable);
+      expect(screen.queryByText(strings.heartbeatCheckerLabel)).not.toBeInTheDocument();
+    });
+  });
+
   it('renders ready with a failed newer migration as a warning, not an alert', async () => {
     render(
       <DeliveryStatusCard
@@ -53,6 +136,7 @@ describe('DeliveryStatusCard', () => {
           kind: 'ok',
           schemaVersion: 4,
           expectedSchemaVersion: 4,
+          heartbeatChecker: { lastTickAt: '2026-10-19T09:00:00Z', stale: false },
           lastMigrationFailure: {
             version: 5,
             error: 'ERROR: column "x" already exists',
@@ -76,6 +160,7 @@ describe('DeliveryStatusCard', () => {
           kind: 'schema_mismatch',
           schemaVersion: 3,
           expectedSchemaVersion: 4,
+          heartbeatChecker: { lastTickAt: '2026-10-19T09:00:00Z', stale: false },
           lastMigrationFailure: {
             version: 4,
             error: 'ERROR: relation "app_publishers" already exists',
@@ -99,6 +184,7 @@ describe('DeliveryStatusCard', () => {
           kind: 'schema_mismatch',
           schemaVersion: 3,
           expectedSchemaVersion: 4,
+          heartbeatChecker: { lastTickAt: '2026-10-19T09:00:00Z', stale: false },
           lastMigrationFailure: null,
         })}
       />,
@@ -164,12 +250,16 @@ describe('DeliveryStatusCard', () => {
     const first = new Promise<ReadinessResult>((resolve) => {
       resolveFirst = resolve;
     });
-    const getReadiness = vi.fn().mockReturnValueOnce(first).mockResolvedValueOnce({
-      kind: 'ok',
-      schemaVersion: 4,
-      expectedSchemaVersion: 4,
-      lastMigrationFailure: null,
-    });
+    const getReadiness = vi
+      .fn()
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce({
+        kind: 'ok',
+        schemaVersion: 4,
+        expectedSchemaVersion: 4,
+        heartbeatChecker: { lastTickAt: '2026-10-19T09:00:00Z', stale: false },
+        lastMigrationFailure: null,
+      });
     // StrictMode runs the mount effect twice, so the first request is
     // superseded by the second while it is still in flight.
     render(

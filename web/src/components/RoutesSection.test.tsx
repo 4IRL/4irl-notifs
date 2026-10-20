@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../api/client';
@@ -66,6 +67,12 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     replayDelivery: vi.fn(),
     listScheduledMessages: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     cancelScheduledMessage: vi.fn(),
+    listHeartbeats: vi.fn().mockResolvedValue([]),
+    createHeartbeat: vi.fn(),
+    updateHeartbeat: vi.fn(),
+    deleteHeartbeat: vi.fn(),
+    pauseHeartbeat: vi.fn(),
+    resumeHeartbeat: vi.fn(),
     ...overrides,
   };
 }
@@ -347,6 +354,24 @@ describe('edit route', () => {
 });
 
 describe('delete route', () => {
+  it('gives each open delete confirm a per-row dismiss name', async () => {
+    const user = userEvent.setup();
+    const listRoutes = vi.fn().mockResolvedValue([buildRoute({ id: 1 }), buildRoute({ id: 2 })]);
+    renderSection({ client: buildClient({ listRoutes }) });
+
+    const subjects = [strings.deleteRoute({ id: 1 }), strings.deleteRoute({ id: 2 })];
+    await screen.findByRole('button', { name: subjects[0] });
+    for (const subject of subjects) {
+      await user.click(button(subject));
+    }
+
+    for (const subject of subjects) {
+      const dismiss = button(strings.cancelActionNamed({ subject }));
+      expect(dismiss).toHaveTextContent(strings.cancelAction);
+    }
+    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
+  });
+
   it('moves focus to the next row after the confirm, and a second click is a no-op', async () => {
     const user = userEvent.setup();
     const pending = deferred<undefined>();
@@ -396,6 +421,58 @@ describe('delete route', () => {
   });
 });
 
+/** Owns the destinations state the way App does, since DeliveryRegistry receives it as props. */
+function RegistryHost({ client }: { client: DeliveryApiClient }) {
+  const [destinationsState, setDestinationsState] = useState<DestinationsLoadState>({
+    status: 'loading',
+    destinations: [],
+  });
+  return (
+    <DeliveryRegistry
+      client={client}
+      destinationsState={destinationsState}
+      onDestinationsStateChange={setDestinationsState}
+    />
+  );
+}
+
+describe('DeliveryRegistry destinations reporting', () => {
+  it('reports the initial load and every later refresh through onDestinationsStateChange', async () => {
+    const user = userEvent.setup();
+    const onDestinationsStateChange = vi.fn();
+    const listDestinations = vi
+      .fn()
+      .mockResolvedValueOnce([buildDestination('ops_discord')])
+      .mockResolvedValue([buildDestination('ops_discord', false)]);
+    const updateDestination = vi.fn().mockResolvedValue(buildDestination('ops_discord', false));
+    render(
+      <DeliveryRegistry
+        client={buildClient({ listDestinations, updateDestination })}
+        destinationsState={{ status: 'ready', destinations: [] }}
+        onDestinationsStateChange={onDestinationsStateChange}
+      />,
+    );
+
+    expect(onDestinationsStateChange).toHaveBeenCalledWith({ status: 'loading', destinations: [] });
+    await waitFor(() =>
+      expect(onDestinationsStateChange).toHaveBeenLastCalledWith({
+        status: 'ready',
+        destinations: [expect.objectContaining({ name: 'ops_discord', enabled: true })],
+      }),
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'Disable ops_discord' }));
+    await user.click(button('Confirm disable ops_discord'));
+
+    await waitFor(() =>
+      expect(onDestinationsStateChange).toHaveBeenLastCalledWith({
+        status: 'ready',
+        destinations: [expect.objectContaining({ name: 'ops_discord', enabled: false })],
+      }),
+    );
+  });
+});
+
 describe('destination delete refreshes routes', () => {
   it('route chips drop the deleted destination once the delete settles', async () => {
     const user = userEvent.setup();
@@ -408,7 +485,7 @@ describe('destination delete refreshes routes', () => {
       .mockResolvedValueOnce([buildRoute({ id: 1, destinations: ['ops_discord', 'family_ntfy'] })])
       .mockResolvedValueOnce([buildRoute({ id: 1, destinations: ['family_ntfy'] })]);
     const client = buildClient({ listDestinations, listRoutes });
-    render(<DeliveryRegistry client={client} />);
+    render(<RegistryHost client={client} />);
     await user.click(await screen.findByRole('button', { name: 'Delete ops_discord' }));
     await user.click(button('Confirm delete ops_discord'));
     await waitFor(() => expect(listRoutes).toHaveBeenCalledTimes(2));

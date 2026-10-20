@@ -72,6 +72,9 @@ export function UsersTable({
                           key={app}
                           triggerLabel={`${strings.deprovisionAction} ${app}`}
                           confirmLabel={`${strings.confirmDeprovisionAction} ${app}`}
+                          dismissAriaLabel={strings.cancelActionNamed({
+                            subject: strings.deprovisionAppForUser({ app, user: displayName }),
+                          })}
                           className="users-table__button users-table__button--secondary"
                           onConfirm={() => onDeprovision({ userId, appId: app })}
                         />
@@ -79,6 +82,9 @@ export function UsersTable({
                       <ConfirmButton
                         triggerLabel={`${strings.deleteAction} ${displayName}`}
                         confirmLabel={`${strings.confirmDeleteAction} ${displayName}`}
+                        dismissAriaLabel={strings.cancelActionNamed({
+                          subject: `${strings.deleteAction} ${displayName}`,
+                        })}
                         className="users-table__button users-table__button--danger"
                         onConfirm={() => onDelete({ userId })}
                       />
