@@ -8,7 +8,9 @@ notification service itself (that is `ARCHITECTURE.md`).
 
 If you are deciding whether to integrate, read **Why integrate**. If you are integrating, read
 **Onboarding a new app** first: it says what the operator does, what your app does, and in what order.
-For the ntfy path, also read the **Mental model** and **Integration in 5 steps** sections.
+If you are a program or an LLM agent calling delivery-api, jump to **Agent quick reference**: every
+endpoint with its request, response and status codes, and a copy-paste onboarding recipe. For the ntfy
+path, also read the **Mental model** and **Integration in 5 steps** sections.
 
 ---
 
@@ -150,6 +152,149 @@ Suggested naming (not enforced beyond the regexes in this guide): short purpose 
   deleted), then remove its token from the Access policies, call `POST /v1/deprovision-app`, and delete
   its stored ntfy publisher (`DELETE /v1/admin/apps/<app>/ntfy-publisher`) so recipient submits fail
   closed.
+
+---
+
+## Agent quick reference (delivery-api)
+
+Everything a program or an LLM agent needs to call delivery-api correctly, in one place. It is derived
+from the handlers and validators; the sections it points to hold the edge cases.
+
+**Base URL:** `https://notifs-delivery.4irl.app`
+
+**Auth, on every request:** headers `CF-Access-Client-Id: <id>` and `CF-Access-Client-Secret: <secret>`.
+An app token reaches `/v1/messages*`, `/v1/heartbeats/*`, `/readyz` and `/healthz`. `/v1/admin/*` needs the
+operator proxy token: an app token gets a Cloudflare Access `403` before the API sees the request.
+
+**Format:** bodies are JSON (`Content-Type: application/json`); the heartbeat pings take no body. Errors
+are `{"error":"<message>"}` with the HTTP status. Timestamps are RFC3339 UTC. `POST /v1/messages` rejects
+unknown fields with `400 {"error":"invalid JSON body"}`. Destination secrets are masked on every read; the
+only time a secret is returned is the new `signing_secret` from `rotate-secret`, once.
+
+### App-facing endpoints (app token)
+
+| Method and path                                              | Request                       | Success                                                  | Errors                                                                          |
+| ------------------------------------------------------------ | ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `POST /v1/messages` (optional `?wait=0..10`)                 | envelope JSON (see Envelope)  | `202 {"message":{…},"duplicate":bool,"replaced":bool}`   | 400 validation, 409 `destination disabled`, 413, 422 `no destination matched` / `app has no ntfy publisher`, 429, 503 `messages unavailable` |
+| `GET /v1/messages/{id}?app_id=<app>`                         | none                          | `200 {"message":{…}}`                                    | 400 `app_id is required`, 404 `message not found`                               |
+| `GET /v1/messages?app_id=<app>&idempotency_key=<key>`        | none                          | `200 {"message":{…}}`                                    | 400, 404                                                                        |
+| `DELETE /v1/messages/{id}?app_id=<app>` or `DELETE /v1/messages?app_id=<app>&idempotency_key=<key>` | none | `200 {"message_id","cancelled":bool,"status"}` (idempotent) | 400                                          |
+| `POST /v1/heartbeats/{app_id}/{name}`                        | none                          | `200 {"app_id","name","state"}`                          | 400, 404 `check not found`, 503 `heartbeats unavailable`                        |
+| `POST /v1/heartbeats/{app_id}/{name}/fail`                   | none                          | `200 {"app_id","name","state"}` (state `down`)           | same                                                                            |
+| `GET /readyz`                                                | none                          | `200` readiness body (below)                             | `503 {"status":"unavailable"}` (database unreachable) or `503` with `"status":"schema_mismatch"` |
+
+Message object (illustrative values; `status` is `pending`, `delivered`, `dead`, `partial`, `scheduled` or
+`cancelled`; a delivery `state` is `pending`, `delivered`, `dead`, `scheduled` or `cancelled`):
+
+```json
+{
+  "message": {
+    "message_id": "<uuid>",
+    "app_id": "myapp",
+    "channel": "alerts",
+    "idempotency_key": "onboarding-test-1",
+    "critical": false,
+    "status": "delivered",
+    "deliver_at": null,
+    "created_at": "2026-10-21T04:00:00Z",
+    "cancelled_at": null,
+    "deliveries": [
+      {
+        "id": 1,
+        "destination": "ops_discord",
+        "state": "delivered",
+        "dead_reason": null,
+        "attempt_count": 1,
+        "last_status_code": 204,
+        "next_attempt_at": null,
+        "delivered_at": "2026-10-21T04:00:01Z"
+      }
+    ]
+  },
+  "duplicate": false,
+  "replaced": false
+}
+```
+
+Readiness body: `{"status":"ok","schema_version":6,"expected_schema_version":6,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false}}`.
+The HTTP status stays `200` even when `heartbeat_checker.stale` is `true`; read the field.
+
+### Operator endpoints (proxy token; used to onboard an app)
+
+| Method and path                                      | Request body                                                                                  | Success                                          | Errors                                                                       |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `POST /v1/admin/destinations`                        | `{"name","type":"ntfy"\|"discord"\|"webhook","enabled"?,"config":{…},"secrets":{…}}`         | `201 {"destination":{…}}`                        | 400 validation, 409 `destination already exists`                             |
+| `GET /v1/admin/destinations`                         | none                                                                                          | `200 {"destinations":[…]}`                       |                                                                              |
+| `GET`, `PATCH`, `DELETE /v1/admin/destinations/{name}` | `PATCH`: `{"enabled"?,"config"?,"secrets"?}` merged per key                                | `200` (`DELETE`: `{"name","deleted"}`)           | 404 `destination does not exist`; `DELETE` also 409 `destination is in use` (a route or a heartbeat check uses it) |
+| `POST /v1/admin/destinations/{name}/rotate-secret`   | `{"overlap_hours":1..168}` (webhook destinations only)                                        | `200` destination plus the new `signing_secret`  | 400, 404, 422 `destination type does not support rotation`                   |
+| `POST /v1/admin/routes`                              | `{"app_pattern","channel_pattern","destinations":["<name>",…],"enabled"?}`                    | `201 {"route":{…}}`                              | 400 validation or `unknown destination`, 409 `route already exists`          |
+| `GET /v1/admin/routes`; `GET`, `PATCH`, `DELETE /v1/admin/routes/{id}` | `PATCH`: any of the four fields; `destinations` replaces the whole set       | `200` (`DELETE`: `{"id","deleted"}`)             | 404 `route does not exist`                                                   |
+| `POST /v1/admin/heartbeats`                          | `{"app_id","name","period_seconds","grace_seconds","destinations":["<name>",…]}`              | `201 {"check":{…}}`                              | 400 validation or `unknown destination`, 409 `check already exists`          |
+| `GET /v1/admin/heartbeats`                           | none                                                                                          | `200 {"checks":[…]}`                             |                                                                              |
+| `GET`, `PATCH`, `DELETE /v1/admin/heartbeats/{id}`   | `PATCH`: any of `period_seconds`, `grace_seconds`, `destinations`                             | `200 {"check":{…}}` (`DELETE`: `{"id","deleted"}`, idempotent) | 400 `app_id and name are immutable`, 404 `check not found`         |
+| `POST /v1/admin/heartbeats/{id}/pause` and `/resume` | none                                                                                          | `200 {"check":{…}}` (idempotent)                 | 404                                                                          |
+| `POST /v1/admin/apps/{app_id}/ntfy-publisher`        | none                                                                                          | `200 {"publisher":{"app_id","publisher_user_id","topic_pattern","created_at","updated_at"}}` (never the token) | 502 mint failed, 503 not configured |
+| `GET`, `DELETE /v1/admin/apps/{app_id}/ntfy-publisher` | none                                                                                        | `200` as above / `204` (idempotent)              | 404 `GET` when none is stored                                                |
+
+**Destination `config` and `secrets` by `type`** (an unknown key is `400 unknown field <section>.<key>`):
+
+| `type`    | `config`                                  | `secrets`                                                                                          |
+| --------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `ntfy`    | `topic` (required, `[A-Za-z0-9_-]`, 1-64) | `access_token` (optional, `tk_` plus 29 lowercase letters or digits)                               |
+| `discord` | none                                      | `webhook_url` (required, https, a Discord host, path `/api/webhooks/<id>/<token>`)                 |
+| `webhook` | none (rotation adds `previous_secret_expires_at`) | `url` (required, https) and `signing_secret` (required, printable ASCII, 32-256 bytes)     |
+
+A destination view is `{"name","type","enabled","disabled_reason","config","secrets"(masked),"created_at","updated_at"}`.
+`enabled` defaults to `true` on create.
+
+**Route patterns:** `app_pattern` is `*` or one exact `app_id`; `channel_pattern` is `*`, one exact channel,
+or a prefix ending in one `*` (for example `alert_*`). A route lists 1-20 distinct destination names. A
+route view is `{"id","app_pattern","channel_pattern","destinations","enabled","created_at","updated_at"}`.
+
+**Heartbeat bounds:** `app_id` and `name` match `^[a-z0-9][a-z0-9_]{0,62}$`; `period_seconds` 60 to
+2678400; `grace_seconds` 60 to 604800; 1-20 distinct, existing `destinations`. A check view is
+`{"id","app_id","name","period_seconds","grace_seconds","paused","state","last_ping_at","last_ping_kind","down_since","deadline_at","destinations":[{"name","type","enabled"}],"created_at","updated_at"}`
+with `state` one of `new`, `up`, `late`, `down` and `last_ping_kind` `success` or `fail`.
+
+### Copy-paste onboarding recipe
+
+Variables: `OP_ID` / `OP_SECRET` (operator proxy token), `NOTIFS_ID` / `NOTIFS_SECRET` (the app's token),
+`B=https://notifs-delivery.4irl.app`. Names below are examples.
+
+```bash
+# 1-3 (operator): a destination, a route to it, and a heartbeat check
+curl -fsS -X POST "$B/v1/admin/destinations" -H "CF-Access-Client-Id: $OP_ID" -H "CF-Access-Client-Secret: $OP_SECRET" -H "Content-Type: application/json" \
+  -d '{"name":"ops_discord","type":"discord","secrets":{"webhook_url":"https://discord.com/api/webhooks/<id>/<token>"}}'
+curl -fsS -X POST "$B/v1/admin/routes" -H "CF-Access-Client-Id: $OP_ID" -H "CF-Access-Client-Secret: $OP_SECRET" -H "Content-Type: application/json" \
+  -d '{"app_pattern":"myapp","channel_pattern":"alerts","destinations":["ops_discord"]}'
+curl -fsS -X POST "$B/v1/admin/heartbeats" -H "CF-Access-Client-Id: $OP_ID" -H "CF-Access-Client-Secret: $OP_SECRET" -H "Content-Type: application/json" \
+  -d '{"app_id":"myapp","name":"nightly_backup","period_seconds":86400,"grace_seconds":3600,"destinations":["ops_discord"]}'
+
+# 4 (app): send a message and read the delivery result
+curl -fsS -X POST "$B/v1/messages?wait=10" -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" -H "Content-Type: application/json" \
+  -d '{"app_id":"myapp","channel":"alerts","idempotency_key":"onboarding-test-1","payload":{},"display":{"title":"myapp is connected","body":"First message"}}'
+
+# 5 (app): ping the heartbeat when the job succeeds (append /fail when it fails)
+curl -fsS -m 10 --retry 3 -X POST "$B/v1/heartbeats/myapp/nightly_backup" -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET"
+```
+
+Success for step 4 is `202` with every `deliveries[].state` equal to `delivered`; for step 5 it is `200`
+with `"state":"up"`.
+
+### Retry rules for a program or agent
+
+- **Safe to retry with the same body:** a network error, a timeout, any `5xx`, and `503`. Keep the same
+  `idempotency_key`; a duplicate comes back flagged `"duplicate": true` and never sends twice.
+- **Do not retry unchanged:** `400`, `404`, `409`, `413`, `422` (fix the request or the operator setup
+  first), and `429` (a scheduled-message cap, not a transient error).
+- **A `202` is not delivery.** Without `?wait`, or when a delivery is still `pending`, read
+  `GET /v1/messages/{id}?app_id=` until each `deliveries[].state` is final (`delivered` or `dead`).
+- **A `dead` delivery is a destination problem, not a reason to resend.** `dead_reason` and
+  `last_status_code` say why (for example `terminal_status` with `403`: the destination rejected the
+  request). Fix the destination, then ask the operator to replay the delivery; re-posting the same
+  `idempotency_key` returns the stored message and does not resend.
+- **A `403` or a redirect to a Cloudflare login page** comes from Access, not the API: the token is
+  missing, wrong, or not authorized on that path.
 
 ---
 
