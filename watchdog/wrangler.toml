@@ -17,7 +17,7 @@ crons = ["*/5 * * * *"]
 # placeholder, the deploy-watchdog CI job skips the deploy with a notice instead of failing.
 [[kv_namespaces]]
 binding = "WATCHDOG_STATE"
-id = "00000000000000000000000000000000"
+id = "37cdc378df264387bf34b08d552a4c3c"
 
 # Secrets (set with `wrangler secret put`, never in [vars]):
 #   DISCORD_WEBHOOK_URL       dedicated watchdog Discord webhook
