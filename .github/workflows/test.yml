@@ -38,6 +38,7 @@ jobs:
           cache-dependency-path: |
             web/package-lock.json
             person-service/package-lock.json
+            setup-web/package-lock.json
             watchdog/package-lock.json
 
       - name: Install frontend dependencies
@@ -46,6 +47,20 @@ jobs:
 
       - name: Run frontend unit tests (Vitest)
         working-directory: web
+        run: npm test
+
+      - name: Install setup-web dependencies
+        working-directory: setup-web
+        run: npm ci
+
+      # A separate, explicit build check so CI fails on a setup-web build break before merge.
+      # Independent of the SetupE2E job, whose Playwright webServer builds dist/ itself.
+      - name: Build setup-web
+        working-directory: setup-web
+        run: npm run build
+
+      - name: Run setup-web unit tests (Vitest)
+        working-directory: setup-web
         run: npm test
 
       - name: Install worker dependencies
@@ -95,4 +110,32 @@ jobs:
 
       - name: Run Playwright e2e tests
         working-directory: web
+        run: npx playwright test
+
+  SetupE2E:
+    name: Setup page end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup node
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: setup-web/package-lock.json
+
+      - name: Install setup-web dependencies
+        working-directory: setup-web
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: setup-web
+        run: npx playwright install --with-deps chromium
+
+      # No standalone build step: the webServer command in setup-web/playwright.config.ts
+      # builds dist/ itself, mirroring the web E2E job above.
+      - name: Run Playwright e2e tests
+        working-directory: setup-web
         run: npx playwright test

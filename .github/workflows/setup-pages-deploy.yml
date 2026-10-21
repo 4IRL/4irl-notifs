@@ -1,0 +1,57 @@
+name: Deploy setup page to Cloudflare Pages
+
+# Operator prerequisite: the Pages project `notifs-setup` (production branch `main`) with the
+# custom domain notifs-setup.4irl.app must exist in the Cloudflare dashboard BEFORE the first
+# merge, or the deploy step fails with project-not-found. Do not create a Cloudflare Access
+# application for it: the page is public by design.
+
+permissions:
+  contents: read
+  actions: write   # Actions Cache write for the setup-node npm cache (paired with the caller job's grant)
+
+on:
+  workflow_call:
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+
+jobs:
+  SetupPagesDeploy:
+    name: Build and deploy setup page to Cloudflare Pages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup node
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: setup-web/package-lock.json
+
+      - name: Install setup-web dependencies
+        working-directory: setup-web
+        run: npm ci
+
+      - name: Build setup page
+        working-directory: setup-web
+        run: npm run build
+
+      # The page's CSP and noindex headers ship only as dist/_headers; fail closed if a build
+      # change ever drops it rather than deploying the page without them.
+      - name: Verify headers file was built
+        working-directory: setup-web
+        run: test -f dist/_headers
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: setup-web
+          # --branch=main marks this as a PRODUCTION deployment (matches the project's
+          # production branch); dist is relative to workingDirectory (setup-web/).
+          command: pages deploy dist --project-name=notifs-setup --branch=main
