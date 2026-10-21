@@ -236,6 +236,7 @@ test.describe('invalid link', { tag: '@all' }, () => {
       await expect(copyButtons({ scope: page })).toHaveCount(0);
       await expect(page.getByRole('tablist')).toHaveCount(0);
       await expect(page.getByRole('img', { name: strings.qrAriaLabel })).toHaveCount(0);
+      await expect(page.getByRole('heading', { name: strings.installCardHeading })).toHaveCount(0);
       await expect(ntfyLinks({ page })).toHaveCount(0);
       // Whole serialized document, not just visible text: attributes and the title count too.
       const markup = await page.content();
