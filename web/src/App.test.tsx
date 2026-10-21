@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { ApiError } from './api/client';
 import type { ApiClient } from './api/client';
-import type { DeliveryApiClient } from './api/deliveryClient';
+import type { DeliveryApiClient, DestinationSummary } from './api/deliveryClient';
 import type { PersonApiClient } from './api/personClient';
 import { strings } from './strings';
 
@@ -66,6 +66,7 @@ function buildFakeDeliveryClient(overrides: Partial<DeliveryApiClient> = {}): De
       kind: 'ok',
       schemaVersion: 4,
       expectedSchemaVersion: 4,
+      heartbeatChecker: { lastTickAt: '2026-10-19T09:00:00Z', stale: false },
       lastMigrationFailure: null,
     }),
     listDestinations: vi.fn().mockResolvedValue([]),
@@ -83,6 +84,12 @@ function buildFakeDeliveryClient(overrides: Partial<DeliveryApiClient> = {}): De
     replayDelivery: vi.fn(),
     listScheduledMessages: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     cancelScheduledMessage: vi.fn(),
+    listHeartbeats: vi.fn().mockResolvedValue([]),
+    createHeartbeat: vi.fn(),
+    updateHeartbeat: vi.fn(),
+    deleteHeartbeat: vi.fn(),
+    pauseHeartbeat: vi.fn(),
+    resumeHeartbeat: vi.fn(),
     ...overrides,
   };
 }
@@ -931,5 +938,204 @@ describe('App Delivery tab', () => {
     expect(
       within(provisioningPanel as HTMLElement).queryByText('destinations down'),
     ).not.toBeInTheDocument();
+  });
+
+  describe('Heartbeats section', () => {
+    function destination(name: string, enabled = true): DestinationSummary {
+      return {
+        name,
+        type: 'ntfy',
+        enabled,
+        disabledReason: null,
+        config: { topic: 'family_alerts' },
+        secrets: {},
+        createdAt: '2026-10-01T00:00:00Z',
+        updatedAt: '2026-10-01T00:00:00Z',
+      };
+    }
+
+    it('mounts between Routes and Pending sends, and only after the Delivery tab is first shown', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient();
+      render(
+        <App
+          client={buildFakeClient()}
+          deliveryClient={deliveryClient}
+          destinationsEnabled
+          heartbeatsEnabled
+          pendingSendsEnabled
+        />,
+      );
+
+      await screen.findByText(strings.usersEmpty);
+      expect(deliveryClient.listHeartbeats).not.toHaveBeenCalled();
+
+      await user.click(tab(strings.tabDelivery));
+      const routes = await screen.findByRole('heading', { name: strings.routesHeading });
+      const heartbeats = await screen.findByRole('heading', { name: strings.heartbeatsHeading });
+      const pending = await screen.findByRole('heading', { name: strings.pendingSendsHeading });
+
+      expect(
+        routes.compareDocumentPosition(heartbeats) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        heartbeats.compareDocumentPosition(pending) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(await screen.findByText(strings.heartbeatsEmpty)).toBeInTheDocument();
+      expect(deliveryClient.listHeartbeats).toHaveBeenCalledTimes(1);
+    });
+
+    it('is absent when the flag is off', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient();
+      render(
+        <App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />,
+      );
+
+      await user.click(tab(strings.tabDelivery));
+      await screen.findByRole('heading', { name: strings.routesHeading });
+
+      expect(screen.queryByRole('heading', { name: strings.heartbeatsHeading })).toBeNull();
+      expect(deliveryClient.listHeartbeats).not.toHaveBeenCalled();
+    });
+
+    it('never mounts without destinationsEnabled, and does not even show the tab bar for it', async () => {
+      const deliveryClient = buildFakeDeliveryClient();
+      render(<App client={buildFakeClient()} deliveryClient={deliveryClient} heartbeatsEnabled />);
+
+      await screen.findByText(strings.usersEmpty);
+
+      expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: strings.heartbeatsHeading })).toBeNull();
+      expect(deliveryClient.listHeartbeats).not.toHaveBeenCalled();
+    });
+
+    it('never mounts in a Delivery tab opened for another section when destinationsEnabled is off', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient();
+      render(
+        <App
+          client={buildFakeClient()}
+          deliveryClient={deliveryClient}
+          heartbeatsEnabled
+          pendingSendsEnabled
+        />,
+      );
+
+      await user.click(tab(strings.tabDelivery));
+      await screen.findByRole('heading', { name: strings.pendingSendsHeading });
+
+      expect(screen.queryByRole('heading', { name: strings.heartbeatsHeading })).toBeNull();
+      expect(deliveryClient.listHeartbeats).not.toHaveBeenCalled();
+    });
+
+    it('shares the one destinations fetch: a destination mutation adds only the Destinations refresh', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient({
+        listDestinations: vi
+          .fn()
+          .mockResolvedValueOnce([destination('ops_discord')])
+          .mockResolvedValue([destination('ops_discord', false)]),
+        updateDestination: vi.fn().mockResolvedValue(destination('ops_discord', false)),
+      });
+      render(
+        <App
+          client={buildFakeClient()}
+          deliveryClient={deliveryClient}
+          destinationsEnabled
+          heartbeatsEnabled
+        />,
+      );
+
+      await user.click(tab(strings.tabDelivery));
+      await screen.findByText(strings.heartbeatsEmpty);
+      await user.click(await screen.findByRole('button', { name: 'Disable ops_discord' }));
+      // Mounting Destinations, Routes and Heartbeats together made exactly one fetch.
+      expect(deliveryClient.listDestinations).toHaveBeenCalledTimes(1);
+      await user.click(screen.getByRole('button', { name: 'Confirm disable ops_discord' }));
+
+      // The disable swaps in Enable once the refreshed (disabled) list lands.
+      expect(await screen.findByRole('button', { name: 'Enable ops_discord' })).toBeInTheDocument();
+      expect(deliveryClient.updateDestination).toHaveBeenCalledTimes(1);
+      // One initial load plus the Destinations section's own refresh; Heartbeats adds none.
+      expect(deliveryClient.listDestinations).toHaveBeenCalledTimes(2);
+    });
+
+    it('the open add form tracks a destination mutation: disabling marks its checkbox "(disabled)"', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient({
+        listDestinations: vi
+          .fn()
+          .mockResolvedValueOnce([destination('ops_discord')])
+          .mockResolvedValue([destination('ops_discord', false)]),
+        updateDestination: vi.fn().mockResolvedValue(destination('ops_discord', false)),
+      });
+      render(
+        <App
+          client={buildFakeClient()}
+          deliveryClient={deliveryClient}
+          destinationsEnabled
+          heartbeatsEnabled
+        />,
+      );
+
+      await user.click(tab(strings.tabDelivery));
+      await screen.findByText(strings.heartbeatsEmpty);
+      const add = await screen.findByRole('button', { name: strings.addHeartbeatAction });
+      await waitFor(() => expect(add).not.toHaveAttribute('aria-disabled'));
+      await user.click(add);
+      const form = screen.getByRole('form', { name: strings.addHeartbeatHeading });
+      const box = within(form).getByRole('checkbox', { name: /^ops_discord/ });
+      expect(box.closest('label')).not.toHaveTextContent(strings.routeDestinationDisabledMark);
+
+      await user.click(screen.getByRole('button', { name: 'Disable ops_discord' }));
+      await user.click(screen.getByRole('button', { name: 'Confirm disable ops_discord' }));
+
+      await screen.findByRole('button', { name: 'Enable ops_discord' });
+      await waitFor(() =>
+        expect(
+          within(form)
+            .getByRole('checkbox', { name: /^ops_discord/ })
+            .closest('label'),
+        ).toHaveTextContent(strings.routeDestinationDisabledMark),
+      );
+    });
+
+    it('Add check is gated on the shared destinations state and re-blocks when the last one is deleted', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient({
+        listDestinations: vi
+          .fn()
+          .mockResolvedValueOnce([destination('ops_discord')])
+          .mockResolvedValue([]),
+      });
+      render(
+        <App
+          client={buildFakeClient()}
+          deliveryClient={deliveryClient}
+          destinationsEnabled
+          heartbeatsEnabled
+        />,
+      );
+
+      await user.click(tab(strings.tabDelivery));
+      await screen.findByText(strings.heartbeatsEmpty);
+      const add = await screen.findByRole('button', { name: strings.addHeartbeatAction });
+      await waitFor(() => expect(add).not.toHaveAttribute('aria-disabled'));
+
+      await user.click(
+        screen.getByRole('button', { name: strings.deleteDestination({ name: 'ops_discord' }) }),
+      );
+      await user.click(
+        screen.getByRole('button', {
+          name: strings.confirmDeleteDestination({ name: 'ops_discord' }),
+        }),
+      );
+
+      await waitFor(() => expect(add).toHaveAttribute('aria-disabled', 'true'));
+      expect(document.getElementById(add.getAttribute('aria-describedby') ?? '')).toHaveTextContent(
+        strings.addHeartbeatHintEmpty,
+      );
+    });
   });
 });

@@ -378,6 +378,7 @@ export function PendingSends({ client }: PendingSendsProps): JSX.Element {
                           confirmLabel={strings.confirmCancelSend}
                           confirmAriaLabel={strings.confirmCancelSendNamed({ key })}
                           dismissLabel={strings.keepSend}
+                          dismissAriaLabel={strings.keepSendNamed({ key })}
                           className="pending-sends__button pending-sends__button--danger"
                           confirmNotice={strings.cancelSendNotice({ key })}
                           busy={busyIds[id] === true}

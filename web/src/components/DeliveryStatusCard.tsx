@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import type { DeliveryApiClient, ReadinessResult } from '../api/deliveryClient';
+import type {
+  DeliveryApiClient,
+  HeartbeatCheckerStatus,
+  ReadinessResult,
+} from '../api/deliveryClient';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { strings } from '../strings';
+import { formatRelativePast } from './formatRelative';
 import { formatUtc } from './formatUtc';
 import './DeliveryStatusCard.css';
 
@@ -26,6 +31,22 @@ function pillFor(result: ReadinessResult | null): { label: string; modifier: str
   }
 }
 
+function heartbeatCheckerFact({
+  checker,
+  now,
+}: {
+  checker: HeartbeatCheckerStatus;
+  now: number;
+}): string {
+  const lastRun =
+    checker.lastTickAt === null
+      ? strings.heartbeatCheckerNever
+      : formatRelativePast({ at: checker.lastTickAt, now });
+  return checker.stale
+    ? strings.heartbeatCheckerStalled({ lastRun })
+    : strings.heartbeatCheckerRunning({ lastRun });
+}
+
 /**
  * delivery-api readiness card. Mounted by the Delivery tab on its first
  * activation, so it fetches once there; only the manual Refresh reloads. A
@@ -35,6 +56,8 @@ function pillFor(result: ReadinessResult | null): { label: string; modifier: str
 export function DeliveryStatusCard({ client }: DeliveryStatusCardProps) {
   // null means a check is in flight.
   const [result, setResult] = useState<ReadinessResult | null>(null);
+  // When the result was fetched; "last run" is relative to it, not to render time.
+  const [loadedAt, setLoadedAt] = useState(() => Date.now());
   const track = useLatestRequest();
 
   // Promise-chain style (see App.tsx): every setState runs inside a promise
@@ -48,6 +71,7 @@ export function DeliveryStatusCard({ client }: DeliveryStatusCardProps) {
         setResult(
           outcome.ok ? outcome.value : { kind: 'unreachable', message: strings.genericError },
         );
+        setLoadedAt(Date.now());
       }),
     [client, track],
   );
@@ -92,6 +116,12 @@ export function DeliveryStatusCard({ client }: DeliveryStatusCardProps) {
                       })}
                 </dd>
               </div>
+              <div>
+                <dt>{strings.heartbeatCheckerLabel}</dt>
+                <dd className={result.heartbeatChecker.stale ? 'status-card__stalled' : undefined}>
+                  {heartbeatCheckerFact({ checker: result.heartbeatChecker, now: loadedAt })}
+                </dd>
+              </div>
             </dl>
           )}
           {result !== null && result.kind === 'unavailable' && (
@@ -115,6 +145,9 @@ export function DeliveryStatusCard({ client }: DeliveryStatusCardProps) {
           {strings.deliveryStatusRefresh}
         </button>
       </div>
+      {hasSchema && result.heartbeatChecker.stale && (
+        <p className="status-card__warn">{strings.heartbeatCheckerStalledWarning}</p>
+      )}
       {result !== null && result.kind === 'ok' && result.lastMigrationFailure !== null && (
         <p className="status-card__warn">
           {strings.deliveryStatusFailedNewerLead({ version: result.lastMigrationFailure.version })}

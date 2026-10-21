@@ -84,3 +84,18 @@ jobs:
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  # The external watchdog (cron Worker) must keep running when the VPS deploy fails or the VPS is
+  # down, so it is deployed in parallel (no `needs`), gated by the same merged-to-main guard. Only
+  # the Cloudflare deploy credentials are passed; its runtime secrets are set out-of-band by the
+  # operator with `wrangler secret put`.
+  deploy-watchdog:
+    if: github.event.pull_request.merged == true
+    name: 'CD Prod - Deploy watchdog'
+    uses: ./.github/workflows/watchdog-deploy.yml
+    permissions:
+      contents: read
+      actions: write   # lets the Actions Cache save the setup-node npm cache
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -67,3 +67,29 @@ func WrapDBError(operation string, err error) error {
 	}
 	return fmt.Errorf("%s: %w", operation, err)
 }
+
+// SQLStateUniqueViolation is the SQLSTATE Postgres reports for a unique-constraint violation.
+const SQLStateUniqueViolation = "23505"
+
+// ErrorCode returns the SQLSTATE of a Postgres error, or "" for any other.
+func ErrorCode(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code
+	}
+	return ""
+}
+
+// Distinct returns names with duplicates removed, never nil.
+func Distinct(names []string) []string {
+	seen := make(map[string]bool, len(names))
+	unique := make([]string, 0, len(names))
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		unique = append(unique, name)
+	}
+	return unique
+}

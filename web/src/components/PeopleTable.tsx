@@ -53,6 +53,9 @@ export function PeopleTable({ people, loading, error, onDelete }: PeopleTablePro
                   <ConfirmButton
                     triggerLabel={`${strings.deleteAction} ${email}`}
                     confirmLabel={`${strings.confirmDeleteAction} ${email}`}
+                    dismissAriaLabel={strings.cancelActionNamed({
+                      subject: `${strings.deleteAction} ${email}`,
+                    })}
                     className="people-table__button people-table__button--danger"
                     onConfirm={() => onDelete({ personHash })}
                   />

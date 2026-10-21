@@ -33,8 +33,9 @@ var (
 	ErrDestinationNotFound = errors.New("destination not found")
 	// ErrDestinationExists means a destination with that name already exists.
 	ErrDestinationExists = errors.New("destination already exists")
-	// ErrDestinationInUse means a route still references the destination.
-	ErrDestinationInUse = errors.New("destination is referenced by a route")
+	// ErrDestinationInUse means something (a route or a heartbeat check) still
+	// references the destination.
+	ErrDestinationInUse = errors.New("destination is in use")
 	// ErrDestinationDisabled means the destination exists but is disabled.
 	ErrDestinationDisabled = errors.New("destination is disabled")
 	// ErrUnknownDestination means a name in a route or envelope does not name

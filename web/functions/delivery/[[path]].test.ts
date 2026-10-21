@@ -131,6 +131,47 @@ describe('delivery proxy route', () => {
       expect(init.method).toBe('DELETE');
     });
 
+    const heartbeatRows: Array<{ method: string; path: string; body?: string }> = [
+      { method: 'GET', path: '/delivery/v1/admin/heartbeats' },
+      { method: 'GET', path: '/delivery/v1/admin/heartbeats/7' },
+      { method: 'POST', path: '/delivery/v1/admin/heartbeats', body: '{"app_id":"a"}' },
+      { method: 'PATCH', path: '/delivery/v1/admin/heartbeats/7', body: '{"period_seconds":120}' },
+      { method: 'DELETE', path: '/delivery/v1/admin/heartbeats/7' },
+      { method: 'POST', path: '/delivery/v1/admin/heartbeats/7/pause' },
+      { method: 'POST', path: '/delivery/v1/admin/heartbeats/7/resume' },
+    ];
+
+    it.each(heartbeatRows)(
+      'forwards $method $path to the upstream admin route',
+      async ({ method, path, body }) => {
+        fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+        const response = await call({
+          path,
+          init: {
+            method,
+            headers: method === 'GET' ? {} : { ...JSON_HEADERS, ...SAME_ORIGIN },
+            ...(body === undefined ? {} : { body }),
+          },
+        });
+        expect(response.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${UPSTREAM}${path.replace('/delivery', '')}`);
+        expect(init.method).toBe(method);
+      },
+    );
+
+    it('resolves an empty segment plus a dot-segment to an admin path, never a ping path', async () => {
+      // `admin//..` collapses back to `admin/`, so this stays under the admin prefix
+      // (upstream answers 404 for it: there is no admin ping route).
+      fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+      await call({
+        path: '/delivery/v1/admin//../heartbeats/urls4irl/nightly_backup',
+        init: { method: 'POST', headers: { ...JSON_HEADERS, ...SAME_ORIGIN } },
+      });
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`${UPSTREAM}/v1/admin/heartbeats/urls4irl/nightly_backup`);
+    });
+
     it('accepts X-Requested-With in place of Sec-Fetch-Site', async () => {
       fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
       await call({
@@ -171,6 +212,33 @@ describe('delivery proxy route', () => {
       { method: 'POST', path: '/delivery/readyz' },
       { method: 'POST', path: '/delivery/v1/messages/abc' },
       { method: 'GET', path: '/delivery/v1/messages/abc' },
+      // Pings are app-to-Tunnel only: the admin proxy never forwards them.
+      { method: 'POST', path: '/delivery/v1/heartbeats/urls4irl/nightly_backup' },
+      { method: 'POST', path: '/delivery/v1/heartbeats/urls4irl/nightly_backup/fail' },
+      { method: 'GET', path: '/delivery/v1/heartbeats/urls4irl/nightly_backup' },
+      { method: 'GET', path: '/delivery/v1/heartbeats' },
+      { method: 'POST', path: '/delivery/v1/heartbeats' },
+      { method: 'GET', path: '/delivery/v1/admin/heartbeats%2f7' },
+      { method: 'GET', path: '/delivery/v1/adminheartbeats' },
+      // An admin-prefix path must never reach the app-facing ping paths: dot-segments
+      // resolve to a non-allowlisted path, and encoded slashes/backslashes are refused.
+      { method: 'POST', path: '/delivery/v1/admin/../heartbeats/urls4irl/nightly_backup' },
+      { method: 'POST', path: '/delivery/v1/admin/../heartbeats/urls4irl/nightly_backup/fail' },
+      { method: 'POST', path: '/delivery/v1/admin/%2e%2e/heartbeats/urls4irl/nightly_backup/fail' },
+      { method: 'POST', path: '/delivery/v1/admin/%2E%2E/heartbeats/urls4irl/nightly_backup' },
+      { method: 'POST', path: '/delivery/v1/admin/.%2e/heartbeats/urls4irl/nightly_backup' },
+      { method: 'POST', path: '/delivery/v1/admin/./../heartbeats/urls4irl/nightly_backup' },
+      { method: 'POST', path: '/delivery/v1/admin/x/../../heartbeats/urls4irl/nightly_backup' },
+      {
+        method: 'POST',
+        path: '/delivery/v1/admin/heartbeats/../../heartbeats/urls4irl/nightly_backup',
+      },
+      { method: 'POST', path: '/delivery/v1/admin/..%2fheartbeats/urls4irl/nightly_backup' },
+      { method: 'POST', path: '/delivery/v1/admin/..%2Fheartbeats/urls4irl/nightly_backup/fail' },
+      { method: 'POST', path: '/delivery/v1/admin/%2e%2e%2fheartbeats/urls4irl/nightly_backup' },
+      { method: 'POST', path: '/delivery/v1/admin/..%5cheartbeats/urls4irl/nightly_backup' },
+      { method: 'POST', path: '/delivery/v1/admin/..\\heartbeats/urls4irl/nightly_backup' },
+      { method: 'POST', path: '/delivery/v1/admin/%2e%2e\\heartbeats/urls4irl/nightly_backup' },
     ];
 
     it.each(rows)('$method $path -> 404 with no upstream fetch', async ({ method, path }) => {

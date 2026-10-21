@@ -4,6 +4,56 @@ const MS_PER_MINUTE = 60_000;
 const MINUTES_PER_HOUR = 60;
 const MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR;
 
+const MS_PER_SECOND = 1000;
+const SECONDS_PER_MINUTE = 60;
+
+/**
+ * How long ago `at` was relative to `now`: "just now" at or after now (or when
+ * unparseable), "N s ago" under a minute, "N min ago" under an hour, "N h ago"
+ * under 24 hours, then "1 day ago" / "N days ago". Every unit rounds down.
+ */
+export function formatRelativePast({ at, now }: { at: string; now: number }): string {
+  const atMs = Date.parse(at);
+  if (Number.isNaN(atMs) || atMs >= now) {
+    return strings.relativeJustNow;
+  }
+  const seconds = Math.floor((now - atMs) / MS_PER_SECOND);
+  if (seconds < 1) {
+    return strings.relativeJustNow;
+  }
+  if (seconds < SECONDS_PER_MINUTE) {
+    return strings.relativeSecondsAgo({ seconds });
+  }
+  const minutes = Math.floor(seconds / SECONDS_PER_MINUTE);
+  if (minutes < MINUTES_PER_HOUR) {
+    return strings.relativeMinutesAgo({ minutes });
+  }
+  if (minutes < MINUTES_PER_DAY) {
+    return strings.relativeHoursAgo({ hours: Math.floor(minutes / MINUTES_PER_HOUR) });
+  }
+  return strings.relativeDaysAgo({ days: Math.floor(minutes / MINUTES_PER_DAY) });
+}
+
+/**
+ * Compact schedule duration: the largest of d / h / min that divides `seconds`
+ * evenly ("5 min", "24 h", "2 d"), otherwise plain seconds. One day reads as
+ * "24 h" (the common daily-job schedule); days start at two.
+ */
+export function formatDuration({ seconds }: { seconds: number }): string {
+  const secondsPerDay = SECONDS_PER_MINUTE * MINUTES_PER_DAY;
+  const secondsPerHour = SECONDS_PER_MINUTE * MINUTES_PER_HOUR;
+  if (seconds >= 2 * secondsPerDay && seconds % secondsPerDay === 0) {
+    return strings.durationDays({ value: seconds / secondsPerDay });
+  }
+  if (seconds > 0 && seconds % secondsPerHour === 0) {
+    return strings.durationHours({ value: seconds / secondsPerHour });
+  }
+  if (seconds > 0 && seconds % SECONDS_PER_MINUTE === 0) {
+    return strings.durationMinutes({ value: seconds / SECONDS_PER_MINUTE });
+  }
+  return strings.durationSeconds({ value: seconds });
+}
+
 /**
  * How far `deliverAt` is in the future relative to `now`, at minute
  * granularity (whole minutes, rounded down): "due now" at or before now, "in

@@ -2,7 +2,9 @@
 // readiness probes, the operator registry endpoints under /v1/admin, the app
 // message endpoints (submit and status under /v1/messages), the operator
 // delivery log and replay endpoints under /v1/admin/deliveries, and the
-// per-app ntfy publisher endpoints under /v1/admin/apps.
+// per-app ntfy publisher endpoints under /v1/admin/apps, the app-facing
+// heartbeat pings under /v1/heartbeats and the operator heartbeat check
+// endpoints under /v1/admin/heartbeats.
 package httpapi
 
 import (
@@ -39,6 +41,14 @@ type ReadinessChecker interface {
 	Readiness(ctx context.Context) (Readiness, error)
 }
 
+// CheckerFreshness reports whether the heartbeat checker is still ticking.
+// *heartbeat.Freshness satisfies it.
+type CheckerFreshness interface {
+	// Status returns the last successful tick (nil when the checker has never
+	// ticked) and whether the checker is stale.
+	Status() (lastTickAt *time.Time, stale bool)
+}
+
 // Registry is the destination and route management surface the /v1/admin
 // endpoints call. *registry.Service satisfies it. Resolve is deliberately not
 // part of it: resolution is for the delivery path, not the admin API.
@@ -62,6 +72,10 @@ type ServerConfig struct {
 	Logger *slog.Logger
 	// Readiness backs GET /readyz. When nil, /readyz always reports unavailable.
 	Readiness ReadinessChecker
+	// HeartbeatChecker backs the heartbeat_checker field of GET /readyz. When
+	// nil, /readyz reports the checker as never ticked and stale (fail closed).
+	// Callers must leave this an untyped nil when no tracker exists.
+	HeartbeatChecker CheckerFreshness
 	// Registry backs the /v1/admin endpoints. When nil, every admin route
 	// answers 503 (fail closed). Callers must leave this an untyped nil when no
 	// service exists: a typed-nil pointer stored here is a non-nil interface
@@ -76,15 +90,25 @@ type ServerConfig struct {
 	// untyped nil when no service exists: a typed-nil pointer stored here is a
 	// non-nil interface and would bypass that guard.
 	Publishers Publishers
+	// Heartbeats backs the /v1/heartbeats and /v1/admin/heartbeats endpoints. When
+	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
+	// caveat as Registry applies.
+	Heartbeats Heartbeats
+	// Now supplies the time the heartbeat views derive their state at; defaults to
+	// time.Now. Tests set it to run on a fixed clock.
+	Now func() time.Time
 }
 
 // Server wraps an *http.ServeMux exposing the delivery HTTP API.
 type Server struct {
 	logger     *slog.Logger
 	readiness  ReadinessChecker
+	checker    CheckerFreshness
 	registry   Registry
 	messages   Messages
 	publishers Publishers
+	heartbeats Heartbeats
+	now        func() time.Time
 	mux        *http.ServeMux
 }
 
@@ -94,6 +118,16 @@ type readinessResponseBody struct {
 	SchemaVersion         int                   `json:"schema_version"`
 	ExpectedSchemaVersion int                   `json:"expected_schema_version"`
 	LastMigrationFailure  *migrationFailureBody `json:"last_migration_failure"`
+	HeartbeatChecker      heartbeatCheckerBody  `json:"heartbeat_checker"`
+}
+
+// heartbeatCheckerBody is the JSON form of the heartbeat checker's freshness.
+// Staleness never changes the /readyz status or HTTP code: the compose
+// healthcheck probes /readyz, and an unhealthy container is not the right
+// reaction to a stalled checker. The watchdog interprets this field instead.
+type heartbeatCheckerBody struct {
+	LastTickAt *string `json:"last_tick_at"`
+	Stale      bool    `json:"stale"`
 }
 
 // migrationFailureBody is the JSON form of a recorded migration failure.
@@ -120,10 +154,16 @@ func NewServer(config ServerConfig) *Server {
 	server := &Server{
 		logger:     logger,
 		readiness:  config.Readiness,
+		checker:    config.HeartbeatChecker,
 		registry:   config.Registry,
 		messages:   config.Messages,
 		publishers: config.Publishers,
+		heartbeats: config.Heartbeats,
+		now:        config.Now,
 		mux:        http.NewServeMux(),
+	}
+	if server.now == nil {
+		server.now = time.Now
 	}
 	server.routes()
 	return server
@@ -155,6 +195,17 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleGetPublisher))
 	server.mux.HandleFunc("DELETE /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleDeletePublisher))
 
+	// App-facing pings sit outside /v1/admin, like POST /v1/messages.
+	server.mux.HandleFunc("POST /v1/heartbeats/{app_id}/{name}", server.requireHeartbeats(server.handlePingCheck))
+	server.mux.HandleFunc("POST /v1/heartbeats/{app_id}/{name}/fail", server.requireHeartbeats(server.handleFailCheck))
+	server.mux.HandleFunc("GET /v1/admin/heartbeats", server.requireHeartbeats(server.handleListChecks))
+	server.mux.HandleFunc("POST /v1/admin/heartbeats", server.requireHeartbeats(server.handleCreateCheck))
+	server.mux.HandleFunc("GET /v1/admin/heartbeats/{id}", server.requireHeartbeats(server.handleGetCheck))
+	server.mux.HandleFunc("PATCH /v1/admin/heartbeats/{id}", server.requireHeartbeats(server.handleUpdateCheck))
+	server.mux.HandleFunc("DELETE /v1/admin/heartbeats/{id}", server.requireHeartbeats(server.handleDeleteCheck))
+	server.mux.HandleFunc("POST /v1/admin/heartbeats/{id}/pause", server.requireHeartbeats(server.handlePauseCheck))
+	server.mux.HandleFunc("POST /v1/admin/heartbeats/{id}/resume", server.requireHeartbeats(server.handleResumeCheck))
+
 	server.mux.HandleFunc("POST /v1/messages", server.requireMessages(server.handleCreateMessage))
 	server.mux.HandleFunc("GET /v1/messages/{id}", server.requireMessages(server.handleGetMessage))
 	server.mux.HandleFunc("GET /v1/messages", server.requireMessages(server.handleGetMessageByKey))
@@ -179,7 +230,8 @@ func (server *Server) handleHealthz(responseWriter http.ResponseWriter, request 
 // checker or a checker error is 503 "unavailable" with the error logged but
 // never leaked; a schema version that differs from the binary's embedded
 // expectation (in either direction) is 503 "schema_mismatch"; otherwise 200.
-// A recorded newer-migration failure is reported in either non-error case.
+// A recorded newer-migration failure is reported in either non-error case. Both
+// bodies carry heartbeat_checker, which never changes the status or HTTP code.
 func (server *Server) handleReadyz(responseWriter http.ResponseWriter, request *http.Request) {
 	if server.readiness == nil {
 		writeJSON(responseWriter, http.StatusServiceUnavailable, unavailableResponseBody{Status: statusUnavailable})
@@ -204,6 +256,7 @@ func (server *Server) handleReadyz(responseWriter http.ResponseWriter, request *
 		Status:                status,
 		SchemaVersion:         readiness.SchemaVersion,
 		ExpectedSchemaVersion: readiness.ExpectedSchemaVersion,
+		HeartbeatChecker:      server.checkerStatus(),
 	}
 	if failure := readiness.LastMigrationFailure; failure != nil {
 		body.LastMigrationFailure = &migrationFailureBody{
@@ -213,6 +266,18 @@ func (server *Server) handleReadyz(responseWriter http.ResponseWriter, request *
 		}
 	}
 	writeJSON(responseWriter, statusCode, body)
+}
+
+// checkerStatus reports the checker's freshness; with no tracker it
+// reports a checker that never ticked and is stale.
+func (server *Server) checkerStatus() heartbeatCheckerBody {
+	if server.checker == nil {
+		return heartbeatCheckerBody{Stale: true}
+	}
+	lastTickAt, stale := server.checker.Status()
+	body := heartbeatCheckerBody{Stale: stale}
+	body.LastTickAt = formatUTC(lastTickAt)
+	return body
 }
 
 // setSensitiveHeaders marks a response as carrying data that must never be

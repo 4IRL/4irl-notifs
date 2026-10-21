@@ -82,6 +82,34 @@ describe('AppsTable', () => {
     expect(screen.getByRole('button', { name: strings.remintTokenAction })).toBeInTheDocument();
   });
 
+  it('gives each open remove confirm a per-row dismiss name', async () => {
+    const user = userEvent.setup();
+    renderTable({
+      apps: [
+        ...apps,
+        {
+          appId: 'chores4irl',
+          displayName: 'Chores4IRL',
+          description: 'Chores app',
+          createdAt: '2026-07-26T10:00:00Z',
+        },
+      ],
+    });
+
+    const subjects = [`${strings.removeAction} URLs4IRL`, `${strings.removeAction} Chores4IRL`];
+    for (const subject of subjects) {
+      await user.click(screen.getByRole('button', { name: subject }));
+    }
+
+    for (const subject of subjects) {
+      const dismiss = screen.getByRole('button', {
+        name: strings.cancelActionNamed({ subject }),
+      });
+      expect(dismiss).toHaveTextContent(strings.cancelAction);
+    }
+    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
+  });
+
   it('removes an app only after confirmation', async () => {
     const user = userEvent.setup();
     const { onRemoveApp } = renderTable();

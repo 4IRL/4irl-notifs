@@ -357,6 +357,9 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
                             <ConfirmButton
                               triggerLabel={strings.replayDelivery({ id })}
                               confirmLabel={strings.confirmReplayDelivery({ id })}
+                              dismissAriaLabel={strings.cancelActionNamed({
+                                subject: strings.replayDelivery({ id }),
+                              })}
                               className="delivery-log__button"
                               busy={busyIds[id] === true}
                               busyLabel={strings.replayingDelivery}

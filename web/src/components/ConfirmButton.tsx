@@ -23,6 +23,11 @@ interface ConfirmButtonProps {
   busyLabel?: string;
   /** Label of the dismiss button; defaults to `strings.cancelAction`. */
   dismissLabel?: string;
+  /**
+   * `aria-label` of the dismiss button (its visible text must be a prefix of it), so two
+   * rows mid-confirm at once have distinguishable dismiss buttons.
+   */
+  dismissAriaLabel?: string;
   /** `aria-label` of the trigger (its visible text must be a prefix of it). */
   triggerAriaLabel?: string;
   /** `aria-label` of the confirm button (its visible text must be a prefix of it). */
@@ -58,6 +63,7 @@ export function ConfirmButton({
   busy = false,
   busyLabel,
   dismissLabel = strings.cancelAction,
+  dismissAriaLabel,
   triggerAriaLabel,
   confirmAriaLabel,
   busyAriaLabel,
@@ -124,6 +130,7 @@ export function ConfirmButton({
       <button
         type="button"
         className="confirm-button__cancel"
+        aria-label={dismissAriaLabel}
         onClick={() => {
           restoreTriggerFocus.current = true;
           setConfirming(false);

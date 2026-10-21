@@ -88,6 +88,12 @@ export interface MigrationFailure {
   failedAt: string;
 }
 
+/** Freshness of the heartbeat checker loop as reported by GET /readyz. */
+export interface HeartbeatCheckerStatus {
+  lastTickAt: string | null;
+  stale: boolean;
+}
+
 /** Outcome of GET /readyz. getReadiness never throws: every failure mode is a
  *  member of this union. */
 export type ReadinessResult =
@@ -96,6 +102,8 @@ export type ReadinessResult =
       schemaVersion: number;
       expectedSchemaVersion: number;
       lastMigrationFailure: MigrationFailure | null;
+      /** An absent or malformed wire field reads as stale, never as an error. */
+      heartbeatChecker: HeartbeatCheckerStatus;
     }
   | { kind: 'unavailable' }
   | { kind: 'unreachable'; message: string };
@@ -196,6 +204,58 @@ export interface CancelScheduledMessageResult {
   status: string;
 }
 
+/** The derived state of a heartbeat check; `late` is computed server-side and never alerted on. */
+export type HeartbeatState = 'new' | 'up' | 'late' | 'down';
+
+export type HeartbeatPingKind = 'success' | 'fail';
+
+/** An alert destination of a check, as embedded in the check view. */
+export interface HeartbeatDestination {
+  name: string;
+  type: DestinationType;
+  enabled: boolean;
+}
+
+/** A heartbeat check as listed by the operator API. */
+export interface HeartbeatCheck {
+  id: number;
+  appId: string;
+  name: string;
+  periodSeconds: number;
+  graceSeconds: number;
+  paused: boolean;
+  state: HeartbeatState;
+  lastPingAt: string | null;
+  lastPingKind: HeartbeatPingKind | null;
+  /** Only populated while the check is down. */
+  downSince: string | null;
+  /** anchor + period + grace; rendered even for paused and down checks. */
+  deadlineAt: string;
+  destinations: HeartbeatDestination[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateHeartbeatParams {
+  appId: string;
+  name: string;
+  periodSeconds: number;
+  graceSeconds: number;
+  destinations: string[];
+}
+
+/** An omitted field is left unchanged server-side; app_id and name are immutable and never sent. */
+export interface UpdateHeartbeatParams {
+  id: number;
+  periodSeconds?: number;
+  graceSeconds?: number;
+  destinations?: string[];
+}
+
+export interface HeartbeatIdParam {
+  id: number;
+}
+
 /** Configuration for createDeliveryApiClient. */
 export interface DeliveryApiClientConfig {
   baseUrl?: string;
@@ -222,6 +282,12 @@ export interface DeliveryApiClient {
   cancelScheduledMessage(
     params: CancelScheduledMessageParams,
   ): Promise<CancelScheduledMessageResult>;
+  listHeartbeats(): Promise<HeartbeatCheck[]>;
+  createHeartbeat(params: CreateHeartbeatParams): Promise<HeartbeatCheck>;
+  updateHeartbeat(params: UpdateHeartbeatParams): Promise<HeartbeatCheck>;
+  deleteHeartbeat(param: HeartbeatIdParam): Promise<void>;
+  pauseHeartbeat(param: HeartbeatIdParam): Promise<HeartbeatCheck>;
+  resumeHeartbeat(param: HeartbeatIdParam): Promise<HeartbeatCheck>;
 }
 
 interface DestinationWire {
@@ -306,11 +372,58 @@ interface MessageWire {
   deliveries: SubmittedDeliveryWire[] | null;
 }
 
+interface HeartbeatWire {
+  id: number;
+  app_id: string;
+  name: string;
+  period_seconds: number;
+  grace_seconds: number;
+  paused: boolean;
+  state: HeartbeatState;
+  last_ping_at: string | null;
+  last_ping_kind: HeartbeatPingKind | null;
+  down_since: string | null;
+  deadline_at: string;
+  destinations: HeartbeatDestination[] | null;
+  created_at: string;
+  updated_at: string;
+}
+
 interface ReadinessWire {
   status?: string;
   schema_version?: number;
   expected_schema_version?: number;
   last_migration_failure?: { version: number; error: string; failed_at: string } | null;
+  heartbeat_checker?: { last_tick_at?: unknown; stale?: unknown } | null;
+}
+
+function mapHeartbeat(wire: HeartbeatWire): HeartbeatCheck {
+  return {
+    id: wire.id,
+    appId: wire.app_id,
+    name: wire.name,
+    periodSeconds: wire.period_seconds,
+    graceSeconds: wire.grace_seconds,
+    paused: wire.paused,
+    state: wire.state,
+    lastPingAt: wire.last_ping_at,
+    lastPingKind: wire.last_ping_kind,
+    downSince: wire.down_since,
+    deadlineAt: wire.deadline_at,
+    destinations: (wire.destinations ?? []).map(({ name, type, enabled }) => ({
+      name,
+      type,
+      enabled,
+    })),
+    createdAt: wire.created_at,
+    updatedAt: wire.updated_at,
+  };
+}
+
+/** Fail closed: anything but a well-formed `stale: false` with a last tick reads as stale. */
+function mapHeartbeatChecker(wire: ReadinessWire['heartbeat_checker']): HeartbeatCheckerStatus {
+  const lastTickAt = typeof wire?.last_tick_at === 'string' ? wire.last_tick_at : null;
+  return { lastTickAt, stale: wire?.stale !== false || lastTickAt === null };
 }
 
 function mapDestination(wire: DestinationWire): DestinationSummary {
@@ -472,6 +585,7 @@ export function createDeliveryApiClient({
       lastMigrationFailure: failure
         ? { version: failure.version, error: failure.error, failedAt: failure.failed_at }
         : null,
+      heartbeatChecker: mapHeartbeatChecker(body.heartbeat_checker),
     };
   }
 
@@ -704,6 +818,78 @@ export function createDeliveryApiClient({
         method: 'DELETE',
       })) as CancelWire;
       return { messageId: wire.message_id, cancelled: wire.cancelled, status: wire.status };
+    },
+
+    async listHeartbeats(): Promise<HeartbeatCheck[]> {
+      const wire = (await request({ path: '/v1/admin/heartbeats', method: 'GET' })) as {
+        checks: HeartbeatWire[] | null;
+      };
+      return (wire.checks ?? []).map(mapHeartbeat);
+    },
+
+    async createHeartbeat({
+      appId,
+      name,
+      periodSeconds,
+      graceSeconds,
+      destinations,
+    }: CreateHeartbeatParams): Promise<HeartbeatCheck> {
+      const wire = (await request({
+        path: '/v1/admin/heartbeats',
+        method: 'POST',
+        body: {
+          app_id: appId,
+          name,
+          period_seconds: periodSeconds,
+          grace_seconds: graceSeconds,
+          destinations,
+        },
+      })) as { check: HeartbeatWire };
+      return mapHeartbeat(wire.check);
+    },
+
+    async updateHeartbeat({
+      id,
+      periodSeconds,
+      graceSeconds,
+      destinations,
+    }: UpdateHeartbeatParams): Promise<HeartbeatCheck> {
+      const body: Record<string, unknown> = {};
+      if (periodSeconds !== undefined) {
+        body.period_seconds = periodSeconds;
+      }
+      if (graceSeconds !== undefined) {
+        body.grace_seconds = graceSeconds;
+      }
+      if (destinations !== undefined) {
+        body.destinations = destinations;
+      }
+      const wire = (await request({
+        path: `/v1/admin/heartbeats/${id}`,
+        method: 'PATCH',
+        body,
+      })) as { check: HeartbeatWire };
+      return mapHeartbeat(wire.check);
+    },
+
+    async deleteHeartbeat({ id }: HeartbeatIdParam): Promise<void> {
+      await request({ path: `/v1/admin/heartbeats/${id}`, method: 'DELETE' });
+    },
+
+    async pauseHeartbeat({ id }: HeartbeatIdParam): Promise<HeartbeatCheck> {
+      const wire = (await request({
+        path: `/v1/admin/heartbeats/${id}/pause`,
+        method: 'POST',
+      })) as { check: HeartbeatWire };
+      return mapHeartbeat(wire.check);
+    },
+
+    async resumeHeartbeat({ id }: HeartbeatIdParam): Promise<HeartbeatCheck> {
+      const wire = (await request({
+        path: `/v1/admin/heartbeats/${id}/resume`,
+        method: 'POST',
+      })) as { check: HeartbeatWire };
+      return mapHeartbeat(wire.check);
     },
   };
 }

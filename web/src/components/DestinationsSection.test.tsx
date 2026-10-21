@@ -67,6 +67,12 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     replayDelivery: vi.fn(),
     listScheduledMessages: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     cancelScheduledMessage: vi.fn(),
+    listHeartbeats: vi.fn().mockResolvedValue([]),
+    createHeartbeat: vi.fn(),
+    updateHeartbeat: vi.fn(),
+    deleteHeartbeat: vi.fn(),
+    pauseHeartbeat: vi.fn(),
+    resumeHeartbeat: vi.fn(),
     ...overrides,
   };
 }
@@ -235,6 +241,31 @@ describe('send test', () => {
 });
 
 describe('enable, disable and delete', () => {
+  it('gives each open disable and delete confirm a per-row dismiss name', async () => {
+    const user = userEvent.setup();
+    const listDestinations = vi
+      .fn()
+      .mockResolvedValue([buildDestination({ name: 'ops' }), buildDestination({ name: 'family' })]);
+    renderSection(buildClient({ listDestinations }));
+
+    const subjects = [
+      strings.disableDestination({ name: 'ops' }),
+      strings.deleteDestination({ name: 'ops' }),
+      strings.disableDestination({ name: 'family' }),
+      strings.deleteDestination({ name: 'family' }),
+    ];
+    await screen.findByRole('button', { name: subjects[0] });
+    for (const subject of subjects) {
+      await user.click(button(subject));
+    }
+
+    for (const subject of subjects) {
+      const dismiss = button(strings.cancelActionNamed({ subject }));
+      expect(dismiss).toHaveTextContent(strings.cancelAction);
+    }
+    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
+  });
+
   it('disables with a confirm, shows the progress label and focuses Enable afterwards', async () => {
     const user = userEvent.setup();
     const update = deferred<undefined>();
@@ -309,16 +340,14 @@ describe('enable, disable and delete', () => {
       listDestinations: vi.fn().mockResolvedValue([buildDestination({ name: 'ops' })]),
       deleteDestination: vi
         .fn()
-        .mockRejectedValue(
-          new ApiError({ status: 409, message: 'destination is used by a route' }),
-        ),
+        .mockRejectedValue(new ApiError({ status: 409, message: 'destination is in use' })),
     });
     renderSection(client);
 
     await user.click(await screen.findByRole('button', { name: 'Delete ops' }));
     await user.click(button('Confirm delete ops'));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('destination is used by a route');
+    expect(await screen.findByRole('alert')).toHaveTextContent('destination is in use');
     expect(button('Delete ops')).toBeInTheDocument();
     expect(button('Delete ops')).toHaveFocus();
   });

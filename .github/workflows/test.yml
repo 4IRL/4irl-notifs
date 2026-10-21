@@ -39,6 +39,7 @@ jobs:
             web/package-lock.json
             person-service/package-lock.json
             setup-web/package-lock.json
+            watchdog/package-lock.json
 
       - name: Install frontend dependencies
         working-directory: web
@@ -69,6 +70,18 @@ jobs:
       - name: Run worker tests (Vitest + workers pool)
         working-directory: person-service
         run: npm test
+
+      - name: Install watchdog dependencies
+        working-directory: watchdog
+        run: npm ci
+
+      - name: Run watchdog tests (Vitest + workers pool)
+        working-directory: watchdog
+        run: npm test
+
+      - name: Typecheck and dry-run build watchdog
+        working-directory: watchdog
+        run: npm run build
 
       - name: Run scripts tests
         run: node --test "scripts/*.test.mjs"

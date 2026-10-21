@@ -3,6 +3,8 @@ package pgutil
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,6 +29,46 @@ func TestWrapDBErrorFlattensPostgresErrors(t *testing.T) {
 	var reachable *pgconn.PgError
 	if errors.As(wrapped, &reachable) {
 		t.Error("PgError is still reachable through errors.As")
+	}
+}
+
+func TestErrorCode(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "postgres error", err: &pgconn.PgError{Code: SQLStateUniqueViolation}, want: SQLStateUniqueViolation},
+		{name: "wrapped postgres error", err: fmt.Errorf("scan: %w", &pgconn.PgError{Code: "23503"}), want: "23503"},
+		{name: "other error", err: context.Canceled, want: ""},
+		{name: "nil error", err: nil, want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ErrorCode(test.err); got != test.want {
+				t.Errorf("ErrorCode() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestDistinct(t *testing.T) {
+	tests := []struct {
+		name  string
+		names []string
+		want  []string
+	}{
+		{name: "nil input yields empty non-nil", names: nil, want: []string{}},
+		{name: "no duplicates", names: []string{"a", "b"}, want: []string{"a", "b"}},
+		{name: "duplicates removed keeping first occurrence order", names: []string{"b", "a", "b", "a", "c"}, want: []string{"b", "a", "c"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := Distinct(test.names)
+			if got == nil || !slices.Equal(got, test.want) {
+				t.Errorf("Distinct(%v) = %#v, want %#v", test.names, got, test.want)
+			}
+		})
 	}
 }
 
