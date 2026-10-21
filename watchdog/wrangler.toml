@@ -10,11 +10,10 @@ workers_dev = false
 crons = ["*/5 * * * *"]
 
 # Last-known state of every probe target lives in one KV key (`state`).
-# PLACEHOLDER ID: the real namespace id is account-specific. The operator creates the
-# namespace (`wrangler kv namespace create WATCHDOG_STATE`) and fills the id in before
-# the first deploy; see the ARCHITECTURE.md "Operator runbook: heartbeat watchdog"
-# section. Never commit the real id without asking the repo owner first. While this is the
-# placeholder, the deploy-watchdog CI job skips the deploy with a notice instead of failing.
+# The id is the account-specific namespace created with
+# `wrangler kv namespace create WATCHDOG_STATE` (a resource identifier, not a credential); see the
+# ARCHITECTURE.md "Operator runbook: heartbeat watchdog" section. Setting it back to the all-zero
+# placeholder makes the deploy-watchdog CI job skip the deploy with a notice instead of failing.
 [[kv_namespaces]]
 binding = "WATCHDOG_STATE"
 id = "37cdc378df264387bf34b08d552a4c3c"
