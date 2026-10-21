@@ -21,7 +21,7 @@ export const strings = {
   qrHeading: 'Continue on your phone',
   qrAriaLabel: 'QR code that opens this setup page on your phone',
   qrCaption: "Scan with your phone's camera. Copy buttons and one-tap links work best there.",
-  stepsHere: 'Or follow the steps here',
+  stepsHere: 'Follow the steps here instead',
   footer: 'This page never sees your password and sends nothing anywhere.',
   copyButton: 'Copy',
   // Accessible name of the idle button; the visible text is just "Copy".
