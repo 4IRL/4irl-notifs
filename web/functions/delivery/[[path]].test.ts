@@ -311,6 +311,72 @@ describe('delivery proxy route', () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
+    // workerd hands a handler an empty ReadableStream (never null) as the body of a
+    // body-less DELETE or POST, while Node's undici reports null for the same call, so
+    // only a stream-bodied request reproduces what the deployed Function sees.
+    function streamOf(bytes: number[]): ReadableStream<Uint8Array> {
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (bytes.length > 0) {
+            controller.enqueue(new Uint8Array(bytes));
+          }
+          controller.close();
+        },
+      });
+    }
+
+    it.each([
+      ['DELETE', '/delivery/v1/admin/heartbeats/7'],
+      ['POST', '/delivery/v1/admin/heartbeats/7/pause'],
+      ['POST', '/delivery/v1/admin/heartbeats/7/resume'],
+      ['POST', '/delivery/v1/admin/deliveries/9/replay'],
+      ['DELETE', '/delivery/v1/admin/routes/7'],
+    ])(
+      'forwards a body-less %s %s whose body is an empty stream (the workerd shape)',
+      async (method, path) => {
+        fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+        const response = await call({
+          path,
+          init: {
+            method,
+            headers: { ...SAME_ORIGIN, 'X-Requested-With': 'admin-ui', 'Content-Length': '0' },
+            body: streamOf([]),
+            duplex: 'half',
+          } as RequestInit,
+        });
+        expect(response.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('still refuses a non-empty stream body with no Content-Type with 415', async () => {
+      const response = await call({
+        path: adminPath,
+        init: {
+          method: 'POST',
+          headers: SAME_ORIGIN,
+          body: streamOf([123, 125]),
+          duplex: 'half',
+        } as RequestInit,
+      });
+      expect(response.status).toBe(415);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('still refuses a text/plain Content-Type even when the stream body is empty', async () => {
+      const response = await call({
+        path: adminPath,
+        init: {
+          method: 'POST',
+          headers: { ...SAME_ORIGIN, 'Content-Type': 'text/plain' },
+          body: streamOf([]),
+          duplex: 'half',
+        } as RequestInit,
+      });
+      expect(response.status).toBe(415);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
     it('accepts application/json with a charset parameter', async () => {
       fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
       const response = await call({
