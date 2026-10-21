@@ -20,6 +20,22 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
   the VPS and posts state changes to Discord
 - **web** — admin UI (Cloudflare Pages, behind Cloudflare Access)
 
+## Why build on it
+
+- **One delivery path, not one per app:** retries with backoff, signing, SSRF-guarded outbound calls,
+  idempotent resubmits, dead-lettering and a delivery log with replay, built once for every app.
+- **Fewer secrets in every repo:** routine alerts no longer need each app to hold a Discord webhook, and
+  rotating one happens in a single place.
+- **Scheduling and monitoring included:** `deliver_at` for cancelable deferred sends, and heartbeats that
+  turn a silently stopped cron into one alert and one recovery.
+- **Watched from outside:** an independent Cloudflare Worker probes the platform every 5 minutes, so an
+  outage of it does not go quietly.
+- **Cheaper with every app:** a new sink or a stricter safety rule is built once and every integrated
+  app inherits it; joining costs a service token, a route and a `curl`.
+
+The full case, and the step-by-step path for onboarding a new app, is in
+[`docs/app-integration-guide.md`](docs/app-integration-guide.md).
+
 ## Local stack
 
 ```bash

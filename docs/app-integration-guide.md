@@ -2,10 +2,510 @@
 
 **Audience:** an engineer (or an LLM) wiring a new client application (e.g. `urls4irl`,
 `tasktracker`) into the 4IRL notification service so it can send personalized notifications to its
-users. This is a **self-service integration guide** — it is not about deploying the notification
-service itself (that is `ARCHITECTURE.md`).
+users, deliver alerts through retries and a delivery log, schedule messages for later, and monitor its
+recurring jobs. This is a **self-service integration guide** — it is not about deploying the
+notification service itself (that is `ARCHITECTURE.md`).
 
-If you read nothing else, read the **Mental model** and **Integration in 5 steps** sections.
+If you are deciding whether to integrate, read **Why integrate**. If you are integrating, read
+**Onboarding a new app** first: it says what the operator does, what your app does, and in what order.
+If the app already sends its own Discord, webhook or ntfy messages or reports from its own cron jobs, read
+**Migrating an existing app from its own senders**: a generic, lane-by-lane playbook with reference
+clients in Python and shell.
+If you are a program or an LLM agent calling delivery-api, jump to **Agent quick reference**: every
+endpoint with its request, response and status codes, and a copy-paste onboarding recipe. For the ntfy
+path, also read the **Mental model** and **Integration in 5 steps** sections.
+
+---
+
+## Why integrate (and what it buys us long term)
+
+You do not have to build any of this yourself, and every app that joins makes the next one cheaper.
+
+**What you stop building**
+
+- **A sender per app.** Before delivery-api, each app carried its own sender (Python, Go and bash), its own
+  webhook secrets and, mostly, no retries and no record of what was sent. Delivery now lives in one
+  hardened place: signing, retries with backoff, SSRF-guarded outbound calls, idempotent resubmits,
+  dead-lettering and an audit trail.
+- **Webhook URLs in every repo.** Apps stop holding Discord webhook URLs for routine traffic: fewer
+  secrets to leak, and one place to rotate them, with an overlap window so receivers keep working during
+  a rotation. (Critical alerts still keep one minimal direct fallback; see `critical`.)
+- **A scheduler for "later".** `deliver_at` holds a message until it is due and lets you cancel or replace
+  it by key. No cron sweep, no queue table.
+- **A dead-man's switch for your jobs.** A cron or timer that silently stopped firing used to be noticed
+  only when a human noticed something missing. One `curl` at the end of the job now turns that silence
+  into exactly one alert, and one recovery alert when the job comes back.
+
+**What you get for free**
+
+- **Visibility.** The Delivery tab of the admin UI shows the delivery log (with dead letters and replay),
+  pending scheduled sends and heartbeat status. "Did it send?" becomes a lookup, not a log grep.
+- **Safe retries.** `(app_id, idempotency_key)` makes retrying after a timeout harmless: the original
+  message comes back flagged `duplicate`.
+- **Routing as configuration.** A message sent without `to` fans out through the operator's routes, so
+  moving an alert to another Discord channel, adding a second destination or switching a sink needs no
+  app change and no deploy.
+- **Per-person delivery.** `to.recipient` takes an email, and the same email is the same person across
+  every 4IRL app, so you never invent or store a notification identity of your own.
+- **An independent watcher on the platform itself.** The watchdog Worker runs on Cloudflare, outside the
+  VPS, and probes delivery-api, provisioning-api and ntfy every 5 minutes, posting to its own Discord
+  channel. You do not need to build monitoring for the notification path, and an outage of it does not
+  go quietly.
+- **Nothing extra to host.** Your app needs no inbound endpoint to be monitored: jobs push a ping and
+  the platform does the watching.
+
+**Why it compounds**
+
+- **One improvement, every app.** A new sink, a stricter outbound-safety rule or a better retry policy
+  is built once and every integrated app inherits it. With per-app senders, each copy has to be fixed
+  separately.
+- **A flat, small cost to join.** A service token, a destination and route in the UI, and a `curl`.
+  That cost does not grow as the platform gains capabilities; the capabilities grow underneath it.
+- **A stable contract.** Apps speak one envelope (`app_id`, `channel`, `payload`, `display`). The
+  delivery internals can change without touching them.
+- **One place to audit and to fix.** Who sent what, when and with what result is in one delivery log,
+  kept for `DELIVERY_RETENTION_DAYS` (30 by default). An incident is debugged once, not once per repo.
+- **Failures get noticed by design.** A heartbeat check that is never pinged raises an alert, so a
+  half-finished integration surfaces instead of going quiet.
+
+**What it costs (so the trade is honest)**
+
+- **A shared dependency.** Your app now depends on delivery-api being up. Idempotent retries keep
+  ordinary sends safe, critical alerts keep a direct fallback, and the watchdog tells the operator when
+  the platform is down.
+- **A service token to manage.** Per-app tokens are an operator-trust boundary, not isolation between
+  apps (see the note under "Sending through delivery-api").
+- **Operator steps per app.** An operator creates the token, destinations, routes and heartbeat checks.
+  The next section lists exactly what.
+
+---
+
+## Onboarding a new app: the whole path
+
+Pick what the app needs, then follow the matching rows. Most apps want the first two.
+
+| The app wants to…                                         | Use                      | The operator sets up                                                                 | Details                          |
+| --------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------ | -------------------------------- |
+| Push notifications straight to users' devices             | ntfy direct (Steps 1-5)  | A service token authorized on `notifs-api`                                           | "Integration in 5 steps"         |
+| Send alerts and notifications with retries, a log, fan-out | `POST /v1/messages`      | A service token on the whole-host `notifs-delivery` app, plus destinations and routes | "Sending through delivery-api"   |
+| Notify one person by email                                | `to.recipient`           | The above, plus the app's ntfy publisher (users are provisioned as in Step 2)        | "Recipients"                     |
+| Send something later, or cancel / replace it              | `deliver_at`             | Nothing extra                                                                        | "Deferred send"                  |
+| Know when a recurring job stops running or fails          | Heartbeats               | One check per job, created in the Heartbeats section                                 | "Heartbeats"                     |
+
+Migrating an app that already has its own senders? Follow **Migrating an existing app from its own
+senders** below alongside these steps.
+
+### Operator steps (once per app)
+
+1. **Check the Access split first.** `notifs-delivery.4irl.app/v1/admin` must be its own path-scoped app
+   (admin proxy token only) and the whole host a second app (proxy token plus per-app tokens). Never
+   authorize an app token before that split exists. Details: "Operator runbook: exposing delivery-api and
+   issuing app tokens".
+2. **Create the app's service token(s).** `<app> → notifs-delivery`, added to the whole-host policy only
+   (never the `/v1/admin` one), and `<app> → notifs-api` if the app provisions ntfy users. Hand over the
+   Client ID and Client Secret; they are shown once.
+3. **Create the destinations and routes.** In the Delivery tab, add the destinations the app's messages
+   should reach (ntfy, Discord or webhook) and the routes that send the app's traffic to them. Use the
+   destination's send-test to confirm each one. Without a matching route or destination a send with no
+   `to` fails with `422 no destination matched`.
+4. **If the app sends to people (`to.recipient`):** mint the app's ntfy publisher (see "Operator runbook:
+   ntfy publisher for an app").
+5. **If the app has recurring jobs:** create one heartbeat check per job with the app's `app_id`, a
+   `name`, a period, a grace (at least 1 hour for daily jobs) and its destinations.
+6. **Verify the token boundary.** The app token gets `403` on `/v1/admin/destinations` and `202` on
+   `POST /v1/messages`.
+
+### App steps (once per app)
+
+1. **Store the credentials as secrets** (`CF-Access-Client-Id`, `CF-Access-Client-Secret`), never in the
+   repo.
+2. **Send a first message and read the result.** `?wait=10` holds the response until each delivery has
+   had a first attempt, so you can see `deliveries[].state` is `delivered`:
+
+   ```bash
+   curl -fsS -m 15 -X POST "https://notifs-delivery.4irl.app/v1/messages?wait=10" \
+     -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" \
+     -H "Content-Type: application/json" \
+     -d '{"app_id":"myapp","channel":"alerts","idempotency_key":"onboarding-test-1","payload":{},"display":{"title":"myapp is connected","body":"First message through delivery-api"}}'
+   ```
+3. **Make `idempotency_key` stable per event** (for example `<event>-<id>`), so a retry after a timeout
+   can never double-send.
+4. **For anything you cannot afford to lose, add the direct fallback** described under `critical`.
+5. **Wire each recurring job to a heartbeat.** Send a success ping when the job succeeds and, where the
+   job can tell, a `/fail` ping when it fails. Run the job once and confirm the check moves from
+   **Waiting** to **Up** in the Heartbeats section.
+6. **If you message people, link them to the shared setup page** instead of writing your own ntfy
+   instructions.
+
+Suggested naming (not enforced beyond the regexes in this guide): short purpose names for channels
+(`alerts`, `reports`), job-shaped names for heartbeat checks (`nightly_backup`), and, when using
+`to.recipient`, an `app_id` plus `channel` short enough that the whole topic stays within 64 characters.
+
+### Who watches what
+
+- **Your recurring jobs:** heartbeats. The job pushes a ping; silence past `period + grace` alerts.
+- **The notification platform itself:** the watchdog, a Cloudflare Worker that probes delivery-api,
+  provisioning-api and ntfy every 5 minutes from outside the VPS and posts changes to its own Discord
+  channel.
+- **Your app's own website or API:** not covered by either today. Keep using the app's own uptime
+  monitoring for that.
+
+### Pausing and removing an app
+
+- **Planned maintenance:** pause the app's heartbeat checks (alerts stop, pings are still recorded) and
+  resume them afterwards; the deadline restarts from the resume.
+- **Removing an app:** delete its heartbeat checks first (a destination that a check uses cannot be
+  deleted), then remove its token from the Access policies, call `POST /v1/deprovision-app`, and delete
+  its stored ntfy publisher (`DELETE /v1/admin/apps/<app>/ntfy-publisher`) so recipient submits fail
+  closed.
+
+---
+
+## Migrating an existing app from its own senders
+
+For an app that already posts to Discord, publishes to ntfy, or runs its own cron reporting. The goal is
+to move it onto delivery-api **lane by lane**, with no big-bang cutover and a way back at every step. The
+recipe is the same for every app.
+
+### 1. Inventory (no code)
+
+List every place the app sends or monitors, one row each:
+
+| Trigger | Transport today | Secret it uses | Sync or fire-and-forget | Does the caller use the result? | Critical? | Schedule (if a job) |
+| ------- | --------------- | -------------- | ----------------------- | ------------------------------- | --------- | ------------------- |
+
+### 2. Map each row
+
+| Today | Becomes |
+| ----- | ------- |
+| Post to a Discord webhook for an event | One envelope on a channel named for the purpose (`activity`, `contact`, `ops`), with `display.title` and `display.body`. The operator creates a Discord destination holding the **same webhook URL** (so the channel history continues) and a route from the app and channel to it. |
+| The caller checks the HTTP result (for example a `204`) to set a flag | `?wait=10`. Delivered means `202` **and** every `deliveries[].state` is `delivered`. |
+| Fire-and-forget thread or task | Same, ignoring the result; log a non-`202` status and the `message_id`. |
+| "I ran" report from a cron or timer | A heartbeat: a success ping, plus `/fail` when the run knows it failed. |
+| Failure message then recovery message, deduped with the app's own flags | If the condition is "the job did not run", a heartbeat does it with no flags (one down alert, one recovery). If the app detects a condition itself, keep its logic and send each transition as a message. |
+| Delayed send built on a queue table or a cron sweep | `deliver_at`, plus cancel or replace by key. |
+| Per-user push straight to ntfy | Keep it (supported), or `to.recipient` once the app's ntfy publisher exists. |
+| An alert that must not be lost | `critical: true` with the direct fallback, kept for these alerts only. |
+| Discord embeds, a custom username or avatar, mentions | **Not supported.** The Discord sink posts plain `**title**\nbody\nurl`, truncated to 2000 characters, with every mention suppressed. Keep such a message on its direct path if the extras matter. |
+
+### 3. Put one adapter in the app
+
+Route every call site through a single function, so migrating a lane is a config change and not a code hunt.
+Suggested contract:
+
+- Input: `channel`, `title`, `body`, an optional `url`, `priority` and `to`, a stable `idempotency_key`,
+  `critical`, and `wait` (0 for fire-and-forget, up to 10 when the caller needs the outcome).
+- Output: whether the service accepted the message, and whether it was delivered (only meaningful with
+  `wait`). **It never raises into business logic.**
+- Timeout of `wait` plus a few seconds. Retry only on a network error or a `5xx`, with the **same**
+  `idempotency_key`.
+- A mode per lane (suggested names): `direct` (the old path), `both` (old path plus the service, with the
+  route pointed at a test channel), and `service`.
+- Never log the token; log the status and `message_id`.
+
+Python (standard library only):
+
+```python
+import json
+import os
+import urllib.error
+import urllib.request
+
+NOTIFS_URL = os.environ.get("NOTIFS_URL", "https://notifs-delivery.4irl.app")
+NOTIFS_ID = os.environ.get("NOTIFS_ID", "")
+NOTIFS_SECRET = os.environ.get("NOTIFS_SECRET", "")
+
+
+def notify(
+    *,
+    app_id: str,
+    channel: str,
+    idempotency_key: str,
+    title: str,
+    body: str = "",
+    url: str | None = None,
+    priority: str | None = None,
+    to: dict[str, str] | None = None,
+    critical: bool = False,
+    wait: int = 0,
+) -> dict[str, object]:
+    """Submit one message. Never raises; returns {ok, delivered, status, message_id}.
+
+    ok: the service accepted the message (202). delivered: with wait > 0, every
+    delivery reached `delivered` within the wait. Retry only when ok is False
+    and status is None or >= 500, reusing the same idempotency_key.
+    """
+    display: dict[str, str] = {"title": title, "body": body}
+    if url:
+        display["url"] = url
+    if priority:
+        display["priority"] = priority
+    envelope: dict[str, object] = {
+        "app_id": app_id,
+        "channel": channel,
+        "idempotency_key": idempotency_key,
+        "critical": critical,
+        "payload": {},
+        "display": display,
+    }
+    if to:
+        envelope["to"] = to
+    request = urllib.request.Request(
+        f"{NOTIFS_URL}/v1/messages?wait={wait}",
+        data=json.dumps(envelope).encode(),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "CF-Access-Client-Id": NOTIFS_ID,
+            "CF-Access-Client-Secret": NOTIFS_SECRET,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=wait + 5) as response:
+            message = json.load(response)["message"]
+    except urllib.error.HTTPError as error:
+        return {"ok": False, "delivered": False, "status": error.code, "message_id": None}
+    except (urllib.error.URLError, OSError, ValueError, KeyError):
+        return {"ok": False, "delivered": False, "status": None, "message_id": None}
+    states = [delivery["state"] for delivery in message["deliveries"]]
+    return {
+        "ok": True,
+        "delivered": bool(states) and all(state == "delivered" for state in states),
+        "status": 202,
+        "message_id": message["message_id"],
+    }
+
+
+def heartbeat(*, app_id: str, name: str, failed: bool = False) -> bool:
+    """Ping a heartbeat check (success, or /fail when failed). Never raises."""
+    suffix = "/fail" if failed else ""
+    request = urllib.request.Request(
+        f"{NOTIFS_URL}/v1/heartbeats/{app_id}/{name}{suffix}",
+        method="POST",
+        headers={"CF-Access-Client-Id": NOTIFS_ID, "CF-Access-Client-Secret": NOTIFS_SECRET},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+```
+
+Shell (needs `curl` and `jq`; `jq` does the JSON escaping, which plain `printf` cannot do safely):
+
+```bash
+NOTIFS_URL="${NOTIFS_URL:-https://notifs-delivery.4irl.app}"
+
+# notifs_notify <app_id> <channel> <idempotency_key> <title> [body]
+# Prints the service's JSON response; exit 0 only when the service accepted the message (202).
+notifs_notify() {
+  local envelope
+  envelope=$(jq -n --arg app "$1" --arg channel "$2" --arg key "$3" --arg title "$4" --arg body "${5:-}" \
+    '{app_id:$app, channel:$channel, idempotency_key:$key, payload:{}, display:{title:$title, body:$body}}')
+  curl -sS -m 15 -X POST "$NOTIFS_URL/v1/messages?wait=10" \
+    -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" \
+    -H "Content-Type: application/json" -d "$envelope" \
+    -o /tmp/notifs_response.$$ -w '%{http_code}' | grep -q '^202$'
+  local accepted=$?
+  cat /tmp/notifs_response.$$ 2>/dev/null
+  rm -f /tmp/notifs_response.$$
+  return $accepted
+}
+
+# notifs_heartbeat <app_id> <name> [fail]   (pass the word "fail" to report a failed run)
+notifs_heartbeat() {
+  local suffix=""
+  [ "${3:-}" = "fail" ] && suffix="/fail"
+  curl -fsS -m 10 --retry 3 -X POST "$NOTIFS_URL/v1/heartbeats/$1/$2$suffix" \
+    -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" > /dev/null
+}
+```
+
+Both were run against a local stack: an accepted message, the same key resubmitted (same `message_id`), a
+send with no route (`422`), a malformed envelope (`400`), an unreachable service (a clean failure, no
+exception), and the heartbeat success, `/fail` and unknown-check cases. A workflow container that can only
+run a restricted `curl` needs its allowlist to admit the delivery-api host and the two Access headers.
+
+### 4. Roll out in steps, each reversible
+
+0. **Operator setup** (see "Onboarding a new app"). Create destinations from the app's existing webhook
+   URLs, but point the **first routes at a test channel**, so nothing reaches the real channel until you
+   choose. Start on the app's staging environment with its own token.
+1. **Heartbeats first.** They are purely additive: nothing is removed, and silent stalls of the app's jobs
+   start alerting.
+2. **Shadow one lane.** Run it in `both` mode with the route on the test channel, and compare messages
+   against the old path for a few days.
+3. **Switch lane by lane**, lowest risk first: background and ops messages, then activity pings, then any
+   lane where a user waits on the result (use `wait`).
+4. **Retire.** After a clean window, delete the old send code and its secret from compose and CI. Keep a
+   single direct webhook only for `critical` alerts.
+
+Rolling back any step is setting that lane's mode back to `direct`.
+
+### 5. Cutover check, per lane
+
+- A message reaches the intended channel, and the delivery log shows it as `delivered`.
+- Resending the same `idempotency_key` returns `"duplicate": true` and does not post again.
+- Disabling a destination makes a send addressed to it by name fail with `409 destination disabled`, and
+  the app's direct fallback fires for `critical` messages.
+- The app logs `message_id` for every send.
+- Staging and local environments cannot post to the production channel: staging has its own token and
+  test-channel routes, and local runs in a log-only mode.
+
+### 6. Pitfalls
+
+- **Idempotency keys:** stable per event and different for every event. A timestamp-based key defeats
+  deduplication; a constant key drops every message after the first.
+- **`202` is not delivery.** Only `wait` plus `deliveries[].state` tells you.
+- **The webhook URL moves.** It becomes a sealed, masked destination secret. If it lived in many places,
+  rotate it once the migration is done.
+- **Egress.** The app's container must be allowed to reach `notifs-delivery.4irl.app`; allowlisting
+  wrappers such as a restricted `curl` need updating.
+- **Leaving both paths forever** doubles the failure modes. Set a date to retire the old one.
+- **Per-app tokens are an operator-trust boundary,** not isolation between apps.
+
+---
+
+## Agent quick reference (delivery-api)
+
+Everything a program or an LLM agent needs to call delivery-api correctly, in one place. It is derived
+from the handlers and validators; the sections it points to hold the edge cases.
+
+**Base URL:** `https://notifs-delivery.4irl.app`
+
+**Auth, on every request:** headers `CF-Access-Client-Id: <id>` and `CF-Access-Client-Secret: <secret>`.
+An app token reaches `/v1/messages*`, `/v1/heartbeats/*`, `/readyz` and `/healthz`. `/v1/admin/*` needs the
+operator proxy token: an app token gets a Cloudflare Access `403` before the API sees the request.
+
+**Format:** bodies are JSON (`Content-Type: application/json`); the heartbeat pings take no body. Errors
+are `{"error":"<message>"}` with the HTTP status. Timestamps are RFC3339 UTC. `POST /v1/messages` rejects
+unknown fields with `400 {"error":"invalid JSON body"}`. Destination secrets are masked on every read; the
+only time a secret is returned is the new `signing_secret` from `rotate-secret`, once.
+
+### App-facing endpoints (app token)
+
+| Method and path                                              | Request                       | Success                                                  | Errors                                                                          |
+| ------------------------------------------------------------ | ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `POST /v1/messages` (optional `?wait=0..10`)                 | envelope JSON (see Envelope)  | `202 {"message":{…},"duplicate":bool,"replaced":bool}`   | 400 validation, 409 `destination disabled`, 413, 422 `no destination matched` / `app has no ntfy publisher`, 429, 503 `messages unavailable` |
+| `GET /v1/messages/{id}?app_id=<app>`                         | none                          | `200 {"message":{…}}`                                    | 400 `app_id is required`, 404 `message not found`                               |
+| `GET /v1/messages?app_id=<app>&idempotency_key=<key>`        | none                          | `200 {"message":{…}}`                                    | 400, 404                                                                        |
+| `DELETE /v1/messages/{id}?app_id=<app>` or `DELETE /v1/messages?app_id=<app>&idempotency_key=<key>` | none | `200 {"message_id","cancelled":bool,"status"}` (idempotent) | 400                                          |
+| `POST /v1/heartbeats/{app_id}/{name}`                        | none                          | `200 {"app_id","name","state"}`                          | 400, 404 `check not found`, 503 `heartbeats unavailable`                        |
+| `POST /v1/heartbeats/{app_id}/{name}/fail`                   | none                          | `200 {"app_id","name","state"}` (state `down`)           | same                                                                            |
+| `GET /readyz`                                                | none                          | `200` readiness body (below)                             | `503 {"status":"unavailable"}` (database unreachable) or `503` with `"status":"schema_mismatch"` |
+
+Message object (illustrative values; `status` is `pending`, `delivered`, `dead`, `partial`, `scheduled` or
+`cancelled`; a delivery `state` is `pending`, `delivered`, `dead`, `scheduled` or `cancelled`):
+
+```json
+{
+  "message": {
+    "message_id": "<uuid>",
+    "app_id": "myapp",
+    "channel": "alerts",
+    "idempotency_key": "onboarding-test-1",
+    "critical": false,
+    "status": "delivered",
+    "deliver_at": null,
+    "created_at": "2026-10-21T04:00:00Z",
+    "cancelled_at": null,
+    "deliveries": [
+      {
+        "id": 1,
+        "destination": "ops_discord",
+        "state": "delivered",
+        "dead_reason": null,
+        "attempt_count": 1,
+        "last_status_code": 204,
+        "next_attempt_at": null,
+        "delivered_at": "2026-10-21T04:00:01Z"
+      }
+    ]
+  },
+  "duplicate": false,
+  "replaced": false
+}
+```
+
+Readiness body: `{"status":"ok","schema_version":6,"expected_schema_version":6,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false}}`.
+The HTTP status stays `200` even when `heartbeat_checker.stale` is `true`; read the field.
+
+### Operator endpoints (proxy token; used to onboard an app)
+
+| Method and path                                      | Request body                                                                                  | Success                                          | Errors                                                                       |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `POST /v1/admin/destinations`                        | `{"name","type":"ntfy"\|"discord"\|"webhook","enabled"?,"config":{…},"secrets":{…}}`         | `201 {"destination":{…}}`                        | 400 validation, 409 `destination already exists`                             |
+| `GET /v1/admin/destinations`                         | none                                                                                          | `200 {"destinations":[…]}`                       |                                                                              |
+| `GET`, `PATCH`, `DELETE /v1/admin/destinations/{name}` | `PATCH`: `{"enabled"?,"config"?,"secrets"?}` merged per key                                | `200` (`DELETE`: `{"name","deleted"}`)           | 404 `destination does not exist`; `DELETE` also 409 `destination is in use` (a route or a heartbeat check uses it) |
+| `POST /v1/admin/destinations/{name}/rotate-secret`   | `{"overlap_hours":1..168}` (webhook destinations only)                                        | `200` destination plus the new `signing_secret`  | 400, 404, 422 `destination type does not support rotation`                   |
+| `POST /v1/admin/routes`                              | `{"app_pattern","channel_pattern","destinations":["<name>",…],"enabled"?}`                    | `201 {"route":{…}}`                              | 400 validation or `unknown destination`, 409 `route already exists`          |
+| `GET /v1/admin/routes`; `GET`, `PATCH`, `DELETE /v1/admin/routes/{id}` | `PATCH`: any of the four fields; `destinations` replaces the whole set       | `200` (`DELETE`: `{"id","deleted"}`)             | 404 `route does not exist`                                                   |
+| `POST /v1/admin/heartbeats`                          | `{"app_id","name","period_seconds","grace_seconds","destinations":["<name>",…]}`              | `201 {"check":{…}}`                              | 400 validation or `unknown destination`, 409 `check already exists`          |
+| `GET /v1/admin/heartbeats`                           | none                                                                                          | `200 {"checks":[…]}`                             |                                                                              |
+| `GET`, `PATCH`, `DELETE /v1/admin/heartbeats/{id}`   | `PATCH`: any of `period_seconds`, `grace_seconds`, `destinations`                             | `200 {"check":{…}}` (`DELETE`: `{"id","deleted"}`, idempotent) | 400 `app_id and name are immutable`, 404 `check not found`         |
+| `POST /v1/admin/heartbeats/{id}/pause` and `/resume` | none                                                                                          | `200 {"check":{…}}` (idempotent)                 | 404                                                                          |
+| `POST /v1/admin/apps/{app_id}/ntfy-publisher`        | none                                                                                          | `200 {"publisher":{"app_id","publisher_user_id","topic_pattern","created_at","updated_at"}}` (never the token) | 502 mint failed, 503 not configured |
+| `GET`, `DELETE /v1/admin/apps/{app_id}/ntfy-publisher` | none                                                                                        | `200` as above / `204` (idempotent)              | 404 `GET` when none is stored                                                |
+
+**Destination `config` and `secrets` by `type`** (an unknown key is `400 unknown field <section>.<key>`):
+
+| `type`    | `config`                                  | `secrets`                                                                                          |
+| --------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `ntfy`    | `topic` (required, `[A-Za-z0-9_-]`, 1-64) | `access_token` (optional, `tk_` plus 29 lowercase letters or digits)                               |
+| `discord` | none                                      | `webhook_url` (required, https, a Discord host, path `/api/webhooks/<id>/<token>`)                 |
+| `webhook` | none (rotation adds `previous_secret_expires_at`) | `url` (required, https) and `signing_secret` (required, printable ASCII, 32-256 bytes)     |
+
+A destination view is `{"name","type","enabled","disabled_reason","config","secrets"(masked),"created_at","updated_at"}`.
+`enabled` defaults to `true` on create.
+
+**Route patterns:** `app_pattern` is `*` or one exact `app_id`; `channel_pattern` is `*`, one exact channel,
+or a prefix ending in one `*` (for example `alert_*`). A route lists 1-20 distinct destination names. A
+route view is `{"id","app_pattern","channel_pattern","destinations","enabled","created_at","updated_at"}`.
+
+**Heartbeat bounds:** `app_id` and `name` match `^[a-z0-9][a-z0-9_]{0,62}$`; `period_seconds` 60 to
+2678400; `grace_seconds` 60 to 604800; 1-20 distinct, existing `destinations`. A check view is
+`{"id","app_id","name","period_seconds","grace_seconds","paused","state","last_ping_at","last_ping_kind","down_since","deadline_at","destinations":[{"name","type","enabled"}],"created_at","updated_at"}`
+with `state` one of `new`, `up`, `late`, `down` and `last_ping_kind` `success` or `fail`.
+
+### Copy-paste onboarding recipe
+
+Variables: `OP_ID` / `OP_SECRET` (operator proxy token), `NOTIFS_ID` / `NOTIFS_SECRET` (the app's token),
+`B=https://notifs-delivery.4irl.app`. Names below are examples.
+
+```bash
+# 1-3 (operator): a destination, a route to it, and a heartbeat check
+curl -fsS -X POST "$B/v1/admin/destinations" -H "CF-Access-Client-Id: $OP_ID" -H "CF-Access-Client-Secret: $OP_SECRET" -H "Content-Type: application/json" \
+  -d '{"name":"ops_discord","type":"discord","secrets":{"webhook_url":"https://discord.com/api/webhooks/<id>/<token>"}}'
+curl -fsS -X POST "$B/v1/admin/routes" -H "CF-Access-Client-Id: $OP_ID" -H "CF-Access-Client-Secret: $OP_SECRET" -H "Content-Type: application/json" \
+  -d '{"app_pattern":"myapp","channel_pattern":"alerts","destinations":["ops_discord"]}'
+curl -fsS -X POST "$B/v1/admin/heartbeats" -H "CF-Access-Client-Id: $OP_ID" -H "CF-Access-Client-Secret: $OP_SECRET" -H "Content-Type: application/json" \
+  -d '{"app_id":"myapp","name":"nightly_backup","period_seconds":86400,"grace_seconds":3600,"destinations":["ops_discord"]}'
+
+# 4 (app): send a message and read the delivery result
+curl -fsS -X POST "$B/v1/messages?wait=10" -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" -H "Content-Type: application/json" \
+  -d '{"app_id":"myapp","channel":"alerts","idempotency_key":"onboarding-test-1","payload":{},"display":{"title":"myapp is connected","body":"First message"}}'
+
+# 5 (app): ping the heartbeat when the job succeeds (append /fail when it fails)
+curl -fsS -m 10 --retry 3 -X POST "$B/v1/heartbeats/myapp/nightly_backup" -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET"
+```
+
+Success for step 4 is `202` with every `deliveries[].state` equal to `delivered`; for step 5 it is `200`
+with `"state":"up"`.
+
+### Retry rules for a program or agent
+
+- **Safe to retry with the same body:** a network error, a timeout, any `5xx`, and `503`. Keep the same
+  `idempotency_key`; a duplicate comes back flagged `"duplicate": true` and never sends twice.
+- **Do not retry unchanged:** `400`, `404`, `409`, `413`, `422` (fix the request or the operator setup
+  first), and `429` (a scheduled-message cap, not a transient error).
+- **A `202` is not delivery.** Without `?wait`, or when a delivery is still `pending`, read
+  `GET /v1/messages/{id}?app_id=` until each `deliveries[].state` is final (`delivered` or `dead`).
+- **A `dead` delivery is a destination problem, not a reason to resend.** `dead_reason` and
+  `last_status_code` say why (for example `terminal_status` with `403`: the destination rejected the
+  request). Fix the destination, then ask the operator to replay the delivery; re-posting the same
+  `idempotency_key` returns the stored message and does not resend.
+- **A `403` or a redirect to a Cloudflare login page** comes from Access, not the API: the token is
+  missing, wrong, or not authorized on that path.
 
 ---
 
@@ -64,6 +564,9 @@ CF-Access-Client-Secret: <client-secret>
 Without this, `notifs-api.4irl.app` returns a Cloudflare Access `403`/redirect — you never reach the API.
 
 `app_id` rule: lowercase letters, digits, and underscores, 1–63 chars (e.g. `urls4irl`, `tasktracker`).
+
+This token is for `notifs-api` only. An app that also sends through delivery-api or pings heartbeats
+needs a second token authorized on `notifs-delivery`; see **Onboarding a new app** above.
 
 ---
 
@@ -744,6 +1247,21 @@ Notes:
 
 ## Integration checklist
 
+### delivery-api and heartbeats (see "Onboarding a new app")
+
+- [ ] Operator confirmed the `/v1/admin` Access split, then issued a token authorized on the whole-host
+      `notifs-delivery` app only.
+- [ ] Destinations and routes exist for the app, and a destination send-test arrived.
+- [ ] Backend stores the `notifs-delivery` Client ID and Secret as secrets.
+- [ ] First `POST /v1/messages?wait=10` returned `202` with every `deliveries[].state` `delivered`.
+- [ ] `idempotency_key` is stable per event; critical alerts have the direct fallback.
+- [ ] (Recipients) The app's ntfy publisher is minted and users are provisioned.
+- [ ] One heartbeat check per recurring job, with a grace of at least 1 hour for daily jobs.
+- [ ] Each job sends a success ping (and a `/fail` ping where it can tell), and the check moved from
+      Waiting to Up after one run.
+
+### ntfy direct
+
 - [ ] Operator issued your app a Cloudflare Access service token, authorized on `notifs-api`.
 - [ ] Backend stores `CF-Access-Client-Id` / `CF-Access-Client-Secret` as secrets.
 - [ ] Called `POST /v1/provision-app` once; stored the **publisher token**.
@@ -763,5 +1281,7 @@ Notes:
 - [ ] All mint responses (`token`) are captured on first response — they are never re-shown.
 
 ## Related docs
-- `ARCHITECTURE.md` — how the service works + Cloudflare/auth config.
+- `ARCHITECTURE.md` — how the service works + Cloudflare/auth config, including the heartbeat watchdog
+  operator runbook and the debugging quick reference.
+- `README.md` — components, the local stack and delivery-api's runtime configuration.
 - `admin-ui-same-origin` plan (`~/code/plans/4irl-notifs/`) — the admin console architecture.
