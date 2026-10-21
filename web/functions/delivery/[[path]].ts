@@ -36,8 +36,36 @@ function isAllowlisted({ method, pathname }: { method: string; pathname: string 
   return pathname.startsWith(ADMIN_PREFIX) && pathname.length > ADMIN_PREFIX.length;
 }
 
+/**
+ * True when the request carries at least one byte of body. `request.body` cannot
+ * answer this: workerd gives a body-less DELETE or POST an empty stream, never null
+ * (only GET and HEAD get null), so the first chunk is read from a clone instead.
+ */
+async function hasBodyBytes(request: Request): Promise<boolean> {
+  const stream = request.clone().body;
+  if (stream === null) {
+    return false;
+  }
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        return false;
+      }
+      if (value.byteLength > 0) {
+        return true;
+      }
+    }
+  } finally {
+    // Not awaited: cancelling one branch of a cloned stream only settles once the other
+    // branch (the original body, still to be read by the proxy) finishes or is cancelled.
+    void reader.cancel().catch(() => undefined);
+  }
+}
+
 /** Cross-site guard for non-GET requests; returns a refusal response or null. */
-function crossSiteGuard(request: Request): Response | null {
+async function crossSiteGuard(request: Request): Promise<Response | null> {
   if (request.method === 'GET') {
     return null;
   }
@@ -46,9 +74,11 @@ function crossSiteGuard(request: Request): Response | null {
   if (!sameOrigin && !hasCustomHeader) {
     return jsonError({ status: 403, error: 'cross-site request refused' });
   }
-  if (request.body !== null) {
-    const contentType = (request.headers.get('Content-Type') ?? '').toLowerCase();
-    const mediaType = contentType.split(';')[0].trim();
+  // A declared Content-Type or any real body must be JSON; a body-less DELETE or
+  // POST (delete, pause, resume, replay) declares neither and passes.
+  const declaredType = request.headers.get('Content-Type');
+  if (declaredType !== null || (await hasBodyBytes(request))) {
+    const mediaType = (declaredType ?? '').toLowerCase().split(';')[0].trim();
     if (mediaType !== 'application/json') {
       return jsonError({ status: 415, error: 'unsupported media type' });
     }
@@ -63,7 +93,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   if (!isAllowlisted({ method: request.method, pathname })) {
     return notFound();
   }
-  const refusal = crossSiteGuard(request);
+  const refusal = await crossSiteGuard(request);
   if (refusal !== null) {
     return refusal;
   }
