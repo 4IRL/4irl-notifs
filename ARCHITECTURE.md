@@ -279,8 +279,10 @@ Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABL
 
 `https://notifs-setup.4irl.app` is a public, self-contained static page that walks an end user through
 installing and configuring the ntfy app (iPhone: ordered steps with copy buttons; Android: one-tap
-`ntfy://` subscribe buttons; desktop: a QR handoff plus a phone picker). Consuming apps link to it as
-`?app=<app_id>&user=u_<hash>&name=<display name>`; the URL contract is in
+`ntfy://` subscribe buttons; desktop: a QR handoff plus a phone picker). Every view starts with an
+install card of three equal buttons (Google Play, F-Droid, App Store) that never changes with the
+detected phone; it uses generic icons and plain store names, not the stores' badges or logos.
+Consuming apps link to it as `?app=<app_id>&user=u_<hash>&name=<display name>`; the URL contract is in
 [`docs/app-integration-guide.md`](docs/app-integration-guide.md) ("Link your users to the setup page").
 
 - **Layout:** `setup-web/` is a sibling project to `web/` (React + Vite + `qrcode.react`, bundled at

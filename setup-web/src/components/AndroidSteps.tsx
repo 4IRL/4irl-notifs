@@ -1,10 +1,9 @@
-import { GOOGLE_PLAY_URL, subscribeHref } from '../ntfyLinks';
+import { subscribeHref } from '../ntfyLinks';
 import { NTFY_SERVER } from '../params';
 import { strings } from '../strings';
 import { CopyField } from './CopyField';
 import { Screenshot } from './Screenshot';
 import { Step } from './Step';
-import { StoreLink } from './StoreLink';
 import './Steps.css';
 
 interface AndroidStepsProps {
@@ -18,8 +17,8 @@ interface AndroidStepsProps {
   oneTap: boolean;
 }
 
-// The four Android steps. Both topics always get a CopyField (issue #46); the
-// one-tap variant adds ntfy:// anchors above them.
+// The three Android steps (the install card above the tabs covers getting the app). Both
+// topics always get a CopyField (issue #46); the one-tap variant adds ntfy:// anchors above them.
 export function AndroidSteps({
   displayName,
   user,
@@ -29,10 +28,7 @@ export function AndroidSteps({
 }: AndroidStepsProps) {
   return (
     <ol className="setup-page__steps" role="list">
-      <Step number={1} title={strings.installNtfyTitle}>
-        <StoreLink href={GOOGLE_PLAY_URL} label={strings.googlePlayLink} />
-      </Step>
-      <Step number={2} title={strings.logInTitle}>
+      <Step number={1} title={strings.logInTitle}>
         <p>
           {strings.androidLogInBefore}
           <b>{strings.androidLogInBold}</b>
@@ -44,7 +40,7 @@ export function AndroidSteps({
         <Screenshot name="androidAddUser" />
       </Step>
       {oneTap ? (
-        <Step number={3} title={strings.androidOneTapTitle}>
+        <Step number={2} title={strings.androidOneTapTitle}>
           <div className="setup-page__subscribe-group">
             <a className="setup-page__primary" href={subscribeHref(personalTopic)}>
               {strings.androidOneTapPersonal}
@@ -68,7 +64,7 @@ export function AndroidSteps({
           </div>
         </Step>
       ) : (
-        <Step number={3} title={strings.androidCopyTitle}>
+        <Step number={2} title={strings.androidCopyTitle}>
           <p>
             {strings.androidCopyBefore}
             <b>{strings.androidCopyBold}</b>
@@ -79,7 +75,7 @@ export function AndroidSteps({
           <p className="setup-page__fallback">{strings.androidCopyOnPhoneNote}</p>
         </Step>
       )}
-      <Step number={4} title={strings.testItTitle}>
+      <Step number={3} title={strings.testItTitle}>
         <p>
           {strings.testItBefore(displayName)}
           <b>{strings.testItBold}</b>

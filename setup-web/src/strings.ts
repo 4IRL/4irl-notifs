@@ -21,7 +21,7 @@ export const strings = {
   qrHeading: 'Continue on your phone',
   qrAriaLabel: 'QR code that opens this setup page on your phone',
   qrCaption: "Scan with your phone's camera. Copy buttons and one-tap links work best there.",
-  stepsHere: 'Or follow the steps here',
+  stepsHere: 'Follow the steps here instead',
   footer: 'This page never sees your password and sends nothing anywhere.',
   copyButton: 'Copy',
   // Accessible name of the idle button; the visible text is just "Copy".
@@ -32,13 +32,16 @@ export const strings = {
   copyError: "Couldn't copy. Press and hold the value above to select it.",
 
   // Shared step copy. Bold segments are split out so components render <b> without HTML in strings.
-  // Decorative mark after an external link's text; rendered aria-hidden.
-  externalLinkMark: '↗',
-  // Screen-reader-only cue appended to links that open a new tab.
+  // Cue appended to the accessible name of links that open a new tab.
   opensInNewTab: ' (opens in a new tab)',
-  installNtfyTitle: 'Install ntfy',
-  appStoreLink: 'Get ntfy on the App Store',
-  googlePlayLink: 'Get ntfy on Google Play',
+  // Install card. The store names are plain text: the page ships no brand artwork or logos.
+  installCardHeading: 'Get the ntfy app',
+  installCardNote: "It's free. Skip this if you already have it.",
+  // Prefix of each store link's accessible name: "Get ntfy on Google Play (opens in a new tab)".
+  getNtfyOn: 'Get ntfy on ',
+  googlePlayName: 'Google Play',
+  fDroidName: 'F-Droid',
+  appStoreName: 'App Store',
   logInTitle: 'Log in',
   labelServiceUrl: 'Service URL',
   labelUsername: 'Username',
