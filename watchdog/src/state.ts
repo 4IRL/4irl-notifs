@@ -78,11 +78,13 @@ export async function readState(kv: KVNamespace): Promise<StateRead> {
   return { kind: 'loaded', state, raw };
 }
 
-/** A failed write is logged and never propagated: the post (if any) has already gone out. */
-export async function writeState({ kv, serialized }: { kv: KVNamespace; serialized: string }): Promise<void> {
+/** A failed write is logged and never propagated (the post, if any, has already gone out); returns whether it succeeded. */
+export async function writeState({ kv, serialized }: { kv: KVNamespace; serialized: string }): Promise<boolean> {
   try {
     await kv.put(STATE_KEY, serialized);
+    return true;
   } catch (error) {
     console.error('watchdog: KV state write failed', error instanceof Error ? error.name : 'Error');
+    return false;
   }
 }

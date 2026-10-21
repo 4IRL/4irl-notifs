@@ -12,6 +12,7 @@ import {
   PROVISIONING_URL,
   WEBHOOK_URL,
   buildEnv,
+  healthyDelivery,
   healthyRoutes,
   readStoredState,
   runScheduled,
@@ -22,12 +23,14 @@ import type { Routes } from './harness';
 
 let errorSpy: MockInstance<typeof console.error>;
 let warnSpy: MockInstance<typeof console.warn>;
+let logSpy: MockInstance<typeof console.log>;
 
 // Storage isolation is per test FILE, so clear the state key before every test.
 beforeEach(async () => {
   await env.WATCHDOG_STATE.delete('state');
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -37,7 +40,20 @@ afterEach(() => {
 });
 
 function consoleOutput(): string {
-  return [...errorSpy.mock.calls, ...warnSpy.mock.calls].flat().map(String).join('\n');
+  return [...errorSpy.mock.calls, ...warnSpy.mock.calls, ...logSpy.mock.calls].flat().map(String).join('\n');
+}
+
+function logLines(): string[] {
+  return logSpy.mock.calls.flat().map(String);
+}
+
+/** Fails with `status` on the first call and answers with `after` on every later call. */
+function failThenRecover({ status, after }: { status: number; after: Routes['ntfy'] }): Routes['ntfy'] {
+  let calls = 0;
+  return (call) => {
+    calls += 1;
+    return calls === 1 ? new Response('boom', { status }) : after(call);
+  };
 }
 
 /** Runs the scheduled handler once with a fresh spy KV over the shared real KV state. */
@@ -241,6 +257,9 @@ describe('probe verdicts', () => {
     expect(aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     expect(aborted).toBe(true);
+    // The retry hangs too: it needs its own 10 s before the target is reported down. The extra
+    // millisecond is because the zero-delay retry timer fires 1 ms into the tick.
+    await vi.advanceTimersByTimeAsync(10_001);
     await pending;
     expect(stub.discordPosts().map((post) => post.content)).toEqual(['🔴 **DOWN** `ntfy`: timeout after 10 s']);
   });
@@ -259,6 +278,7 @@ describe('probe verdicts', () => {
     const kv = spyKv();
     const pending = runScheduled({ at: MORNING, workerEnv: buildEnv({ kv: kv.kv }) });
     await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(10_001);
     await pending;
     expect(stub.discordPosts().map((post) => post.content)).toEqual(['🔴 **DOWN** `ntfy`: timeout after 10 s']);
   });
@@ -437,6 +457,155 @@ describe('failure handling', () => {
     });
     expect(retried.stub.discordPosts().map((post) => post.content)).toEqual(['🔴 **DOWN** `ntfy`: HTTP 500']);
     expect(retried.kv.put).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('retry before alerting', () => {
+  it('stays quiet when the first attempt fails and the retry passes, and warns in the log', async () => {
+    await run({ at: MORNING, routes: healthyRoutes(MORNING) });
+    const at = MORNING + 5 * MINUTE;
+    const routes = {
+      ...healthyRoutes(at),
+      delivery: failThenRecover({ status: 520, after: healthyDelivery(at) }),
+    };
+    const result = await run({ at, routes });
+    expect(result.stub.discordPosts()).toHaveLength(0);
+    expect(result.stub.callsTo(DELIVERY_URL)).toHaveLength(2);
+    expect(result.kv.put).not.toHaveBeenCalled();
+    expect((await readStoredState())?.targets['delivery-api']?.status).toBe('up');
+    expect(warnSpy.mock.calls.flat().map(String).join('\n')).toContain(
+      'watchdog: probe recovered on retry id=delivery-api first_detail="HTTP 520"',
+    );
+  });
+
+  it('alerts with the retry verdict when both attempts fail', async () => {
+    let calls = 0;
+    const routes = {
+      ...healthyRoutes(MORNING),
+      delivery: () => new Response('boom', { status: ++calls === 1 ? 520 : 503 }),
+    };
+    const result = await run({ at: MORNING, routes });
+    expect(result.stub.callsTo(DELIVERY_URL)).toHaveLength(2);
+    expect(result.stub.discordPosts().map((post) => post.content)).toEqual([
+      '🔴 **DOWN** `delivery-api`: HTTP 503',
+    ]);
+  });
+
+  it('retries only the failing target, once, and never a passing one', async () => {
+    const routes = { ...healthyRoutes(MORNING), ntfy: () => new Response('x', { status: 500 }) };
+    const { stub } = await run({ at: MORNING, routes });
+    expect(stub.callsTo(NTFY_URL)).toHaveLength(2);
+    expect(stub.callsTo(DELIVERY_URL)).toHaveLength(1);
+    expect(stub.callsTo(PROVISIONING_URL)).toHaveLength(1);
+  });
+
+  it.each([
+    ['no override', undefined],
+    ['a non-numeric override', 'abc'],
+    ['a negative override', '-5'],
+  ])('waits 2 s before the retry with %s', async (_label, override) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const stub = stubFetch({
+      ...healthyRoutes(MORNING),
+      ntfy: failThenRecover({ status: 500, after: () => Response.json({ healthy: true }) }),
+    });
+    const kv = spyKv();
+    const pending = runScheduled({
+      at: MORNING,
+      workerEnv: buildEnv({ kv: kv.kv, PROBE_RETRY_DELAY_MS: override }),
+    });
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(stub.callsTo(NTFY_URL)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(stub.callsTo(NTFY_URL)).toHaveLength(2);
+    expect(stub.discordPosts()).toHaveLength(0);
+  });
+});
+
+describe('probe and run logging', () => {
+  it('logs one line per probe attempt with the status and duration', async () => {
+    await run({ at: MORNING, routes: healthyRoutes(MORNING) });
+    const probeLines = logLines().filter((line) => line.startsWith('watchdog: probe '));
+    expect(probeLines).toHaveLength(3);
+    expect(probeLines).toContainEqual(
+      expect.stringMatching(/^watchdog: probe id=delivery-api attempt=1 ok=true http=200 duration_ms=\d+$/),
+    );
+    expect(probeLines).toContainEqual(
+      expect.stringMatching(/^watchdog: probe id=ntfy attempt=1 ok=true http=200 duration_ms=\d+$/),
+    );
+  });
+
+  it('logs the failure detail and both attempts of a probe that stays down', async () => {
+    const routes = { ...healthyRoutes(MORNING), ntfy: () => new Response('x', { status: 500 }) };
+    await run({ at: MORNING, routes });
+    const lines = logLines();
+    for (const attempt of [1, 2]) {
+      expect(lines).toContainEqual(
+        expect.stringMatching(
+          new RegExp(`^watchdog: probe id=ntfy attempt=${attempt} ok=false http=500 duration_ms=\\d+ detail="HTTP 500"$`),
+        ),
+      );
+    }
+  });
+
+  it('logs http=none when no response arrived', async () => {
+    const routes = {
+      ...healthyRoutes(MORNING),
+      ntfy: () => {
+        throw new TypeError('connect ECONNREFUSED 10.0.0.1');
+      },
+    };
+    await run({ at: MORNING, routes });
+    expect(logLines()).toContainEqual(
+      expect.stringMatching(
+        /^watchdog: probe id=ntfy attempt=1 ok=false http=none duration_ms=\d+ detail="request failed \(TypeError\)"$/,
+      ),
+    );
+  });
+
+  it('logs a run summary: written on the first run, unchanged on the next', async () => {
+    await run({ at: MORNING, routes: healthyRoutes(MORNING) });
+    expect(logLines()).toContainEqual(
+      expect.stringMatching(
+        /^watchdog: run state=loaded up=3 down=0 transitions=0 discord=none kv_write=written duration_ms=\d+$/,
+      ),
+    );
+    logSpy.mockClear();
+    const at = MORNING + 5 * MINUTE;
+    await run({ at, routes: healthyRoutes(at) });
+    expect(logLines()).toContainEqual(
+      expect.stringMatching(/^watchdog: run state=loaded up=3 down=0 transitions=0 discord=none kv_write=unchanged /),
+    );
+  });
+
+  it('logs discord=failed and kv_write=skipped when the post fails', async () => {
+    const routes = {
+      ...healthyRoutes(MORNING),
+      ntfy: () => new Response('x', { status: 500 }),
+      discord: () => new Response('no', { status: 500 }),
+    };
+    await run({ at: MORNING, routes });
+    expect(logLines()).toContainEqual(
+      expect.stringMatching(
+        /^watchdog: run state=loaded up=2 down=1 transitions=1 discord=failed kv_write=skipped duration_ms=\d+$/,
+      ),
+    );
+  });
+
+  it('logs state=read_failed when the KV read throws', async () => {
+    await run({ at: MORNING, routes: healthyRoutes(MORNING), kvOptions: { getThrows: true } });
+    expect(logLines()).toContainEqual(
+      expect.stringMatching(/^watchdog: run state=read_failed up=3 down=0 transitions=0 discord=none kv_write=skipped /),
+    );
+  });
+
+  it('logs kv_write=failed when the post went out but the write threw', async () => {
+    const routes = { ...healthyRoutes(MORNING), ntfy: () => new Response('x', { status: 500 }) };
+    await run({ at: MORNING, routes, kvOptions: { putThrows: true } });
+    expect(logLines()).toContainEqual(
+      expect.stringMatching(/^watchdog: run state=loaded up=2 down=1 transitions=1 discord=posted kv_write=failed /),
+    );
   });
 });
 

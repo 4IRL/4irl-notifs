@@ -254,8 +254,8 @@ worker-deploy: ## Deploy person-service to Cloudflare (operator-run post-merge; 
 
 ## Worker (watchdog)
 
-watchdog-test: ## Run watchdog Worker tests (Vitest + workers pool)
-	cd watchdog && npm test
+watchdog-test: ## Run watchdog Worker tests (Vitest + workers pool); filter with args="-t <name>"
+	cd watchdog && npm test -- $(args)
 
 watchdog-build: ## Typecheck and dry-run bundle the watchdog Worker (tsc --noEmit + wrangler deploy --dry-run)
 	cd watchdog && npm run build
