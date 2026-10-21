@@ -1657,7 +1657,8 @@ describe('Heartbeats edit check', () => {
 
     expect(screen.getByLabelText(strings.heartbeatPeriodLabel)).toHaveValue(90);
     expect(screen.getByLabelText(strings.heartbeatPeriodUnitLabel)).toHaveValue('minutes');
-    expect(screen.getByLabelText(strings.heartbeatGraceLabel)).toHaveValue(1.5);
+    expect(screen.getByLabelText(strings.heartbeatGraceLabel)).toHaveValue(90);
+    expect(screen.getByLabelText(strings.heartbeatGraceUnitLabel)).toHaveValue('seconds');
     await user.click(button(strings.saveHeartbeat));
 
     expect(updateHeartbeat).not.toHaveBeenCalled();

@@ -97,9 +97,12 @@
 .pending-sends__actions-cell {
   position: sticky;
   inset-inline-end: 0;
-  background: var(--surface);
-  /* Soft edge on the scrolled-under side: shows there is more to scroll to. */
-  box-shadow: -0.5rem 0 0.5rem -0.5rem color-mix(in srgb, var(--text) 45%, transparent);
+  /* The page background, not the card surface: the table sits directly on the page,
+     so a lighter cell would read as a panel. */
+  background: var(--bg);
+  /* Soft dark edge on the scrolled-under side: shows there is more to scroll to. A
+     shadow built from the (light) text colour glows on a dark theme. */
+  box-shadow: -0.5rem 0 0.5rem -0.5rem rgb(0 0 0 / 60%);
 }
 
 /* Re-enables wrapping for the row error and the confirm notice inside the

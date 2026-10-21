@@ -70,8 +70,11 @@
   flex: 1 1 auto;
 }
 
+/* Never shrinks below its longest option: next to the flexing number input a
+   narrow column would otherwise squeeze the unit label ("minutes") into a clip. */
 .destination-form__select {
   width: auto;
+  flex: 0 0 auto;
 }
 
 .destination-form__actions {

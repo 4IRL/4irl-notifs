@@ -546,6 +546,7 @@ export const strings = {
   heartbeatGraceLabel: 'Grace',
   heartbeatPeriodUnitLabel: 'Period unit',
   heartbeatGraceUnitLabel: 'Grace unit',
+  heartbeatUnitSeconds: 'seconds',
   heartbeatUnitMinutes: 'minutes',
   heartbeatUnitHours: 'hours',
   heartbeatUnitDays: 'days',
