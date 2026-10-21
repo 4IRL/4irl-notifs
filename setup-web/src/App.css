@@ -83,9 +83,9 @@
   text-align: center;
 }
 
-/* Visually hidden but still read by screen readers. Shared by CopyField's "Copied"
-   live region and StoreLink's "opens in a new tab" cue; positioned against the
-   nearest positioned ancestor (CopyField sets one) or the page. */
+/* Visually hidden but still read by screen readers. Used by CopyField's "Copied"
+   live region; positioned against the nearest positioned ancestor (CopyField sets
+   one) or the page. */
 .setup-page__sr-only {
   position: absolute;
   width: 1px;

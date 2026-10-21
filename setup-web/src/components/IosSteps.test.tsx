@@ -1,7 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { APP_STORE_URL } from '../ntfyLinks';
 import { screenshots } from '../screenshots';
 import { strings } from '../strings';
 import { expectCopyButtonsCopy } from './copyAssertions';
@@ -19,12 +18,11 @@ function renderSteps() {
 }
 
 describe('IosSteps', () => {
-  it('renders the six steps in order with their headings', () => {
+  it('renders the five steps in order with their headings', () => {
     renderSteps();
 
     const steps = screen.getAllByRole('listitem');
     const titles = [
-      strings.installNtfyTitle,
       strings.iosServerTitle,
       strings.logInTitle,
       strings.iosPersonalTitle,
@@ -39,13 +37,10 @@ describe('IosSteps', () => {
     expect(screen.getByRole('list')).toBeInTheDocument();
   });
 
-  it('links to the App Store in a new tab with noopener noreferrer', () => {
+  it('renders no links: the install card owns the store downloads', () => {
     renderSteps();
 
-    const link = screen.getByRole('link', { name: new RegExp(strings.appStoreLink) });
-    expect(link).toHaveAttribute('href', APP_STORE_URL);
-    expect(link).toHaveAttribute('target', '_blank');
-    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 
   it('renders exactly four copy buttons that copy the exact derived values', async () => {
@@ -89,14 +84,14 @@ describe('IosSteps', () => {
     expect(container.querySelector('input, textarea, form')).toBeNull();
   });
 
-  it('renders the two iPhone screenshots in steps 2 and 3 with distinct alt text and sizes', () => {
+  it('renders the two iPhone screenshots in steps 1 and 2 with distinct alt text and sizes', () => {
     renderSteps();
 
     const steps = screen.getAllByRole('listitem');
-    const serverShot = within(steps[1]).getByRole('img', {
+    const serverShot = within(steps[0]).getByRole('img', {
       name: screenshots.iosDefaultServer.alt,
     });
-    const userShot = within(steps[2]).getByRole('img', { name: screenshots.iosAddUser.alt });
+    const userShot = within(steps[1]).getByRole('img', { name: screenshots.iosAddUser.alt });
     expect(screen.getAllByRole('img')).toHaveLength(2);
     expect(serverShot).toHaveAttribute('src', screenshots.iosDefaultServer.src);
     expect(userShot).toHaveAttribute('src', screenshots.iosAddUser.src);

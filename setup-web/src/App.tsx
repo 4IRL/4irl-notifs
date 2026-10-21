@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 
 import { AndroidSteps } from './components/AndroidSteps';
+import { InstallCard } from './components/InstallCard';
 import { IosSteps } from './components/IosSteps';
 import { PlatformTabs } from './components/PlatformTabs';
 import { QrHandoff } from './components/QrHandoff';
@@ -68,11 +69,11 @@ export default function App({
         {strings.leadAfterNtfy}
       </p>
       {detected === null && (
-        <>
-          <QrHandoff app={app} user={user} name={nameIsFallback ? null : displayName} />
-          <h2 className="setup-page__section-h">{strings.stepsHere}</h2>
-        </>
+        <QrHandoff app={app} user={user} name={nameIsFallback ? null : displayName} />
       )}
+      {/* Static: the same three stores whatever the detected phone or selected tab. */}
+      <InstallCard />
+      {detected === null && <h2 className="setup-page__section-h">{strings.stepsHere}</h2>}
       <PlatformTabs
         detected={detected}
         selected={selected}

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 
 import { strings } from '../src/strings.ts';
 import {
@@ -253,6 +254,65 @@ test.describe('missing name', { tag: '@all' }, () => {
     await expect(badge).toHaveText('tasktracker');
     await expect(badge).toHaveClass(/setup-page__badge--mono/);
     await expect(page.getByRole('tablist')).toBeVisible();
+  });
+});
+
+test.describe('install card', { tag: '@all' }, () => {
+  // Host prefixes, not our own constants: this pins that the buttons go to the real stores.
+  const STORE_HOSTS = [
+    { name: strings.googlePlayName, hrefStart: 'https://play.google.com/' },
+    { name: strings.fDroidName, hrefStart: 'https://f-droid.org/' },
+    { name: strings.appStoreName, hrefStart: 'https://apps.apple.com/' },
+  ];
+
+  function storeLinks({ page }: { page: Page }) {
+    return page.getByRole('link', { name: new RegExp(`^${strings.getNtfyOn}`) });
+  }
+
+  test('shows the three store links in order, opening in a new tab', async ({ page }) => {
+    await page.goto(VALID_LINK);
+
+    await expect(
+      page.getByRole('heading', { level: 2, name: strings.installCardHeading }),
+    ).toBeVisible();
+    const links = storeLinks({ page });
+    await expect(links).toHaveCount(STORE_HOSTS.length);
+    for (const [index, { name, hrefStart }] of STORE_HOSTS.entries()) {
+      const link = links.nth(index);
+      await expect(link).toHaveText(name);
+      await expect(link).toHaveAttribute('href', new RegExp(`^${hrefStart}`));
+      await expect(link).toHaveAttribute('target', '_blank');
+      await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    }
+  });
+
+  test('stays on one row, tappable and unclipped, at 320px wide', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.goto(VALID_LINK);
+
+    const links = await storeLinks({ page }).all();
+    expect(links).toHaveLength(STORE_HOSTS.length);
+    const boxes = [];
+    for (const link of links) {
+      await expect(link).toBeVisible();
+      const box = await link.boundingBox();
+      if (box === null) throw new Error('store link has no bounding box');
+      boxes.push(box);
+      // The visible label is never clipped by its button.
+      expect(await link.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
+    // Never wraps: every button shares one top edge.
+    expect(new Set(boxes.map((box) => Math.round(box.y))).size).toBe(1);
+    // Comfortable tap target.
+    for (const box of boxes) {
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    }
+    // And the row does not push the page wider than the screen.
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
   });
 });
 

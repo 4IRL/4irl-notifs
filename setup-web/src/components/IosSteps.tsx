@@ -1,10 +1,8 @@
-import { APP_STORE_URL } from '../ntfyLinks';
 import { NTFY_SERVER } from '../params';
 import { strings } from '../strings';
 import { CopyField } from './CopyField';
 import { Screenshot } from './Screenshot';
 import { Step } from './Step';
-import { StoreLink } from './StoreLink';
 import './Steps.css';
 
 interface IosStepsProps {
@@ -14,16 +12,14 @@ interface IosStepsProps {
   broadcastTopic: string;
 }
 
-// The six iPhone steps. The iOS app has no deep link for subscribing, so every
-// value is a CopyField and nothing here renders an ntfy:// anchor.
+// The five iPhone steps (the install card above the tabs covers getting the app). The iOS
+// app has no deep link for subscribing, so every value is a CopyField and nothing here
+// renders an ntfy:// anchor.
 export function IosSteps({ displayName, user, personalTopic, broadcastTopic }: IosStepsProps) {
   return (
     // role="list" restores list semantics that WebKit drops under `list-style: none`.
     <ol className="setup-page__steps" role="list">
-      <Step number={1} title={strings.installNtfyTitle}>
-        <StoreLink href={APP_STORE_URL} label={strings.appStoreLink} />
-      </Step>
-      <Step number={2} title={strings.iosServerTitle}>
+      <Step number={1} title={strings.iosServerTitle}>
         <p>
           {strings.iosServerBefore}
           <b>{strings.iosServerBold}</b>
@@ -33,7 +29,7 @@ export function IosSteps({ displayName, user, personalTopic, broadcastTopic }: I
         <div className="setup-page__warn">{strings.iosServerWarning}</div>
         <Screenshot name="iosDefaultServer" />
       </Step>
-      <Step number={3} title={strings.logInTitle}>
+      <Step number={2} title={strings.logInTitle}>
         <p>
           {strings.iosLogInBefore}
           <b>{strings.iosLogInBold}</b>
@@ -43,7 +39,7 @@ export function IosSteps({ displayName, user, personalTopic, broadcastTopic }: I
         <p className="setup-page__pw">{strings.passwordNote(displayName)}</p>
         <Screenshot name="iosAddUser" />
       </Step>
-      <Step number={4} title={strings.iosPersonalTitle}>
+      <Step number={3} title={strings.iosPersonalTitle}>
         <p>
           {strings.iosPersonalBefore}
           <b>{strings.iosPersonalBold}</b>
@@ -51,7 +47,7 @@ export function IosSteps({ displayName, user, personalTopic, broadcastTopic }: I
         </p>
         <CopyField label={strings.labelPersonalTopic} value={personalTopic} />
       </Step>
-      <Step number={5} title={strings.iosBroadcastTitle}>
+      <Step number={4} title={strings.iosBroadcastTitle}>
         <p>
           {strings.iosBroadcastBefore}
           <b>{strings.iosBroadcastBold}</b>
@@ -59,7 +55,7 @@ export function IosSteps({ displayName, user, personalTopic, broadcastTopic }: I
         </p>
         <CopyField label={strings.labelBroadcastTopic} value={broadcastTopic} />
       </Step>
-      <Step number={6} title={strings.testItTitle}>
+      <Step number={5} title={strings.testItTitle}>
         <p>
           {strings.testItBefore(displayName)}
           <b>{strings.testItBold}</b>

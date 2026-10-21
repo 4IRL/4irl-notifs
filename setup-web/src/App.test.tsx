@@ -447,3 +447,65 @@ describe('platform switching and the URL', () => {
     expect(screen.getByRole('img', { name: strings.qrAriaLabel })).toBeInTheDocument();
   });
 });
+
+// True when `later` comes after `earlier` in document order.
+function follows({ earlier, later }: { earlier: Node; later: Node }) {
+  return Boolean(earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+function storeLinks() {
+  return screen.getAllByRole('link', { name: new RegExp(`^${strings.getNtfyOn}`) });
+}
+
+describe('App install card', () => {
+  const platforms = [
+    { name: 'iPhone', userAgent: IPHONE_UA },
+    { name: 'Android', userAgent: ANDROID_UA },
+    { name: 'desktop', userAgent: DESKTOP_UA },
+  ];
+
+  it.each(platforms)('shows all three store links on $name', ({ userAgent }) => {
+    renderApp({ userAgent });
+
+    expect(storeLinks()).toHaveLength(3);
+    expect(
+      screen.getByRole('heading', { level: 2, name: strings.installCardHeading }),
+    ).toBeVisible();
+  });
+
+  it.each(platforms)('puts the card above the platform tabs on $name', ({ userAgent }) => {
+    renderApp({ userAgent });
+
+    const heading = screen.getByRole('heading', { name: strings.installCardHeading });
+    expect(follows({ earlier: heading, later: screen.getByRole('tablist') })).toBe(true);
+  });
+
+  it('puts the card directly below the QR and above the steps prompt on desktop', () => {
+    renderApp({ userAgent: DESKTOP_UA });
+
+    const qr = screen.getByRole('img', { name: strings.qrAriaLabel });
+    const heading = screen.getByRole('heading', { name: strings.installCardHeading });
+    const stepsHeading = screen.getByRole('heading', { name: strings.stepsHere });
+    expect(follows({ earlier: qr, later: heading })).toBe(true);
+    expect(follows({ earlier: heading, later: stepsHeading })).toBe(true);
+  });
+
+  it('puts the card between the lead sentence and the tabs on a phone, with no QR', () => {
+    renderApp({ userAgent: IPHONE_UA });
+
+    const lead = screen.getByText(strings.leadNtfy, { selector: 'strong' });
+    const heading = screen.getByRole('heading', { name: strings.installCardHeading });
+    expect(follows({ earlier: lead, later: heading })).toBe(true);
+    expect(screen.queryByRole('img', { name: strings.qrAriaLabel })).not.toBeInTheDocument();
+  });
+
+  it('keeps the same three links when the selected tab changes', async () => {
+    const user = userEvent.setup();
+    renderApp({ userAgent: IPHONE_UA });
+    const before = storeLinks().map((link) => link.getAttribute('href'));
+
+    await user.click(screen.getByRole('tab', { name: strings.tabAndroid }));
+
+    expect(storeLinks().map((link) => link.getAttribute('href'))).toEqual(before);
+  });
+});

@@ -1,7 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { GOOGLE_PLAY_URL } from '../ntfyLinks';
 import { screenshots } from '../screenshots';
 import { strings } from '../strings';
 import { AndroidSteps } from './AndroidSteps';
@@ -33,31 +32,17 @@ function follows({ earlier, later }: { earlier: Node; later: Node }) {
 }
 
 describe('AndroidSteps with one-tap', () => {
-  it('renders four steps titled for the one-tap flow', () => {
+  it('renders three steps titled for the one-tap flow', () => {
     renderSteps({ oneTap: true });
 
     const steps = screen.getAllByRole('listitem');
-    const titles = [
-      strings.installNtfyTitle,
-      strings.logInTitle,
-      strings.androidOneTapTitle,
-      strings.testItTitle,
-    ];
+    const titles = [strings.logInTitle, strings.androidOneTapTitle, strings.testItTitle];
     expect(steps).toHaveLength(titles.length);
     // Accessible name excludes the aria-hidden numeral, so this pins title and order.
     titles.forEach((title, index) => {
       expect(within(steps[index]).getByRole('heading', { level: 2, name: title })).toBeVisible();
     });
     expect(screen.getByRole('list')).toBeInTheDocument();
-  });
-
-  it('links to Google Play in a new tab with noopener noreferrer', () => {
-    renderSteps({ oneTap: true });
-
-    const link = screen.getByRole('link', { name: new RegExp(strings.googlePlayLink) });
-    expect(link).toHaveAttribute('href', GOOGLE_PLAY_URL);
-    expect(link).toHaveAttribute('target', '_blank');
-    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
   it('renders both ntfy:// anchors with no target, primary then secondary', () => {
@@ -121,8 +106,8 @@ describe('AndroidSteps copy-only', () => {
     const { container } = renderSteps({ oneTap: false });
 
     expect(container.querySelector('a[href^="ntfy://"]')).toBeNull();
-    // Only the Google Play link remains.
-    expect(screen.getAllByRole('link')).toHaveLength(1);
+    // No store links either: the install card owns those.
+    expect(screen.queryAllByRole('link')).toHaveLength(0);
   });
 
   it('keeps all four copy buttons copying the exact values', async () => {
@@ -152,11 +137,11 @@ describe('AndroidSteps shared content', () => {
     },
   );
 
-  it.each([true, false])('renders the Add user screenshot in step 2 (oneTap=%s)', (oneTap) => {
+  it.each([true, false])('renders the Add user screenshot in step 1 (oneTap=%s)', (oneTap) => {
     renderSteps({ oneTap });
 
     const steps = screen.getAllByRole('listitem');
-    const shot = within(steps[1]).getByRole('img', { name: screenshots.androidAddUser.alt });
+    const shot = within(steps[0]).getByRole('img', { name: screenshots.androidAddUser.alt });
     expect(shot).toHaveAttribute('src', screenshots.androidAddUser.src);
     expect(screen.getAllByRole('img')).toHaveLength(1);
   });
