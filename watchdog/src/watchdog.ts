@@ -1,5 +1,5 @@
 import { formatDuration, formatSince, truncateContent } from './format';
-import { PROBE_TIMEOUT_MS, discardBody, probeTarget } from './probe';
+import { PROBE_TIMEOUT_MS, discardBody, probeWithRetry } from './probe';
 import { readState, writeState } from './state';
 import type { StateRead } from './state';
 import { TARGETS } from './targets';
@@ -136,45 +136,60 @@ export async function runWatchdog({ env, now }: { env: Env; now: number }): Prom
     console.warn('watchdog: Cloudflare Access credentials are not configured; Access-protected probes will fail');
   }
 
+  const startedAt = Date.now();
   const [stateRead, results] = await Promise.all([
     readState(env.WATCHDOG_STATE),
-    Promise.all(TARGETS.map((target) => probeTarget({ target, env, now }))),
+    Promise.all(TARGETS.map((target) => probeWithRetry({ target, env, now }))),
   ]);
 
   const previous = stateRead.kind === 'loaded' ? stateRead.state : null;
   const nowIso = new Date(now).toISOString();
   const { next, changeLines } = reconcile({ previous, results, nowIso, nowMs: now });
 
-  const today = nowIso.slice(0, 10);
-  // The summary is only decided on a run that could read the state: with an unreadable state the
-  // last summary date is unknown and the summary would otherwise repeat on every run after 16:00.
-  const summaryDue =
-    stateRead.kind === 'loaded' &&
-    new Date(now).getUTCHours() >= SUMMARY_HOUR_UTC &&
-    next.last_summary_date !== today;
-  if (summaryDue) {
-    next.last_summary_date = today;
-  }
+  let discord: 'none' | 'posted' | 'failed' = 'none';
+  let kvWrite: 'skipped' | 'unchanged' | 'written' | 'failed' = 'skipped';
+  try {
+    const today = nowIso.slice(0, 10);
+    // The summary is only decided on a run that could read the state: with an unreadable state the
+    // last summary date is unknown and the summary would otherwise repeat on every run after 16:00.
+    const summaryDue =
+      stateRead.kind === 'loaded' &&
+      new Date(now).getUTCHours() >= SUMMARY_HOUR_UTC &&
+      next.last_summary_date !== today;
+    if (summaryDue) {
+      next.last_summary_date = today;
+    }
 
-  const content = buildMessage({
-    stateRead,
-    changeLines,
-    summary: summaryDue ? summaryBlock(next.targets) : null,
-  });
-  if (content !== null) {
-    const posted = await postToDiscord({ webhookUrl, content });
-    if (!posted) {
+    const content = buildMessage({
+      stateRead,
+      changeLines,
+      summary: summaryDue ? summaryBlock(next.targets) : null,
+    });
+    if (content !== null) {
+      const posted = await postToDiscord({ webhookUrl, content });
+      discord = posted ? 'posted' : 'failed';
+      if (!posted) {
+        return;
+      }
+    } else if (stateRead.kind === 'unavailable' && stateRead.reason === 'read_failed') {
+      // A transient KV read failure with nothing to post: `next` was reconciled against no previous
+      // state, so writing it would reset last_summary_date and every up target's `since`.
       return;
     }
-  } else if (stateRead.kind === 'unavailable' && stateRead.reason === 'read_failed') {
-    // A transient KV read failure with nothing to post: `next` was reconciled against no previous
-    // state, so writing it would reset last_summary_date and every up target's `since`.
-    return;
-  }
 
-  const serialized = JSON.stringify(next);
-  const unchanged = stateRead.kind === 'loaded' && stateRead.raw === serialized;
-  if (!unchanged) {
-    await writeState({ kv: env.WATCHDOG_STATE, serialized });
+    const serialized = JSON.stringify(next);
+    if (stateRead.kind === 'loaded' && stateRead.raw === serialized) {
+      kvWrite = 'unchanged';
+    } else {
+      kvWrite = (await writeState({ kv: env.WATCHDOG_STATE, serialized })) ? 'written' : 'failed';
+    }
+  } finally {
+    const states = Object.values(next.targets);
+    const downCount = states.filter((state) => state.status === 'down').length;
+    console.log(
+      `watchdog: run state=${stateRead.kind === 'loaded' ? 'loaded' : stateRead.reason} ` +
+        `up=${states.length - downCount} down=${downCount} transitions=${changeLines.length} ` +
+        `discord=${discord} kv_write=${kvWrite} duration_ms=${Date.now() - startedAt}`,
+    );
   }
 }

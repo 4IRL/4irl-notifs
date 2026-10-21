@@ -61,8 +61,16 @@ export async function probeTarget({
   env: Env;
   now: number;
 }): Promise<ProbeResult> {
+  const startedAt = Date.now();
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), PROBE_TIMEOUT_MS);
+  let httpStatus: number | null = null;
+  const finish = (verdict: ProbeVerdict): ProbeResult => ({
+    id: target.id,
+    verdict,
+    httpStatus,
+    durationMs: Date.now() - startedAt,
+  });
   try {
     const response = await fetch(target.url, {
       method: 'GET',
@@ -70,22 +78,81 @@ export async function probeTarget({
       redirect: 'manual',
       signal: abort.signal,
     });
+    httpStatus = response.status;
     const decided = classifyStatus({ target, status: response.status });
     if (decided !== null) {
       await discardBody(response);
-      return { id: target.id, verdict: decided };
+      return finish(decided);
     }
     const verdict = await target.evaluate({ response, now });
     // A body read that was cut off by the timeout is swallowed by the evaluators' JSON parsing, so
     // the abort flag, not the verdict text, decides whether this was a timeout.
-    return { id: target.id, verdict: abort.signal.aborted ? timeoutVerdict() : verdict };
+    return finish(abort.signal.aborted ? timeoutVerdict() : verdict);
   } catch (error) {
     if (abort.signal.aborted) {
-      return { id: target.id, verdict: timeoutVerdict() };
+      return finish(timeoutVerdict());
     }
     const name = error instanceof Error ? error.name : 'Error';
-    return { id: target.id, verdict: { ok: false, detail: `request failed (${name})` } };
+    return finish({ ok: false, detail: `request failed (${name})` });
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Long enough to outlast a production deploy recreating the containers (about 8 to 10 s of refused connections).
+const DEFAULT_RETRY_DELAY_MS = 30_000;
+const MAX_RETRY_DELAY_MS = 60_000;
+
+/** The override must be a finite number between 0 and 60 s; anything else gets the default. */
+function retryDelayMs(env: Env): number {
+  const raw = env.PROBE_RETRY_DELAY_MS?.trim();
+  if (raw === undefined || raw === '') {
+    return DEFAULT_RETRY_DELAY_MS;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= MAX_RETRY_DELAY_MS ? parsed : DEFAULT_RETRY_DELAY_MS;
+}
+
+function describeDetail(verdict: ProbeVerdict): string {
+  return JSON.stringify(verdict.detail ?? 'unknown failure');
+}
+
+/**
+ * One line per attempt: enough to see afterwards what each probe returned and how long it took.
+ * Logging convention: `watchdog: <event> key=value ...`, one line per event, no secrets or URLs.
+ */
+function logProbe({ result, attempt }: { result: ProbeResult; attempt: number }): void {
+  const detail = result.verdict.ok ? '' : ` detail=${describeDetail(result.verdict)}`;
+  console.log(
+    `watchdog: probe id=${result.id} attempt=${attempt} ok=${result.verdict.ok} ` +
+      `http=${result.httpStatus ?? 'none'} duration_ms=${result.durationMs}${detail}`,
+  );
+}
+
+/**
+ * Probes a target and, when the first attempt fails, probes it once more after a short pause, so one
+ * transient failure (a stray 520, a dropped connection) does not alert. The retry's verdict is the
+ * one reported. Both attempts are logged, and a failure that the retry cleared is logged as a warning.
+ */
+export async function probeWithRetry({
+  target,
+  env,
+  now,
+}: {
+  target: Target;
+  env: Env;
+  now: number;
+}): Promise<ProbeResult> {
+  const first = await probeTarget({ target, env, now });
+  logProbe({ result: first, attempt: 1 });
+  if (first.verdict.ok) {
+    return first;
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs(env)));
+  const second = await probeTarget({ target, env, now });
+  logProbe({ result: second, attempt: 2 });
+  if (second.verdict.ok) {
+    console.warn(`watchdog: probe recovered on retry id=${target.id} first_detail=${describeDetail(first.verdict)}`);
+  }
+  return second;
 }

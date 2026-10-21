@@ -9,6 +9,12 @@ workers_dev = false
 [triggers]
 crons = ["*/5 * * * *"]
 
+# Keep the per-probe and per-run log lines (`watchdog: probe ...`, `watchdog: run ...`) so a past
+# alert can be investigated afterwards: Workers & Pages > notifs-watchdog > Logs. Without this they
+# are only visible while `wrangler tail` is running.
+[observability]
+enabled = true
+
 # Last-known state of every probe target lives in one KV key (`state`).
 # The id is the account-specific namespace created with
 # `wrangler kv namespace create WATCHDOG_STATE` (a resource identifier, not a credential); see the
