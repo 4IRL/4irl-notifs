@@ -41,6 +41,8 @@ describe('AndroidSteps with one-tap', () => {
     // Accessible name excludes the aria-hidden numeral, so this pins title and order.
     titles.forEach((title, index) => {
       expect(within(steps[index]).getByRole('heading', { level: 2, name: title })).toBeVisible();
+      // The visible numeral is aria-hidden, so assert it separately.
+      expect(steps[index].querySelector('.setup-page__num')).toHaveTextContent(String(index + 1));
     });
     expect(screen.getByRole('list')).toBeInTheDocument();
   });
@@ -93,8 +95,16 @@ describe('AndroidSteps with one-tap', () => {
 });
 
 describe('AndroidSteps copy-only', () => {
-  it('titles step 3 "Subscribe to your topics" with the on-your-phone note', () => {
+  it('titles step 2 "Subscribe to your topics" with the on-your-phone note', () => {
     renderSteps({ oneTap: false });
+
+    const steps = screen.getAllByRole('listitem');
+    const titles = [strings.logInTitle, strings.androidCopyTitle, strings.testItTitle];
+    expect(steps).toHaveLength(titles.length);
+    titles.forEach((title, index) => {
+      expect(within(steps[index]).getByRole('heading', { level: 2, name: title })).toBeVisible();
+      expect(steps[index].querySelector('.setup-page__num')).toHaveTextContent(String(index + 1));
+    });
 
     // The numeral badge is aria-hidden, so the accessible name is just the title.
     expect(screen.getByRole('heading', { name: strings.androidCopyTitle })).toBeInTheDocument();

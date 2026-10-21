@@ -33,6 +33,8 @@ describe('IosSteps', () => {
     // Accessible name excludes the aria-hidden numeral, so this pins title and order.
     titles.forEach((title, index) => {
       expect(within(steps[index]).getByRole('heading', { level: 2, name: title })).toBeVisible();
+      // The visible numeral is aria-hidden, so assert it separately.
+      expect(steps[index].querySelector('.setup-page__num')).toHaveTextContent(String(index + 1));
     });
     expect(screen.getByRole('list')).toBeInTheDocument();
   });
