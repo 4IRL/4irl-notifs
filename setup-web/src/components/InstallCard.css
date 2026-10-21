@@ -18,8 +18,8 @@
   margin: 0 0 var(--space-2);
 }
 
-/* One row at every width, never wrapping: the three buttons share the row equally and
-   only their widths shrink, so the label size and the tap height stay constant. */
+/* One row at every width, never wrapping onto a second row: the three buttons share the row
+   equally and only their widths shrink, so the label size stays constant. */
 .setup-page__stores {
   display: flex;
   flex-wrap: nowrap;
@@ -53,7 +53,9 @@
   font-weight: 600;
   text-align: center;
   text-decoration: none;
-  white-space: nowrap;
+  /* A label that is too wide for its button (a wider system font at 320px) wraps onto a
+     second line instead of overflowing; the buttons share a height, so the row stays even. */
+  overflow-wrap: break-word;
 }
 
 .setup-page__store:hover {

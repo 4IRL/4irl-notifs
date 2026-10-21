@@ -287,10 +287,7 @@ test.describe('install card', { tag: '@all' }, () => {
     }
   });
 
-  test('stays on one row, tappable and unclipped, at 320px wide', async ({ page }) => {
-    await page.setViewportSize({ width: 320, height: 640 });
-    await page.goto(VALID_LINK);
-
+  async function expectStoreRowIntact({ page }: { page: Page }) {
     const links = await storeLinks({ page }).all();
     expect(links).toHaveLength(STORE_HOSTS.length);
     const boxes = [];
@@ -314,6 +311,24 @@ test.describe('install card', { tag: '@all' }, () => {
         () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
       ),
     ).toBe(true);
+  }
+
+  test('stays on one row, tappable and unclipped, at 320px wide', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.goto(VALID_LINK);
+
+    await expectStoreRowIntact({ page });
+  });
+
+  test('stays intact at 320px wide when the labels render wider', async ({ page }) => {
+    // A wider system font (DejaVu Sans, common on Linux CI runners) made the "Google Play" label
+    // overflow its button at this width. Letter spacing widens the text on any machine, so this
+    // does not depend on which fonts are installed.
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.goto(VALID_LINK);
+    await page.addStyleTag({ content: '.setup-page__store { letter-spacing: 0.12em; }' });
+
+    await expectStoreRowIntact({ page });
   });
 });
 
