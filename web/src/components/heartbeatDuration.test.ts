@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { splitDuration, toSeconds } from './heartbeatDuration';
+import { DURATION_UNITS, splitDuration, toSeconds } from './heartbeatDuration';
 
 describe('splitDuration', () => {
   it.each([
@@ -18,11 +18,15 @@ describe('splitDuration', () => {
     expect(splitDuration(seconds)).toEqual({ value, unit });
   });
 
-  it('falls back to a fractional minutes value for a duration that is not a whole minute', () => {
-    expect(splitDuration(90)).toEqual({ value: '1.5', unit: 'minutes' });
+  it.each([
+    [90, '90'],
+    [61, '61'],
+    [150, '150'],
+  ] as const)('shows %i s, which is not a whole minute, in seconds', (seconds, value) => {
+    expect(splitDuration(seconds)).toEqual({ value, unit: 'seconds' });
   });
 
-  it.each([60, 90, 3600, 5400, 7200, 86_400, 90_000, 604_800, 2_678_400])(
+  it.each([60, 61, 90, 150, 3600, 5400, 7200, 86_400, 90_000, 604_800, 2_678_400])(
     'round-trips %i s back to the same seconds',
     (seconds) => {
       expect(toSeconds(splitDuration(seconds))).toBe(seconds);
@@ -35,6 +39,8 @@ describe('toSeconds', () => {
     ['24', 'hours', 86_400],
     ['2', 'days', 172_800],
     ['1', 'minutes', 60],
+    ['90', 'seconds', 90],
+    ['60', 'seconds', 60],
     [' 3 ', 'hours', 10_800],
     ['0.5', 'hours', 1800],
     ['0.1', 'hours', 360],
@@ -48,7 +54,17 @@ describe('toSeconds', () => {
     ['abc', 'hours'],
     ['Infinity', 'hours'],
     ['0.0001', 'minutes'],
+    ['0.5', 'seconds'],
   ] as const)('rejects %j %s', (value, unit) => {
     expect(toSeconds({ value, unit })).toBeNull();
+  });
+
+  it('offers seconds first, then minutes, hours and days', () => {
+    expect(DURATION_UNITS.map((entry) => entry.unit)).toEqual([
+      'seconds',
+      'minutes',
+      'hours',
+      'days',
+    ]);
   });
 });

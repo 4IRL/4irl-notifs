@@ -1,16 +1,17 @@
 import { strings } from '../strings';
 
 /** The units a heartbeat period or grace can be entered in. */
-export type DurationUnit = 'minutes' | 'hours' | 'days';
+export type DurationUnit = 'seconds' | 'minutes' | 'hours' | 'days';
 
 const SECONDS_PER_UNIT: Record<DurationUnit, number> = {
+  seconds: 1,
   minutes: 60,
   hours: 3600,
   days: 86_400,
 };
 
 /** Largest first, so the first unit that divides a value evenly is the largest one. */
-const UNITS_LARGEST_FIRST: DurationUnit[] = ['days', 'hours', 'minutes'];
+const UNITS_LARGEST_FIRST: DurationUnit[] = ['days', 'hours', 'minutes', 'seconds'];
 
 /**
  * Days start at two, like the list's own duration text (formatDuration): one day
@@ -22,6 +23,7 @@ const MIN_SECONDS_FOR_DAYS = 2 * SECONDS_PER_UNIT.days;
 const SECONDS_TOLERANCE = 1e-6;
 
 export const DURATION_UNITS: Array<{ unit: DurationUnit; label: string }> = [
+  { unit: 'seconds', label: strings.heartbeatUnitSeconds },
   { unit: 'minutes', label: strings.heartbeatUnitMinutes },
   { unit: 'hours', label: strings.heartbeatUnitHours },
   { unit: 'days', label: strings.heartbeatUnitDays },
@@ -35,9 +37,8 @@ export interface DurationInput {
 
 /**
  * The form representation of a stored duration: the largest unit that divides
- * it evenly (days only from two days up; falling back to minutes, which may
- * leave a fractional value for a duration set through the API), so an untouched
- * field converts back to the exact stored seconds.
+ * it evenly (days only from two days up; seconds when it is not a whole minute),
+ * so an untouched field converts back to the exact stored seconds.
  */
 export function splitDuration(seconds: number): DurationInput {
   const unit =
@@ -45,7 +46,7 @@ export function splitDuration(seconds: number): DurationInput {
       (candidate) =>
         seconds % SECONDS_PER_UNIT[candidate] === 0 &&
         (candidate !== 'days' || seconds >= MIN_SECONDS_FOR_DAYS),
-    ) ?? 'minutes';
+    ) ?? 'seconds';
   return { value: String(seconds / SECONDS_PER_UNIT[unit]), unit };
 }
 
