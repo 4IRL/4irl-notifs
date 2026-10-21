@@ -11,10 +11,13 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
   API (`/v1/messages`, including `DELETE /v1/messages` cancel of scheduled messages), the operator
   `/v1/admin` registry API (destinations and routes, AES-256-GCM sealed secrets, masked reads), the
   operator delivery log and replay (`/v1/admin/deliveries`) and the operator scheduled-message list
-  and cancel (`/v1/admin/scheduled-messages`); delivers webhook, Discord and ntfy messages through an
-  in-process delivery worker, releases scheduled messages with an in-process releaser and prunes old
-  messages with a retention sweeper; see
+  and cancel (`/v1/admin/scheduled-messages`); takes heartbeat pings (`/v1/heartbeats`) with an operator
+  CRUD (`/v1/admin/heartbeats`); delivers webhook, Discord and ntfy messages through an
+  in-process delivery worker, releases scheduled messages with an in-process releaser, raises heartbeat
+  alerts with an in-process heartbeat checker and prunes old messages with a retention sweeper; see
   [`ARCHITECTURE.md`](ARCHITECTURE.md#delivery-api-endpoints)
+- **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api and ntfy from outside
+  the VPS and posts state changes to Discord
 - **web** — admin UI (Cloudflare Pages, behind Cloudflare Access)
 
 ## Local stack
