@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import App from './App';
+import { APP_STORE_URL, F_DROID_URL, GOOGLE_PLAY_URL } from './ntfyLinks';
 import { strings } from './strings';
 
 const IPHONE_UA =
@@ -467,7 +468,11 @@ describe('App install card', () => {
   it.each(platforms)('shows all three store links on $name', ({ userAgent }) => {
     renderApp({ userAgent });
 
-    expect(storeLinks()).toHaveLength(3);
+    expect(storeLinks().map((link) => link.getAttribute('href'))).toEqual([
+      GOOGLE_PLAY_URL,
+      F_DROID_URL,
+      APP_STORE_URL,
+    ]);
     expect(
       screen.getByRole('heading', { level: 2, name: strings.installCardHeading }),
     ).toBeVisible();
