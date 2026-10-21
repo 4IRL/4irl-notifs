@@ -15,7 +15,8 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel) and the operator `/v1/admin/scheduled-messages` list and cancel. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`), a retention sweeper and the heartbeat checker (30 s tick). Has no auth of its own; reachable only behind the path-scoped Access apps below. |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*`, `/people`, `/apps` and `/delivery/*` proxy Functions. |
-| **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor, deliberately off the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`), provisioning-api `/healthz` and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes plus a daily summary (16:00 UTC) to a dedicated Discord webhook. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
+| **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor on Cloudflare's network, independent of the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`), provisioning-api `/healthz` and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes plus a daily summary (16:00 UTC) to a dedicated Discord webhook. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
+| **setup page**       | React/Vite → Cloudflare Pages (static)          | `notifs-setup.4irl.app`  | Public ntfy setup walkthrough linked from every app. No API calls, no Access. See "Setup page". |
 
 Two live environments: **local** (docker-compose: ntfy + provisioning-api + delivery-api + Postgres) and
 **production** (the VPS + Cloudflare). ntfy + provisioning-api + delivery-api (with its Postgres) run on
@@ -150,11 +151,15 @@ graph TD
 | `notifs.4irl.app`        | Tunnel → `127.0.0.1:8090` | **No** (ntfy token auth) | ntfy container               |
 | `notifs-people.4irl.app` | Worker custom domain      | Yes (service-token only) | person-service Worker        |
 | `notifs-delivery.4irl.app`   | Tunnel → `127.0.0.1:8300` | Yes (service-token only; path-scoped, see below) | delivery-api container |
+| `notifs-setup.4irl.app`  | Cloudflare Pages          | **No** (public static page) | Pages project `notifs-setup` |
 
 - The Tunnel is a **shared, remotely-managed** connector (also fronts urls4irl); notifs routes were
   added as public hostnames — no new daemon/credential, dashboard-only.
 - ntfy is deliberately **not** behind Access (mobile/CLI clients can't do an OAuth redirect); its
   own token auth is the boundary.
+- `notifs-setup.4irl.app` is deliberately **public**: it is a static page that holds no secrets, so it
+  must have no Access application, and no wildcard `*.4irl.app` Access app may cover it (see "Setup
+  page" below).
 
 ---
 
@@ -267,6 +272,41 @@ sequenceDiagram
 
 Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABLED=true`,
 `VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`, `VITE_PENDING_SENDS_ENABLED=true`, `VITE_HEARTBEATS_ENABLED=true`.
+
+---
+
+## Setup page
+
+`https://notifs-setup.4irl.app` is a public, self-contained static page that walks an end user through
+installing and configuring the ntfy app (iPhone: ordered steps with copy buttons; Android: one-tap
+`ntfy://` subscribe buttons; desktop: a QR handoff plus a phone picker). Consuming apps link to it as
+`?app=<app_id>&user=u_<hash>&name=<display name>`; the URL contract is in
+[`docs/app-integration-guide.md`](docs/app-integration-guide.md) ("Link your users to the setup page").
+
+- **Layout:** `setup-web/` is a sibling project to `web/` (React + Vite + `qrcode.react`, bundled at
+  build time; its own `package.json`, Vitest unit tests, Playwright e2e). It deploys to its own Pages
+  project `notifs-setup`, separate from `notifs-admin`, so none of the admin UI's Access-proxy
+  Functions or `jose` ship with it. Make targets: `make setup-web-*`.
+- **No API calls.** The page parses the query string, derives the topics locally
+  (`{app}-{hash}-all`, `{app}-broadcast`) and talks to nothing. It never sees the subscriber password
+  (the user types that into the ntfy app).
+- **Privacy posture (`setup-web/public/_headers`):** `Referrer-Policy: no-referrer`, a CSP of
+  `default-src 'none'` with only same-origin script, style and image (`connect-src 'none'`, no fonts,
+  no framing), `X-Robots-Tag: noindex`, `nosniff`, and a restrictive `Permissions-Policy`. The URL
+  carries a user's ntfy id, so the page must not leak it by referrer, analytics or third-party
+  requests. Its screenshots are first-party, same-origin assets.
+- **Screenshots go stale.** `setup-web/public/screenshots/` holds real captures of the ntfy iOS and
+  Android apps, taken by hand. When ntfy changes its UI they drift from reality; re-capture them (the
+  manifest test in `setup-web/src/screenshots.test.ts` checks the files and their dimensions, not that
+  they still match the app).
+- **Deploy:** `prod-build-and-deploy.yml` fans out `deploy-setup-page` (`setup-pages-deploy.yml`,
+  `wrangler pages deploy` to `notifs-setup`, production branch `main`) next to the admin UI deploy.
+  The Pages project and the custom domain `notifs-setup.4irl.app` are **dashboard-managed operator
+  prerequisites** that must exist before the first deploy, as must the absence of any Access
+  application on the hostname (and any wildcard `*.4irl.app` Access app that would cover it).
+- **CI:** the check `CI and Tests / Test / Setup page end-to-end` runs the Playwright suite. It is a
+  new check name; if branch protection on `main` lists required checks by name, the operator must add it
+  there once it has reported.
 
 ---
 
@@ -411,7 +451,7 @@ token; `prod-deploy.yml` exports it into the deploy shell as ntfy's `upstream-ac
 the poll ceiling under bulk load. Privacy trade-off (accepted): topic names — which embed the
 `person_hash` — plus timing reach ntfy.sh; message bodies never do.
 
-**iOS device setup — exact match or silent failure.** The ntfy iOS app's **Default Server** (or the
+**iOS device setup — exact match or silent failure.** The ntfy iOS app's **Default server** (or the
 per-subscription server) must equal `base-url` **character-for-character**: `https://notifs.4irl.app`,
 https scheme, no trailing slash. The APNs wake-up references the server by `base-url`; if the app's
 server URL differs at all, it can't correlate the wake to a subscription and silently fetches nothing.
@@ -439,6 +479,7 @@ graph TD
   M --> D2["deploy-admin-ui<br/>wrangler pages deploy (notifs-admin)"]
   M --> D3["deploy-person-service<br/>wrangler d1 migrations apply → wrangler deploy Worker"]
   M --> D4["deploy-watchdog<br/>wrangler deploy Worker (no D1)"]
+  M --> D5["deploy-setup-page<br/>wrangler pages deploy (notifs-setup)"]
 ```
 
 - **VPS deploy** (`prod-deploy.yml`): SSH via `cloudflared access ssh` (own SSH key + deploy service
@@ -518,8 +559,9 @@ The Heartbeats admin section ships with its backend: `VITE_HEARTBEATS_ENABLED=tr
 | "Stalled" status card or Heartbeats load error right after the first heartbeats deploy | The Pages UI deployed before the VPS: the old `delivery-api` binary has no `/v1/admin/heartbeats` routes or `heartbeat_checker` field, and migration 0006 may not be applied yet. Wait for the `deploy-prod` job to finish, then refresh. |
 | Admin API `500` "no such table: app"                  | person-service Worker deployed without applying D1 migration 0002 — run `wrangler d1 migrations apply person-service --remote` (CI does this automatically before deploy).                           |
 | Direct browser visit to a backend → 403               | Expected post-lockdown (service-token-only). Rollback = re-add `U4I Dev Policy`.                                                                                                                     |
+| Setup page asks for a login                           | An Access application (or a wildcard `*.4irl.app` Access app) is covering `notifs-setup.4irl.app`; the page is meant to be public. Remove or exclude the hostname from that app.                       |
 | ntfy publish/subscribe 403                            | Wrong ntfy token, or topic outside the token's ACL (`{app_id}-*` publisher / `{app_id}-{hash}-*` subscriber).                                                                                        |
-| iOS notifications silent/delayed (Android & web fine) | ntfy iOS app **Default Server** ≠ `base-url` (`https://notifs.4irl.app`), or `upstream-base-url`/`upstream-access-token` unset or rate-limited on the server.                                        |
+| iOS notifications silent/delayed (Android & web fine) | ntfy iOS app **Default server** ≠ `base-url` (`https://notifs.4irl.app`), or `upstream-base-url`/`upstream-access-token` unset or rate-limited on the server.                                        |
 
 **Where to look:** Pages Functions logs (`wrangler pages deployment tail`); Cloudflare Access audit
 logs (per-app); VPS `docker compose logs`; provisioning-api emits structured errors server-side (never
