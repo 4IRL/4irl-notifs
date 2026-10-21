@@ -99,16 +99,18 @@ export async function probeTarget({
   }
 }
 
-const DEFAULT_RETRY_DELAY_MS = 2_000;
+// Long enough to outlast a production deploy recreating the containers (about 8 to 10 s of refused connections).
+const DEFAULT_RETRY_DELAY_MS = 30_000;
+const MAX_RETRY_DELAY_MS = 60_000;
 
-/** The override must be a finite number between 0 and the probe timeout; anything else gets the default. */
+/** The override must be a finite number between 0 and 60 s; anything else gets the default. */
 function retryDelayMs(env: Env): number {
   const raw = env.PROBE_RETRY_DELAY_MS?.trim();
   if (raw === undefined || raw === '') {
     return DEFAULT_RETRY_DELAY_MS;
   }
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 && parsed <= PROBE_TIMEOUT_MS ? parsed : DEFAULT_RETRY_DELAY_MS;
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= MAX_RETRY_DELAY_MS ? parsed : DEFAULT_RETRY_DELAY_MS;
 }
 
 function describeDetail(verdict: ProbeVerdict): string {

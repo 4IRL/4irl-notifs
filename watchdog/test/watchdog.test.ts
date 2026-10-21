@@ -536,8 +536,8 @@ describe('retry before alerting', () => {
     ['a negative override', '-5'],
     ['an empty override', ''],
     ['a blank override', '   '],
-    ['an override above the 10 s probe timeout', '60000'],
-  ])('waits 2 s before the retry with %s', async (_label, override) => {
+    ['an override above the 60 s ceiling', '60001'],
+  ])('waits 30 s before the retry with %s', async (_label, override) => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const stub = stubFetch({
       ...healthyRoutes(MORNING),
@@ -548,7 +548,7 @@ describe('retry before alerting', () => {
       at: MORNING,
       workerEnv: buildEnv({ kv: kv.kv, PROBE_RETRY_DELAY_MS: override }),
     });
-    await vi.advanceTimersByTimeAsync(1_999);
+    await vi.advanceTimersByTimeAsync(29_999);
     expect(stub.callsTo(NTFY_URL)).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     await pending;
@@ -556,7 +556,10 @@ describe('retry before alerting', () => {
     expect(stub.discordPosts()).toHaveLength(0);
   });
 
-  it('honours a valid PROBE_RETRY_DELAY_MS override', async () => {
+  it.each([
+    ['500', 500],
+    ['60000', 60_000],
+  ])('honours a valid PROBE_RETRY_DELAY_MS override of %s ms', async (override, delayMs) => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const stub = stubFetch({
       ...healthyRoutes(MORNING),
@@ -565,9 +568,9 @@ describe('retry before alerting', () => {
     const kv = spyKv();
     const pending = runScheduled({
       at: MORNING,
-      workerEnv: buildEnv({ kv: kv.kv, PROBE_RETRY_DELAY_MS: '500' }),
+      workerEnv: buildEnv({ kv: kv.kv, PROBE_RETRY_DELAY_MS: override }),
     });
-    await vi.advanceTimersByTimeAsync(499);
+    await vi.advanceTimersByTimeAsync(delayMs - 1);
     expect(stub.callsTo(NTFY_URL)).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     await pending;

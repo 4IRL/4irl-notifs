@@ -4,7 +4,7 @@ export interface Env {
   DISCORD_WEBHOOK_URL?: string;
   CF_ACCESS_CLIENT_ID?: string;
   CF_ACCESS_CLIENT_SECRET?: string;
-  /** Pause before the single retry of a failed probe, in ms. Unset, empty or invalid means 2000; tests set 0. */
+  /** Pause before the single retry of a failed probe, in ms. Unset, empty, invalid or above 60000 means 30000; tests set 0. */
   PROBE_RETRY_DELAY_MS?: string;
 }
 
