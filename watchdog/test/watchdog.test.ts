@@ -47,6 +47,13 @@ function logLines(): string[] {
   return logSpy.mock.calls.flat().map(String);
 }
 
+function warnLines(): string[] {
+  return warnSpy.mock.calls.flat().map(String);
+}
+
+/** Time to let a retried probe's own 10 s timeout elapse, with margin over the retry timer offset. */
+const RETRY_TIMEOUT_ADVANCE_MS = 10_100;
+
 /** Fails with `status` on the first call and answers with `after` on every later call. */
 function failThenRecover({ status, after }: { status: number; after: Routes['ntfy'] }): Routes['ntfy'] {
   let calls = 0;
@@ -257,10 +264,16 @@ describe('probe verdicts', () => {
     expect(aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     expect(aborted).toBe(true);
-    // The retry hangs too: it needs its own 10 s before the target is reported down. The extra
-    // millisecond is because the zero-delay retry timer fires 1 ms into the tick.
-    await vi.advanceTimersByTimeAsync(10_001);
+    // The retry hangs too: it needs its own 10 s before the target is reported down. The margin
+    // keeps the test independent of the zero-delay retry timer firing a millisecond into the tick.
+    await vi.advanceTimersByTimeAsync(RETRY_TIMEOUT_ADVANCE_MS);
     await pending;
+    expect(stub.callsTo(NTFY_URL)).toHaveLength(2);
+    expect(logLines()).toContainEqual(
+      expect.stringMatching(
+        /^watchdog: probe id=ntfy attempt=2 ok=false http=none duration_ms=\d+ detail="timeout after 10 s"$/,
+      ),
+    );
     expect(stub.discordPosts().map((post) => post.content)).toEqual(['🔴 **DOWN** `ntfy`: timeout after 10 s']);
   });
 
@@ -278,7 +291,7 @@ describe('probe verdicts', () => {
     const kv = spyKv();
     const pending = runScheduled({ at: MORNING, workerEnv: buildEnv({ kv: kv.kv }) });
     await vi.advanceTimersByTimeAsync(10_000);
-    await vi.advanceTimersByTimeAsync(10_001);
+    await vi.advanceTimersByTimeAsync(RETRY_TIMEOUT_ADVANCE_MS);
     await pending;
     expect(stub.discordPosts().map((post) => post.content)).toEqual(['🔴 **DOWN** `ntfy`: timeout after 10 s']);
   });
@@ -383,6 +396,7 @@ describe('failure handling', () => {
     expect(stub.discordPosts()).toHaveLength(0);
     expect(kv.put).toHaveBeenCalledTimes(1);
     expect((await readStoredState())?.targets['ntfy']?.status).toBe('up');
+    expect(logLines()).toContainEqual(expect.stringMatching(/^watchdog: run state=invalid .* kv_write=written /));
   });
 
   it('treats an unparseable stored state as unavailable and repairs it', async () => {
@@ -473,8 +487,24 @@ describe('retry before alerting', () => {
     expect(result.stub.callsTo(DELIVERY_URL)).toHaveLength(2);
     expect(result.kv.put).not.toHaveBeenCalled();
     expect((await readStoredState())?.targets['delivery-api']?.status).toBe('up');
-    expect(warnSpy.mock.calls.flat().map(String).join('\n')).toContain(
-      'watchdog: probe recovered on retry id=delivery-api first_detail="HTTP 520"',
+    expect(warnLines()).toContain('watchdog: probe recovered on retry id=delivery-api first_detail="HTTP 520"');
+    expect(logLines()).toContainEqual(
+      expect.stringMatching(/^watchdog: probe id=delivery-api attempt=2 ok=true http=200 duration_ms=\d+$/),
+    );
+  });
+
+  it('retries an Access 403 first attempt and stays quiet when the retry passes', async () => {
+    const routes = {
+      ...healthyRoutes(MORNING),
+      provisioning: failThenRecover({ status: 403, after: () => new Response('ok') }),
+    };
+    const result = await run({ at: MORNING, routes });
+    expect(result.stub.discordPosts()).toHaveLength(0);
+    expect(result.stub.callsTo(PROVISIONING_URL)).toHaveLength(2);
+    expect(logLines()).toContainEqual(
+      expect.stringMatching(
+        /^watchdog: probe id=provisioning-api attempt=1 ok=false http=403 duration_ms=\d+ detail="access denied \(HTTP 403\)"$/,
+      ),
     );
   });
 
@@ -489,6 +519,7 @@ describe('retry before alerting', () => {
     expect(result.stub.discordPosts().map((post) => post.content)).toEqual([
       '🔴 **DOWN** `delivery-api`: HTTP 503',
     ]);
+    expect(warnLines().join('\n')).not.toContain('recovered on retry');
   });
 
   it('retries only the failing target, once, and never a passing one', async () => {
@@ -503,6 +534,9 @@ describe('retry before alerting', () => {
     ['no override', undefined],
     ['a non-numeric override', 'abc'],
     ['a negative override', '-5'],
+    ['an empty override', ''],
+    ['a blank override', '   '],
+    ['an override above the 10 s probe timeout', '60000'],
   ])('waits 2 s before the retry with %s', async (_label, override) => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const stub = stubFetch({
@@ -520,6 +554,24 @@ describe('retry before alerting', () => {
     await pending;
     expect(stub.callsTo(NTFY_URL)).toHaveLength(2);
     expect(stub.discordPosts()).toHaveLength(0);
+  });
+
+  it('honours a valid PROBE_RETRY_DELAY_MS override', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const stub = stubFetch({
+      ...healthyRoutes(MORNING),
+      ntfy: failThenRecover({ status: 500, after: () => Response.json({ healthy: true }) }),
+    });
+    const kv = spyKv();
+    const pending = runScheduled({
+      at: MORNING,
+      workerEnv: buildEnv({ kv: kv.kv, PROBE_RETRY_DELAY_MS: '500' }),
+    });
+    await vi.advanceTimersByTimeAsync(499);
+    expect(stub.callsTo(NTFY_URL)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(stub.callsTo(NTFY_URL)).toHaveLength(2);
   });
 });
 

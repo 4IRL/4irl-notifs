@@ -1,5 +1,4 @@
 import type { Env, ProbeResult, ProbeVerdict, Target } from './types';
-// Logging convention: `watchdog: <event> key=value ...`, one line per event, no secrets or URLs.
 
 export const PROBE_TIMEOUT_MS = 10_000;
 const PROBE_TIMEOUT_SECONDS = PROBE_TIMEOUT_MS / 1000;
@@ -100,22 +99,26 @@ export async function probeTarget({
   }
 }
 
-export const DEFAULT_RETRY_DELAY_MS = 2_000;
+const DEFAULT_RETRY_DELAY_MS = 2_000;
 
+/** The override must be a finite number between 0 and the probe timeout; anything else gets the default. */
 function retryDelayMs(env: Env): number {
   const raw = env.PROBE_RETRY_DELAY_MS?.trim();
   if (raw === undefined || raw === '') {
     return DEFAULT_RETRY_DELAY_MS;
   }
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_RETRY_DELAY_MS;
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= PROBE_TIMEOUT_MS ? parsed : DEFAULT_RETRY_DELAY_MS;
 }
 
 function describeDetail(verdict: ProbeVerdict): string {
   return JSON.stringify(verdict.detail ?? 'unknown failure');
 }
 
-/** One line per attempt: enough to see afterwards what each probe returned and how long it took. */
+/**
+ * One line per attempt: enough to see afterwards what each probe returned and how long it took.
+ * Logging convention: `watchdog: <event> key=value ...`, one line per event, no secrets or URLs.
+ */
 function logProbe({ result, attempt }: { result: ProbeResult; attempt: number }): void {
   const detail = result.verdict.ok ? '' : ` detail=${describeDetail(result.verdict)}`;
   console.log(
