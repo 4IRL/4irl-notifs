@@ -38,6 +38,8 @@ Guidance for Claude Code when working in this repository.
   | Help / all lint / all unit tests | `make help` / `make lint` / `make test` |
   | Script tests | `make scripts-test` (`scripts/*.test.mjs`, node:test) |
   | Watchdog Worker tests / build | `make watchdog-test` (`npm test` in `watchdog/`, Vitest + workers pool) / `make watchdog-build` (tsc + `wrangler deploy --dry-run`) |
+  | App onboarding (plan/apply/verify) / manifest lint | `make onboard app=<app_id\|_platform> [cmd=plan\|apply\|verify] [env=<name>] [prune=1] [resend_secrets=1]` / `make onboard-lint` (`node scripts/onboard.mjs lint apps`, part of `make lint`) |
+  | App onboarding integration test | `make onboard-integration-test` (needs local stack up; `node --test scripts/onboard.integration.test.mjs`; also runs in CI's integration job) |
   | New worktree | `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` |
   | Remove worktree | `make worktree-rm` (run inside the worktree) |
   | Resolved ports | `make worktree-ports` |
@@ -51,6 +53,7 @@ Guidance for Claude Code when working in this repository.
   | `setup-web/**`                                                     | `make setup-web-test`  |
   | `watchdog/**`                                                      | `make watchdog-test`   |
   | `scripts/**`                                                       | `make scripts-test`    |
+  | `apps/**`                                                          | `make onboard-lint`    |
   | `docs/** *.md .claude/** .gitignore`                               | na docs and config only |
   | `**`                                                               | `make test`            |
 - **GitHub project board:** n/a
@@ -132,6 +135,9 @@ shown for reference only.
 | `make test` | Run all unit tests (both Go modules, web + setup-web Vitest, worker Vitest, watchdog Vitest, scripts) |
 | `make scripts-test` (`node --test "scripts/*.test.mjs"`) | Run the `scripts/` unit tests |
 | `make watchdog-test` / `make watchdog-build` | Run the watchdog Worker tests (Vitest + workers pool) / typecheck and dry-run bundle it |
+| `make onboard app=<app_id\|_platform> [cmd=plan\|apply\|verify] [env=<name>] [prune=1] [resend_secrets=1]` | Plan/apply/verify an app's (or `_platform`'s) declarative onboarding manifest under `apps/` |
+| `make onboard-lint` (`node scripts/onboard.mjs lint apps`) | Offline schema + cross-manifest lint of every manifest under `apps/` (part of `make lint`, run in CI) |
+| `make onboard-integration-test` (`node --test scripts/onboard.integration.test.mjs`) | Live plan/apply/verify/prune of a throwaway app manifest against the local stack (local stack must be up; also runs in CI's integration job) |
 | `make scripts-lint` / `make scripts-format` (`npx prettier` with `web/.prettierrc`) | Check / format `scripts/*.mjs` |
 | `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` | Create an isolated worktree with its own compose project and ports (see [`docs/worktrees.md`](docs/worktrees.md)) |
 | `make worktree-rm` | Remove the current worktree (run inside it; branch kept) |
