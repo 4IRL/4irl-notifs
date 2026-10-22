@@ -14,6 +14,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Setup node
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+
       - name: Setup Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -78,6 +83,9 @@ jobs:
           NOTIFS_DELIVERY_TEST_DSN: postgres://delivery:delivery-local-dev@127.0.0.1:18300/delivery?sslmode=disable
         # -p 1: the packages share one database, and the pgstore test writes a transient failure row that /readyz would report
         run: go test -p 1 -tags integration ./...
+
+      - name: Run app onboarding integration test
+        run: make onboard-integration-test
 
       - name: Dump container state on failure
         if: failure()
