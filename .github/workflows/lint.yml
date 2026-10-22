@@ -44,6 +44,9 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      - name: Lint app onboarding manifests
+        run: make onboard-lint
+
       - name: Install frontend dependencies
         working-directory: web
         run: npm ci

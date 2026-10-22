@@ -80,7 +80,75 @@ You do not have to build any of this yourself, and every app that joins makes th
 
 ---
 
+## Onboarding with a manifest (recommended)
+
+For apps using `POST /v1/messages` and/or heartbeats (most apps — see the table below), the recommended
+path is one reviewed JSON manifest plus `scripts/onboard.mjs` (wrapped by `make onboard`), not clicking
+through the admin UI or scripting `curl` by hand. The manifest is what you edit; the tool makes the
+server match it. **Not** a replacement for the "ntfy direct" path (Steps 1-5) or for the one-time
+operator setup in "Operator steps (once per app)" below (the Access split, service tokens, the app's
+ntfy publisher) — it only covers the destinations/routes/heartbeats part of onboarding.
+
+**Schema summary.** One file per app at `apps/<app_id>.json` (the basename must equal `app_id`):
+- `destinations`: either an **owned** destination — `{ "name", "type": "ntfy"|"discord"|"webhook", "config"?, "secrets"?, "enabled"? }`, with `name` required to start with `<app_id>_` — that the tool creates, patches and (with `--prune`) deletes, or a **shared reference** `{ "use": "<name>" }` to a destination owned by another manifest, which the app only routes to and never modifies.
+- `routes`: `{ "channel", "destinations", "enabled"? }` — `app_pattern` is always derived as the
+  manifest's own `app_id` and is never written by hand.
+- `heartbeats`: `{ "name", "period", "grace", "destinations" }`, with `period`/`grace` as durations
+  (`24h`, `1h`, …) rather than raw seconds.
+- an optional `environments.<env>` block overriding `heartbeats.<name>.{period,grace}` and
+  `destinations.<name>.enabled` per environment.
+
+The platform-wide manifest (wildcard `*` routes, `platform_`-prefixed shared destinations) is the
+separate `apps/_platform.json`, not an app manifest.
+
+**Commands** (`make onboard app=<app_id|_platform> ...` — see `make help` for every flag):
+- `cmd=plan` (the default) — read-only: lists every create/update/delete the manifest implies and
+  always exits `0`; a printed `! blocking` line means `apply` would refuse, it never stops `plan`.
+- `cmd=apply` — creates/patches in dependency order (destinations, then routes, then heartbeats),
+  refuses on any blocking action (a destination type/field change that `PATCH` cannot make, or a
+  `use` reference to a destination that does not exist), then re-lists and re-plans to confirm the
+  server actually converged.
+- `cmd=verify` — sends one real test message through each exact-channel route and pings every
+  heartbeat, using the app's own token, and reports pass/fail per item.
+- `prune=1` (with `cmd=plan` or `cmd=apply`) — also reports, or deletes, server-side objects the app
+  owns that the manifest no longer lists (heartbeats and routes before destinations, since a
+  destination still referenced by either cannot be removed).
+- `resend_secrets=1` (with `cmd=apply`) — re-sends every owned destination's secrets from the
+  environment; used for secret rotation.
+- `make onboard-lint` (also part of `make lint`, and run in CI on every PR) — an offline schema and
+  cross-manifest check over all of `apps/`, with no network call.
+
+**Env vars** (set in your own shell or password manager — never committed to the repo):
+- `ONBOARD_URL` — the delivery-api base URL to manage. `make onboard` defaults it to the local stack
+  (`DELIVERY_URL`) unless you already have it exported, so export it yourself to point at staging or
+  production.
+- `ONBOARD_ACCESS_ID` / `ONBOARD_ACCESS_SECRET` — the operator proxy token, used by `plan`/`apply`.
+- `ONBOARD_APP_ACCESS_ID` / `ONBOARD_APP_ACCESS_SECRET` — the app's own token, used by `verify` only.
+
+**Ownership rules.** An app's manifest only ever creates, patches or (with `--prune`) deletes
+destinations named `<app_id>_*`, routes whose `app_pattern` is exactly its own `app_id`, and
+heartbeats whose `app_id` matches. It never touches anything owned by another app's manifest or by
+the platform manifest, and a `use` reference never modifies the destination it points at.
+
+**The manifest is the source of truth; admin UI edits show as drift.** Once an app is onboarded with a
+manifest, make the manifest the thing you edit. A change made directly in the admin UI shows up as an
+`update`/`unmanaged` action the next time anyone runs `plan`, and a later `apply` overwrites it back to
+what the manifest says.
+
+**`verify` always pings every heartbeat it checks**, including on a first/dry-run integration check — a
+ping marks the check `up` and starts its deadline. `verify` prints a warning naming each heartbeat it
+pinged and the timestamp it goes `down` by without a real ping from the app, so confirm the app's own
+recurring job is actually wired up to ping before relying on the result.
+
+---
+
 ## Onboarding a new app: the whole path
+
+Prefer **"Onboarding with a manifest (recommended)"** above when the app only needs `POST /v1/messages`
+and/or heartbeats — it covers the destinations/routes/heartbeats part of the "operator sets up" column
+below with one file and one command instead of the admin UI or hand-written `curl`. The steps below,
+including the raw `curl` calls in "Copy-paste onboarding recipe", remain the fallback (and are still
+required for the Access/token/ntfy-publisher steps a manifest does not cover).
 
 Pick what the app needs, then follow the matching rows. Most apps want the first two.
 
@@ -468,6 +536,9 @@ route view is `{"id","app_pattern","channel_pattern","destinations","enabled","c
 with `state` one of `new`, `up`, `late`, `down` and `last_ping_kind` `success` or `fail`.
 
 ### Copy-paste onboarding recipe
+
+Prefer **"Onboarding with a manifest (recommended)"** above (`make onboard`) for steps 1-3; the raw
+`curl` calls below are the fallback for a one-off change or for debugging what the tool would send.
 
 Variables: `OP_ID` / `OP_SECRET` (operator proxy token), `NOTIFS_ID` / `NOTIFS_SECRET` (the app's token),
 `B=https://notifs-delivery.4irl.app`. Names below are examples.

@@ -3,7 +3,8 @@
 	delivery-test delivery-integration-test delivery-lint delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	setup-web-dev setup-web-test setup-web-e2e setup-web-build setup-web-lint setup-web-format setup-web-pages-dev \
-	worker-test worker-build worker-deploy watchdog-test watchdog-build scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm
+	worker-test worker-build worker-deploy watchdog-test watchdog-build scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm \
+	onboard onboard-lint onboard-integration-test
 
 .DEFAULT_GOAL := help
 
@@ -51,7 +52,7 @@ SMOKE_EMAIL := smoketest@example.com
 help: ## Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-lint: go-lint delivery-lint web-lint setup-web-lint scripts-lint workflows-lint ## Run all linters (Go + frontends + scripts + workflows)
+lint: go-lint delivery-lint web-lint setup-web-lint scripts-lint workflows-lint onboard-lint ## Run all linters (Go + frontends + scripts + workflows + app onboarding manifests)
 
 test: go-test delivery-test web-test setup-web-test worker-test watchdog-test scripts-test ## Run all unit tests (Go, web + setup-web Vitest, worker Vitest, watchdog Vitest, scripts)
 
@@ -259,3 +260,24 @@ watchdog-test: ## Run watchdog Worker tests (Vitest + workers pool); filter with
 
 watchdog-build: ## Typecheck and dry-run bundle the watchdog Worker (tsc --noEmit + wrangler deploy --dry-run)
 	cd watchdog && npm run build
+
+## App onboarding (scripts/onboard.mjs)
+
+# app/cmd/env/prune/resend_secrets are quoted with the worktree-new $(subst ...) idiom (escape embedded
+# single quotes, wrap in single quotes) so each one reaches node as one literal argument/value, never
+# interpolated into a shell string — see docs/app-integration-guide.md "Onboarding with a manifest".
+onboard: ## Plan/apply/verify app onboarding: make onboard app=<app_id|_platform> [cmd=plan|apply|verify] [env=<name>] [prune=1] [resend_secrets=1]
+	@$(if $(findstring /,$(app)),$(error app must be a bare app_id or _platform, not a path))
+	@ONBOARD_URL="$${ONBOARD_URL:-$(DELIVERY_URL)}" node scripts/onboard.mjs '$(subst ','\'',$(or $(cmd),plan))' 'apps/$(subst ','\'',$(app)).json' $(if $(env),--env '$(subst ','\'',$(env))') $(if $(filter 1,$(prune)),--prune) $(if $(filter 1,$(resend_secrets)),--resend-secrets)
+
+onboard-lint: ## Offline lint of every manifest under apps/ (no network call; part of `make lint`)
+	node scripts/onboard.mjs lint apps
+
+# Needs the local stack, like delivery-integration-test. Sets ONBOARD_INTEGRATION_URL so
+# scripts/onboard.integration.test.mjs runs instead of skipping; `make scripts-test` (no env set)
+# stays skipped-green with no stack. ONBOARD_INTEGRATION_PROVISIONING_URL lets the test mint (and
+# revoke) a real ntfy publisher token via provisioning-api, so its owned ntfy destination actually
+# authenticates against ntfy's auth-default-access: deny-all. Runs only that one file, not the
+# whole scripts/ glob.
+onboard-integration-test: ## Run the live app onboarding integration test (local stack must be up)
+	ONBOARD_INTEGRATION_URL=$(DELIVERY_URL) ONBOARD_INTEGRATION_PROVISIONING_URL=$(API_URL) node --test scripts/onboard.integration.test.mjs
