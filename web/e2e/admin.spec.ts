@@ -1572,7 +1572,18 @@ test.describe('admin UI Delivery tab', () => {
     });
 
     await page.setViewportSize({ width: 1280, height: 900 });
+    // `.pending-sends__scroll` only mounts once the initial fetch resolves and
+    // `loading` flips false (see PendingSends.tsx); register the wait before
+    // navigating (which triggers the fetch) so a slow response under host
+    // contention is awaited deterministically instead of padding the
+    // visibility timeout.
+    const scheduledMessagesLoaded = page.waitForResponse(
+      (response) =>
+        response.url().includes('/delivery/v1/admin/scheduled-messages') &&
+        response.request().method() === 'GET',
+    );
     await page.goto('/#delivery');
+    await scheduledMessagesLoaded;
     const pending = page.getByRole('region', { name: 'Pending sends' });
     const wrapper = pending.locator('.pending-sends__scroll');
     await expect(wrapper).toBeVisible();
@@ -1604,7 +1615,16 @@ test.describe('admin UI Delivery tab', () => {
     });
 
     await page.setViewportSize({ width: 1280, height: 900 });
+    // Same fetch-dependent mount as the "page is wide" test above: wait for
+    // the scheduled-messages response before asserting, rather than relying
+    // on the default visibility timeout to also cover the fetch.
+    const scheduledMessagesLoaded = page.waitForResponse(
+      (response) =>
+        response.url().includes('/delivery/v1/admin/scheduled-messages') &&
+        response.request().method() === 'GET',
+    );
     await page.goto('/#delivery');
+    await scheduledMessagesLoaded;
     const pending = page.getByRole('region', { name: 'Pending sends' });
     const row = pending.locator('tbody tr').first();
     await expectCenteredInRow({ badge: row.locator('.pending-sends__pill'), row });
