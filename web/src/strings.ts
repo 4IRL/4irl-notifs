@@ -256,6 +256,37 @@ export const strings = {
   deliveryStatusUnreachableDetail: ({ message }: { message: string }): string =>
     `Could not reach delivery-api: ${message}`,
 
+  // Narrow-layout row menu (the three-dot button that holds a row's actions).
+  rowActionsFor: ({ row }: { row: string }): string => `Actions for ${row}`,
+
+  // Visible text of a Destinations / Routes row action. The row already shows which
+  // destination or route it is, so the button reads as the bare verb; its accessible name
+  // (the `…Destination` / `…Route` strings below) keeps the object and always contains this
+  // text (WCAG 2.5.3 Label in Name).
+  rowActionTest: 'Test',
+  rowActionEdit: 'Edit',
+  rowActionClose: 'Close',
+  rowActionDisable: 'Disable',
+  rowActionConfirmDisable: 'Confirm disable',
+  rowActionEnable: 'Enable',
+  rowActionDelete: 'Delete',
+  rowActionConfirmDelete: 'Confirm delete',
+
+  // Owner badges (Destinations, Routes and Heartbeats tables).
+  columnOwner: 'Owner',
+  ownerPrefix: 'Owner: ',
+  ownerOperator: 'Operator',
+  ownerApp: ({ appId }: { appId: string }): string => `App · ${appId}`,
+  ownerUnknown: 'Unknown',
+  ownerManagedNote: ({ appId }: { appId: string }): string =>
+    `Managed by ${appId}'s deploy — operator edits are reverted on its next deploy.`,
+  ownerUnknownNote:
+    "Owner unknown — an app's deploy may manage this, and operator edits could be reverted.",
+  // The short forms under a row's buttons: one line that is never cut off (the Owner badge
+  // beside it names the app). The long forms above stay in the confirm notices and the row menu.
+  ownerManagedInlineNote: 'Edits are overridden on next deploy',
+  ownerUnknownInlineNote: 'Owner unknown — edits may be overridden',
+
   // Destinations section.
   destinationsHeading: 'Destinations',
   destinationsLoading: 'Loading destinations…',
@@ -357,6 +388,7 @@ export const strings = {
   addRouteHintLoading: 'Loading destinations…',
   addRouteHintError: 'Could not load destinations',
   addRouteHintEmpty: 'Add a destination first',
+  routeRowLabel: ({ id }: { id: number }): string => `route ${id}`,
   editRoute: ({ id }: { id: number }): string => `Edit route ${id}`,
   closeRoute: ({ id }: { id: number }): string => `Close route ${id}`,
   deleteRoute: ({ id }: { id: number }): string => `Delete route ${id}`,
@@ -595,6 +627,136 @@ export const strings = {
   invalidHeartbeatGrace: 'Grace must be between 1 minute and 7 days.',
   heartbeatNeedsDestination: 'Select at least one alert destination.',
   heartbeatTooManyDestinations: 'Select at most 20 alert destinations.',
+
+  // App identities section.
+  identitiesHeading: 'App identities',
+  identitiesRefresh: 'Refresh app identities',
+  identitiesHint:
+    "An app's GitHub deploy workflow requests an identity the first time it deploys. Approve it to let that workflow receive delivery keys for the app. Every deploy issues a new key; the previous key stops working 24 hours later.",
+  identitiesLoading: 'Loading app identities…',
+  identitiesLoadFailed: ({ message }: { message: string }): string =>
+    `Could not load app identities (${message}).`,
+  identitiesLoadFailedFallback: 'request failed',
+  identitiesRetry: 'Retry',
+  identitiesPendingSummary: ({ count }: { count: number }): string =>
+    count === 1 ? '1 request awaiting approval' : `${count} requests awaiting approval`,
+  identitiesRequestsHeading: 'Requests',
+  identitiesBindingsHeading: 'Approved apps',
+  identitiesRequestsEmpty:
+    "No pending requests. A request appears when an app's deploy asks for an identity.",
+  identitiesBindingsEmpty: 'No approved apps yet.',
+  identitiesRejectedNote:
+    "A rejected request stays listed for 30 days and has no actions; the app's next deploy files a fresh request.",
+  columnIdentityStatus: 'Status',
+  columnIdentityApp: 'App',
+  columnIdentityRequestedBy: 'Requested by (GitHub)',
+  columnIdentityRequested: 'Requested',
+  columnIdentityBoundTo: 'Bound to (GitHub)',
+  columnIdentityKeys: 'Keys',
+  columnIdentityActions: 'Actions',
+  identityRequestPending: 'Pending',
+  identityRequestRejected: 'Rejected',
+  identityRequestUnknown: 'Unknown status',
+  identityRequestUnknownSub: 'This UI does not recognise the status, so no action is offered.',
+  identityRepoSub: ({
+    repositoryId,
+    workflow,
+  }: {
+    repositoryId: number;
+    workflow: string;
+  }): string => `repo id ${repositoryId} · ${workflow}`,
+  identityRefSub: ({
+    ref,
+    environment,
+    runId,
+  }: {
+    ref: string;
+    environment: string | null;
+    runId: string;
+  }): string =>
+    environment === null
+      ? `${ref} · no environment · run ${runId}`
+      : `${ref} · environment ${environment} · run ${runId}`,
+  identityBoundSub: ({
+    workflow,
+    ref,
+    environment,
+  }: {
+    workflow: string;
+    ref: string;
+    environment: string | null;
+  }): string => [workflow, ref, environment ?? 'no environment'].join(' · '),
+  identityApprovedSub: ({ time }: { time: string }): string => `approved ${time}`,
+  identityNoKeys: 'No keys yet — the next deploy receives one.',
+  identityKeyActive: 'Active',
+  identityKeySuperseded: 'Superseded',
+  identityKeyRevoked: 'Revoked',
+  identityKeyUnknown: 'Unknown state',
+  identityKeyIssued: ({ time, lastUsed }: { time: string; lastUsed: string }): string =>
+    `issued ${time} · ${lastUsed}`,
+  identityKeySupersededSub: ({ time, lastUsed }: { time: string; lastUsed: string }): string =>
+    `stops working ${time} · ${lastUsed}`,
+  identityKeyRevokedSub: ({ time, reason }: { time: string; reason: string | null }): string =>
+    reason === null ? `revoked ${time}` : `revoked ${time} ${reason}`,
+  identityKeyUnknownSub: ({ time }: { time: string }): string => `issued ${time}`,
+  identityKeyLastUsed: ({ relative }: { relative: string }): string => `last used ${relative}`,
+  identityKeyNeverUsed: 'never used',
+  identityRevokedByOperator: 'by operator',
+  identityRevokedWhenUnbound: 'when unbound',
+  identityRevokedAfterGrace: 'after its 24 h grace period',
+  approveIdentity: 'Approve',
+  approveIdentityNamed: ({ app }: { app: string }): string => `Approve identity request for ${app}`,
+  approvingIdentity: 'Approving…',
+  approvingIdentityNamed: ({ app }: { app: string }): string =>
+    `Approving identity request for ${app}`,
+  rejectIdentity: 'Reject',
+  rejectIdentityNamed: ({ app }: { app: string }): string => `Reject identity request for ${app}`,
+  confirmRejectIdentity: 'Confirm reject',
+  confirmRejectIdentityNamed: ({ app }: { app: string }): string =>
+    `Confirm reject identity request for ${app}`,
+  cancelRejectIdentityNamed: ({ app }: { app: string }): string =>
+    `Cancel reject identity request for ${app}`,
+  rejectIdentityNotice: 'The deploy keeps failing until a new request is approved.',
+  rejectingIdentity: 'Rejecting…',
+  rejectingIdentityNamed: ({ app }: { app: string }): string =>
+    `Rejecting identity request for ${app}`,
+  revokeKey: 'Revoke',
+  revokeKeyNamed: ({ hint, app }: { hint: string; app: string }): string =>
+    `Revoke key ${hint} for ${app}`,
+  confirmRevokeKey: 'Confirm revoke',
+  confirmRevokeKeyNamed: ({ hint, app }: { hint: string; app: string }): string =>
+    `Confirm revoke key ${hint} for ${app}`,
+  cancelRevokeKeyNamed: ({ hint, app }: { hint: string; app: string }): string =>
+    `Cancel revoke key ${hint} for ${app}`,
+  revokeKeyNotice: 'Anything still using this key is refused straight away.',
+  revokingKey: 'Revoking…',
+  revokingKeyNamed: ({ hint, app }: { hint: string; app: string }): string =>
+    `Revoking key ${hint} for ${app}`,
+  unbindApp: 'Unbind',
+  unbindAppNamed: ({ app }: { app: string }): string => `Unbind ${app}`,
+  confirmUnbindApp: 'Confirm unbind',
+  confirmUnbindAppNamed: ({ app }: { app: string }): string => `Confirm unbind ${app}`,
+  cancelUnbindAppNamed: ({ app }: { app: string }): string => `Cancel unbind ${app}`,
+  unbindAppNotice:
+    "Revokes every key. Objects the app owns are kept but can't be managed until it is bound again.",
+  unbindingApp: 'Unbinding…',
+  unbindingAppNamed: ({ app }: { app: string }): string => `Unbinding ${app}`,
+  identityApproved: ({ app, repository }: { app: string; repository: string }): string =>
+    `Approved ${app} for ${repository}. Its next deploy receives a key.`,
+  identityRejected: ({ app }: { app: string }): string =>
+    `Rejected the identity request for ${app}.`,
+  identityKeyRevokedResult: ({ hint, app }: { hint: string; app: string }): string =>
+    `Revoked key ${hint} for ${app}.`,
+  identityUnbound: ({ app }: { app: string }): string => `Unbound ${app}. Its keys are revoked.`,
+  identityAlreadyUnbound: ({ app }: { app: string }): string => `${app} was already unbound.`,
+  identityApproveFailed: ({ message }: { message: string }): string =>
+    `Could not approve: ${message}`,
+  identityRejectFailed: ({ message }: { message: string }): string =>
+    `Could not reject: ${message}`,
+  identityRevokeFailed: ({ message }: { message: string }): string =>
+    `Could not revoke: ${message}`,
+  identityUnbindFailed: ({ message }: { message: string }): string =>
+    `Could not unbind: ${message}`,
 
   genericError: 'Something went wrong. Please try again.',
 } as const;

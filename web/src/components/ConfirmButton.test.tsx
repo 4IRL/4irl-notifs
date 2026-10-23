@@ -323,4 +323,150 @@ describe('ConfirmButton', () => {
       screen.getByRole('button', { name: 'Remove foo' }),
     );
   });
+
+  it('Escape closes the pair like Cancel: no confirm, focus back on the trigger, no bubbling', async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const onOuterKeyDown = vi.fn();
+    render(
+      <div onKeyDown={onOuterKeyDown}>
+        <ConfirmButton
+          triggerLabel="Remove foo"
+          confirmLabel="Confirm remove foo"
+          onConfirm={onConfirm}
+          confirmNotice="Gone for good."
+        />
+      </div>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Remove foo' }));
+    expect(screen.getByRole('button', { name: 'Confirm remove foo' })).toHaveFocus();
+    await user.keyboard('{Escape}');
+
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onOuterKeyDown).not.toHaveBeenCalled();
+    expect(screen.queryByText('Gone for good.')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove foo' })).toHaveFocus();
+  });
+
+  it('Escape from the Cancel button closes the pair too, and other keys leave it open', async () => {
+    const user = userEvent.setup();
+    render(
+      <ConfirmButton
+        triggerLabel="Remove foo"
+        confirmLabel="Confirm remove foo"
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Remove foo' }));
+    await user.keyboard('{Tab}');
+    expect(screen.getByRole('button', { name: strings.cancelAction })).toHaveFocus();
+    await user.keyboard('a');
+    expect(screen.getByRole('button', { name: 'Confirm remove foo' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('button', { name: 'Remove foo' })).toHaveFocus();
+  });
+
+  it('reports every open and close through onConfirmingChange', async () => {
+    const user = userEvent.setup();
+    const onConfirmingChange = vi.fn();
+    const { rerender } = render(
+      <ConfirmButton
+        triggerLabel="Remove foo"
+        confirmLabel="Confirm remove foo"
+        onConfirm={vi.fn()}
+        busyLabel="Removing…"
+        onConfirmingChange={onConfirmingChange}
+      />,
+    );
+    const lastReport = () => onConfirmingChange.mock.calls.at(-1)?.[0];
+    expect(lastReport()).toBe(false);
+
+    // Cancel, Escape and Confirm each close it.
+    await user.click(screen.getByRole('button', { name: 'Remove foo' }));
+    expect(lastReport()).toBe(true);
+    await user.click(screen.getByRole('button', { name: strings.cancelAction }));
+    expect(lastReport()).toBe(false);
+
+    await user.click(screen.getByRole('button', { name: 'Remove foo' }));
+    expect(lastReport()).toBe(true);
+    await user.keyboard('{Escape}');
+    expect(lastReport()).toBe(false);
+
+    await user.click(screen.getByRole('button', { name: 'Remove foo' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm remove foo' }));
+    expect(lastReport()).toBe(false);
+
+    // Going busy while open closes it.
+    await user.click(screen.getByRole('button', { name: 'Remove foo' }));
+    expect(lastReport()).toBe(true);
+    rerender(
+      <ConfirmButton
+        triggerLabel="Remove foo"
+        confirmLabel="Confirm remove foo"
+        onConfirm={vi.fn()}
+        busy
+        busyLabel="Removing…"
+        onConfirmingChange={onConfirmingChange}
+      />,
+    );
+    expect(lastReport()).toBe(false);
+  });
+
+  it('closes the owner’s state when it unmounts while open, and follows a new callback', async () => {
+    const user = userEvent.setup();
+    const first = vi.fn();
+    const second = vi.fn();
+    const { rerender, unmount } = render(
+      <ConfirmButton
+        triggerLabel="Remove foo"
+        confirmLabel="Confirm remove foo"
+        onConfirm={vi.fn()}
+        onConfirmingChange={first}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Remove foo' }));
+    rerender(
+      <ConfirmButton
+        triggerLabel="Remove foo"
+        confirmLabel="Confirm remove foo"
+        onConfirm={vi.fn()}
+        onConfirmingChange={second}
+      />,
+    );
+    // A new inline callback does not re-announce the unchanged state.
+    expect(second).not.toHaveBeenCalled();
+
+    unmount();
+    expect(second).toHaveBeenLastCalledWith(false);
+  });
+
+  it('hidden hides the trigger but keeps it mounted and registered', () => {
+    const registerTrigger = vi.fn();
+    const { rerender } = render(
+      <ConfirmButton
+        triggerLabel="Remove foo"
+        confirmLabel="Confirm remove foo"
+        onConfirm={vi.fn()}
+        registerTrigger={registerTrigger}
+        hidden
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Remove foo' })).not.toBeInTheDocument();
+    const trigger = screen.getByText('Remove foo');
+    expect(trigger).toHaveAttribute('hidden');
+    expect(registerTrigger).toHaveBeenLastCalledWith(trigger);
+
+    rerender(
+      <ConfirmButton
+        triggerLabel="Remove foo"
+        confirmLabel="Confirm remove foo"
+        onConfirm={vi.fn()}
+        registerTrigger={registerTrigger}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Remove foo' })).not.toHaveAttribute('hidden');
+  });
 });

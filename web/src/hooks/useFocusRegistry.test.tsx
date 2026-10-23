@@ -48,6 +48,41 @@ describe('useFocusRegistry', () => {
     expect(screen.getByText('late')).toHaveFocus();
   });
 
+  it('hands a request for a hidden control to its row’s visible button', async () => {
+    const user = userEvent.setup();
+    function HiddenHarness() {
+      const { registerControl, requestFocus } = useFocusRegistry();
+      return (
+        <div>
+          <button type="button" onClick={() => requestFocus('edit')}>
+            go edit
+          </button>
+          <table>
+            <tbody>
+              <tr>
+                <td>
+                  <button
+                    type="button"
+                    hidden
+                    ref={(element) => registerControl({ key: 'edit', element })}
+                  >
+                    edit
+                  </button>
+                  <button type="button">confirm</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+    render(<HiddenHarness />);
+
+    await user.click(screen.getByText('go edit'));
+
+    expect(screen.getByText('confirm')).toHaveFocus();
+  });
+
   it('forgets an unmounted control', async () => {
     const user = userEvent.setup();
     const { rerender } = render(<Harness showLate />);

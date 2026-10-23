@@ -1,0 +1,272 @@
+/* Shared layout for the admin registry tables (Destinations, Routes, Heartbeats and
+   App identities). Cells never wrap: the table is as wide as its content (filling the
+   wrapper when there is room) and the wrapper scrolls, both ways, when there is not.
+   The column titles stay pinned to the top of the wrapper and the first (identifying)
+   column stays pinned to its start edge, so a row is always labelled while scrolling.
+
+   Markup contract:
+     <div class="admin-table__scroll">
+       <table class="admin-table">
+         <thead><tr><th class="admin-table__lead">...</th><th class="admin-table__fill">...</th></tr></thead>
+         <tbody>
+           <tr><td class="admin-table__lead">...</td>...</tr>
+           <tr><td colspan="N" class="admin-table__editor-cell"><div class="admin-table__editor">...</div></td></tr>
+         </tbody>
+       </table>
+     </div>
+   Per-component classes (`destinations__table`, `routes__scroll`, ...) stay on the same
+   elements as stable hooks; they carry no layout of their own. */
+
+/* The scrollport. `max-height` is what makes the sticky header useful: with no height
+   bound the wrapper would never scroll vertically and the header would pin to nothing.
+   `container-type` lets the inline editor size itself to the visible width (100cqw), so
+   it neither widens the max-content table nor needs horizontal scrolling. */
+.admin-table__scroll {
+  /* The widest the pinned first column may get (it is as wide as its content up to this).
+     Two spellings of one value: `cqw` sizes the cell against this wrapper, `%` is what
+     `scroll-padding` resolves against (the wrapper's scrollport). Ordinary identifiers
+     ("urls4irl / check-name") are far narrower and never reach it; only a pathological
+     one is cut, and its cell carries the full value in `title`. */
+  --admin-table-lead-max: min(60cqw, 32rem);
+  --admin-table-lead-inset: min(60%, 32rem);
+  max-width: 100%;
+  max-height: min(75vh, 48rem);
+  overflow: auto;
+  container-type: inline-size;
+  /* Keyboard focus and scrollIntoView never leave a control under the pinned header ... */
+  scroll-padding-top: 3rem;
+  /* ... nor under the pinned first column: the most it can cover, so a focused control is
+     always scrolled clear of it. */
+  scroll-padding-inline-start: var(--admin-table-lead-inset);
+}
+
+.admin-table__scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* `separate` (not `collapse`) so the sticky cells keep their row separators: collapsed
+   borders drop out from under sticky cells. */
+.admin-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Pinned column titles: opaque (the page background, the table sits directly on the page),
+   above the body rows and below nothing but the corner cell. */
+.admin-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* The pinned first column. Opaque so scrolled content never shows through. A row-state
+   background (e.g. the pending-request accent) must be opaque and out-specify this rule
+   (`.component__table .row--state td`), so a highlighted row stays one colour across the
+   pinned and scrolling cells. The shadow is dark, as one built from the (light) text
+   colour glows on a dark theme. The cap is a backstop for an unusually long identifier:
+   without it the pinned column could cover the whole visible width and leave nothing to
+   scroll to. Ordinary values are far shorter and never reach it. */
+.admin-table .admin-table__lead {
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+  max-width: var(--admin-table-lead-max);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--bg);
+  box-shadow: 0.5rem 0 0.5rem -0.5rem rgb(0 0 0 / 60%);
+}
+
+/* The corner cell sits above both the pinned titles and the pinned column. */
+.admin-table th.admin-table__lead {
+  z-index: 3;
+}
+
+/* The wide column takes the spare width when the table is wider than its content, so
+   the other columns (the Actions cell above all) keep their content width. */
+.admin-table__fill {
+  width: 100%;
+}
+
+/* The trailing Actions column. Its content sits at the cell's trailing edge: the cell is as
+   wide as its widest row (an owner note, an open confirm's notice, another row's longer set
+   of buttons), so start-aligned content would leave a narrower row's buttons at the far left
+   of a wide cell, i.e. under the pinned column once the wrapper is scrolled to its end, with
+   blank space where the row ends. Trailing-aligned, the end of the scroll always shows the
+   end of every row's controls. The cell's content is one `div` of controls (a flex row) and
+   any notes or status pills. */
+.admin-table td.admin-table__actions,
+.admin-table th.admin-table__actions {
+  text-align: end;
+}
+
+.admin-table td.admin-table__actions > div {
+  justify-content: flex-end;
+}
+
+/* Lines under the buttons in an Actions cell (the owner note, a send-test result, a row
+   error) never widen the column: the buttons set its width and these fit inside it. A block
+   with `width: 0` adds nothing to the cell's intrinsic width, and `min-width: 100%` then
+   stretches it to the width the buttons gave the cell. Text wraps inside that width by
+   default (a result or an error must be read in full); the owner note is a short single line
+   (see below). The long owner text lives in the confirm notice and the row menu. */
+.admin-table td.admin-table__actions .admin-table__aux {
+  box-sizing: border-box;
+  width: 0;
+  min-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The owner note is short and always shown in full on one line: never cut with an ellipsis or
+   clipped. It sizes to its text, so it is the one line that may set the cell's width. */
+.admin-table td.admin-table__actions .admin-table__note {
+  width: auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+/* A button the row hides while one of its destructive confirms is open (see
+   useConfirmingRows): the pair takes the place of the row's buttons, so the cell is never wider
+   than when the row is idle. A component's own `display` would otherwise out-specify the UA
+   `[hidden]` rule. */
+.admin-table button[hidden] {
+  display: none;
+}
+
+/* A confirm pair opened in a cell: Confirm and Cancel stay on one line, filling the width of
+   the cell's controls; the notice sits on its own line under them (inside an inline editor it
+   wraps like the rest of the form). The notice contributes nothing to the cell's intrinsic
+   width (`width: 0`), so a long sentence never widens the cell or the table: `min-width: 100%`
+   stretches it to the width the controls give the cell, and it wraps in full within that. This
+   is the one text in a cell that wraps by design, as it is a sentence the operator must read
+   in full, never cut with an ellipsis. */
+.admin-table td:not(.admin-table__editor-cell) .confirm-button__group {
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  white-space: nowrap;
+}
+
+/* In an Actions cell the pair is a grid that fills the cell's controls: a spare first column,
+   then Confirm and Cancel at their own width (they take the place of the row's other buttons,
+   which are hidden), so they sit at the cell's trailing edge like the idle buttons, with the
+   notice spanning every column under them. The notice is `width: 0` (above), so the buttons
+   alone set the width the pair asks of the cell, and the notice wraps within the cell's width. */
+.admin-table td.admin-table__actions .confirm-button__group {
+  display: grid;
+  grid-template-columns: 1fr max-content max-content;
+  flex: 1 1 auto;
+}
+
+.admin-table td.admin-table__actions .confirm-button__group > button:first-child {
+  grid-column: 2;
+}
+
+.admin-table td.admin-table__actions .confirm-button__group > .confirm-button__cancel {
+  grid-column: 3;
+}
+
+.admin-table td.admin-table__actions .confirm-button__notice {
+  grid-column: 1 / -1;
+}
+
+.admin-table td:not(.admin-table__editor-cell) .confirm-button__notice {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 0;
+  min-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The inline edit row (and the one-time secret reveal): a full-width cell whose content
+   is pinned to the visible width of the wrapper, so the form wraps normally, never sits
+   under a pinned cell (this row has none) and never needs horizontal scrolling. */
+.admin-table td.admin-table__editor-cell {
+  white-space: normal;
+  padding-inline: 0;
+}
+
+.admin-table__editor {
+  position: sticky;
+  inset-inline-start: 0;
+  box-sizing: border-box;
+  width: 100%;
+  width: 100cqw;
+}
+
+/* The kebab column (narrow layout only; see RowActionsMenu): a narrow Actions column pinned
+   to the end edge of the wrapper, opaque, so the row menu is always reachable and never
+   covered. Its cells sit below the pinned titles (z-index 2); its header cell is the corner,
+   above both. */
+.admin-table td.admin-table__kebab,
+.admin-table th.admin-table__kebab {
+  position: sticky;
+  inset-inline-end: 0;
+  width: 3rem;
+  padding-inline: 0;
+  text-align: center;
+  background: var(--bg);
+  box-shadow: -0.5rem 0 0.5rem -0.5rem rgb(0 0 0 / 60%);
+}
+
+.admin-table td.admin-table__kebab {
+  z-index: 1;
+  padding-block: 0;
+}
+
+.admin-table th.admin-table__kebab {
+  z-index: 3;
+}
+
+/* The owner badge under the identifying value of the first cell (narrow layout only, where the
+   Owner column is dropped so the owner is in view without scrolling). Its own block line, so the
+   nowrap badge never shares a line with the value. */
+.admin-table__owner-line {
+  display: block;
+  margin-top: 0.25rem;
+}
+
+/* The narrow layout (the same breakpoint as `useCompactTable`, which swaps each row's inline
+   buttons for one kebab menu). The first column is not pinned here: a column pinned on a
+   narrow screen next to the rest is what cut every value off. Cells show their full text at
+   natural width and the wrapper scrolls; only the column titles and the kebab column stay
+   put. */
+@media (max-width: 30rem) {
+  .admin-table__scroll {
+    scroll-padding-inline-start: 0;
+  }
+
+  .admin-table td.admin-table__lead {
+    position: static;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+    box-shadow: none;
+  }
+
+  /* The title cell keeps its place in the pinned header row. */
+  .admin-table th.admin-table__lead {
+    inset-inline-start: auto;
+    z-index: 2;
+  }
+}
