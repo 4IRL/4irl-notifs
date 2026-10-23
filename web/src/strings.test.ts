@@ -144,6 +144,11 @@ describe('strings module', () => {
     );
   });
 
+  it('names a row in the narrow-layout kebab menu', () => {
+    expect(strings.rowActionsFor({ row: 'urls4irl/nightly' })).toBe('Actions for urls4irl/nightly');
+    expect(strings.routeRowLabel({ id: 7 })).toBe('route 7');
+  });
+
   it('exposes the people section heading, status copy, and column headers', () => {
     expect(strings.peopleHeading).toBe('People');
     expect(strings.peopleLoading).toBe('Loading people…');

@@ -25,7 +25,12 @@ export function useFocusRegistry(): FocusRegistry {
     const element = controls.current.get(key);
     if (element !== undefined) {
       pendingFocus.current = null;
-      element.focus();
+      // A control an open confirm has stepped aside (the `hidden` attribute) cannot take focus:
+      // the row's visible control (the confirm button) keeps it instead of focus being lost.
+      const target = element.hidden
+        ? element.closest('tr')?.querySelector<HTMLElement>('button:not([hidden])')
+        : element;
+      target?.focus();
     }
   });
 
