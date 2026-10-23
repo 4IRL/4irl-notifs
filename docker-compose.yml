@@ -42,6 +42,32 @@ services:
       retries: 3
       start_period: 10s
 
+  # LOCAL/CI ONLY: the real person-service Worker under `wrangler dev --local` with a local D1, so
+  # integration tests can prove the person store's behaviour. Production deploys
+  # docker-compose.prod.yml by itself and talks to the Cloudflare-hosted Worker; do not add this
+  # service there. No host port is published and no Access headers are needed locally. The D1 state
+  # lives inside the container and is lost when it is recreated.
+  person-service:
+    restart: unless-stopped
+    build:
+      context: ./person-service
+      dockerfile: Dockerfile
+    environment:
+      - WRANGLER_SEND_METRICS=false
+    healthcheck:
+      # The CMD applies migrations before serving, so a 200 on /people means the schema is ready.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/people').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
   provisioning-api:
     restart: unless-stopped
     build:
@@ -51,6 +77,8 @@ services:
       - "127.0.0.1:${API_PORT:-8091}:8080"
     depends_on:
       ntfy:
+        condition: service_healthy
+      person-service:
         condition: service_healthy
     environment:
       # The bundled ntfy CLI edits the same auth.db the ntfy server uses; these
@@ -63,6 +91,9 @@ services:
       # everything else shells the CLI). The ntfy service listens on :80 inside
       # the compose network. LOCKSTEP: keep this env in sync with docker-compose.prod.yml.
       - NTFY_PUBLISH_URL=http://ntfy:80
+      # Local person-service Worker (local/CI only; prod points at the Cloudflare-hosted Worker
+      # in docker-compose.prod.yml). No Access client id/secret: the client omits empty headers.
+      - PERSON_SERVICE_URL=http://person-service:8787
     volumes:
       - ntfy-auth:/var/lib/ntfy
     healthcheck:

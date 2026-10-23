@@ -46,7 +46,9 @@ Or `make local-up` / `make local-down`. ntfy listens on `http://127.0.0.1:8090` 
 (override with `NTFY_PORT`; config: `ntfy/server.yml`; auth database on the `ntfy-auth` named
 volume, shared with the provisioning-api container). The same stack also runs `delivery-postgres`,
 `delivery-migrate` and `delivery-api` (`http://127.0.0.1:8300` by default, override with
-`DELIVERY_PORT`; Postgres data on the `delivery-pgdata` volume).
+`DELIVERY_PORT`; Postgres data on the `delivery-pgdata` volume). It also runs a local-only
+`person-service` (the real Worker under `wrangler dev --local`, no Access, no published port; its
+D1 state is lost when the container is recreated); production uses the Cloudflare-hosted Worker.
 
 delivery-api runtime configuration (environment):
 

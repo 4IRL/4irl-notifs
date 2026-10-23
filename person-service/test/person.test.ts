@@ -11,6 +11,7 @@ import { isValidEmail } from '../src/index';
 // next, so clear the table explicitly before every test.
 beforeEach(async () => {
   await env.DB.exec('DELETE FROM person');
+  await env.DB.exec('DELETE FROM password_reset');
 });
 
 /** Fetches from the running Worker with a JSON body, mirroring how a caller would. */
