@@ -3,8 +3,10 @@
 // message endpoints (submit and status under /v1/messages), the operator
 // delivery log and replay endpoints under /v1/admin/deliveries, and the
 // per-app ntfy publisher endpoints under /v1/admin/apps, the app-facing
-// heartbeat pings under /v1/heartbeats and the operator heartbeat check
-// endpoints under /v1/admin/heartbeats.
+// heartbeat pings under /v1/heartbeats, the operator heartbeat check
+// endpoints under /v1/admin/heartbeats, the app identity token exchange under
+// /v1/app-identity and the operator identity endpoints under
+// /v1/admin/app-identity.
 package httpapi
 
 import (
@@ -94,6 +96,11 @@ type ServerConfig struct {
 	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
 	// caveat as Registry applies.
 	Heartbeats Heartbeats
+	// AppIdentity backs POST /v1/app-identity/exchange, the /v1/admin/app-identity
+	// endpoints and the app key check on every app-facing route (/v1/messages and the
+	// heartbeat pings). When nil, every one of those routes answers 503 (fail closed;
+	// there is no bypass). The same typed-nil caveat as Registry applies.
+	AppIdentity AppIdentity
 	// Now supplies the time the heartbeat views derive their state at; defaults to
 	// time.Now. Tests set it to run on a fixed clock.
 	Now func() time.Time
@@ -101,15 +108,16 @@ type ServerConfig struct {
 
 // Server wraps an *http.ServeMux exposing the delivery HTTP API.
 type Server struct {
-	logger     *slog.Logger
-	readiness  ReadinessChecker
-	checker    CheckerFreshness
-	registry   Registry
-	messages   Messages
-	publishers Publishers
-	heartbeats Heartbeats
-	now        func() time.Time
-	mux        *http.ServeMux
+	logger      *slog.Logger
+	readiness   ReadinessChecker
+	checker     CheckerFreshness
+	registry    Registry
+	messages    Messages
+	publishers  Publishers
+	heartbeats  Heartbeats
+	appIdentity AppIdentity
+	now         func() time.Time
+	mux         *http.ServeMux
 }
 
 // readinessResponseBody is the /readyz JSON body when the database answered.
@@ -152,15 +160,16 @@ func NewServer(config ServerConfig) *Server {
 	}
 
 	server := &Server{
-		logger:     logger,
-		readiness:  config.Readiness,
-		checker:    config.HeartbeatChecker,
-		registry:   config.Registry,
-		messages:   config.Messages,
-		publishers: config.Publishers,
-		heartbeats: config.Heartbeats,
-		now:        config.Now,
-		mux:        http.NewServeMux(),
+		logger:      logger,
+		readiness:   config.Readiness,
+		checker:     config.HeartbeatChecker,
+		registry:    config.Registry,
+		messages:    config.Messages,
+		publishers:  config.Publishers,
+		heartbeats:  config.Heartbeats,
+		appIdentity: config.AppIdentity,
+		now:         config.Now,
+		mux:         http.NewServeMux(),
 	}
 	if server.now == nil {
 		server.now = time.Now
@@ -205,6 +214,15 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("DELETE /v1/admin/heartbeats/{id}", server.requireHeartbeats(server.handleDeleteCheck))
 	server.mux.HandleFunc("POST /v1/admin/heartbeats/{id}/pause", server.requireHeartbeats(server.handlePauseCheck))
 	server.mux.HandleFunc("POST /v1/admin/heartbeats/{id}/resume", server.requireHeartbeats(server.handleResumeCheck))
+
+	// The exchange is app-facing but takes no app key: its GitHub OIDC token is the credential.
+	server.mux.HandleFunc("POST /v1/app-identity/exchange", server.requireAppIdentity(server.handleExchange))
+	server.mux.HandleFunc("GET /v1/admin/app-identity/requests", server.requireAppIdentity(server.handleListIdentityRequests))
+	server.mux.HandleFunc("POST /v1/admin/app-identity/requests/{id}/approve", server.requireAppIdentity(server.handleApproveIdentityRequest))
+	server.mux.HandleFunc("POST /v1/admin/app-identity/requests/{id}/reject", server.requireAppIdentity(server.handleRejectIdentityRequest))
+	server.mux.HandleFunc("GET /v1/admin/app-identity/bindings", server.requireAppIdentity(server.handleListIdentityBindings))
+	server.mux.HandleFunc("POST /v1/admin/app-identity/keys/{id}/revoke", server.requireAppIdentity(server.handleRevokeIdentityKey))
+	server.mux.HandleFunc("DELETE /v1/admin/app-identity/bindings/{app_id}", server.requireAppIdentity(server.handleUnbindApp))
 
 	server.mux.HandleFunc("POST /v1/messages", server.requireMessages(server.handleCreateMessage))
 	server.mux.HandleFunc("GET /v1/messages/{id}", server.requireMessages(server.handleGetMessage))

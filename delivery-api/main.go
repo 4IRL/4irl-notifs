@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/appidentity"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/database"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
@@ -49,9 +50,9 @@ const (
 	// 10 s a ?wait request can hold Shutdown (httpapi.MaxWait) plus the 16 s an in-flight delivery attempt can
 	// need to finish and be recorded (dispatch.MaxInFlightShutdown), so a SIGTERM never abandons either.
 	shutdownTimeout = httpapi.MaxWait + dispatch.MaxInFlightShutdown
-	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker, sweeper, releaser and heartbeat checker to unwind.
+	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker, sweeper, releaser, heartbeat checker and OIDC replay cleanup to unwind.
 	backgroundStopMargin = 4 * time.Second
-	// backgroundStopTimeout bounds how long runServe waits for the worker, sweeper, releaser and heartbeat checker after HTTP has drained.
+	// backgroundStopTimeout bounds how long runServe waits for the worker, sweeper, releaser, heartbeat checker and OIDC replay cleanup after HTTP has drained.
 	// Worst-case total shutdown is shutdownTimeout + backgroundStopTimeout (46 s), which the compose
 	// stop_grace_period must exceed (docker-compose.yml and docker-compose.prod.yml; pinned by
 	// TestComposeStopGracePeriodCoversShutdown).
@@ -169,6 +170,31 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	if maxScheduledTotalErr != nil {
 		return maxScheduledTotalErr
 	}
+	// Fail-closed OIDC config: a static dev JWKS file without DELIVERY_OIDC_DEV_MODE=1 stops startup.
+	oidcConfig, oidcErr := appidentity.ConfigFromEnv(os.Getenv)
+	if oidcErr != nil {
+		return oidcErr
+	}
+	logger.Info("app identity configured",
+		"oidc_audience", oidcConfig.Audience, "oidc_dev_mode", oidcConfig.DevMode, "oidc_static_jwks", oidcConfig.JWKSFile != "",
+		"pending_request_ttl", oidcConfig.PendingRequestTTL)
+	// Built before any port is bound so an unreadable dev JWKS file stops startup. In production no JWKS
+	// file is set and the verifier fetches GitHub's keys lazily, on the first token it sees.
+	oidcVerifier, verifierErr := appidentity.NewVerifier(appidentity.VerifierConfig{
+		Audience: oidcConfig.Audience,
+		JWKSFile: oidcConfig.JWKSFile,
+		Logger:   logger,
+	})
+	if verifierErr != nil {
+		return fmt.Errorf("build oidc verifier: %w", verifierErr)
+	}
+	appIdentityStore := appidentity.NewPGStore(pool)
+	appIdentityService := appidentity.NewService(appidentity.ServiceConfig{
+		Store:    appIdentityStore,
+		Admin:    appIdentityStore,
+		Verifier: oidcVerifier,
+		Logger:   logger,
+	})
 
 	checker := readiness.NewChecker(pool, migrate.NewPGStore(pool), migrate.ExpectedVersion(loaded))
 	// See ServerConfig.Registry for why it is set only here.
@@ -228,6 +254,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Messages:         messageService,
 		Publishers:       publisherService,
 		Heartbeats:       heartbeatService,
+		AppIdentity:      appIdentityService,
 	}).Handler()
 
 	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)
@@ -262,11 +289,23 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 				Freshness: heartbeatFreshness,
 			})
 		},
+		// The OIDC replay ledger has its own cleanup loop: it sweeps a different table on a
+		// different (absolute expires_at) criterion than the message retention sweeper above.
+		func(backgroundCtx context.Context) {
+			appidentity.RunReplayCleanup(backgroundCtx, appidentity.ReplayCleanupConfig{
+				Store:         appIdentityStore,
+				RejectedStore: appIdentityStore,
+				PendingStore:  appIdentityStore,
+				PendingTTL:    oidcConfig.PendingRequestTTL,
+				Interval:      appidentity.DefaultReplayCleanupInterval,
+				Logger:        logger,
+			})
+		},
 	)
 
 	logger.Info("delivery-api listening", "address", listener.Addr().String())
 	serveErr := serve(ctx, logger, listener, handler, shutdownTimeout)
-	// Stop the worker, sweeper, releaser and heartbeat checker whether serve returned on cancellation or on a listener failure, and wait
+	// Stop the worker, sweeper, releaser, heartbeat checker and OIDC replay cleanup whether serve returned on cancellation or on a listener failure, and wait
 	// for them before the deferred pool.Close so an in-flight attempt can still record its outcome.
 	background.stop(logger, backgroundStopTimeout)
 	return serveErr
