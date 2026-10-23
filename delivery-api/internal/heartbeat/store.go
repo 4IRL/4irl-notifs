@@ -12,8 +12,9 @@ import (
 type Store interface {
 	// Create persists a new check in state new with its anchor at now. Each
 	// destination name is resolved to an id in the same transaction: an unknown
-	// name returns registry.ErrUnknownDestination with nothing inserted, and a duplicate
-	// (app_id, name) returns ErrCheckExists.
+	// name, or a destination the check's app_id may not use (see
+	// registry.DestinationUsableBy), returns registry.ErrUnknownDestination with
+	// nothing inserted, and a duplicate (app_id, name) returns ErrCheckExists.
 	Create(ctx context.Context, check NewCheck, now time.Time) (StoredCheck, error)
 	// Get returns the check with that id, or ErrCheckNotFound.
 	Get(ctx context.Context, id int64) (StoredCheck, error)
@@ -24,7 +25,7 @@ type Store interface {
 	// row, so a concurrent Patch of other fields is never reverted. The merged
 	// result is validated before anything is written (a *ValidationError). It
 	// returns ErrCheckNotFound for a missing id and registry.ErrUnknownDestination for an
-	// unknown name.
+	// unknown name or a destination the check's app_id may not use.
 	Patch(ctx context.Context, id int64, patch CheckPatch, now time.Time) (StoredCheck, error)
 	// Delete removes the check (its destination links cascade) and reports
 	// whether a row existed; deleting a missing check is not an error.
@@ -51,4 +52,21 @@ type Store interface {
 	// still equals alertSeq, so a newer alert is never cleared by a stale flush.
 	// It reports whether a pending alert was cleared.
 	ClearPendingAlert(ctx context.Context, id int64, alertSeq int) (bool, error)
+
+	// The *OwnedBy methods below confine a write to the checks the app appID owns
+	// (owner_kind 'app', owner_app_id appID): the owner is part of the row lock
+	// (or of the one DELETE statement), so a check owned by anyone else, or absent,
+	// returns ErrCheckNotFound (DeleteOwnedBy reports false) and is never touched.
+
+	// ListByOwner returns the checks the app appID owns, ordered by name, never nil.
+	ListByOwner(ctx context.Context, appID string) ([]StoredCheck, error)
+	// PatchOwnedBy is Patch for a check the app appID owns.
+	PatchOwnedBy(ctx context.Context, id int64, appID string, patch CheckPatch, now time.Time) (StoredCheck, error)
+	// DeleteOwnedBy is Delete for a check the app appID owns; it reports whether a
+	// row was removed.
+	DeleteOwnedBy(ctx context.Context, id int64, appID string) (bool, error)
+	// PauseOwnedBy is Pause for a check the app appID owns.
+	PauseOwnedBy(ctx context.Context, id int64, appID string, now time.Time) (StoredCheck, error)
+	// ResumeOwnedBy is Resume for a check the app appID owns.
+	ResumeOwnedBy(ctx context.Context, id int64, appID string, now time.Time) (StoredCheck, error)
 }

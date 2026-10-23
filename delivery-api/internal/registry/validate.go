@@ -7,17 +7,14 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/appid"
 )
 
 // destinationNamePattern matches a destination name (and an exact app_id):
 // lowercase letters, digits and underscores, starting with a letter or digit,
 // 1-63 characters.
 var destinationNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,62}$`)
-
-// appIDPattern matches an exact app_id, the same rule as provisioning-api. It
-// intentionally duplicates destinationNamePattern: the two rules are
-// independent and may diverge.
-var appIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,62}$`)
 
 // channelExactPattern matches an exact channel: lowercase letters, digits and
 // underscores, 1-32 characters, the same rule as provisioning-api.
@@ -102,7 +99,7 @@ func ValidateAppPattern(pattern string) error {
 	if pattern == wildcardPattern {
 		return nil
 	}
-	if pattern == reservedEveryone || !appIDPattern.MatchString(pattern) {
+	if pattern == reservedEveryone || !appid.Valid(pattern) {
 		return &ValidationError{Message: "invalid app_pattern"}
 	}
 	return nil
@@ -256,8 +253,8 @@ func reportableKey(key string) string {
 
 // parseHTTPSURL parses rawURL and reports whether it is a static-valid
 // destination URL: it parses, is at most 2048 bytes, uses the https scheme,
-// has a non-empty host and carries no userinfo. Dial-time SSRF checks are a
-// later phase's job.
+// has a non-empty host and carries no userinfo. Registration-time resolution
+// is URLChecker's job (ssrf.go); dial-time checks are the transport guard's.
 func parseHTTPSURL(rawURL string) (*url.URL, bool) {
 	if len(rawURL) > maxURLLength {
 		return nil, false

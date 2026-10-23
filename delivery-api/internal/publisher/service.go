@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/appid"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
@@ -37,8 +38,8 @@ func tokenAAD(appID string) []byte {
 // invalid app id (before the minter is called) and ErrMintUnavailable when no
 // minter is configured. A minter error is returned and nothing is stored.
 func (service *Service) Mint(ctx context.Context, appID string) (PublisherView, error) {
-	if !appIDPattern.MatchString(appID) {
-		return PublisherView{}, &ValidationError{Message: "invalid app_id"}
+	if validateErr := appid.ValidateAppID(appID); validateErr != nil {
+		return PublisherView{}, &ValidationError{Message: validateErr.Error()}
 	}
 	if service.minter == nil {
 		return PublisherView{}, ErrMintUnavailable
@@ -81,8 +82,8 @@ func (service *Service) Get(ctx context.Context, appID string) (PublisherView, e
 // *ValidationError for an invalid app id (before the store is touched). It does
 // not revoke the token in ntfy; that is a provisioning-api operator step.
 func (service *Service) Remove(ctx context.Context, appID string) error {
-	if !appIDPattern.MatchString(appID) {
-		return &ValidationError{Message: "invalid app_id"}
+	if validateErr := appid.ValidateAppID(appID); validateErr != nil {
+		return &ValidationError{Message: validateErr.Error()}
 	}
 	return service.store.Delete(ctx, appID)
 }

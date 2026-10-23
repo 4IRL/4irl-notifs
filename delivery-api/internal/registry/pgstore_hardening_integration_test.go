@@ -76,10 +76,42 @@ func TestDestinationErrorsDoNotExposeSealedSecrets(testInstance *testing.T) {
 		testInstance.Fatalf("the *pgconn.PgError (its Detail can hold the failing row) must not be reachable: %+v", pgErr)
 	}
 	rendered := fmt.Sprintf("%v %+v", err, err)
-	if !strings.Contains(rendered, "SQLSTATE 23514") {
+	// The name CHECK violation (SQLSTATE 23514) is a client-correctable conflict, so it surfaces as
+	// the ErrCheckViolation sentinel: no driver error, hence no row detail, rides along with it.
+	if !errors.Is(err, registry.ErrCheckViolation) {
 		testInstance.Fatalf("error %q did not come from the name CHECK constraint", rendered)
 	}
+	if !strings.Contains(rendered, "(constraint ") {
+		testInstance.Fatalf("error %q does not name the violated constraint", rendered)
+	}
 	for _, leaked := range []string{"aabb", `\x01aa`, "Failing row"} {
+		if strings.Contains(strings.ToLower(rendered), strings.ToLower(leaked)) {
+			testInstance.Fatalf("error %q leaks %q", rendered, leaked)
+		}
+	}
+}
+
+// A NOT NULL violation (SQLSTATE 23502) is not mapped to a sentinel, so it goes through WrapDBError, and its
+// PgError Detail ("Failing row contains (...)") carries the whole row. None of it may be reachable.
+func TestDestinationNotNullViolationDoesNotExposeTheRow(testInstance *testing.T) {
+	ctx, store, _ := newTestStore(testInstance)
+
+	rowCarrying := sampleDestination("rowleakcheck")
+	rowCarrying.SealedSecrets = nil
+	_, err := store.InsertDestination(ctx, rowCarrying)
+	if err == nil {
+		testInstance.Fatal("a destination with no sealed secrets must be rejected")
+	}
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		testInstance.Fatalf("the *pgconn.PgError (its Detail holds the failing row) must not be reachable: %+v", pgErr)
+	}
+	rendered := fmt.Sprintf("%v %+v", err, err)
+	if !strings.Contains(rendered, "SQLSTATE 23502") {
+		testInstance.Fatalf("error %q did not come from the NOT NULL constraint", rendered)
+	}
+	for _, leaked := range []string{"Failing row", "rowleakcheck", "alerts_rowleakcheck"} {
 		if strings.Contains(strings.ToLower(rendered), strings.ToLower(leaked)) {
 			testInstance.Fatalf("error %q leaks %q", rendered, leaked)
 		}

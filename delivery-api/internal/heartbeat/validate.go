@@ -2,16 +2,13 @@ package heartbeat
 
 import (
 	"regexp"
+
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/appid"
 )
 
 // namePattern matches a check name: lowercase letters, digits and underscores,
 // starting with a letter or digit, 1-63 characters.
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,62}$`)
-
-// appIDPattern matches an app_id, the same rule as provisioning-api and the
-// registry. It intentionally duplicates namePattern and the other packages'
-// copies: the rules are independent and may diverge.
-var appIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,62}$`)
 
 // destinationNamePattern matches a destination name, the same rule as the
 // registry. It is a per-package duplicate: the rules are independent and may
@@ -33,10 +30,10 @@ const (
 	MaxDestinations = 20
 )
 
-// ValidateAppID checks an app_id.
+// ValidateAppID checks an app_id against the shared slug rule (package appid).
 func ValidateAppID(appID string) error {
-	if !appIDPattern.MatchString(appID) {
-		return &ValidationError{Message: "invalid app_id"}
+	if validateErr := appid.ValidateAppID(appID); validateErr != nil {
+		return &ValidationError{Message: validateErr.Error()}
 	}
 	return nil
 }

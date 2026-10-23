@@ -27,12 +27,12 @@ func TestViewsUseSnakeCaseJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal route: %v", err)
 	}
-	for _, want := range []string{`"name"`, `"type"`, `"enabled"`, `"disabled_reason"`, `"config"`, `"secrets"`, `"created_at"`, `"updated_at"`} {
+	for _, want := range []string{`"name"`, `"type"`, `"enabled"`, `"disabled_reason"`, `"config"`, `"secrets"`, `"owner_kind"`, `"owner_app_id"`, `"created_at"`, `"updated_at"`} {
 		if !strings.Contains(string(destination), want) {
 			t.Errorf("destination JSON %s missing %s", destination, want)
 		}
 	}
-	for _, want := range []string{`"id"`, `"app_pattern"`, `"channel_pattern"`, `"destinations"`, `"enabled"`, `"created_at"`, `"updated_at"`} {
+	for _, want := range []string{`"id"`, `"app_pattern"`, `"channel_pattern"`, `"destinations"`, `"enabled"`, `"owner_kind"`, `"owner_app_id"`, `"created_at"`, `"updated_at"`} {
 		if !strings.Contains(string(route), want) {
 			t.Errorf("route JSON %s missing %s", route, want)
 		}

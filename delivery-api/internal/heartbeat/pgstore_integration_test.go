@@ -125,6 +125,33 @@ func TestCreateAndRead(testInstance *testing.T) {
 	}
 }
 
+func TestCreateOwnerDefaultsToOperatorAndAppOwnerRoundTrips(testInstance *testing.T) {
+	stack := newFixture(testInstance)
+	stack.destination(testInstance, "ops")
+
+	operatorOwned := stack.check(testInstance, "nightly", "ops")
+	if operatorOwned.OwnerKind != registry.OwnerOperator || operatorOwned.OwnerAppID != nil {
+		testInstance.Fatalf("default check owner = %q/%v, want operator/nil", operatorOwned.OwnerKind, operatorOwned.OwnerAppID)
+	}
+
+	ownerApp := "billing"
+	appOwned, err := stack.store.Create(stack.ctx, heartbeat.NewCheck{
+		AppID: "billing", Name: "weekly", PeriodSeconds: 600, GraceSeconds: 300,
+		DestinationNames: []string{"ops"}, OwnerKind: registry.OwnerApp, OwnerAppID: &ownerApp,
+	}, created)
+	if err != nil {
+		testInstance.Fatalf("create app-owned check: %v", err)
+	}
+	if appOwned.OwnerKind != registry.OwnerApp || appOwned.OwnerAppID == nil || *appOwned.OwnerAppID != ownerApp {
+		testInstance.Fatalf("app-owned check owner = %q/%v, want app/%s", appOwned.OwnerKind, appOwned.OwnerAppID, ownerApp)
+	}
+
+	pinged, err := stack.store.RecordPing(stack.ctx, "billing", "weekly", heartbeat.PingSuccess, created)
+	if err != nil || pinged.OwnerKind != registry.OwnerApp {
+		testInstance.Fatalf("RecordPing = (%+v, %v), want the owner to survive a state change", pinged, err)
+	}
+}
+
 func TestCreateDuplicateReturnsErrCheckExists(testInstance *testing.T) {
 	stack := newFixture(testInstance)
 	stack.destination(testInstance, "ops")
@@ -159,6 +186,75 @@ func TestCreateUnknownDestinationLeavesNoPartialRow(testInstance *testing.T) {
 	}
 	if rows := stack.count(testInstance, "heartbeat_check_destinations"); rows != 0 {
 		testInstance.Fatalf("heartbeat_check_destinations rows = %d, want 0", rows)
+	}
+}
+
+// appOwnedDestination inserts a destination owned by ownerApp (its name must
+// start with "<ownerApp>_"). The app-scoped destination API exists, but this fixture seeds the row directly to
+// stay independent of it.
+func (stack fixture) appOwnedDestination(testInstance *testing.T, name string, ownerApp string) {
+	testInstance.Helper()
+	if _, err := stack.registry.InsertDestination(stack.ctx, registry.StoredDestination{
+		Name:          name,
+		Type:          registry.TypeNtfy,
+		Config:        map[string]string{"topic": "alerts_" + name},
+		SealedSecrets: []byte{0x01},
+		Enabled:       true,
+		OwnerKind:     registry.OwnerApp,
+		OwnerAppID:    &ownerApp,
+	}); err != nil {
+		testInstance.Fatalf("insert app-owned destination %s: %v", name, err)
+	}
+}
+
+func TestCreateRefusesAnotherAppsDestination(testInstance *testing.T) {
+	stack := newFixture(testInstance)
+	stack.destination(testInstance, "ops")
+	stack.appOwnedDestination(testInstance, "other_hook", "other")
+	stack.appOwnedDestination(testInstance, "billing_hook", "billing")
+
+	_, err := stack.store.Create(stack.ctx, heartbeat.NewCheck{
+		AppID: "billing", Name: "nightly", PeriodSeconds: 60, GraceSeconds: 60,
+		DestinationNames: []string{"ops", "other_hook"},
+	}, created)
+	if !errors.Is(err, registry.ErrUnknownDestination) {
+		testInstance.Fatalf("create error = %v, want ErrUnknownDestination (the same as an absent destination)", err)
+	}
+	if rows := stack.count(testInstance, "heartbeat_checks"); rows != 0 {
+		testInstance.Fatalf("heartbeat_checks rows = %d, want 0 (no partial row)", rows)
+	}
+	if rows := stack.count(testInstance, "heartbeat_check_destinations"); rows != 0 {
+		testInstance.Fatalf("heartbeat_check_destinations rows = %d, want 0", rows)
+	}
+
+	// The check's own app, and operator-owned destinations, stay usable.
+	stored := stack.check(testInstance, "nightly", "ops", "billing_hook")
+	if len(stored.Destinations) != 2 {
+		testInstance.Fatalf("destinations = %+v, want ops and billing_hook", stored.Destinations)
+	}
+}
+
+func TestPatchRefusesAnotherAppsDestination(testInstance *testing.T) {
+	stack := newFixture(testInstance)
+	stack.destination(testInstance, "ops")
+	stack.appOwnedDestination(testInstance, "other_hook", "other")
+	stack.appOwnedDestination(testInstance, "billing_hook", "billing")
+	stored := stack.check(testInstance, "nightly", "ops")
+
+	_, err := stack.store.Patch(stack.ctx, stored.ID,
+		heartbeat.CheckPatch{DestinationNames: []string{"ops", "other_hook"}}, created)
+	if !errors.Is(err, registry.ErrUnknownDestination) {
+		testInstance.Fatalf("patch error = %v, want ErrUnknownDestination", err)
+	}
+	reread, getErr := stack.store.Get(stack.ctx, stored.ID)
+	if getErr != nil || len(reread.Destinations) != 1 || reread.Destinations[0].Name != "ops" {
+		testInstance.Fatalf("check after refused patch = (%+v, %v), want destinations unchanged", reread, getErr)
+	}
+
+	patched, patchErr := stack.store.Patch(stack.ctx, stored.ID,
+		heartbeat.CheckPatch{DestinationNames: []string{"ops", "billing_hook"}}, created)
+	if patchErr != nil || len(patched.Destinations) != 2 {
+		testInstance.Fatalf("patch to the check's own destination = (%+v, %v)", patched, patchErr)
 	}
 }
 

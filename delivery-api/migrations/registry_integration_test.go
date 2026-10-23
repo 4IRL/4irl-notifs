@@ -104,11 +104,20 @@ func TestDestinationConstraints(testInstance *testing.T) {
 		})
 	}
 
-	testInstance.Run("owner_kind other than operator rejected", func(subTest *testing.T) {
+	// 0007 widened owner_kind to operator or app; an app owner must now name its
+	// app (the owner constraints are covered in ownership_integration_test.go).
+	testInstance.Run("owner_kind app without owner_app_id rejected", func(subTest *testing.T) {
 		_, err := pool.Exec(ctx,
 			"INSERT INTO destinations (name, type, owner_kind, sealed_secrets) VALUES ('owned', 'ntfy', 'app', $1)",
 			placeholderSealedSecrets)
-		expectSQLState(subTest, "insert destination with owner_kind app", err, sqlStateCheckViolation)
+		expectSQLState(subTest, "insert destination with owner_kind app and no owner", err, sqlStateCheckViolation)
+	})
+
+	testInstance.Run("owner_kind other than operator or app rejected", func(subTest *testing.T) {
+		_, err := pool.Exec(ctx,
+			"INSERT INTO destinations (name, type, owner_kind, sealed_secrets) VALUES ('owned', 'ntfy', 'person', $1)",
+			placeholderSealedSecrets)
+		expectSQLState(subTest, "insert destination with owner_kind person", err, sqlStateCheckViolation)
 	})
 }
 

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -134,11 +135,40 @@ func (store *fakeStore) DeleteDestination(_ context.Context, name string) (bool,
 	return existed, nil
 }
 
-func (store *fakeStore) resolveNames(names []string) ([]int64, error) {
+func (store *fakeStore) ListDestinationsByOwner(_ context.Context, appID string) ([]StoredDestination, error) {
+	store.record("ListDestinationsByOwner")
+	if failure := store.failures["ListDestinationsByOwner"]; failure != nil {
+		return nil, failure
+	}
+	owned := []StoredDestination{}
+	for _, destination := range store.sortedDestinations() {
+		if ownedByApp(destination, appID) {
+			owned = append(owned, destination)
+		}
+	}
+	return owned, nil
+}
+
+func (store *fakeStore) DeleteDestinationOwnedBy(_ context.Context, name, appID string) (bool, error) {
+	store.record("DeleteDestinationOwnedBy")
+	if store.deleteErr != nil {
+		return false, store.deleteErr
+	}
+	destination, found := store.destinations[name]
+	if !found || !ownedByApp(destination, appID) {
+		return false, nil
+	}
+	delete(store.destinations, name)
+	return true, nil
+}
+
+// resolveNames mirrors PGStore's resolveDestinationIDs: a name that does not
+// exist, or whose destination the linking app pattern may not use, is unknown.
+func (store *fakeStore) resolveNames(names []string, appPattern string) ([]int64, error) {
 	ids := []int64{}
 	for _, name := range names {
 		destination, found := store.destinations[name]
-		if !found {
+		if !found || !destination.UsableBy(appPattern) {
 			return nil, ErrUnknownDestination
 		}
 		ids = append(ids, destination.ID)
@@ -148,7 +178,10 @@ func (store *fakeStore) resolveNames(names []string) ([]int64, error) {
 
 func (store *fakeStore) InsertRoute(_ context.Context, route StoredRoute) (StoredRoute, error) {
 	store.record("InsertRoute")
-	ids, resolveErr := store.resolveNames(route.DestinationNames)
+	if failure := store.failures["InsertRoute"]; failure != nil {
+		return StoredRoute{}, failure
+	}
+	ids, resolveErr := store.resolveNames(route.DestinationNames, route.AppPattern)
 	if resolveErr != nil {
 		return StoredRoute{}, resolveErr
 	}
@@ -196,6 +229,9 @@ func (store *fakeStore) UpdateRoute(
 	_ context.Context, id int64, mutate func(StoredRoute) (StoredRoute, error),
 ) (StoredRoute, error) {
 	store.record("UpdateRoute")
+	if failure := store.failures["UpdateRoute"]; failure != nil {
+		return StoredRoute{}, failure
+	}
 	current, found := store.routes[id]
 	if !found {
 		return StoredRoute{}, ErrRouteNotFound
@@ -204,7 +240,7 @@ func (store *fakeStore) UpdateRoute(
 	if mutateErr != nil {
 		return StoredRoute{}, mutateErr
 	}
-	ids, resolveErr := store.resolveNames(mutated.DestinationNames)
+	ids, resolveErr := store.resolveNames(mutated.DestinationNames, mutated.AppPattern)
 	if resolveErr != nil {
 		return StoredRoute{}, resolveErr
 	}
@@ -218,6 +254,33 @@ func (store *fakeStore) DeleteRoute(_ context.Context, id int64) (bool, error) {
 	_, existed := store.routes[id]
 	delete(store.routes, id)
 	return existed, nil
+}
+
+func (store *fakeStore) ListRoutesByOwner(_ context.Context, appID string) ([]StoredRoute, error) {
+	store.record("ListRoutesByOwner")
+	if failure := store.failures["ListRoutesByOwner"]; failure != nil {
+		return nil, failure
+	}
+	owned := []StoredRoute{}
+	for _, route := range store.sortedRoutes(false) {
+		if routeOwnedByApp(route, appID) {
+			owned = append(owned, route)
+		}
+	}
+	return owned, nil
+}
+
+func (store *fakeStore) DeleteRouteOwnedBy(_ context.Context, id int64, appID string) (bool, error) {
+	store.record("DeleteRouteOwnedBy")
+	if failure := store.failures["DeleteRouteOwnedBy"]; failure != nil {
+		return false, failure
+	}
+	route, found := store.routes[id]
+	if !found || !routeOwnedByApp(route, appID) {
+		return false, nil
+	}
+	delete(store.routes, id)
+	return true, nil
 }
 
 func (store *fakeStore) ListEnabledRoutes(context.Context) ([]StoredRoute, error) {
@@ -320,6 +383,12 @@ func TestCreateDestinationSealsAndMasks(t *testing.T) {
 	}
 	if view.Secrets["webhook_url"] != testDiscordMasked {
 		t.Fatalf("secrets not masked: %v", view.Secrets)
+	}
+	if view.OwnerKind != OwnerOperator || view.OwnerAppID != nil {
+		t.Fatalf("admin-created destination owner = %q/%v, want operator/nil", view.OwnerKind, view.OwnerAppID)
+	}
+	if stored := fixture.store.destinations["ops_alerts"]; stored.OwnerKind != OwnerOperator || stored.OwnerAppID != nil {
+		t.Fatalf("stored destination owner = %q/%v, want operator/nil", stored.OwnerKind, stored.OwnerAppID)
 	}
 	if view.Config == nil || len(view.Config) != 0 {
 		t.Fatalf("config must be an empty non-nil map, got %#v", view.Config)
@@ -928,6 +997,12 @@ func TestCreateRoute(t *testing.T) {
 	if len(view.Destinations) != 1 || view.Destinations[0] != "ops" {
 		t.Fatalf("destinations = %v", view.Destinations)
 	}
+	if view.OwnerKind != OwnerOperator || view.OwnerAppID != nil {
+		t.Fatalf("admin-created route owner = %q/%v, want operator/nil", view.OwnerKind, view.OwnerAppID)
+	}
+	if stored := fixture.store.routes[view.ID]; stored.OwnerKind != OwnerOperator || stored.OwnerAppID != nil {
+		t.Fatalf("stored route owner = %q/%v, want operator/nil", stored.OwnerKind, stored.OwnerAppID)
+	}
 }
 
 func TestCreateRouteValidationLeavesStoreUntouched(t *testing.T) {
@@ -1170,6 +1245,157 @@ func TestResolveNoMatchReturnsEmptyNonNil(t *testing.T) {
 	}
 	if resolved == nil || len(resolved) != 0 {
 		t.Fatalf("want empty non-nil slice, got %#v", resolved)
+	}
+}
+
+// createAppADestination creates the Discord destination "app_a_hook" and marks
+// it as owned by app_a, the way a direct SQL insert would, since no API can
+// create an app-owned destination yet.
+func (fixture serviceFixture) createAppADestination(t *testing.T) {
+	t.Helper()
+	fixture.createDiscord(t, "app_a_hook")
+	ownerApp := "app_a"
+	stored := fixture.store.destinations["app_a_hook"]
+	stored.OwnerKind = OwnerApp
+	stored.OwnerAppID = &ownerApp
+	fixture.store.destinations["app_a_hook"] = stored
+}
+
+func TestResolveNamedAppOwnedDestinationOnlyForItsOwner(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createAppADestination(t)
+	fixture.createDiscord(t, "shared")
+
+	owned, err := fixture.service.Resolve(context.Background(), "app_a", "app_a_hook", "c")
+	if err != nil || len(owned) != 1 || owned[0].Name != "app_a_hook" {
+		t.Fatalf("owner resolve = %+v, %v", owned, err)
+	}
+	for _, other := range []string{"app_b", "", "*", "app_a*"} {
+		if _, err := fixture.service.Resolve(context.Background(), other, "app_a_hook", "c"); !errors.Is(err, ErrUnknownDestination) {
+			t.Fatalf("app %q resolving another app's destination: want ErrUnknownDestination, got %v", other, err)
+		}
+	}
+	for _, appID := range []string{"app_a", "app_b"} {
+		if shared, err := fixture.service.Resolve(context.Background(), appID, "shared", "c"); err != nil || len(shared) != 1 {
+			t.Fatalf("app %q resolving an operator-owned destination = %+v, %v", appID, shared, err)
+		}
+	}
+}
+
+func TestResolveNamedUnusableDestinationReadsAsUnknownEvenWhenDisabled(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createAppADestination(t)
+	disabled := false
+	if _, err := fixture.service.UpdateDestination(context.Background(), "app_a_hook", DestinationPatch{Enabled: &disabled}); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	// The disabled state of another app's destination must not leak.
+	if _, err := fixture.service.Resolve(context.Background(), "app_b", "app_a_hook", "c"); !errors.Is(err, ErrUnknownDestination) {
+		t.Fatalf("other app: want ErrUnknownDestination, got %v", err)
+	}
+	if _, err := fixture.service.Resolve(context.Background(), "app_a", "app_a_hook", "c"); !errors.Is(err, ErrDestinationDisabled) {
+		t.Fatalf("owner: want ErrDestinationDisabled, got %v", err)
+	}
+}
+
+func TestResolveNamedDeniesAnUnknownOwnerKind(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createDiscord(t, "ops")
+	stored := fixture.store.destinations["ops"]
+	stored.OwnerKind = ""
+	fixture.store.destinations["ops"] = stored
+
+	if _, err := fixture.service.Resolve(context.Background(), "app_a", "ops", "c"); !errors.Is(err, ErrUnknownDestination) {
+		t.Fatalf("empty owner kind: want ErrUnknownDestination, got %v", err)
+	}
+}
+
+func TestResolveByRoutesDropsDestinationsTheAppMayNotUseAndLogsThem(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createAppADestination(t)
+	fixture.createDiscord(t, "shared")
+	fixture.createRoute(t, "*", "*", "shared")
+	// A bad row that write-time validation would refuse: an operator "*" route
+	// linked to app A's destination, inserted behind the service's back.
+	badRoute := fixture.createRoute(t, "app_a", "*", "shared")
+	stored := fixture.store.routes[badRoute.ID]
+	stored.AppPattern = "*"
+	stored.ChannelPattern = "alerts"
+	stored.DestinationIDs = []int64{fixture.store.destinations["app_a_hook"].ID, fixture.store.destinations["shared"].ID}
+	fixture.store.routes[badRoute.ID] = stored
+
+	resolved, err := fixture.service.Resolve(context.Background(), "app_b", "", "alerts")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(resolved) != 1 || resolved[0].Name != "shared" {
+		t.Fatalf("app_b resolved %+v, want only the operator-owned destination", resolved)
+	}
+	logged := fixture.logs.String()
+	for _, want := range []string{"level=WARN", "app_a_hook", "route_ids=[" + strconv.FormatInt(badRoute.ID, 10) + "]", "app_id=app_b"} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("log %q lacks %q", logged, want)
+		}
+	}
+
+	owner, err := fixture.service.Resolve(context.Background(), "app_a", "", "alerts")
+	if err != nil {
+		t.Fatalf("resolve for owner: %v", err)
+	}
+	names := []string{}
+	for _, destination := range owner {
+		names = append(names, destination.Name)
+	}
+	if strings.Join(names, ",") != "app_a_hook,shared" {
+		t.Fatalf("owner resolved %v, want its own destination too", names)
+	}
+}
+
+func TestCreateRouteAppOwnedDestinationRule(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createAppADestination(t)
+
+	for _, pattern := range []string{"*", "app_b"} {
+		_, err := fixture.service.CreateRoute(context.Background(), RouteInput{
+			AppPattern: pattern, ChannelPattern: "*", Destinations: []string{"app_a_hook"},
+		})
+		if !errors.Is(err, ErrUnknownDestination) {
+			t.Fatalf("app_pattern %q: want ErrUnknownDestination, got %v", pattern, err)
+		}
+	}
+	if len(fixture.store.routes) != 0 {
+		t.Fatalf("a refused route was stored: %+v", fixture.store.routes)
+	}
+	view, err := fixture.service.CreateRoute(context.Background(), RouteInput{
+		AppPattern: "app_a", ChannelPattern: "*", Destinations: []string{"app_a_hook"},
+	})
+	if err != nil || view.OwnerKind != OwnerOperator {
+		t.Fatalf("operator route for the owner app = %+v, %v", view, err)
+	}
+}
+
+func TestUpdateRouteAppOwnedDestinationRule(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.createAppADestination(t)
+	fixture.createDiscord(t, "shared")
+	route := fixture.createRoute(t, "app_a", "*", "app_a_hook")
+
+	widened := "*"
+	if _, err := fixture.service.UpdateRoute(context.Background(), route.ID, RoutePatch{AppPattern: &widened}); !errors.Is(err, ErrUnknownDestination) {
+		t.Fatalf("widening the pattern: want ErrUnknownDestination, got %v", err)
+	}
+	if stored := fixture.store.routes[route.ID]; stored.AppPattern != "app_a" {
+		t.Fatalf("a refused patch changed the stored pattern to %q", stored.AppPattern)
+	}
+
+	shared := fixture.createRoute(t, "*", "*", "shared")
+	if _, err := fixture.service.UpdateRoute(context.Background(), shared.ID, RoutePatch{Destinations: []string{"shared", "app_a_hook"}}); !errors.Is(err, ErrUnknownDestination) {
+		t.Fatalf("adding another app's destination to a * route: want ErrUnknownDestination, got %v", err)
+	}
+	narrowed := "app_a"
+	if _, err := fixture.service.UpdateRoute(context.Background(), shared.ID, RoutePatch{AppPattern: &narrowed, Destinations: []string{"shared", "app_a_hook"}}); err != nil {
+		t.Fatalf("narrowing to the owner and adding its destination: %v", err)
 	}
 }
 

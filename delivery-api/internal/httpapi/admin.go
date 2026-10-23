@@ -34,6 +34,8 @@ const (
 	errMsgInternalError       = "internal error"
 	errMsgInvalidOverlapHours = "invalid overlap_hours"
 	errMsgRotationUnsupported = "destination type does not support rotation"
+	errMsgConstraintViolation = "request violates a data constraint"
+	errMsgURLCheckUnavailable = "destination url check unavailable"
 )
 
 // Bounds of the rotate-secret overlap window, in hours.
@@ -374,6 +376,17 @@ func parsePositiveID(responseWriter http.ResponseWriter, request *http.Request, 
 	return id, true
 }
 
+// boundBodyRead gives the client bodyReadTimeout to send the request body and
+// returns the func that clears the deadline again. Use it as
+// `defer boundBodyRead(responseWriter)()` around every body read.
+func boundBodyRead(responseWriter http.ResponseWriter) func() {
+	// Best effort: ResponseController reports an error where the writer cannot
+	// set a deadline (for example an httptest recorder), which is safe to ignore.
+	responseController := http.NewResponseController(responseWriter)
+	_ = responseController.SetReadDeadline(time.Now().Add(bodyReadTimeout))
+	return func() { _ = responseController.SetReadDeadline(time.Time{}) }
+}
+
 // decodeJSON reads exactly one JSON value from the request body into dst. The
 // body is capped at maxBytes, unknown fields are rejected, and any data after
 // the first value is rejected. On failure it writes 413 for an oversized body
@@ -384,11 +397,7 @@ func parsePositiveID(responseWriter http.ResponseWriter, request *http.Request, 
 // indefinitely. The deadline is cleared again once the decode finishes, so it
 // never cuts short the work that follows (for example a message wait).
 func decodeJSON(responseWriter http.ResponseWriter, request *http.Request, dst any, maxBytes int64) bool {
-	// Best effort: ResponseController reports an error where the writer cannot
-	// set a deadline (for example an httptest recorder), which is safe to ignore.
-	responseController := http.NewResponseController(responseWriter)
-	_ = responseController.SetReadDeadline(time.Now().Add(bodyReadTimeout))
-	defer func() { _ = responseController.SetReadDeadline(time.Time{}) }()
+	defer boundBodyRead(responseWriter)()
 
 	limitedBody := http.MaxBytesReader(responseWriter, request.Body, maxBytes)
 	decoder := json.NewDecoder(limitedBody)
@@ -439,6 +448,16 @@ func (server *Server) writeServiceError(responseWriter http.ResponseWriter, requ
 		writeError(responseWriter, http.StatusConflict, errMsgDestinationInUse)
 	case errors.Is(err, registry.ErrUnknownDestination):
 		writeError(responseWriter, http.StatusBadRequest, errMsgUnknownDestination)
+	case errors.Is(err, registry.ErrCheckViolation):
+		// A CHECK the database enforces (for example an app-owned route's app_pattern must stay its
+		// owner's id) is a request the client can correct, not a server fault. The error text names the
+		// operation and the constraint (never row data), so it is logged: a Go validator that drifts from a
+		// database CHECK would otherwise be a silent 400.
+		server.logger.Warn("registry request violated a data constraint", "error", err, "path", request.URL.Path)
+		writeError(responseWriter, http.StatusBadRequest, errMsgConstraintViolation)
+	case errors.Is(err, registry.ErrURLCheckUnavailable):
+		// The service already logged why the check was unavailable.
+		writeError(responseWriter, http.StatusServiceUnavailable, errMsgURLCheckUnavailable)
 	default:
 		server.logger.Error("registry service error", "error", err, "path", request.URL.Path)
 		writeError(responseWriter, http.StatusInternalServerError, errMsgInternalError)

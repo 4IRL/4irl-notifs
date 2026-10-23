@@ -71,6 +71,9 @@ func WrapDBError(operation string, err error) error {
 // SQLStateUniqueViolation is the SQLSTATE Postgres reports for a unique-constraint violation.
 const SQLStateUniqueViolation = "23505"
 
+// SQLStateCheckViolation is the SQLSTATE Postgres reports for a CHECK-constraint violation.
+const SQLStateCheckViolation = "23514"
+
 // ErrorCode returns the SQLSTATE of a Postgres error, or "" for any other.
 func ErrorCode(err error) string {
 	var pgErr *pgconn.PgError

@@ -97,17 +97,25 @@ type StoredCheck struct {
 	// PendingAlert is the outbox: the alert kind not yet flushed, or nil.
 	PendingAlert *string
 	Destinations []DestinationRef
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// OwnerKind is registry.OwnerOperator or registry.OwnerApp; OwnerAppID is set
+	// exactly when it is an app. This is the owner, distinct from AppID, which is
+	// the ping identity.
+	OwnerKind  string
+	OwnerAppID *string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
-// NewCheck is the input to create a check.
+// NewCheck is the input to create a check. An empty OwnerKind is stored as
+// registry.OwnerOperator.
 type NewCheck struct {
 	AppID            string
 	Name             string
 	PeriodSeconds    int
 	GraceSeconds     int
 	DestinationNames []string
+	OwnerKind        string
+	OwnerAppID       *string
 }
 
 // CheckUpdate is the input to change a check's schedule and destinations; the

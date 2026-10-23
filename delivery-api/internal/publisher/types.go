@@ -9,7 +9,6 @@ package publisher
 
 import (
 	"errors"
-	"regexp"
 	"time"
 )
 
@@ -27,10 +26,6 @@ type ValidationError struct {
 
 // Error returns the validation message.
 func (validationError *ValidationError) Error() string { return validationError.Message }
-
-// appIDPattern is the app identifier shape, the same rule the messages and
-// app_publishers tables enforce.
-var appIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,62}$`)
 
 // StoredPublisher is a publisher as persisted. SealedToken holds the AES-GCM
 // sealed ntfy token and is never serialized.

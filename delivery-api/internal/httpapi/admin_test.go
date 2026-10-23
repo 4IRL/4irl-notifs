@@ -182,13 +182,14 @@ func sampleDestinationView() registry.DestinationView {
 		Enabled:   true,
 		Config:    map[string]string{"topic": "ops"},
 		Secrets:   map[string]string{"token": "****abcd"},
+		OwnerKind: registry.OwnerOperator,
 		CreatedAt: adminTimestamp,
 		UpdatedAt: adminTimestamp,
 	}
 }
 
 const sampleDestinationJSON = `{"name":"ops_ntfy","type":"ntfy","enabled":true,"disabled_reason":null,` +
-	`"config":{"topic":"ops"},"secrets":{"token":"****abcd"},` +
+	`"config":{"topic":"ops"},"secrets":{"token":"****abcd"},"owner_kind":"operator","owner_app_id":null,` +
 	`"created_at":"` + adminTimestampJSON + `","updated_at":"` + adminTimestampJSON + `"}`
 
 func sampleRouteView() registry.RouteView {
@@ -198,13 +199,14 @@ func sampleRouteView() registry.RouteView {
 		ChannelPattern: "backup_*",
 		Destinations:   []string{"ops_ntfy"},
 		Enabled:        true,
+		OwnerKind:      registry.OwnerOperator,
 		CreatedAt:      adminTimestamp,
 		UpdatedAt:      adminTimestamp,
 	}
 }
 
 const sampleRouteJSON = `{"id":7,"app_pattern":"*","channel_pattern":"backup_*","destinations":["ops_ntfy"],` +
-	`"enabled":true,"created_at":"` + adminTimestampJSON + `","updated_at":"` + adminTimestampJSON + `"}`
+	`"enabled":true,"owner_kind":"operator","owner_app_id":null,"created_at":"` + adminTimestampJSON + `","updated_at":"` + adminTimestampJSON + `"}`
 
 // adminRoute is one admin endpoint with a valid request body.
 type adminRoute struct {
@@ -672,6 +674,19 @@ func TestAdminMapsServiceErrors(testInstance *testing.T) {
 		{
 			name: "rotation unsupported", err: registry.ErrRotationUnsupported,
 			wantStatus: http.StatusUnprocessableEntity, wantBody: `{"error":"destination type does not support rotation"}` + "\n",
+		},
+		{
+			// SQLSTATE 23514, e.g. an admin PATCH of an app-owned route's app_pattern: a 400, never a 500.
+			name: "check violation", err: registry.ErrCheckViolation,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"request violates a data constraint"}` + "\n",
+		},
+		{
+			name: "wrapped check violation", err: fmt.Errorf("wrap: %w", registry.ErrCheckViolation),
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"request violates a data constraint"}` + "\n",
+		},
+		{
+			name: "url check unavailable", err: registry.ErrURLCheckUnavailable,
+			wantStatus: http.StatusServiceUnavailable, wantBody: `{"error":"destination url check unavailable"}` + "\n",
 		},
 		{
 			name: "wrapped sentinel", err: fmt.Errorf("wrap: %w", registry.ErrRouteNotFound),
