@@ -326,9 +326,11 @@ Consuming apps link to it as `?app=<app_id>&user=u_<hash>&name=<display name>`; 
 - **Subscriber auth — token vs. password.** The subscriber token (above) is what an app hands a
   programmatic/Android client to subscribe. **iOS is different:** the ntfy iOS app's subscribe screen has
   **no token field**, so an iOS subscriber logs into the ntfy app with a **username + password** —
-  `u_<person_hash>` + a **self-chosen password** the app sets for them via `POST /v1/set-password`. The
-  ntfy access token is therefore Android/programmatic-only; iOS relies on the password path. (Same ntfy
-  user either way — the password and the token are two auth methods onto the one `u_<person_hash>` identity.)
+  `u_<person_hash>` + a **generated password** (`xxxx-xxxx-xxxx-xxxx`) that provisioning-api creates and
+  returns once from `POST /v1/provision` (a new one comes from `POST /v1/reset-password`; the legacy
+  `POST /v1/set-password` for an app-chosen password is not for new apps). The ntfy access token is
+  therefore Android/programmatic-only; iOS relies on the password path. (Same ntfy user either way — the
+  password and the token are two auth methods onto the one `u_<person_hash>` identity.)
 - **Topics:** `{app_id}-{person_hash}-{channel}`, with the standard channel `all` (one per app; others
   only by explicit need). Publisher writes any `{app_id}-*`; subscriber reads its own
   `{app_id}-{person_hash}-*`.
@@ -339,7 +341,8 @@ Consuming apps link to it as `?app=<app_id>&user=u_<hash>&name=<display name>`; 
   `POST /v1/provision` returns it as `broadcast_topic`. **Send authz is app-side:** ntfy authenticates the
   app-level publisher token, not the app's users, so restricting who may *trigger* a broadcast to that
   app's admins is the consuming app's responsibility (see the integration guide's broadcast section).
-- **person-service D1** table `person(person_hash PK, email, created_at)` — reverse index so an
+- **person-service D1** table `person(person_hash PK, email, created_at, password_set_at)` (plus the
+  `password_reset` table; see "Subscriber passwords: storage, claims and flows") — reverse index so an
   operator can map an opaque hash back to an email. Populated by the provisioning-api **dual-write**
   (Go) on every `/v1/provision`, and **dual-deleted** on a full user teardown (`DELETE /v1/users/{id}`
   or a deprovision that removes the user's last app).
@@ -367,7 +370,7 @@ graph LR
 
 ### provisioning-api endpoints (`notifs-api.4irl.app`, all Service-Auth gated)
 
-`POST /v1/provision` · `POST /v1/deprovision` · `POST /v1/set-password` · `GET /v1/users` ·
+`POST /v1/provision` · `POST /v1/reset-password` · `POST /v1/deprovision` · `POST /v1/set-password` · `GET /v1/users` ·
 `DELETE /v1/users/{user_id}` · `POST /v1/provision-app` · `POST /v1/deprovision-app` ·
 `POST /v1/test-notify` · `GET /healthz`. Bodies +
 responses are JSON; errors `{ "error": … }`. Notes: `DELETE /v1/users/{id}` is idempotent (200 even when
@@ -382,10 +385,89 @@ response. `channel` defaults to `all`; `title` defaults to `<app_id> test` (the 
 a `Title` header (RFC 2047-encoded when non-ASCII).
 `POST /v1/set-password {app_id, email, password}` → `{user_id, app_id, updated}` sets a person's
 ntfy password (via `ntfy user change-pass`) so they can log into the ntfy iOS app directly with
-`u_<person_hash>` + that password; the user must already be provisioned (missing user → `404
-{"error":"user does not exist"}`), the password is validated at 8–128 chars (`400 {"error":"invalid
-password"}`), and like every `/v1/*` route it is Service-Auth gated at the edge (no Go-level auth). Full
-contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
+`u_<person_hash>` + that password; it is **not for new apps** (use the generated password). The user
+must already be provisioned (missing user → `404 {"error":"user does not exist"}`), the password is
+validated at 8–128 chars (`400 {"error":"invalid password"}`), it records `password_set_at` before
+changing the password (so a later provision won't replace a chosen one) and returns `500` with nothing
+changed when that record can't be written, and like every `/v1/*` route it is Service-Auth gated at the
+edge (no Go-level auth). Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
+
+`POST /v1/provision` gains an optional `password` (`xxxx-xxxx-xxxx-xxxx`, about 80 bits) only when that call
+generated one; every `200` sends `Cache-Control: no-store`. `POST /v1/reset-password {app_id, email}` →
+`{user_id, app_id, password}` makes a fresh one (`400` invalid JSON body / app_id / email, `404`
+user does not exist, `429` too many password changes, `500`), every response `Cache-Control: no-store`.
+The limit is 5 resets per person per rolling hour and is checked first, so `429` wins over `404`. Every
+reset `429` carries `Retry-After`: the seconds until the oldest slot expires for a true limit, a fixed 60
+for a limit-store outage or unconfigured client (status and body identical). The limit store fails
+closed: if it is down or unconfigured, reset answers `429` and makes no ntfy call.
+
+#### Subscriber passwords: storage, claims and flows
+
+- **person-service D1** (migration `0003_subscriber_password.sql`): `person` gains nullable
+  `password_set_at` (ISO-8601 UTC; NULL = no known password), and a new `password_reset(reset_id PK,
+  person_hash, reset_at epoch ms)` table with an index on `(person_hash, reset_at)` holds the reset
+  history. `GET /people` and `GET /person` keep their column lists, so the admin UI never sees
+  `password_set_at`. State lives in D1 so a redeploy of the single provisioning-api container loses
+  nothing.
+- **Claim modes** (`POST /person/{hash}/password-claim`): a claim atomically records
+  `password_set_at = now` and reports the stamp it replaced. The body may carry an optional
+  `password_set_at` (canonical `toISOString()` UTC form, e.g. `2026-10-22T10:00:00.123Z`; anything else is
+  `400 {"error":"invalid password_set_at"}`) which the Worker stores instead of its own clock; absent, it
+  stamps with its own clock. `if_unset` creates the row if missing and
+  stamps only when the column is NULL; `always` creates the row if missing and overwrites the stamp;
+  `update_only` never creates a row and overwrites the stamp of an existing one. A **release**
+  (`DELETE /person/{hash}/password-claim`) restores a given value only if the column still equals the
+  stamp the claim wrote, so a newer claim is never undone. Reset slots are
+  `POST /person/{hash}/password-resets` (insert only if fewer than 5 in the last hour; `429` with
+  `retry_after_seconds` otherwise) and `DELETE /person/{hash}/password-resets/{reset_id}` (a failed reset
+  doesn't count). `DELETE /person/{hash}` also deletes that hash's reset rows in the same batch.
+- **Per-person lock.** Every flow takes an in-process lock keyed by `person_hash` (sound because prod runs
+  exactly one provisioning-api replica). Provision holds it from its first claim until it returns;
+  ResetPassword and SetPassword from their stamp claim until they return; `DeleteUser` across the ntfy
+  delete and the person delete (person ids only); `Deprovision` only for the last-app teardown. The lock is
+  not re-entrant and never nested.
+- **Provision:** `if_unset` claim; if claimed, generate a subscriber password and apply it (a pre-existing
+  ntfy user is rotated with `change-pass`). If not claimed but `AddUser` actually created a new ntfy user
+  the stamp is stale, and Provision **self-heals** with claim-before-apply: `always` claim first, then
+  `change-pass`; a failed apply releases the claim to NULL so the retry heals again. The `if_unset` claim
+  sends a client-generated stamp; a claim error or an unconfigured client leaves the throwaway password and
+  returns no `password`, and an ambiguous claim error (transport error, timeout or 5xx: the Worker may have
+  committed the stamp) makes a best-effort release of that stamp back to NULL (a no-op if it was never
+  written), while a 4xx rejection releases nothing. Any failure after a
+  successful claim releases it to NULL and returns 500; an undelivered password is simply superseded.
+- **ResetPassword:** claim a reset slot (any error is a `429`), then `update_only` stamp claim, then
+  `change-pass`; failures release the stamp (restoring the previous value) and then the slot. When no
+  person row existed, an `always` claim records the stamp afterwards; if that fails the call still returns
+  the applied password and logs at Error level.
+- **DeleteUser fail-loud:** for a person id (`u_` + 16 base32 chars) a configured person store's delete
+  failure now returns `500` after the ntfy delete (idempotent, so retry is safe). Other ids (publishers,
+  `u_` ids with a non-hash suffix) only delete the ntfy user. `Deprovision`'s last-app teardown stays
+  best-effort (log and swallow). A stale stamp left by a failed or raced person delete is healed by
+  Provision as above.
+- **Legacy people.** A person who predates `0003` has a NULL stamp and a working password. Their next
+  `POST /v1/provision` (any app) claims the stamp and **rotates** their password; the returned password is
+  the only delivery, so every consumer must always display a returned password.
+- **Accepted edge cases.** (1) An orphan person row with a NULL stamp left after a failed first provision is
+  harmless and reused by the next successful Provision. (2) If the first-provision claim is applied by the Worker but
+  the response is lost, no password is delivered (treated as store unavailable) but Provision releases the
+  client-supplied stamp best-effort; only if that release also fails does the person stay stamped, and the
+  recovery is `POST /v1/reset-password`.
+- **Logging:** Provision logs `subscriber password decision` with `outcome` generated / already_set /
+  store_unavailable / healed; Reset logs `password reset` with `outcome` reset / limited /
+  limit_store_unavailable / stamp_unavailable / not_found / failed; claim and release failures log at
+  Error level with `person_hash`. No log line or error string contains a password.
+- **Admin UI.** It is a `/v1/provision` caller: it shows the returned password once in the provision
+  result, with a Copy password button, and a neutral "no password was returned" message when the response
+  has none. It is also a `POST /v1/reset-password` caller: each person row in the Users list has a
+  "Reset password" action (shown only when the row's email is known from the People list, so no endpoint
+  is extended; the app id is the row's first app) that asks for confirmation ("replaces the current
+  password immediately"), calls reset, and reveals the new password once with a Copy password button and
+  a Done button. A `404`, a `429` (with the `Retry-After` seconds, 60 when absent) and any other failure
+  each show a plain message; the password lives only in component state and is cleared by Done, the next
+  reset, or the row leaving the list.
+- **Local person-service.** The local `docker-compose.yml` runs a person-service container (`wrangler dev`
+  with a local D1; local and CI only, prod keeps the real Worker) so integration tests can prove a
+  generated password signs in to ntfy and set-password's stamp-first path works locally.
 
 ### Scheduling & time-based notifications are app-owned — notifs stays a dumb pipe
 
@@ -462,10 +544,11 @@ server URL differs at all, it can't correlate the wake to a subscription and sil
 
 **iOS login is username+password, not a token.** Unlike Android/programmatic clients (which subscribe
 with the subscriber token), the ntfy iOS app's subscribe screen has no token field — an iOS user signs
-in with **`u_<person_hash>` + a self-chosen password**, which the app sets for them via `POST
-/v1/set-password` (see the endpoint inventory and `docs/app-integration-guide.md`). So the integration
-step for iOS is: provision the subscriber, then call `set-password` so they have a credential to log in
-with; the subscriber access token remains Android/programmatic-only.
+in with **`u_<person_hash>` + the generated password** that provisioning-api creates and returns once from
+`POST /v1/provision` (or a new one from `POST /v1/reset-password`; see the endpoint inventory and
+`docs/app-integration-guide.md`). So the integration step for iOS is: provision the subscriber, show the
+returned password once, and offer "Generate a new password"; the subscriber access token remains
+Android/programmatic-only.
 
 **Retention:** `cache-duration: 24h` — a client offline, or an iOS device fetching after a delayed
 wake, backfills missed messages via `since=` for up to 24h.
@@ -480,10 +563,21 @@ graph TD
   B --> D1J["deploy-prod<br/>SSH → VPS docker compose up<br/>(ntfy + provisioning-api + delivery-api + Postgres)"]
   M --> D2["deploy-admin-ui<br/>wrangler pages deploy (notifs-admin)"]
   M --> D3["deploy-person-service<br/>wrangler d1 migrations apply → wrangler deploy Worker"]
+  D3 --> D1J
   M --> D4["deploy-watchdog<br/>wrangler deploy Worker (no D1)"]
   M --> D5["deploy-setup-page<br/>wrangler pages deploy (notifs-setup)"]
 ```
 
+- **Deploy order (enforced in CI).** `deploy-prod` has `needs: [build-prod, deploy-person-service]` in
+  `prod-build-and-deploy.yml`, so the Worker and migration `0003` are live before the API. A failed Worker
+  deploy therefore skips the VPS deploy (fail closed, intended). If the Worker lags behind the API (for
+  example the Worker deploy failed and the API was deployed some other way), provision leaves the password
+  out, reset returns `429`, and **set-password returns `500`** until the Worker and migration `0003` are
+  live. The admin UI deploys with or before the API (it runs in parallel with `deploy-prod`, so it is live
+  at about the same time); an older UI against the new API would drop the returned `password`, so deploy
+  it first when deploying by hand. Migration `0003` is additive, so an older Worker or API keeps working
+  against it; rolling back the API alone is safe, while rolling back the Worker removes the new routes and
+  degrades the API as above.
 - **VPS deploy** (`prod-deploy.yml`): SSH via `cloudflared access ssh` (own SSH key + deploy service
   token), SCPs compose + ntfy config, `docker compose up -d`. Dual-write creds delivered as Docker
   Compose secrets (`PERSON_SERVICE_ACCESS_CLIENT_*`), never a plaintext `.env`.

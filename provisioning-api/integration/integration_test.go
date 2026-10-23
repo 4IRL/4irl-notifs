@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -58,6 +59,14 @@ type provisionResponse struct {
 	TopicPattern   string `json:"topic_pattern"`
 	BroadcastTopic string `json:"broadcast_topic"`
 	Token          string `json:"token"`
+	Password       string `json:"password"`
+}
+
+// resetPasswordResponse mirrors the /v1/reset-password success body.
+type resetPasswordResponse struct {
+	UserID   string `json:"user_id"`
+	AppID    string `json:"app_id"`
+	Password string `json:"password"`
 }
 
 // provisionAppResponse mirrors the /v1/provision-app success body.
@@ -1011,15 +1020,17 @@ func TestSetPasswordChangesNtfyPassword(t *testing.T) {
 
 	// Provision the subscriber so the u_<hash> user exists AND holds a read grant
 	// on its own scoped topic pattern — the Basic-Auth read below is then an
-	// authorization success (200), not a 403 on an ungranted topic.
+	// authorization success (200), not a 403 on an ungranted topic. Provision
+	// generates a subscriber password and returns it, but this test replaces it
+	// with a known one through the endpoint under test.
 	status, provisionBody := postJSON(t, "/v1/provision", map[string]string{"app_id": appID, "email": email})
 	if status != http.StatusOK {
 		t.Fatalf("provision status = %d, body = %s", status, provisionBody)
 	}
 	ownTopic := appID + "-" + personHash + "-test"
 
-	// Set a KNOWN old password via the endpoint under test (provision mints an
-	// unknown throwaway), establishing a baseline the "old no longer works"
+	// Set a KNOWN old password via the endpoint under test (the provision-returned
+	// password is random), establishing a baseline the "old no longer works"
 	// assertion can rest on.
 	status, setOldBody := postJSON(t, "/v1/set-password", map[string]string{"app_id": appID, "email": email, "password": oldPassword})
 	if status != http.StatusOK {
@@ -1058,6 +1069,221 @@ func TestSetPasswordChangesNtfyPassword(t *testing.T) {
 	if !strings.Contains(string(missingBody), "user does not exist") {
 		t.Fatalf("set-password 404 body = %s, expected it to contain %q", missingBody, "user does not exist")
 	}
+}
+
+// postJSONFull is postJSON that also returns the response headers.
+func postJSONFull(t *testing.T, path string, payload map[string]string) (int, http.Header, []byte) {
+	t.Helper()
+	encoded, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		t.Fatalf("marshaling payload: %v", marshalErr)
+	}
+	response, postErr := http.Post(apiBaseURL()+path, "application/json", bytes.NewReader(encoded))
+	if postErr != nil {
+		t.Fatalf("POST %s: %v", path, postErr)
+	}
+	defer closeBody(t, response)
+	body := readBody(t, response)
+	return response.StatusCode, response.Header, body
+}
+
+// provisionFull provisions (appID, email) and returns the decoded body and
+// headers, failing the test on a non-200.
+func provisionFull(t *testing.T, appID string, email string) (provisionResponse, http.Header) {
+	t.Helper()
+	status, headers, body := postJSONFull(t, "/v1/provision", map[string]string{"app_id": appID, "email": email})
+	if status != http.StatusOK {
+		t.Fatalf("provision %s status = %d, body = %s", appID, status, body)
+	}
+	var provisioned provisionResponse
+	if unmarshalErr := json.Unmarshal(body, &provisioned); unmarshalErr != nil {
+		t.Fatalf("unmarshaling provision response: %v", unmarshalErr)
+	}
+	return provisioned, headers
+}
+
+// resetPassword calls /v1/reset-password and returns status, headers and body.
+func resetPassword(t *testing.T, appID string, email string) (int, http.Header, []byte) {
+	t.Helper()
+	return postJSONFull(t, "/v1/reset-password", map[string]string{"app_id": appID, "email": email})
+}
+
+func requireBasicAuth(t *testing.T, topic string, userID string, password string, want int, label string) {
+	t.Helper()
+	if got := readStatusWithBasicAuth(t, topic, userID, password); got != want {
+		t.Fatalf("%s: Basic-Auth read status = %d, expected %d", label, got, want)
+	}
+}
+
+func requireRejected(t *testing.T, topic string, userID string, password string, label string) {
+	t.Helper()
+	got := readStatusWithBasicAuth(t, topic, userID, password)
+	if got != http.StatusUnauthorized && got != http.StatusForbidden {
+		t.Fatalf("%s: Basic-Auth read status = %d, expected 401 or 403", label, got)
+	}
+}
+
+func TestProvisionReturnsWorkingPasswordOnlyOnce(t *testing.T) {
+	waitForHealth(t)
+	const email = "itest-genpw-once@example.com"
+	const appID = "itestgenpw"
+	const secondAppID = "itestgenpwtwo"
+	personHash := personhash.Hash(email)
+	ntfyUserID := personhash.NtfyUser(email)
+	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
+
+	first, headers := provisionFull(t, appID, email)
+	if first.Password == "" {
+		t.Fatal("first provision returned no password")
+	}
+	if cacheControl := headers.Get("Cache-Control"); cacheControl != "no-store" {
+		t.Fatalf("provision Cache-Control = %q, expected no-store", cacheControl)
+	}
+	requireBasicAuth(t, appID+"-"+personHash+"-test", ntfyUserID, first.Password, http.StatusOK, "provision password")
+
+	second, _ := provisionFull(t, secondAppID, email)
+	if second.Password != "" {
+		t.Fatal("a second app's provision returned a password; expected none")
+	}
+	requireBasicAuth(t, appID+"-"+personHash+"-test", ntfyUserID, first.Password, http.StatusOK, "first password after second provision")
+}
+
+func TestResetPasswordRotatesAndRateLimits(t *testing.T) {
+	waitForHealth(t)
+	const email = "itest-reset@example.com"
+	const appID = "itestreset"
+	personHash := personhash.Hash(email)
+	ntfyUserID := personhash.NtfyUser(email)
+	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
+	ownTopic := appID + "-" + personHash + "-test"
+
+	provisioned, _ := provisionFull(t, appID, email)
+	if provisioned.Password == "" {
+		t.Fatal("provision returned no password")
+	}
+	previous := provisioned.Password
+
+	var latest string
+	for attempt := 1; attempt <= 5; attempt++ {
+		status, headers, body := resetPassword(t, appID, email)
+		if status != http.StatusOK {
+			t.Fatalf("reset %d status = %d, body = %s", attempt, status, body)
+		}
+		if cacheControl := headers.Get("Cache-Control"); cacheControl != "no-store" {
+			t.Fatalf("reset %d Cache-Control = %q, expected no-store", attempt, cacheControl)
+		}
+		var reset resetPasswordResponse
+		if unmarshalErr := json.Unmarshal(body, &reset); unmarshalErr != nil {
+			t.Fatalf("unmarshaling reset response: %v", unmarshalErr)
+		}
+		if reset.Password == "" || reset.Password == previous {
+			t.Fatalf("reset %d returned password %q, expected a new non-empty one", attempt, reset.Password)
+		}
+		requireBasicAuth(t, ownTopic, ntfyUserID, reset.Password, http.StatusOK, "reset password")
+		requireRejected(t, ownTopic, ntfyUserID, previous, "superseded password")
+		previous = reset.Password
+		latest = reset.Password
+	}
+
+	status, headers, body := resetPassword(t, appID, email)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("6th reset status = %d, expected 429; body = %s", status, body)
+	}
+	retryAfter, convErr := strconv.Atoi(headers.Get("Retry-After"))
+	if convErr != nil || retryAfter <= 0 {
+		t.Fatalf("6th reset Retry-After = %q, expected a positive number of seconds", headers.Get("Retry-After"))
+	}
+	requireBasicAuth(t, ownTopic, ntfyUserID, latest, http.StatusOK, "5th reset password after the 429")
+}
+
+func TestResetPasswordForUnknownEmailIsNotFound(t *testing.T) {
+	waitForHealth(t)
+	const email = "itest-reset-missing@example.com"
+	t.Cleanup(func() { deleteUser(t, personhash.NtfyUser(email)) })
+
+	status, headers, body := resetPassword(t, "itestresetmissing", email)
+	if status != http.StatusNotFound {
+		t.Fatalf("reset for unknown email status = %d, expected 404; body = %s", status, body)
+	}
+	if !strings.Contains(string(body), "user does not exist") {
+		t.Fatalf("reset 404 body = %s, expected it to contain %q", body, "user does not exist")
+	}
+	if cacheControl := headers.Get("Cache-Control"); cacheControl != "no-store" {
+		t.Fatalf("reset 404 Cache-Control = %q, expected no-store", cacheControl)
+	}
+}
+
+func TestSetPasswordThenReprovisionKeepsChosenPassword(t *testing.T) {
+	waitForHealth(t)
+	const email = "itest-genpw-chosen@example.com"
+	const appID = "itestchosen"
+	const chosenPassword = "my-chosen-password"
+	personHash := personhash.Hash(email)
+	ntfyUserID := personhash.NtfyUser(email)
+	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
+	ownTopic := appID + "-" + personHash + "-test"
+
+	provisionFull(t, appID, email)
+	status, setBody := postJSON(t, "/v1/set-password", map[string]string{"app_id": appID, "email": email, "password": chosenPassword})
+	if status != http.StatusOK {
+		t.Fatalf("set-password status = %d, body = %s", status, setBody)
+	}
+
+	again, _ := provisionFull(t, appID, email)
+	if again.Password != "" {
+		t.Fatal("re-provision after set-password returned a password; expected none")
+	}
+	requireBasicAuth(t, ownTopic, ntfyUserID, chosenPassword, http.StatusOK, "chosen password after re-provision")
+}
+
+func TestDeleteThenProvisionReturnsFreshPassword(t *testing.T) {
+	waitForHealth(t)
+	const email = "itest-genpw-delete@example.com"
+	const appID = "itestdelete"
+	personHash := personhash.Hash(email)
+	ntfyUserID := personhash.NtfyUser(email)
+	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
+	ownTopic := appID + "-" + personHash + "-test"
+
+	first, _ := provisionFull(t, appID, email)
+	if first.Password == "" {
+		t.Fatal("first provision returned no password")
+	}
+	deleteUser(t, ntfyUserID)
+
+	second, _ := provisionFull(t, appID, email)
+	if second.Password == "" {
+		t.Fatal("provision after DELETE returned no password; expected a fresh one")
+	}
+	if second.Password == first.Password {
+		t.Fatal("provision after DELETE returned the same password")
+	}
+	requireBasicAuth(t, ownTopic, ntfyUserID, second.Password, http.StatusOK, "fresh password after delete")
+}
+
+func TestProvisionSelfHealsStaleStamp(t *testing.T) {
+	waitForHealth(t)
+	const email = "itest-genpw-heal@example.com"
+	const appID = "itestheal"
+	personHash := personhash.Hash(email)
+	ntfyUserID := personhash.NtfyUser(email)
+	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
+	ownTopic := appID + "-" + personHash + "-test"
+
+	first, _ := provisionFull(t, appID, email)
+	if first.Password == "" {
+		t.Fatal("first provision returned no password")
+	}
+
+	// Delete the ntfy user behind the API's back: the person row and its
+	// password_set_at stamp remain, so the stamp is stale.
+	runNtfyCLIInContainer(t, nil, ntfycli.UserDeleteArgs(ntfyUserID)...)
+
+	healed, _ := provisionFull(t, appID, email)
+	if healed.Password == "" {
+		t.Fatal("provision with a stale stamp returned no password; expected the self-heal to deliver one")
+	}
+	requireBasicAuth(t, ownTopic, ntfyUserID, healed.Password, http.StatusOK, "self-healed password")
 }
 
 func TestConcurrentProvisionsAreSerializedUnderLoad(t *testing.T) {
