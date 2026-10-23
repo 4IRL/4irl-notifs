@@ -19,6 +19,7 @@ import (
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfypublish"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personsvc"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/validation"
 )
 
@@ -46,6 +47,17 @@ type PersonServiceClient interface {
 	DeletePerson(ctx context.Context, personHash string) error
 	// DeleteApp removes an app registry row (idempotent).
 	DeleteApp(ctx context.Context, appID string) error
+	// ClaimPassword atomically records password_set_at per mode.
+	ClaimPassword(ctx context.Context, personHash string, email string, mode personsvc.ClaimMode) (personsvc.PasswordClaim, error)
+	// ClaimPasswordWithStamp is ClaimPassword with a client-generated stamp the Worker stores
+	// instead of its own clock, so the caller can release it after a lost response.
+	ClaimPasswordWithStamp(ctx context.Context, personHash string, email string, mode personsvc.ClaimMode, stamp string) (personsvc.PasswordClaim, error)
+	// ReleasePasswordClaim restores restoreTo only if the stamp still equals claim.SetAt.
+	ReleasePasswordClaim(ctx context.Context, personHash string, claim personsvc.PasswordClaim, restoreTo string) error
+	// ClaimResetSlot reserves a reset slot; a limit returns *personsvc.ResetLimitError.
+	ClaimResetSlot(ctx context.Context, personHash string) (string, error)
+	// ReleaseResetSlot gives a reset slot back (idempotent).
+	ReleaseResetSlot(ctx context.Context, personHash string, resetID string) error
 }
 
 // NotificationPublisher is the subset of the outbound ntfy HTTP publisher
@@ -63,6 +75,9 @@ type ServiceConfig struct {
 	// GeneratePassword returns the throwaway password for newly created
 	// users (people authenticate with tokens, never this password).
 	GeneratePassword func() (string, error)
+	// GenerateSubscriberPassword returns the typeable password generated for
+	// a person's phone sign-in. Nil means the real GenerateSubscriberPassword.
+	GenerateSubscriberPassword func() (string, error)
 	// PersonClient is the optional person-service dual-write client. When
 	// nil (or PersonClient.Configured() is false), Provision skips the
 	// dual-write entirely.
@@ -78,11 +93,14 @@ type ServiceConfig struct {
 
 // Service orchestrates ntfy CLI operations into provision/deprovision calls.
 type Service struct {
-	client           NtfyClient
-	generatePassword func() (string, error)
-	personClient     PersonServiceClient
-	publisher        NotificationPublisher
-	logger           *slog.Logger
+	client                     NtfyClient
+	generatePassword           func() (string, error)
+	generateSubscriberPassword func() (string, error)
+	// personLocks serializes every password-touching flow per person.
+	personLocks  keyedLock
+	personClient PersonServiceClient
+	publisher    NotificationPublisher
+	logger       *slog.Logger
 }
 
 // NewService builds a Service from config.
@@ -91,12 +109,17 @@ func NewService(config ServiceConfig) *Service {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
+	generateSubscriberPassword := config.GenerateSubscriberPassword
+	if generateSubscriberPassword == nil {
+		generateSubscriberPassword = GenerateSubscriberPassword
+	}
 	return &Service{
-		client:           config.Client,
-		generatePassword: config.GeneratePassword,
-		personClient:     config.PersonClient,
-		publisher:        config.Publisher,
-		logger:           logger,
+		client:                     config.Client,
+		generatePassword:           config.GeneratePassword,
+		generateSubscriberPassword: generateSubscriberPassword,
+		personClient:               config.PersonClient,
+		publisher:                  config.Publisher,
+		logger:                     logger,
 	}
 }
 
@@ -120,24 +143,38 @@ type ProvisionResult struct {
 	// TopicPattern and discoverability by consuming apps.
 	BroadcastTopic string
 	Token          string
+	// Password is the first-time ntfy sign-in password, set only when this call
+	// generated one. It is shown to the person once and never stored.
+	Password string
 }
 
 // Provision ensures the person's global ntfy user exists, grants a scoped
 // read-only topic ACL for this app, and issues a fresh app-labeled token
 // (removing stale tokens for the same app so repeated provisioning does not
 // accumulate credentials).
-func (service *Service) Provision(ctx context.Context, request ProvisionRequest) (ProvisionResult, error) {
+func (service *Service) Provision(ctx context.Context, request ProvisionRequest) (result ProvisionResult, provisionErr error) {
 	personHash := personhash.Hash(request.Email)
 	ntfyUserID := personhash.NtfyUser(request.Email)
 	topicPattern := ntfycli.TopicPattern(request.AppID, personHash)
 
-	password, passwordErr := service.generatePassword()
-	if passwordErr != nil {
-		return ProvisionResult{}, passwordErr
+	unlock := service.personLocks.lock(personHash)
+	defer unlock()
+
+	// heldClaim is the password claim this call owns. If anything fails after
+	// it is taken, it is released back to NULL so the next Provision claims
+	// again and regenerates; an undelivered password is simply superseded.
+	var heldClaim *personsvc.PasswordClaim
+	defer func() {
+		if provisionErr != nil && heldClaim != nil {
+			service.releasePasswordClaim(personHash, *heldClaim, "")
+		}
+	}()
+
+	subscriberPassword, applyErr := service.applySubscriberPassword(ctx, request, personHash, ntfyUserID, &heldClaim)
+	if applyErr != nil {
+		return ProvisionResult{}, applyErr
 	}
-	if addUserErr := service.client.AddUser(ctx, ntfyUserID, password); addUserErr != nil && !errors.Is(addUserErr, ntfycli.ErrAlreadyExists) {
-		return ProvisionResult{}, addUserErr
-	}
+
 	if grantErr := service.client.GrantAccess(ctx, ntfyUserID, topicPattern, ntfycli.PermissionReadOnly); grantErr != nil {
 		return ProvisionResult{}, grantErr
 	}
@@ -175,7 +212,138 @@ func (service *Service) Provision(ctx context.Context, request ProvisionRequest)
 		TopicPattern:   topicPattern,
 		BroadcastTopic: ntfycli.BroadcastTopicPattern(request.AppID),
 		Token:          tokenValue,
+		Password:       subscriberPassword,
 	}, nil
+}
+
+// Outcome values of the "subscriber password decision" log line.
+const (
+	outcomeGenerated        = "generated"
+	outcomeAlreadySet       = "already_set"
+	outcomeStoreUnavailable = "store_unavailable"
+	outcomeHealed           = "healed"
+)
+
+// releaseTimeout bounds a claim release; it runs on a fresh context because
+// the failure being handled may be a cancelled request.
+const releaseTimeout = 5 * time.Second
+
+// personStoreConfigured reports whether a person-service client is usable.
+func (service *Service) personStoreConfigured() bool {
+	return service.personClient != nil && service.personClient.Configured()
+}
+
+// releasePasswordClaim gives a claim back on a fresh bounded context. A failed
+// release is logged at Error level with its error text (never fatal).
+func (service *Service) releasePasswordClaim(personHash string, claim personsvc.PasswordClaim, restoreTo string) {
+	releaseCtx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer cancel()
+	if releaseErr := service.personClient.ReleasePasswordClaim(releaseCtx, personHash, claim, restoreTo); releaseErr != nil {
+		service.logger.Error("password claim release failed", "person_hash", personHash, "error", releaseErr)
+	}
+}
+
+// applySubscriberPassword runs the password half of Provision: it claims the
+// person's password stamp, creates or rotates the ntfy user's password, and
+// returns the generated password ("" when none was generated this call). On a
+// successful claim it stores the claim in heldClaim so Provision can release
+// it if a later step fails. The caller holds the person lock.
+func (service *Service) applySubscriberPassword(ctx context.Context, request ProvisionRequest, personHash string, ntfyUserID string, heldClaim **personsvc.PasswordClaim) (string, error) {
+	email := personhash.Normalize(request.Email)
+
+	var claim personsvc.PasswordClaim
+	storeAvailable := service.personStoreConfigured()
+	if storeAvailable {
+		var claimErr error
+		// The stamp is generated here so an ambiguous failure (the Worker may
+		// have committed it before the response was lost) can still be released.
+		claimStamp := personsvc.NewClaimStamp(time.Now())
+		claim, claimErr = service.personClient.ClaimPasswordWithStamp(ctx, personHash, email, personsvc.ClaimIfUnset, claimStamp)
+		if claimErr != nil {
+			ambiguous := personsvc.IsAmbiguousFailure(claimErr)
+			service.logger.Error("password claim failed", "person_hash", personHash, "error", claimErr, "ambiguous", ambiguous)
+			if ambiguous {
+				// Best-effort: a no-op if the stamp was never written; otherwise it
+				// returns the person to NULL so a later provision can claim again.
+				service.logger.Info("releasing possibly committed password claim", "person_hash", personHash, "stamp", claimStamp)
+				service.releasePasswordClaim(personHash, personsvc.PasswordClaim{SetAt: claimStamp}, "")
+			}
+			storeAvailable = false
+		}
+	}
+
+	if storeAvailable && claim.Claimed {
+		*heldClaim = &claim
+		subscriberPassword, generateErr := service.generateSubscriberPassword()
+		if generateErr != nil {
+			return "", generateErr
+		}
+		addUserErr := service.client.AddUser(ctx, ntfyUserID, subscriberPassword)
+		if errors.Is(addUserErr, ntfycli.ErrAlreadyExists) {
+			// A legacy person (NULL stamp, working password): rotate it.
+			addUserErr = service.client.ChangePassword(ctx, ntfyUserID, subscriberPassword)
+		}
+		if addUserErr != nil {
+			return "", addUserErr
+		}
+		service.logger.Info("subscriber password decision", "person_hash", personHash, "app_id", request.AppID, "outcome", outcomeGenerated)
+		return subscriberPassword, nil
+	}
+
+	// No claim was won: keep the existing password. A newly created ntfy user
+	// is given a throwaway password (people authenticate with tokens).
+	throwawayPassword, passwordErr := service.generatePassword()
+	if passwordErr != nil {
+		return "", passwordErr
+	}
+	addUserErr := service.client.AddUser(ctx, ntfyUserID, throwawayPassword)
+	alreadyExisted := errors.Is(addUserErr, ntfycli.ErrAlreadyExists)
+	if addUserErr != nil && !alreadyExisted {
+		return "", addUserErr
+	}
+
+	outcome := outcomeStoreUnavailable
+	if storeAvailable {
+		outcome = outcomeAlreadySet
+		if !alreadyExisted {
+			// The stamp is set but the ntfy user did not exist: it is stale
+			// (the user was deleted without clearing the person row). Heal it,
+			// recording the claim BEFORE changing the ntfy password.
+			healedPassword, healErr := service.healStaleStamp(ctx, personHash, email, ntfyUserID, heldClaim)
+			if healErr != nil {
+				return "", healErr
+			}
+			if healedPassword != "" {
+				service.logger.Info("subscriber password decision", "person_hash", personHash, "app_id", request.AppID, "outcome", outcomeHealed)
+				return healedPassword, nil
+			}
+			outcome = outcomeStoreUnavailable
+		}
+	}
+	service.logger.Info("subscriber password decision", "person_hash", personHash, "app_id", request.AppID, "outcome", outcome)
+	return "", nil
+}
+
+// healStaleStamp repairs a stale password stamp: it claims `always` first, then
+// sets a generated subscriber password. An `always` claim error changes nothing
+// and returns "" (the store-unavailable path); a ChangePassword failure
+// returns its error and leaves the claim in heldClaim for Provision to release
+// back to NULL.
+func (service *Service) healStaleStamp(ctx context.Context, personHash string, email string, ntfyUserID string, heldClaim **personsvc.PasswordClaim) (string, error) {
+	subscriberPassword, generateErr := service.generateSubscriberPassword()
+	if generateErr != nil {
+		return "", generateErr
+	}
+	claim, claimErr := service.personClient.ClaimPassword(ctx, personHash, email, personsvc.ClaimAlways)
+	if claimErr != nil {
+		service.logger.Error("password claim failed", "person_hash", personHash, "error", claimErr)
+		return "", nil
+	}
+	*heldClaim = &claim
+	if changeErr := service.client.ChangePassword(ctx, ntfyUserID, subscriberPassword); changeErr != nil {
+		return "", changeErr
+	}
+	return subscriberPassword, nil
 }
 
 // dualWritePerson best-effort mirrors the personHash -> email mapping to the
@@ -537,20 +705,44 @@ func (service *Service) ListUsers(ctx context.Context) ([]UserSummary, error) {
 }
 
 // DeleteUser removes the user entirely (ntfy drops their grants and tokens),
-// then best-effort dual-deletes the person's reverse-index row so the two
-// stores stay in sync. A full teardown is idempotent: an already-gone ntfy
-// user (ntfycli.ErrNotFound) is treated as success so the person row is still
+// then deletes the person's reverse-index row so the two stores stay in sync.
+// A full teardown is idempotent: an already-gone ntfy user
+// (ntfycli.ErrNotFound) is treated as success so the person row is still
 // cleaned up and a repeat delete does not 404. Only "u_"-prefixed ids carry a
 // person row, so the dual-delete is scoped to those (a publisher identity like
 // "{app}-publisher" has no reverse-index row).
+//
+// A person id ("u_" + 16 base32 chars) holds the person lock across both
+// deletes and fails loudly when the configured person store's delete fails
+// (the call is idempotent, so a retry is safe). Any other id, including a "u_"
+// id with a non-hash suffix, only deletes the ntfy user: no person row can
+// exist for it, and the Worker would answer 400 on every retry.
 func (service *Service) DeleteUser(ctx context.Context, userID string) error {
+	personHash, hasPersonRow := personHashFromUserID(userID)
+	if hasPersonRow {
+		unlock := service.personLocks.lock(personHash)
+		defer unlock()
+	}
 	if deleteErr := service.client.DeleteUser(ctx, userID); deleteErr != nil && !errors.Is(deleteErr, ntfycli.ErrNotFound) {
 		return deleteErr
 	}
-	if personHash, isPersonUser := strings.CutPrefix(userID, "u_"); isPersonUser {
-		service.dualDeletePerson(ctx, personHash)
+	if hasPersonRow && service.personStoreConfigured() {
+		if deleteErr := service.personClient.DeletePerson(ctx, personHash); deleteErr != nil {
+			service.logger.Error("person-service delete failed", "person_hash", personHash, "error", deleteErr)
+			return deleteErr
+		}
 	}
 	return nil
+}
+
+// personHashFromUserID returns the person hash of a person id ("u_" followed by
+// a suffix matching personHashPattern), and false for any other id.
+func personHashFromUserID(userID string) (string, bool) {
+	personHash, hasPrefix := strings.CutPrefix(userID, "u_")
+	if !hasPrefix || !personHashPattern.MatchString(personHash) {
+		return "", false
+	}
+	return personHash, true
 }
 
 // DeprovisionRequest identifies the app/ntfy-user pair to deprovision. The
@@ -596,6 +788,12 @@ func (service *Service) Deprovision(ctx context.Context, request DeprovisionRequ
 			}
 		}
 	}
+
+	// The last-app check and teardown hold the person lock so they cannot
+	// interleave with a Provision or Reset of the same person. DeprovisionApp
+	// takes no lock itself, so the lock is never nested.
+	unlock := service.personLocks.lock(personHash)
+	defer unlock()
 
 	ntfyUsers, listUsersErr := service.client.ListUsers(ctx)
 	if listUsersErr != nil {
@@ -690,10 +888,186 @@ type SetPasswordResult struct {
 // SetPassword changes the person's ntfy password via the CLI, deriving
 // their ntfy user id from the email. The user must already exist (a
 // missing user propagates ntfycli.ErrNotFound).
+//
+// The password stamp is recorded BEFORE the password changes (update-only: it
+// never creates a person row), so a later Provision cannot replace a password
+// the person chose. If the stamp cannot be recorded (store unconfigured or the
+// claim fails) nothing changes and an error is returned. If ChangePassword
+// fails, the prior stamp is restored (only if it still matches). For an ntfy
+// user with no person row, the stamp is recorded after the change succeeds.
 func (service *Service) SetPassword(ctx context.Context, request SetPasswordRequest) (SetPasswordResult, error) {
+	personHash := personhash.Hash(request.Email)
 	ntfyUserID := personhash.NtfyUser(request.Email)
+	email := personhash.Normalize(request.Email)
+
+	unlock := service.personLocks.lock(personHash)
+	defer unlock()
+
+	if !service.personStoreConfigured() {
+		service.logger.Error("set-password cannot record password stamp: person store not configured", "person_hash", personHash)
+		return SetPasswordResult{}, ErrPersonStoreUnavailable
+	}
+	claim, claimErr := service.personClient.ClaimPassword(ctx, personHash, email, personsvc.ClaimUpdateOnly)
+	if claimErr != nil {
+		service.logger.Error("password claim failed", "person_hash", personHash, "error", claimErr)
+		return SetPasswordResult{}, claimErr
+	}
 	if changePassErr := service.client.ChangePassword(ctx, ntfyUserID, request.Password); changePassErr != nil {
+		if claim.RowExists && claim.Claimed {
+			service.releasePasswordClaim(personHash, claim, claim.PreviousSetAt)
+		}
 		return SetPasswordResult{}, changePassErr
 	}
+	if !claim.RowExists {
+		service.recordStampAfterChange(ctx, personHash, email)
+	}
 	return SetPasswordResult{UserID: ntfyUserID}, nil
+}
+
+// ErrTooManyPasswordChanges is the sentinel a *TooManyPasswordChangesError
+// satisfies via errors.Is.
+var ErrTooManyPasswordChanges = errors.New("too many password changes")
+
+// DefaultRetryAfterSeconds is the Retry-After for a reset refused because the
+// limit could not be checked (store down or unconfigured), not a true limit.
+// The HTTP layer reuses it for a 429 whose error carries no seconds.
+const DefaultRetryAfterSeconds = 60
+
+// TooManyPasswordChangesError refuses a reset and says when to retry.
+type TooManyPasswordChangesError struct {
+	RetryAfterSeconds int
+}
+
+func (tooManyErr *TooManyPasswordChangesError) Error() string {
+	return fmt.Sprintf("%s: retry after %d seconds", ErrTooManyPasswordChanges.Error(), tooManyErr.RetryAfterSeconds)
+}
+
+// Is makes errors.Is(err, ErrTooManyPasswordChanges) hold.
+func (tooManyErr *TooManyPasswordChangesError) Is(target error) bool {
+	return target == ErrTooManyPasswordChanges
+}
+
+// ResetPasswordRequest identifies the person (by email) whose ntfy password is
+// replaced by a generated one. AppID is carried for parity and echoed back.
+type ResetPasswordRequest struct {
+	AppID string
+	Email string
+}
+
+// ResetPasswordResult carries the new password; it is shown once and never stored.
+type ResetPasswordResult struct {
+	UserID   string
+	AppID    string
+	Password string
+}
+
+// Outcome values of the "password reset" log line.
+const (
+	resetOutcomeReset             = "reset"
+	resetOutcomeLimited           = "limited"
+	resetOutcomeLimitStoreUnavail = "limit_store_unavailable"
+	resetOutcomeStampUnavailable  = "stamp_unavailable"
+	resetOutcomeNotFound          = "not_found"
+	resetOutcomeFailed            = "failed"
+)
+
+// ResetPassword replaces the person's ntfy password with a generated one, at
+// most 5 times per person per rolling hour. The limit is checked first (429
+// wins over 404, and an unconfigured or failing limit store refuses). A reset
+// slot is claimed before the person lock; the stamp claim and the password
+// change run under it. A failed attempt gives its slot (and stamp) back.
+func (service *Service) ResetPassword(ctx context.Context, request ResetPasswordRequest) (ResetPasswordResult, error) {
+	personHash := personhash.Hash(request.Email)
+	ntfyUserID := personhash.NtfyUser(request.Email)
+	email := personhash.Normalize(request.Email)
+
+	logOutcome := func(outcome string) {
+		service.logger.Info("password reset", "person_hash", personHash, "app_id", request.AppID, "outcome", outcome)
+	}
+
+	if !service.personStoreConfigured() {
+		service.logger.Error("reset refused: person store not configured", "person_hash", personHash)
+		logOutcome(resetOutcomeLimitStoreUnavail)
+		return ResetPasswordResult{}, &TooManyPasswordChangesError{RetryAfterSeconds: DefaultRetryAfterSeconds}
+	}
+	slotID, slotErr := service.personClient.ClaimResetSlot(ctx, personHash)
+	if slotErr != nil {
+		var limitErr *personsvc.ResetLimitError
+		if errors.As(slotErr, &limitErr) {
+			retryAfter := limitErr.RetryAfterSeconds
+			if retryAfter < 1 {
+				retryAfter = DefaultRetryAfterSeconds
+			}
+			logOutcome(resetOutcomeLimited)
+			return ResetPasswordResult{}, &TooManyPasswordChangesError{RetryAfterSeconds: retryAfter}
+		}
+		service.logger.Error("reset slot claim failed", "person_hash", personHash, "error", slotErr)
+		logOutcome(resetOutcomeLimitStoreUnavail)
+		return ResetPasswordResult{}, &TooManyPasswordChangesError{RetryAfterSeconds: DefaultRetryAfterSeconds}
+	}
+
+	// Any failure below gives the slot back; success keeps it.
+	slotKept := false
+	defer func() {
+		if !slotKept {
+			service.releaseResetSlot(personHash, slotID)
+		}
+	}()
+
+	newPassword, generateErr := service.generateSubscriberPassword()
+	if generateErr != nil {
+		service.logger.Error("subscriber password generation failed", "person_hash", personHash, "error", generateErr)
+		logOutcome(resetOutcomeFailed)
+		return ResetPasswordResult{}, generateErr
+	}
+
+	unlock := service.personLocks.lock(personHash)
+	defer unlock()
+
+	claim, claimErr := service.personClient.ClaimPassword(ctx, personHash, email, personsvc.ClaimUpdateOnly)
+	if claimErr != nil {
+		service.logger.Error("password claim failed", "person_hash", personHash, "error", claimErr)
+		logOutcome(resetOutcomeStampUnavailable)
+		return ResetPasswordResult{}, claimErr
+	}
+	if changeErr := service.client.ChangePassword(ctx, ntfyUserID, newPassword); changeErr != nil {
+		if claim.RowExists && claim.Claimed {
+			service.releasePasswordClaim(personHash, claim, claim.PreviousSetAt)
+		}
+		if errors.Is(changeErr, ntfycli.ErrNotFound) {
+			logOutcome(resetOutcomeNotFound)
+		} else {
+			logOutcome(resetOutcomeFailed)
+		}
+		return ResetPasswordResult{}, changeErr
+	}
+	if !claim.RowExists {
+		service.recordStampAfterChange(ctx, personHash, email)
+	}
+	slotKept = true
+	logOutcome(resetOutcomeReset)
+	return ResetPasswordResult{UserID: ntfyUserID, AppID: request.AppID, Password: newPassword}, nil
+}
+
+// releaseResetSlot gives a reset slot back on a fresh bounded context. A failed
+// release is logged at Error level with its error text (never fatal).
+func (service *Service) releaseResetSlot(personHash string, slotID string) {
+	releaseCtx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer cancel()
+	if releaseErr := service.personClient.ReleaseResetSlot(releaseCtx, personHash, slotID); releaseErr != nil {
+		service.logger.Error("reset slot release failed", "person_hash", personHash, "error", releaseErr)
+	}
+}
+
+// ErrPersonStoreUnavailable is returned when a flow needs the person store
+// (to record a password stamp) and it is not configured.
+var ErrPersonStoreUnavailable = errors.New("person store unavailable")
+
+// recordStampAfterChange records the password stamp for an ntfy user that had
+// no person row, after its password was already changed. A failure is logged at
+// Error level but never fails the call: the password is already applied.
+func (service *Service) recordStampAfterChange(ctx context.Context, personHash string, email string) {
+	if _, recordErr := service.personClient.ClaimPassword(ctx, personHash, email, personsvc.ClaimAlways); recordErr != nil {
+		service.logger.Error("password stamp record after change failed", "person_hash", personHash, "error", recordErr)
+	}
 }

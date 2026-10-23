@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfypublish"
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personsvc"
 )
 
 // fakeNtfyClient records invocations and plays back scripted behavior for the
@@ -33,24 +35,73 @@ type fakeNtfyClient struct {
 	removeTokenErr          error
 	listUsers               []ntfycli.User
 	listUsersErr            error
+	// listUsersFunc, when set, replaces listUsers (for call-dependent results).
+	listUsersFunc func() []ntfycli.User
+
+	// statefulUsers makes AddUser behave like ntfy: ErrAlreadyExists for a
+	// user that already exists, and DeleteUser forgets it.
+	statefulUsers bool
+	users         map[string]bool
+
+	// Optional hooks run at the start of the matching call (gate-blocked lock
+	// tests); changePasswordHook may also return an error.
+	addUserHook        func()
+	deleteUserHook     func()
+	changePasswordHook func() error
 }
 
+// recordMutex guards every fake's invocation slice: the fakes can share one
+// slice through recordTo, and concurrent flows record from several goroutines.
+var recordMutex sync.Mutex
+
 func (client *fakeNtfyClient) record(format string, values ...any) {
+	recordMutex.Lock()
+	defer recordMutex.Unlock()
 	client.invocations = append(client.invocations, fmt.Sprintf(format, values...))
 }
 
 func (client *fakeNtfyClient) AddUser(_ context.Context, userID string, password string) error {
+	if client.addUserHook != nil {
+		client.addUserHook()
+	}
 	client.record("AddUser(%s,pw=%s)", userID, password)
-	return client.addUserErr
+	if client.addUserErr != nil {
+		return client.addUserErr
+	}
+	if client.statefulUsers {
+		recordMutex.Lock()
+		defer recordMutex.Unlock()
+		if client.users == nil {
+			client.users = map[string]bool{}
+		}
+		if client.users[userID] {
+			return fmt.Errorf("ntfy user: %w", ntfycli.ErrAlreadyExists)
+		}
+		client.users[userID] = true
+	}
+	return nil
 }
 
 func (client *fakeNtfyClient) ChangePassword(_ context.Context, userID, password string) error {
 	client.record("ChangePassword(%s,pw=%s)", userID, password)
+	if client.changePasswordHook != nil {
+		if hookErr := client.changePasswordHook(); hookErr != nil {
+			return hookErr
+		}
+	}
 	return client.changePasswordErr
 }
 
 func (client *fakeNtfyClient) DeleteUser(_ context.Context, userID string) error {
+	if client.deleteUserHook != nil {
+		client.deleteUserHook()
+	}
 	client.record("DeleteUser(%s)", userID)
+	if client.statefulUsers {
+		recordMutex.Lock()
+		delete(client.users, userID)
+		recordMutex.Unlock()
+	}
 	return client.deleteUserErr
 }
 
@@ -87,13 +138,17 @@ func (client *fakeNtfyClient) RemoveToken(_ context.Context, userID string, toke
 
 func (client *fakeNtfyClient) ListUsers(_ context.Context) ([]ntfycli.User, error) {
 	client.record("ListUsers()")
+	if client.listUsersFunc != nil {
+		return client.listUsersFunc(), client.listUsersErr
+	}
 	return client.listUsers, client.listUsersErr
 }
 
 func newTestService(client *fakeNtfyClient) *Service {
 	return NewService(ServiceConfig{
-		Client:           client,
-		GeneratePassword: func() (string, error) { return "generated-pw", nil },
+		Client:                     client,
+		GeneratePassword:           func() (string, error) { return "generated-pw", nil },
+		GenerateSubscriberPassword: func() (string, error) { return "abcd-efgh-ijkm-npqr", nil },
 	})
 }
 
@@ -110,9 +165,43 @@ type fakePersonClient struct {
 	upsertErr       error
 	deletePersonErr error
 	deleteAppErr    error
+
+	// Scriptable results for the password-claim and reset-slot methods
+	// (used when stateful is false).
+	claimResult     personsvc.PasswordClaim
+	claimErr        error
+	claimErrByMode  map[personsvc.ClaimMode]error
+	releaseClaimErr error
+	resetSlotID     string
+	resetSlotErr    error
+	releaseSlotErr  error
+
+	// stateful models the Worker semantics: per-hash stamp and row existence,
+	// release-if-equal, and per-hash reset-slot counting with a limit of
+	// fakeResetLimit. Scripted errors (claimErr, resetSlotErr, ...) still win.
+	stateful    bool
+	rows        map[string]*fakePersonRow
+	resetSlots  map[string][]string
+	nextSlotSeq int
+	stampSeq    int
+
+	// claimStamps holds the stamp passed to each claim ("" = Worker clock).
+	claimStamps []string
+
+	mutex sync.Mutex
+}
+
+// fakeResetLimit is the Worker's per-person reset limit per rolling hour.
+const fakeResetLimit = 5
+
+// fakePersonRow is one stateful-fake person row; stamp "" is NULL.
+type fakePersonRow struct {
+	stamp string
 }
 
 func (client *fakePersonClient) record(format string, values ...any) {
+	recordMutex.Lock()
+	defer recordMutex.Unlock()
 	entry := fmt.Sprintf(format, values...)
 	if client.recordTo != nil {
 		*client.recordTo = append(*client.recordTo, entry)
@@ -138,6 +227,115 @@ func (client *fakePersonClient) DeletePerson(_ context.Context, personHash strin
 func (client *fakePersonClient) DeleteApp(_ context.Context, appID string) error {
 	client.record("DeleteApp(%s)", appID)
 	return client.deleteAppErr
+}
+
+func (client *fakePersonClient) ClaimPassword(ctx context.Context, personHash string, email string, mode personsvc.ClaimMode) (personsvc.PasswordClaim, error) {
+	return client.ClaimPasswordWithStamp(ctx, personHash, email, mode, "")
+}
+
+// ClaimPasswordWithStamp records the supplied stamp in claimStamps (the
+// stateful fake still mints its own stamp-N so existing assertions hold).
+func (client *fakePersonClient) ClaimPasswordWithStamp(_ context.Context, personHash string, email string, mode personsvc.ClaimMode, stamp string) (personsvc.PasswordClaim, error) {
+	client.record("ClaimPassword(%s,%s,%s)", personHash, email, mode)
+	client.mutex.Lock()
+	client.claimStamps = append(client.claimStamps, stamp)
+	client.mutex.Unlock()
+	if client.claimErr != nil {
+		return personsvc.PasswordClaim{}, client.claimErr
+	}
+	if modeErr, scripted := client.claimErrByMode[mode]; scripted {
+		return personsvc.PasswordClaim{}, modeErr
+	}
+	if !client.stateful {
+		return client.claimResult, nil
+	}
+
+	client.mutex.Lock()
+	defer client.mutex.Unlock()
+	if client.rows == nil {
+		client.rows = map[string]*fakePersonRow{}
+	}
+	row, exists := client.rows[personHash]
+	// Like the Worker: row_exists is the pre-claim existence for update_only
+	// and true for the modes that create the row.
+	claim := personsvc.PasswordClaim{RowExists: exists || mode != personsvc.ClaimUpdateOnly}
+	switch {
+	case mode != personsvc.ClaimIfUnset && mode != personsvc.ClaimAlways && mode != personsvc.ClaimUpdateOnly:
+		return personsvc.PasswordClaim{}, fmt.Errorf("fake person client: invalid claim mode %q", mode)
+	case mode == personsvc.ClaimUpdateOnly && !exists:
+		return claim, nil
+	case mode == personsvc.ClaimIfUnset && exists && row.stamp != "":
+		claim.SetAt = row.stamp
+		return claim, nil
+	}
+	if !exists {
+		row = &fakePersonRow{}
+		client.rows[personHash] = row
+	} else {
+		claim.PreviousSetAt = row.stamp
+	}
+	client.stampSeq++
+	row.stamp = fmt.Sprintf("stamp-%d", client.stampSeq)
+	claim.Claimed = true
+	claim.SetAt = row.stamp
+	return claim, nil
+}
+
+func (client *fakePersonClient) ReleasePasswordClaim(_ context.Context, personHash string, claim personsvc.PasswordClaim, restoreTo string) error {
+	client.record("ReleasePasswordClaim(%s,%s,%s)", personHash, claim.SetAt, restoreTo)
+	if client.releaseClaimErr != nil {
+		return client.releaseClaimErr
+	}
+	if client.stateful {
+		client.mutex.Lock()
+		defer client.mutex.Unlock()
+		if row, exists := client.rows[personHash]; exists && row.stamp == claim.SetAt && claim.SetAt != "" {
+			row.stamp = restoreTo
+		}
+	}
+	return nil
+}
+
+func (client *fakePersonClient) ClaimResetSlot(_ context.Context, personHash string) (string, error) {
+	client.record("ClaimResetSlot(%s)", personHash)
+	if client.resetSlotErr != nil {
+		return "", client.resetSlotErr
+	}
+	if !client.stateful {
+		return client.resetSlotID, nil
+	}
+
+	client.mutex.Lock()
+	defer client.mutex.Unlock()
+	if client.resetSlots == nil {
+		client.resetSlots = map[string][]string{}
+	}
+	if len(client.resetSlots[personHash]) >= fakeResetLimit {
+		return "", &personsvc.ResetLimitError{RetryAfterSeconds: 120}
+	}
+	client.nextSlotSeq++
+	slotID := fmt.Sprintf("reset-%d", client.nextSlotSeq)
+	client.resetSlots[personHash] = append(client.resetSlots[personHash], slotID)
+	return slotID, nil
+}
+
+func (client *fakePersonClient) ReleaseResetSlot(_ context.Context, personHash string, resetID string) error {
+	client.record("ReleaseResetSlot(%s,%s)", personHash, resetID)
+	if client.releaseSlotErr != nil {
+		return client.releaseSlotErr
+	}
+	if client.stateful {
+		client.mutex.Lock()
+		defer client.mutex.Unlock()
+		remaining := client.resetSlots[personHash][:0:0]
+		for _, slotID := range client.resetSlots[personHash] {
+			if slotID != resetID {
+				remaining = append(remaining, slotID)
+			}
+		}
+		client.resetSlots[personHash] = remaining
+	}
+	return nil
 }
 
 // aliceEmail/aliceNtfyUser/aliceHash are the golden-vector-derived identity
@@ -229,12 +427,8 @@ func TestProvisionToleratesExistingUser(t *testing.T) {
 
 func TestProvisionDualWritesToPersonServiceAfterTokenIssuedWhenConfigured(t *testing.T) {
 	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new_token"}
-	personClient := &fakePersonClient{configuredValue: true, recordTo: &ntfyClient.invocations}
-	service := NewService(ServiceConfig{
-		Client:           ntfyClient,
-		GeneratePassword: func() (string, error) { return "generated-pw", nil },
-		PersonClient:     personClient,
-	})
+	personClient := &fakePersonClient{configuredValue: true, stateful: true, recordTo: &ntfyClient.invocations}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
 
 	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: "  Alice@Example.COM "})
 	if err != nil {
@@ -245,7 +439,8 @@ func TestProvisionDualWritesToPersonServiceAfterTokenIssuedWhenConfigured(t *tes
 	}
 
 	expectedInvocations := strings.Join([]string{
-		fmt.Sprintf("AddUser(%s,pw=generated-pw)", aliceNtfyUser),
+		fmt.Sprintf("ClaimPassword(%s,alice@example.com,if_unset)", aliceHash),
+		fmt.Sprintf("AddUser(%s,pw=abcd-efgh-ijkm-npqr)", aliceNtfyUser),
 		fmt.Sprintf("GrantAccess(%s,urls4irl-%s-*,ro)", aliceNtfyUser, aliceHash),
 		fmt.Sprintf("GrantAccess(%s,urls4irl-broadcast,ro)", aliceNtfyUser),
 		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
@@ -259,12 +454,8 @@ func TestProvisionDualWritesToPersonServiceAfterTokenIssuedWhenConfigured(t *tes
 
 func TestProvisionSucceedsWhenPersonServiceDualWriteFails(t *testing.T) {
 	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new_token"}
-	personClient := &fakePersonClient{configuredValue: true, upsertErr: errors.New("person-service unreachable")}
-	service := NewService(ServiceConfig{
-		Client:           ntfyClient,
-		GeneratePassword: func() (string, error) { return "generated-pw", nil },
-		PersonClient:     personClient,
-	})
+	personClient := &fakePersonClient{configuredValue: true, stateful: true, upsertErr: errors.New("person-service unreachable")}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
 
 	result, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail})
 	if err != nil {
@@ -278,6 +469,7 @@ func TestProvisionSucceedsWhenPersonServiceDualWriteFails(t *testing.T) {
 		TopicPattern:   "urls4irl-" + aliceHash + "-*",
 		BroadcastTopic: "urls4irl-broadcast",
 		Token:          "tk_new_token",
+		Password:       "abcd-efgh-ijkm-npqr",
 	}
 	if result != expectedResult {
 		t.Fatalf("result = %#v, expected %#v", result, expectedResult)
@@ -303,18 +495,15 @@ func TestProvisionSkipsDualWriteWhenPersonServiceUnconfigured(t *testing.T) {
 
 func TestProvisionSkipsDualWriteWhenNtfyProvisioningFailsBeforeTokenMint(t *testing.T) {
 	ntfyClient := &fakeNtfyClient{grantAccessErr: errors.New("grant access failed")}
-	personClient := &fakePersonClient{configuredValue: true}
-	service := NewService(ServiceConfig{
-		Client:           ntfyClient,
-		GeneratePassword: func() (string, error) { return "generated-pw", nil },
-		PersonClient:     personClient,
-	})
+	personClient := &fakePersonClient{configuredValue: true, stateful: true}
+	service := newTestServiceWithPersonClient(ntfyClient, personClient)
 
 	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail}); err == nil {
 		t.Fatal("expected GrantAccess error to propagate")
 	}
-	if len(personClient.invocations) != 0 {
-		t.Fatalf("UpsertPerson must not be called when ntfy provisioning fails before the token is minted, got: %v", personClient.invocations)
+	expectedPersonInvocations := fmt.Sprintf("ClaimPassword(%s,alice@example.com,if_unset) | ReleasePasswordClaim(%s,stamp-1,)", aliceHash, aliceHash)
+	if got := strings.Join(personClient.invocations, " | "); got != expectedPersonInvocations {
+		t.Fatalf("person invocations = %s, expected %s (no UpsertPerson, the claim released)", got, expectedPersonInvocations)
 	}
 }
 
@@ -342,7 +531,7 @@ func TestProvisionLogsWarnWhenPersonServiceDualWriteFails(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
 
 	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new_token"}
-	personClient := &fakePersonClient{configuredValue: true, upsertErr: errors.New("person-service unreachable")}
+	personClient := &fakePersonClient{configuredValue: true, stateful: true, upsertErr: errors.New("person-service unreachable")}
 	service := NewService(ServiceConfig{
 		Client:           ntfyClient,
 		GeneratePassword: func() (string, error) { return "generated-pw", nil },
@@ -668,9 +857,10 @@ func TestDeleteUserDelegatesToClient(t *testing.T) {
 
 func newTestServiceWithPersonClient(client *fakeNtfyClient, personClient *fakePersonClient) *Service {
 	return NewService(ServiceConfig{
-		Client:           client,
-		GeneratePassword: func() (string, error) { return "generated-pw", nil },
-		PersonClient:     personClient,
+		Client:                     client,
+		GeneratePassword:           func() (string, error) { return "generated-pw", nil },
+		GenerateSubscriberPassword: func() (string, error) { return "abcd-efgh-ijkm-npqr", nil },
+		PersonClient:               personClient,
 	})
 }
 
@@ -735,9 +925,20 @@ func TestDeleteUserSkipsDualDeleteForNonPersonUser(t *testing.T) {
 	}
 }
 
+// newSetPasswordService builds a service whose stateful person store already
+// holds alice's row (with a prior password stamp), the usual set-password case.
+func newSetPasswordService(client *fakeNtfyClient) (*Service, *fakePersonClient) {
+	personClient := &fakePersonClient{
+		configuredValue: true,
+		stateful:        true,
+		rows:            map[string]*fakePersonRow{aliceHash: {stamp: "earlier-stamp"}},
+	}
+	return newTestServiceWithPersonClient(client, personClient), personClient
+}
+
 func TestSetPasswordDelegatesToClient(t *testing.T) {
 	client := &fakeNtfyClient{}
-	service := newTestService(client)
+	service, personClient := newSetPasswordService(client)
 
 	result, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"})
 	if err != nil {
@@ -749,11 +950,14 @@ func TestSetPasswordDelegatesToClient(t *testing.T) {
 	if got := strings.Join(client.invocations, " | "); got != fmt.Sprintf("ChangePassword(%s,pw=sekrit-pw)", aliceNtfyUser) {
 		t.Fatalf("invocations = %s, expected ChangePassword(%s,pw=sekrit-pw)", got, aliceNtfyUser)
 	}
+	if got := strings.Join(personClient.invocations, " | "); got != fmt.Sprintf("ClaimPassword(%s,alice@example.com,update_only)", aliceHash) {
+		t.Fatalf("person invocations = %s, expected a single update_only claim", got)
+	}
 }
 
 func TestSetPasswordPropagatesClientError(t *testing.T) {
 	client := &fakeNtfyClient{changePasswordErr: errors.New("boom")}
-	service := newTestService(client)
+	service, _ := newSetPasswordService(client)
 
 	if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err == nil {
 		t.Fatal("expected the ChangePassword error to propagate")
@@ -762,7 +966,7 @@ func TestSetPasswordPropagatesClientError(t *testing.T) {
 
 func TestSetPasswordPropagatesNotFound(t *testing.T) {
 	client := &fakeNtfyClient{changePasswordErr: fmt.Errorf("ntfy user: %w: no such user", ntfycli.ErrNotFound)}
-	service := newTestService(client)
+	service, _ := newSetPasswordService(client)
 
 	_, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"})
 	if !errors.Is(err, ntfycli.ErrNotFound) {
@@ -781,7 +985,7 @@ func TestSetPasswordPropagatesNotFound(t *testing.T) {
 // cannot silently change the reset target.
 func TestSetPasswordIsEmailGlobalAcrossApps(t *testing.T) {
 	client := &fakeNtfyClient{addTokenValue: "tk_new_token"}
-	service := newTestService(client)
+	service, _ := newSetPasswordService(client)
 
 	// Provision alice under one app so she has an established app grant.
 	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail}); err != nil {

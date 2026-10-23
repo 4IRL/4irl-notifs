@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
@@ -45,6 +46,9 @@ type ProvisioningService interface {
 	TestNotify(ctx context.Context, request provisioning.TestNotifyRequest) (provisioning.TestNotifyResult, error)
 	// SetPassword changes the identified person's ntfy password.
 	SetPassword(ctx context.Context, request provisioning.SetPasswordRequest) (provisioning.SetPasswordResult, error)
+	// ResetPassword replaces the person's ntfy password with a generated one
+	// (rate limited per person).
+	ResetPassword(ctx context.Context, request provisioning.ResetPasswordRequest) (provisioning.ResetPasswordResult, error)
 }
 
 // ServerConfig configures a Server. Service is required; Logger defaults to
@@ -96,6 +100,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /v1/deprovision-app", server.handleDeprovisionApp)
 	server.mux.HandleFunc("POST /v1/test-notify", server.handleTestNotify)
 	server.mux.HandleFunc("POST /v1/set-password", server.handleSetPassword)
+	server.mux.HandleFunc("POST /v1/reset-password", server.handleResetPassword)
 }
 
 // handleHealthz responds 200 with a plain-text "ok" body for liveness checks.
@@ -124,6 +129,15 @@ type provisionResponseBody struct {
 	TopicPattern   string `json:"topic_pattern"`
 	BroadcastTopic string `json:"broadcast_topic"`
 	Token          string `json:"token"`
+	// Password is present only when this call generated the person's
+	// first-time ntfy password; it is shown once and never stored.
+	Password string `json:"password,omitempty"`
+}
+
+// setNoStore marks a response as uncacheable; call it before writeJSON for any
+// response that carries a credential.
+func setNoStore(responseWriter http.ResponseWriter) {
+	responseWriter.Header().Set("Cache-Control", "no-store")
 }
 
 // writeJSON encodes body as JSON with the given status code and
@@ -141,6 +155,16 @@ func writeJSON(responseWriter http.ResponseWriter, statusCode int, body any) {
 func (server *Server) writeServiceError(responseWriter http.ResponseWriter, request *http.Request, err error) {
 	if errors.Is(err, ntfycli.ErrNotFound) {
 		writeJSON(responseWriter, http.StatusNotFound, map[string]string{"error": "user does not exist"})
+		return
+	}
+	if errors.Is(err, provisioning.ErrTooManyPasswordChanges) {
+		retryAfterSeconds := provisioning.DefaultRetryAfterSeconds
+		var tooManyErr *provisioning.TooManyPasswordChangesError
+		if errors.As(err, &tooManyErr) && tooManyErr.RetryAfterSeconds > 0 {
+			retryAfterSeconds = tooManyErr.RetryAfterSeconds
+		}
+		responseWriter.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+		writeJSON(responseWriter, http.StatusTooManyRequests, map[string]string{"error": "too many password changes"})
 		return
 	}
 	server.logger.Error("provisioning service error", "error", err, "path", request.URL.Path)
@@ -177,6 +201,7 @@ func (server *Server) handleProvision(responseWriter http.ResponseWriter, reques
 		return
 	}
 
+	setNoStore(responseWriter)
 	writeJSON(responseWriter, http.StatusOK, provisionResponseBody{
 		UserID:         result.UserID,
 		AppID:          result.AppID,
@@ -184,6 +209,7 @@ func (server *Server) handleProvision(responseWriter http.ResponseWriter, reques
 		TopicPattern:   result.TopicPattern,
 		BroadcastTopic: result.BroadcastTopic,
 		Token:          result.Token,
+		Password:       result.Password,
 	})
 }
 
@@ -529,6 +555,57 @@ func (server *Server) handleTestNotify(responseWriter http.ResponseWriter, reque
 	}
 
 	writeJSON(responseWriter, http.StatusOK, testNotifyResponseBody{Results: results})
+}
+
+// resetPasswordRequestBody is the JSON body for POST /v1/reset-password.
+type resetPasswordRequestBody struct {
+	AppID string `json:"app_id"`
+	Email string `json:"email"`
+}
+
+// resetPasswordResponseBody is the JSON response for a successful reset; the
+// password is shown once and never stored.
+type resetPasswordResponseBody struct {
+	UserID   string `json:"user_id"`
+	AppID    string `json:"app_id"`
+	Password string `json:"password"`
+}
+
+// handleResetPassword validates app_id then email, delegates to
+// Service.ResetPassword and returns the generated password. Every response
+// (success or error) is no-store, set before any write. A refused reset is 429
+// with Retry-After (see writeServiceError).
+func (server *Server) handleResetPassword(responseWriter http.ResponseWriter, request *http.Request) {
+	setNoStore(responseWriter)
+
+	var requestBody resetPasswordRequestBody
+	if decodeErr := json.NewDecoder(request.Body).Decode(&requestBody); decodeErr != nil {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if !validateAppID(requestBody.AppID) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid app_id"})
+		return
+	}
+	if !validateEmail(requestBody.Email) {
+		writeJSON(responseWriter, http.StatusBadRequest, map[string]string{"error": "invalid email"})
+		return
+	}
+
+	result, resetErr := server.service.ResetPassword(request.Context(), provisioning.ResetPasswordRequest{
+		AppID: requestBody.AppID,
+		Email: requestBody.Email,
+	})
+	if resetErr != nil {
+		server.writeServiceError(responseWriter, request, resetErr)
+		return
+	}
+
+	writeJSON(responseWriter, http.StatusOK, resetPasswordResponseBody{
+		UserID:   result.UserID,
+		AppID:    result.AppID,
+		Password: result.Password,
+	})
 }
 
 // setPasswordRequestBody is the JSON body for POST /v1/set-password.
