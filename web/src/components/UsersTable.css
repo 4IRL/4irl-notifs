@@ -1,5 +1,10 @@
 .users-table {
   margin-top: var(--space-5);
+  /* The page grid can be wider than the viewport on a phone when a wide sibling
+     table (Send test) stretches it, so the one-time reveal and its messages cap
+     at the viewport minus the page padding (App.css `.app__main`) to stay on
+     screen. */
+  --users-table-reveal-max: min(100%, calc(100vw - 2 * var(--space-4)));
 }
 
 .users-table__status {
@@ -67,6 +72,106 @@
 .users-table__button--secondary:hover {
   border-color: var(--accent-2-hover);
   color: var(--accent-2-hover);
+}
+
+.users-table__button--tall {
+  min-height: 2.75rem;
+}
+
+.users-table__button--plain {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.users-table__button--plain:hover {
+  background: var(--surface-hover);
+}
+
+.users-table__actions .confirm-button__cancel {
+  min-height: 2.75rem;
+}
+
+.users-table__actions .confirm-button__cancel:focus-visible,
+.users-table__button:focus-visible,
+.users-table__password:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.users-table__hint {
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
+/* Persistent live region: always in the DOM (never display:none, which would
+   unregister it) but takes no space when empty. */
+.users-table__reset-status {
+  margin: 0;
+  max-width: var(--users-table-reveal-max);
+}
+
+.users-table__reset-status:empty {
+  height: 0;
+}
+
+.users-table__reset-status p {
+  margin: var(--space-2) 0 0;
+  color: var(--text-h);
+}
+
+.users-table__reset-status p.users-table__copy-ok {
+  color: var(--ok);
+}
+
+.users-table__reset-status p.users-table__copy-fallback {
+  color: var(--text-h);
+  background: var(--surface);
+}
+
+.users-table__reveal {
+  max-width: var(--users-table-reveal-max);
+  box-sizing: border-box;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--ok);
+  background: var(--ok-bg);
+  border-radius: var(--radius);
+}
+
+.users-table__reveal h3 {
+  margin: 0 0 var(--space-1);
+  color: var(--text-h);
+  font-size: 1rem;
+}
+
+.users-table__reveal label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.users-table__reveal-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.users-table__password {
+  flex: 1 1 20ch;
+  min-width: calc(20ch + 1.25rem);
+  max-width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--text-h);
+  padding: var(--space-2);
+  font-family: var(--mono);
+  font-size: 1rem;
+  user-select: all;
 }
 
 .users-table__button--danger {

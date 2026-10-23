@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { ProvisionParams, ProvisionResult } from '../api/client';
 import { ApiError } from '../api/client';
 import type { AppSummary } from '../api/personClient';
+import { useCopyStatus } from '../hooks/useCopyStatus';
 import { strings } from '../strings';
 import { isValidAppId, isValidEmail } from '../validation';
 import { AppCombobox } from './AppCombobox';
@@ -23,9 +24,16 @@ export function ProvisionForm({ onProvision, apps = [] }: ProvisionFormProps) {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState<ProvisionResult | null>(null);
+  const { status: copyStatus, copy: handleCopy, clear: clearCopyStatus } = useCopyStatus();
+  const password = result?.password;
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    // Clear the previous password, token and copy status on every submit
+    // attempt (including validation failures) and invalidate in-flight copies.
+    setResult(null);
+    clearCopyStatus();
 
     if (!isValidAppId(appId)) {
       setError(strings.invalidAppId);
@@ -84,10 +92,70 @@ export function ProvisionForm({ onProvision, apps = [] }: ProvisionFormProps) {
           </p>
         )}
 
+        <div role="status" aria-atomic="false" className="provision-form__status">
+          {result !== null && result.password !== undefined && <p>{strings.passwordRevealLead}</p>}
+          {result !== null && result.password === undefined && (
+            <>
+              <p>{strings.noPasswordReturned}</p>
+              <p>{strings.noPasswordRecovery}</p>
+            </>
+          )}
+          {copyStatus !== null && (
+            <p
+              key={copyStatus.count}
+              className={
+                copyStatus.kind === 'copied'
+                  ? 'provision-form__copy-ok'
+                  : 'provision-form__copy-fallback'
+              }
+            >
+              {copyStatus.kind === 'copied'
+                ? strings.passwordCopied
+                : strings.passwordCopyUnavailable}
+            </p>
+          )}
+        </div>
+
         {result !== null && (
           <div className="provision-form__token-reveal">
-            <p>{strings.tokenRevealLead({ userId: result.userId, appId: result.appId })}</p>
-            <p className="provision-form__token">{result.token}</p>
+            {password !== undefined && (
+              <div
+                role="group"
+                aria-labelledby="provision-password-heading"
+                className="provision-form__password-group"
+              >
+                <h3 id="provision-password-heading">{strings.passwordGroupHeading}</h3>
+                <label htmlFor="provision-password">{strings.passwordLabel}</label>
+                <div className="provision-form__password-row">
+                  <input
+                    id="provision-password"
+                    type="text"
+                    readOnly
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="provision-form__password"
+                    value={password}
+                    onFocus={(event) => event.currentTarget.select()}
+                  />
+                  <button
+                    type="button"
+                    className="provision-form__copy"
+                    onClick={() => handleCopy(password)}
+                  >
+                    {strings.copyPassword}
+                  </button>
+                </div>
+              </div>
+            )}
+            <div
+              role="group"
+              aria-labelledby="provision-token-heading"
+              className="provision-form__token-group"
+            >
+              <h3 id="provision-token-heading">{strings.tokenGroupHeading}</h3>
+              <p>{strings.tokenRevealLead({ userId: result.userId, appId: result.appId })}</p>
+              <p className="provision-form__token">{result.token}</p>
+            </div>
           </div>
         )}
       </form>

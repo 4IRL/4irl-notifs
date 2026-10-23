@@ -59,6 +59,50 @@ describe('api client', () => {
     });
   });
 
+  it('provision maps the optional password when the API returns one', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        status: 200,
+        body: {
+          user_id: 'u_76gzqgp4byjl6dje',
+          app_id: 'urls4irl',
+          person_hash: '76gzqgp4byjl6dje',
+          topic_pattern: 'urls4irl-76gzqgp4byjl6dje-*',
+          broadcast_topic: 'urls4irl-broadcast',
+          token: 'tk_abc',
+          password: 'abcd-efgh-ijkm-npqr',
+        },
+      }),
+    );
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    const result = await client.provision({ appId: 'urls4irl', email: 'alice@example.com' });
+
+    expect(result.password).toBe('abcd-efgh-ijkm-npqr');
+  });
+
+  it('provision leaves password undefined when the API omits it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        status: 200,
+        body: {
+          user_id: 'u_76gzqgp4byjl6dje',
+          app_id: 'urls4irl',
+          person_hash: '76gzqgp4byjl6dje',
+          topic_pattern: 'urls4irl-76gzqgp4byjl6dje-*',
+          broadcast_topic: 'urls4irl-broadcast',
+          token: 'tk_abc',
+        },
+      }),
+    );
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    const result = await client.provision({ appId: 'urls4irl', email: 'alice@example.com' });
+
+    expect(result.password).toBeUndefined();
+    expect('password' in result).toBe(false);
+  });
+
   it('deprovision POSTs the pair', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({ status: 200, body: { user_id: 'alice', app_id: 'urls4irl', removed: true } }),
@@ -273,6 +317,70 @@ describe('api client', () => {
       client.provision({ appId: 'BAD', email: 'alice@example.com' }),
     ).rejects.toBeInstanceOf(ApiError);
   });
+
+  it('resetPassword POSTs app_id/email and maps the result', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        status: 200,
+        body: { user_id: 'u_abc', app_id: 'urls4irl', password: 'abcd-efgh-ijkm-npqr' },
+      }),
+    );
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    const result = await client.resetPassword({ appId: 'urls4irl', email: 'alice@example.com' });
+
+    expect(result).toEqual({
+      userId: 'u_abc',
+      appId: 'urls4irl',
+      password: 'abcd-efgh-ijkm-npqr',
+    });
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe('https://api.test/v1/reset-password');
+    expect(calledInit.method).toBe('POST');
+    expect(JSON.parse(calledInit.body as string)).toEqual({
+      app_id: 'urls4irl',
+      email: 'alice@example.com',
+    });
+  });
+
+  it('resetPassword failures carry the status and Retry-After seconds, never a password', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'too many password changes' }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json', 'Retry-After': '42' },
+      }),
+    );
+    const client = createApiClient({ fetchImpl: fetchMock });
+
+    await expect(
+      client.resetPassword({ appId: 'urls4irl', email: 'alice@example.com' }),
+    ).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 429,
+      message: 'too many password changes',
+      retryAfterSeconds: 42,
+    });
+  });
+
+  it.each([null, 'soon', '0', '-5', '1.5', ''])(
+    'ApiError leaves retryAfterSeconds unset for Retry-After %j',
+    async (header) => {
+      fetchMock.mockResolvedValue(
+        new Response(JSON.stringify({ error: 'too many password changes' }), {
+          status: 429,
+          headers: header === null ? {} : { 'Retry-After': header },
+        }),
+      );
+      const client = createApiClient({ fetchImpl: fetchMock });
+
+      const failure = await client
+        .resetPassword({ appId: 'urls4irl', email: 'alice@example.com' })
+        .catch((rejection: unknown) => rejection);
+
+      expect(failure).toBeInstanceOf(ApiError);
+      expect((failure as ApiError).retryAfterSeconds).toBeUndefined();
+    },
+  );
 
   it("sends credentials so the admin app's Access session cookie reaches the same-origin proxy Function", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));

@@ -81,6 +81,86 @@
   margin: 0;
 }
 
+/* Persistent live region: always in the DOM (never display:none, which would
+   unregister it) but takes no space, including the form's flex gap, when empty. */
+.provision-form__status {
+  margin: 0;
+}
+
+/* The negative margin cancels the form's flex gap (`.provision-form form`, same var). */
+.provision-form__status:empty {
+  height: 0;
+  margin-top: calc(-1 * var(--space-2));
+}
+
+.provision-form__status p {
+  margin: 0;
+  color: var(--text-h);
+}
+
+.provision-form__status p.provision-form__copy-ok {
+  color: var(--ok);
+}
+
+.provision-form__status p.provision-form__copy-fallback {
+  color: var(--text-h);
+  background: var(--surface);
+}
+
+.provision-form__token-reveal h3 {
+  margin: 0 0 var(--space-1);
+  color: var(--text-h);
+  font-size: 1rem;
+}
+
+.provision-form__token-reveal label {
+  display: block;
+  margin-bottom: var(--space-1);
+}
+
+.provision-form__token-group {
+  margin-top: var(--space-2);
+}
+
+.provision-form__password-group {
+  margin-bottom: var(--space-2);
+}
+
+.provision-form__password-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.provision-form .provision-form__password {
+  flex: 1 1 20ch;
+  min-width: calc(20ch + 1.25rem);
+  max-width: 100%;
+  box-sizing: border-box;
+  font-family: var(--mono);
+  user-select: all;
+}
+
+.provision-form button.provision-form__copy {
+  margin-top: 0;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  min-height: 44px;
+}
+
+.provision-form button.provision-form__copy:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--accent-hover);
+}
+
+.provision-form button.provision-form__copy:focus-visible,
+.provision-form .provision-form__password:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .provision-form__token-reveal .provision-form__token {
   font-family: var(--mono);
   word-break: break-all;

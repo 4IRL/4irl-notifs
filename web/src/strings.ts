@@ -71,6 +71,38 @@ export const strings = {
   tokenRevealLead: ({ userId, appId }: TokenRevealParams): string =>
     `Token for ${userId} @ ${appId} (copy now — shown once):`,
 
+  passwordRevealLead:
+    "This person's password is shown only once. It replaces any earlier password for this person.",
+  passwordGroupHeading: 'New password',
+  passwordLabel: 'Password',
+  tokenGroupHeading: 'Token',
+  copyPassword: 'Copy password',
+  passwordCopied: 'Copied',
+  passwordCopyUnavailable: 'Copy not available. Select the password and copy it manually.',
+  noPasswordReturned: 'No password was returned by this request.',
+  noPasswordRecovery:
+    'If this person needs a new one, call POST /v1/reset-password from the app that serves them.',
+
+  // Operator password reset (Users list row action).
+  resetPasswordAction: 'Reset password',
+  confirmResetPasswordAction: 'Confirm reset',
+  resettingPasswordAction: 'Resetting…',
+  resetPasswordNotice: 'Resetting replaces the current password immediately.',
+  resetPasswordUnavailable: 'Reset unavailable: email not loaded.',
+  resetPasswordDone: 'Done',
+  resetPasswordTriggerNamed: ({ user }: { user: string }): string => `Reset password for ${user}`,
+  resetPasswordConfirmNamed: ({ user }: { user: string }): string =>
+    `Confirm reset password for ${user}`,
+  resetPasswordBusyNamed: ({ user }: { user: string }): string => `Resetting password for ${user}`,
+  resetPasswordDoneNamed: ({ user }: { user: string }): string => `Done with password for ${user}`,
+  resetPasswordRevealLead: ({ user }: { user: string }): string =>
+    `The new password for ${user} is shown only once. It replaces any earlier password.`,
+  resetPasswordNotFound: 'This person does not exist. Refresh the list.',
+  resetPasswordTooMany: ({ seconds }: { seconds: number }): string =>
+    `Too many password changes. Try again in ${seconds} s.`,
+  resetPasswordFailed: 'Could not reset the password. Try again.',
+  resetPasswordDefaultRetrySeconds: 60,
+
   invalidAppId: 'App ID must be lowercase letters, digits, or underscores.',
   invalidUserId: 'User ID must be lowercase letters, digits, underscores, or hyphens.',
   invalidEmail: 'Enter a valid email address.',

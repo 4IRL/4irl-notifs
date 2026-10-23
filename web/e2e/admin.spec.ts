@@ -43,59 +43,270 @@ test.describe('admin UI critical flows', () => {
     ).toBeVisible();
   });
 
-  test('provisioning a user reveals the returned token', async ({ page }) => {
-    let usersReturned = 0;
-    await page.route('**/v1/users', async (route) => {
-      // Empty before provisioning, one user afterwards.
-      const users =
-        usersReturned === 0
-          ? []
-          : [
+  for (const withPassword of [true, false]) {
+    test(`provisioning a user reveals the returned token ${withPassword ? 'and the one-time password' : 'and the no-password state'}`, async ({
+      page,
+    }) => {
+      let usersReturned = 0;
+      await page.route('**/v1/users', async (route) => {
+        // Empty before provisioning, one user afterwards. The mobile-layout
+        // case keeps the list empty: a user row widens the unrelated Send-test
+        // table past 390px, which would mask the provision reveal's own layout.
+        const users =
+          usersReturned === 0 || withPassword
+            ? []
+            : [
+                {
+                  user_id: 'u_abcdefgh23456777',
+                  apps: ['urls4irl'],
+                  topic_patterns: ['urls4irl-abcdefgh23456777-*'],
+                },
+              ];
+        usersReturned += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ users }),
+        });
+      });
+      await page.route('**/v1/provision', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            user_id: 'u_abcdefgh23456777',
+            app_id: 'urls4irl',
+            person_hash: 'abcdefgh23456777',
+            topic_pattern: 'urls4irl-abcdefgh23456777-*',
+            token: 'tk_e2e_secret',
+            ...(withPassword ? { password: 'abcd-efgh-ijkm-npqr' } : {}),
+          }),
+        });
+      });
+      await page.route('**/people', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: '{"people":[]}',
+        });
+      });
+      await page.route('**/apps', async (route) => {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: '{"apps":[]}' });
+      });
+
+      if (withPassword) {
+        await page.setViewportSize({ width: 390, height: 844 });
+      }
+      await page.goto('/');
+
+      // "App ID" also labels the Add-an-app form, so scope to the Provision
+      // section (by its heading) to disambiguate.
+      const provisionSection = page
+        .locator('section')
+        .filter({ has: page.getByRole('heading', { name: 'Provision a user into an app' }) });
+      await provisionSection.getByLabel('App ID').fill('urls4irl');
+      await provisionSection.getByLabel('Email').fill('alice@example.com');
+      await provisionSection.getByRole('button', { name: 'Provision', exact: true }).click();
+
+      await expect(page.getByText('tk_e2e_secret')).toBeVisible();
+      if (withPassword) {
+        await expect(
+          provisionSection.getByText(
+            "This person's password is shown only once. It replaces any earlier password for this person.",
+          ),
+        ).toBeVisible();
+        await expect(provisionSection.getByLabel('Password', { exact: true })).toHaveValue(
+          'abcd-efgh-ijkm-npqr',
+        );
+        const copyBox = await provisionSection
+          .getByRole('button', { name: 'Copy password' })
+          .boundingBox();
+        expect(copyBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+        const overflow = await page.evaluate(
+          () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        );
+        expect(overflow).toBeLessThanOrEqual(0);
+      } else {
+        await expect(
+          provisionSection.getByText('No password was returned by this request.'),
+        ).toBeVisible();
+      }
+    });
+  }
+
+  test.describe('operator password reset from the Users list', () => {
+    const RESET_PASSWORD = 'abcd-efgh-ijkm-npqr';
+    const EMAIL = 'alice@example.com';
+
+    async function mockUsersWithEmail(page: Page): Promise<void> {
+      await page.route('**/v1/users', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            users: [
               {
                 user_id: 'u_abcdefgh23456777',
                 apps: ['urls4irl'],
                 topic_patterns: ['urls4irl-abcdefgh23456777-*'],
               },
-            ];
-      usersReturned += 1;
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ users }),
+            ],
+          }),
+        });
       });
-    });
-    await page.route('**/v1/provision', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          user_id: 'u_abcdefgh23456777',
-          app_id: 'urls4irl',
-          person_hash: 'abcdefgh23456777',
-          topic_pattern: 'urls4irl-abcdefgh23456777-*',
-          token: 'tk_e2e_secret',
-        }),
+      await page.route('**/people', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            people: [
+              { person_hash: 'abcdefgh23456777', email: EMAIL, created_at: '2026-01-01T00:00:00Z' },
+            ],
+          }),
+        });
       });
-    });
-    await page.route('**/people', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
-    });
-    await page.route('**/apps', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"apps":[]}' });
+      await page.route('**/apps', async (route) => {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: '{"apps":[]}' });
+      });
+    }
+
+    function usersSectionOf(page: Page): Locator {
+      return page
+        .locator('section')
+        .filter({ has: page.getByRole('heading', { name: 'Users', exact: true }) });
+    }
+
+    async function confirmReset(section: Locator): Promise<void> {
+      await section.getByRole('button', { name: `Reset password for ${EMAIL}` }).click();
+      await section.getByRole('button', { name: `Confirm reset password for ${EMAIL}` }).click();
+    }
+
+    test('confirm, reveal once, then Done clears it and refocuses the trigger', async ({
+      page,
+    }) => {
+      await mockUsersWithEmail(page);
+      let resetBody: unknown = null;
+      let resetCalls = 0;
+      await page.route('**/v1/reset-password', async (route) => {
+        resetCalls += 1;
+        resetBody = route.request().postDataJSON();
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'Cache-Control': 'no-store' },
+          body: JSON.stringify({
+            user_id: 'u_abcdefgh23456777',
+            app_id: 'urls4irl',
+            password: RESET_PASSWORD,
+          }),
+        });
+      });
+      await page.goto('/');
+      const section = usersSectionOf(page);
+
+      await section.getByRole('button', { name: `Reset password for ${EMAIL}` }).click();
+      await expect(
+        section.getByText('Resetting replaces the current password immediately.'),
+      ).toBeVisible();
+      expect(resetCalls).toBe(0);
+      await section.getByRole('button', { name: `Confirm reset password for ${EMAIL}` }).click();
+
+      await expect(
+        section.getByText(
+          `The new password for ${EMAIL} is shown only once. It replaces any earlier password.`,
+        ),
+      ).toBeVisible();
+      await expect(section.getByLabel('Password', { exact: true })).toHaveValue(RESET_PASSWORD);
+      expect(resetCalls).toBe(1);
+      expect(resetBody).toEqual({ app_id: 'urls4irl', email: EMAIL });
+
+      await section.getByRole('button', { name: `Done with password for ${EMAIL}` }).click();
+      await expect(section.getByLabel('Password', { exact: true })).toHaveCount(0);
+      await expect(page.getByText(RESET_PASSWORD)).toHaveCount(0);
+      await expect(
+        section.getByRole('button', { name: `Reset password for ${EMAIL}` }),
+      ).toBeFocused();
     });
 
-    await page.goto('/');
+    test('429 shows the retry time from Retry-After and 404 says the person is gone', async ({
+      page,
+    }) => {
+      await mockUsersWithEmail(page);
+      let status = 429;
+      await page.route('**/v1/reset-password', async (route) => {
+        await route.fulfill({
+          status,
+          contentType: 'application/json',
+          headers: status === 429 ? { 'Retry-After': '42' } : {},
+          body: JSON.stringify({
+            error: status === 429 ? 'too many password changes' : 'user does not exist',
+          }),
+        });
+      });
+      await page.goto('/');
+      const section = usersSectionOf(page);
 
-    // "App ID" also labels the Add-an-app form, so scope to the Provision
-    // section (by its heading) to disambiguate.
-    const provisionSection = page
-      .locator('section')
-      .filter({ has: page.getByRole('heading', { name: 'Provision a user into an app' }) });
-    await provisionSection.getByLabel('App ID').fill('urls4irl');
-    await provisionSection.getByLabel('Email').fill('alice@example.com');
-    await provisionSection.getByRole('button', { name: 'Provision', exact: true }).click();
+      await confirmReset(section);
+      await expect(
+        section.getByText('Too many password changes. Try again in 42 s.'),
+      ).toBeVisible();
+      await expect(section.getByLabel('Password', { exact: true })).toHaveCount(0);
 
-    await expect(page.getByText('tk_e2e_secret')).toBeVisible();
+      status = 404;
+      await confirmReset(section);
+      await expect(
+        section.getByText('This person does not exist. Refresh the list.'),
+      ).toBeVisible();
+      await expect(section.getByText('Too many password changes')).toHaveCount(0);
+    });
+
+    test('the reveal fits at 390px with 44px controls', async ({ page }) => {
+      await mockUsersWithEmail(page);
+      await page.route('**/v1/reset-password', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            user_id: 'u_abcdefgh23456777',
+            app_id: 'urls4irl',
+            password: RESET_PASSWORD,
+          }),
+        });
+      });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto('/');
+      const section = usersSectionOf(page);
+
+      const trigger = section.getByRole('button', { name: `Reset password for ${EMAIL}` });
+      expect((await trigger.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+      await confirmReset(section);
+      await expect(section.getByLabel('Password', { exact: true })).toHaveValue(RESET_PASSWORD);
+
+      // With a user row the page itself is already wider than 390px (the
+      // unrelated Send-test table is ~587px), so a document-level overflow
+      // assertion would test that table, not this feature. Assert instead that
+      // the reveal, its messages and its controls stay inside the viewport.
+      // Playwright scrolled sideways to reach the row's (pre-existing, wide)
+      // actions cell; measure from the page origin.
+      await page.evaluate(() => window.scrollTo(0, 0));
+      const group = section.getByRole('group', { name: 'New password' });
+      const onScreen = [
+        group,
+        section.getByRole('status'),
+        group.getByLabel('Password', { exact: true }),
+        section.getByRole('button', { name: 'Copy password' }),
+        section.getByRole('button', { name: `Done with password for ${EMAIL}` }),
+      ];
+      for (const target of onScreen) {
+        const box = await target.boundingBox();
+        expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+        expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+      }
+      for (const name of ['Copy password', `Done with password for ${EMAIL}`]) {
+        const box = await section.getByRole('button', { name }).boundingBox();
+        expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+      }
+    });
   });
 
   test('lists people from the person service', async ({ page }) => {
