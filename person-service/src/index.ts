@@ -170,8 +170,203 @@ async function handleDeletePerson({
     return errorResponse({ message: 'invalid person_hash', status: 400 });
   }
 
-  await env.DB.prepare('DELETE FROM person WHERE person_hash = ?1').bind(personHash).run();
+  // One batch (a single transaction) so the person and their reset history
+  // are removed together.
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM person WHERE person_hash = ?1').bind(personHash),
+    env.DB.prepare('DELETE FROM password_reset WHERE person_hash = ?1').bind(personHash),
+  ]);
   return jsonResponse({ body: { person_hash: personHash, deleted: true }, status: 200 });
+}
+
+const CLAIM_MODES = ['if_unset', 'always', 'update_only'] as const;
+type ClaimMode = (typeof CLAIM_MODES)[number];
+
+const RESET_LIMIT = 5;
+const RESET_WINDOW_MS = 3_600_000;
+
+/** Parses a request body as JSON, returning undefined when it is not valid JSON. */
+async function readJsonBody(request: Request): Promise<unknown | undefined> {
+  try {
+    return await request.json();
+  } catch {
+    return undefined;
+  }
+}
+
+const CLIENT_STAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** True for a canonical `toISOString()` UTC timestamp (exact round trip). */
+function isValidClientStamp(value: unknown): value is string {
+  if (typeof value !== 'string' || !CLIENT_STAMP_PATTERN.test(value)) {
+    return false;
+  }
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+/** Handles `POST /person/{hash}/password-claim` — atomically records
+ *  password_set_at per the claim mode and reports the stamp it replaced.
+ *  The previous-stamp read and the write run in one D1 batch (a single
+ *  transaction), so concurrent claims cannot both win. */
+async function handlePasswordClaim({
+  personHash,
+  request,
+  env,
+}: {
+  personHash: string;
+  request: Request;
+  env: Env;
+}): Promise<Response> {
+  const parsedBody = await readJsonBody(request);
+  const {
+    email: rawEmail,
+    mode,
+    password_set_at: clientStamp,
+  } = (parsedBody ?? {}) as { email?: unknown; mode?: unknown; password_set_at?: unknown };
+
+  if (typeof rawEmail !== 'string' || !isValidEmail(rawEmail)) {
+    return errorResponse({ message: 'invalid email', status: 400 });
+  }
+  if (typeof mode !== 'string' || !(CLAIM_MODES as readonly string[]).includes(mode)) {
+    return errorResponse({ message: 'invalid mode', status: 400 });
+  }
+  if (clientStamp !== undefined && !isValidClientStamp(clientStamp)) {
+    return errorResponse({ message: 'invalid password_set_at', status: 400 });
+  }
+  const claimMode = mode as ClaimMode;
+
+  const normalizedEmail = normalizeEmail(rawEmail);
+  // A client-supplied stamp lets the caller release the claim even if the
+  // response is lost; absent, the Worker stamps with its own clock.
+  const now = clientStamp ?? new Date().toISOString();
+
+  const readPrevious = env.DB.prepare('SELECT password_set_at FROM person WHERE person_hash = ?1').bind(
+    personHash,
+  );
+  let write: D1PreparedStatement;
+  if (claimMode === 'update_only') {
+    write = env.DB.prepare('UPDATE person SET password_set_at = ?2 WHERE person_hash = ?1').bind(personHash, now);
+  } else {
+    // if_unset only overwrites a NULL stamp; always overwrites unconditionally.
+    // Email is only written when the row is created (the INSERT branch).
+    const conflictGuard = claimMode === 'if_unset' ? 'WHERE person.password_set_at IS NULL' : '';
+    write = env.DB.prepare(
+      `INSERT INTO person (person_hash, email, created_at, password_set_at)
+       VALUES (?1, ?2, ?3, ?3)
+       ON CONFLICT(person_hash) DO UPDATE SET password_set_at = excluded.password_set_at ${conflictGuard}`,
+    ).bind(personHash, normalizedEmail, now);
+  }
+
+  const [previousResult] = await env.DB.batch<{ password_set_at: string | null }>([readPrevious, write]);
+  const previousRow = previousResult?.results[0];
+  const rowExisted = previousRow !== undefined;
+  const previousStamp = previousRow?.password_set_at ?? null;
+
+  const claimed = claimMode === 'update_only' ? rowExisted : !(rowExisted && previousStamp !== null && claimMode === 'if_unset');
+  let currentStamp: string | null = null;
+  if (claimed) {
+    currentStamp = now;
+  } else if (rowExisted) {
+    currentStamp = previousStamp;
+  }
+
+  return jsonResponse({
+    body: {
+      claimed,
+      row_exists: claimMode === 'update_only' ? rowExisted : true,
+      password_set_at: currentStamp,
+      previous_set_at: claimed ? previousStamp : null,
+    },
+    status: 200,
+  });
+}
+
+/** Handles `DELETE /person/{hash}/password-claim` — restores restore_to only
+ *  if the column still equals password_set_at, so a newer claim is never undone. */
+async function handlePasswordClaimRelease({
+  personHash,
+  request,
+  env,
+}: {
+  personHash: string;
+  request: Request;
+  env: Env;
+}): Promise<Response> {
+  const parsedBody = await readJsonBody(request);
+  const { password_set_at: passwordSetAt, restore_to: restoreTo } = (parsedBody ?? {}) as {
+    password_set_at?: unknown;
+    restore_to?: unknown;
+  };
+
+  if (typeof passwordSetAt !== 'string' || passwordSetAt.length === 0) {
+    return errorResponse({ message: 'invalid password_set_at', status: 400 });
+  }
+  if (restoreTo !== null && typeof restoreTo !== 'string') {
+    return errorResponse({ message: 'invalid restore_to', status: 400 });
+  }
+
+  const row = await env.DB.prepare(
+    `UPDATE person SET password_set_at = ?3
+     WHERE person_hash = ?1 AND password_set_at = ?2
+     RETURNING person_hash`,
+  )
+    .bind(personHash, passwordSetAt, restoreTo)
+    .first<{ person_hash: string }>();
+
+  return jsonResponse({ body: { released: row !== null }, status: 200 });
+}
+
+/** Handles `POST /person/{hash}/password-resets` — claims one reset slot only
+ *  if fewer than RESET_LIMIT slots exist in the rolling window. The count and
+ *  the insert are a single statement, so parallel requests cannot exceed it. */
+async function handleClaimResetSlot({ personHash, env }: { personHash: string; env: Env }): Promise<Response> {
+  const nowMs = Date.now();
+  const windowStart = nowMs - RESET_WINDOW_MS;
+  const resetId = crypto.randomUUID();
+
+  const [, insertResult, oldestResult] = await env.DB.batch<{ reset_id?: string; oldest?: number | null }>([
+    env.DB.prepare('DELETE FROM password_reset WHERE person_hash = ?1 AND reset_at <= ?2').bind(
+      personHash,
+      windowStart,
+    ),
+    env.DB.prepare(
+      `INSERT INTO password_reset (reset_id, person_hash, reset_at)
+       SELECT ?1, ?2, ?3
+       WHERE (SELECT COUNT(*) FROM password_reset WHERE person_hash = ?2 AND reset_at > ?4) < ?5
+       RETURNING reset_id`,
+    ).bind(resetId, personHash, nowMs, windowStart, RESET_LIMIT),
+    env.DB.prepare(
+      'SELECT MIN(reset_at) AS oldest FROM password_reset WHERE person_hash = ?1 AND reset_at > ?2',
+    ).bind(personHash, windowStart),
+  ]);
+
+  if ((insertResult?.results.length ?? 0) > 0) {
+    return jsonResponse({ body: { reset_id: resetId }, status: 200 });
+  }
+
+  const oldest = oldestResult?.results[0]?.oldest ?? nowMs;
+  const retryAfterSeconds = Math.max(1, Math.ceil((oldest + RESET_WINDOW_MS - nowMs) / 1000));
+  return jsonResponse({ body: { error: 'reset limit reached', retry_after_seconds: retryAfterSeconds }, status: 429 });
+}
+
+/** Handles `DELETE /person/{hash}/password-resets/{reset_id}` — idempotently
+ *  frees one slot so a failed reset does not count against the limit. */
+async function handleReleaseResetSlot({
+  personHash,
+  resetId,
+  env,
+}: {
+  personHash: string;
+  resetId: string;
+  env: Env;
+}): Promise<Response> {
+  const row = await env.DB.prepare(
+    'DELETE FROM password_reset WHERE reset_id = ?1 AND person_hash = ?2 RETURNING reset_id',
+  )
+    .bind(resetId, personHash)
+    .first<{ reset_id: string }>();
+  return jsonResponse({ body: { released: row !== null }, status: 200 });
 }
 
 /** Handles `GET /apps` — enumerates every registered app, ordered by created_at then app_id. */
@@ -332,9 +527,45 @@ export default {
     }
 
     if (url.pathname.startsWith('/person/')) {
-      const personHash = url.pathname.slice('/person/'.length);
+      const [personHash = '', subresource, resetId, ...extraSegments] = url.pathname
+        .slice('/person/'.length)
+        .split('/');
+
+      if (subresource === undefined) {
+        if (request.method === 'DELETE') {
+          return handleDeletePerson({ personHash, env });
+        }
+        return errorResponse({ message: 'method not allowed', status: 405 });
+      }
+
+      if (extraSegments.length > 0 || (resetId !== undefined && subresource !== 'password-resets')) {
+        return errorResponse({ message: 'not found', status: 404 });
+      }
+      if (subresource !== 'password-claim' && subresource !== 'password-resets') {
+        return errorResponse({ message: 'not found', status: 404 });
+      }
+      if (!PERSON_HASH_PATTERN.test(personHash)) {
+        return errorResponse({ message: 'invalid person_hash', status: 400 });
+      }
+
+      if (subresource === 'password-claim') {
+        if (request.method === 'POST') {
+          return handlePasswordClaim({ personHash, request, env });
+        }
+        if (request.method === 'DELETE') {
+          return handlePasswordClaimRelease({ personHash, request, env });
+        }
+        return errorResponse({ message: 'method not allowed', status: 405 });
+      }
+
+      if (resetId === undefined) {
+        if (request.method === 'POST') {
+          return handleClaimResetSlot({ personHash, env });
+        }
+        return errorResponse({ message: 'method not allowed', status: 405 });
+      }
       if (request.method === 'DELETE') {
-        return handleDeletePerson({ personHash, env });
+        return handleReleaseResetSlot({ personHash, resetId, env });
       }
       return errorResponse({ message: 'method not allowed', status: 405 });
     }

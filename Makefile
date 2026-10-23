@@ -77,7 +77,7 @@ worktree-rm: ## Remove this worktree (run inside it)
 
 ## Local stack (ntfy + provisioning-api + delivery-api + Postgres)
 
-local-up: ## Bring up the local ntfy + provisioning-api + delivery-api (+ Postgres, migrate) stack
+local-up: ## Bring up the local ntfy + person-service + provisioning-api + delivery-api (+ Postgres, migrate) stack
 	$(COMPOSE) up -d --build
 
 local-down: ## Tear down the local stack
@@ -161,6 +161,9 @@ notif-smoke-test: ## Provision an app publisher and a test user, publish as the 
 
 go-test: ## Run Go unit tests
 	cd provisioning-api && go test ./...
+
+go-test-race: ## Run Go unit tests under the race detector
+	cd provisioning-api && go test -race ./...
 
 go-integration-test: ## Run Go integration tests (local stack must be up)
 	@C="$$($(COMPOSE) ps -q provisioning-api)"; cd provisioning-api && NOTIFS_API_CONTAINER="$$C" NOTIFS_API_URL=$(API_URL) NTFY_URL=$(NTFY_URL) go test -tags integration ./...

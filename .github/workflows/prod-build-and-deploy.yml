@@ -20,7 +20,7 @@ jobs:
 
   deploy-prod:
     if: github.event.pull_request.merged == true
-    needs: build-prod
+    needs: [build-prod, deploy-person-service]
     name: 'CD Prod - Deploy'
     uses: ./.github/workflows/prod-deploy.yml
     permissions: read-all
@@ -72,8 +72,11 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-  # person-service (Cloudflare Worker) is likewise independent of the Docker image + VPS
-  # stack, so it runs in parallel (no `needs`), gated by the same merged-to-main guard.
+  # person-service (Cloudflare Worker) builds independently of the Docker image, but
+  # `deploy-prod` waits for it (`needs: [build-prod, deploy-person-service]`) so the Worker
+  # routes and migration 0003 are live before the API that calls them. Consequence: a failed
+  # Worker deploy now skips the VPS deploy (fail closed, intended). Gated by the same
+  # merged-to-main guard.
   deploy-person-service:
     if: github.event.pull_request.merged == true
     name: 'CD Prod - Deploy person-service'
