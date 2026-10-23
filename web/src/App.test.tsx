@@ -20,6 +20,11 @@ function buildFakeClient(overrides: Partial<ApiClient> = {}): ApiClient {
       topicPattern: 'urls4irl-abcdefgh23456777-*',
       token: 'tk_generated',
     }),
+    resetPassword: vi.fn().mockResolvedValue({
+      userId: 'u_abcdefgh23456777',
+      appId: 'urls4irl',
+      password: 'abcd-efgh-ijkm-npqr',
+    }),
     deprovision: vi.fn().mockResolvedValue(undefined),
     listUsers: vi.fn().mockResolvedValue([]),
     deleteUser: vi.fn().mockResolvedValue(undefined),
@@ -384,6 +389,69 @@ describe('App', () => {
       within(sectionByHeading(strings.peopleHeading)).getByText('alice@example.com'),
     ).toBeInTheDocument();
     expect(screen.queryByText('u_76gzqgp4byjl6dje')).not.toBeInTheDocument();
+  });
+
+  it('resets a person password from the Users list with the row app and joined email, leaving the banner and lists alone', async () => {
+    const user = userEvent.setup();
+    const listUsers = vi.fn().mockResolvedValue([
+      {
+        userId: 'u_76gzqgp4byjl6dje',
+        apps: ['urls4irl'],
+        topicPatterns: ['urls4irl-76gzqgp4byjl6dje-*'],
+      },
+    ]);
+    const client = buildFakeClient({ listUsers });
+    const personClient = buildFakePersonClient({
+      listPeople: vi.fn().mockResolvedValue([
+        {
+          personHash: '76gzqgp4byjl6dje',
+          email: 'alice@example.com',
+          createdAt: '2026-07-19T18:12:03Z',
+        },
+      ]),
+    });
+    render(<App client={client} personClient={personClient} />);
+    const users = sectionByHeading(strings.usersHeading);
+
+    await user.click(
+      await within(users).findByRole('button', {
+        name: strings.resetPasswordTriggerNamed({ user: 'alice@example.com' }),
+      }),
+    );
+    await user.click(
+      within(users).getByRole('button', {
+        name: strings.resetPasswordConfirmNamed({ user: 'alice@example.com' }),
+      }),
+    );
+
+    expect(await within(users).findByDisplayValue('abcd-efgh-ijkm-npqr')).toBeInTheDocument();
+    expect(client.resetPassword).toHaveBeenCalledWith({
+      appId: 'urls4irl',
+      email: 'alice@example.com',
+    });
+    expect(listUsers).toHaveBeenCalledTimes(1);
+    expect(personClient.listPeople).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('offers no Reset action when the email is not known (no person client)', async () => {
+    const client = buildFakeClient({
+      listUsers: vi.fn().mockResolvedValue([
+        {
+          userId: 'u_76gzqgp4byjl6dje',
+          apps: ['urls4irl'],
+          topicPatterns: ['urls4irl-76gzqgp4byjl6dje-*'],
+        },
+      ]),
+    });
+    render(<App client={client} />);
+
+    await waitFor(() =>
+      expect(
+        within(sectionByHeading(strings.usersHeading)).getByText(strings.resetPasswordUnavailable),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('button', { name: /^Reset password for/ })).not.toBeInTheDocument();
   });
 
   it('renders raw userIds in the users table when no personClient is supplied', async () => {

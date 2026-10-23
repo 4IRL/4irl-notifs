@@ -24,6 +24,62 @@ describe('strings module', () => {
     );
   });
 
+  it('exposes the provision password reveal copy', () => {
+    expect(strings.passwordRevealLead).toBe(
+      "This person's password is shown only once. It replaces any earlier password for this person.",
+    );
+    expect(strings.noPasswordReturned).toBe('No password was returned by this request.');
+    expect(strings.noPasswordRecovery).toBe(
+      'If this person needs a new one, call POST /v1/reset-password from the app that serves them.',
+    );
+    expect(strings.passwordCopied).toBe('Copied');
+    expect(strings.passwordCopyUnavailable).toBe(
+      'Copy not available. Select the password and copy it manually.',
+    );
+    expect(strings.copyPassword).toBe('Copy password');
+    expect(strings.passwordGroupHeading).toBe('New password');
+    expect(strings.passwordLabel).toBe('Password');
+  });
+
+  it('exposes the operator password reset copy', () => {
+    expect(strings.resetPasswordAction).toBe('Reset password');
+    expect(strings.confirmResetPasswordAction).toBe('Confirm reset');
+    expect(strings.resettingPasswordAction).toBe('Resetting…');
+    expect(strings.resetPasswordNotice).toBe(
+      'Resetting replaces the current password immediately.',
+    );
+    expect(strings.resetPasswordUnavailable).toBe('Reset unavailable: email not loaded.');
+    expect(strings.resetPasswordDone).toBe('Done');
+    expect(strings.resetPasswordTriggerNamed({ user: 'alice@example.com' })).toBe(
+      'Reset password for alice@example.com',
+    );
+    expect(strings.resetPasswordConfirmNamed({ user: 'alice@example.com' })).toBe(
+      'Confirm reset password for alice@example.com',
+    );
+    expect(strings.resetPasswordBusyNamed({ user: 'alice@example.com' })).toBe(
+      'Resetting password for alice@example.com',
+    );
+    expect(strings.resetPasswordDoneNamed({ user: 'alice@example.com' })).toBe(
+      'Done with password for alice@example.com',
+    );
+    expect(strings.resetPasswordRevealLead({ user: 'alice@example.com' })).toBe(
+      'The new password for alice@example.com is shown only once. It replaces any earlier password.',
+    );
+    expect(strings.resetPasswordNotFound).toBe('This person does not exist. Refresh the list.');
+    expect(strings.resetPasswordFailed).toBe('Could not reset the password. Try again.');
+    expect(strings.resetPasswordDefaultRetrySeconds).toBe(60);
+  });
+
+  it('formats the reset 429 wait so it reads correctly for any count', () => {
+    expect(strings.resetPasswordTooMany({ seconds: 42 })).toBe(
+      'Too many password changes. Try again in 42 s.',
+    );
+    expect(strings.resetPasswordTooMany({ seconds: 1 })).toBe(
+      'Too many password changes. Try again in 1 s.',
+    );
+    expect(strings.resetPasswordTooMany({ seconds: 1 })).not.toContain('seconds');
+  });
+
   it('exposes validation and empty-state copy', () => {
     expect(strings.invalidAppId).toBe('App ID must be lowercase letters, digits, or underscores.');
     expect(strings.invalidUserId).toBe(

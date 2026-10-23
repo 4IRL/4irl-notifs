@@ -18,6 +18,8 @@ export interface ProvisionResult {
   topicPattern: string;
   broadcastTopic: string;
   token: string;
+  /** Present only when this call generated the person's password (shown once). */
+  password?: string;
 }
 
 /** An app/user pair identifying a deprovision target; userId is the ntfy user id. */
@@ -92,12 +94,54 @@ export interface ApiClientConfig {
 /** Error thrown for non-2xx API responses, carrying the HTTP status. */
 export class ApiError extends Error {
   readonly status: number;
+  /** Seconds from a valid `Retry-After` response header; absent when missing or invalid. */
+  readonly retryAfterSeconds?: number;
 
-  constructor({ status, message }: { status: number; message: string }) {
+  constructor({
+    status,
+    message,
+    retryAfterSeconds,
+  }: {
+    status: number;
+    message: string;
+    retryAfterSeconds?: number;
+  }) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    if (retryAfterSeconds !== undefined) {
+      this.retryAfterSeconds = retryAfterSeconds;
+    }
   }
+}
+
+/** Parses a `Retry-After` header as a positive whole number of seconds, else undefined. */
+function parseRetryAfter(value: string | null): number | undefined {
+  if (value === null || !/^\d+$/.test(value.trim())) {
+    return undefined;
+  }
+  const seconds = Number(value.trim());
+  return seconds > 0 ? seconds : undefined;
+}
+
+/** Parameters for an operator password reset. */
+export interface ResetPasswordParams {
+  appId: string;
+  email: string;
+}
+
+/** The result of a password reset: the new password, shown once. */
+export interface ResetPasswordResult {
+  userId: string;
+  appId: string;
+  password: string;
+}
+
+/** Wire shape of a reset-password response. */
+interface ResetPasswordResponseWire {
+  user_id: string;
+  app_id: string;
+  password: string;
 }
 
 /** Wire shape of the users list response. */
@@ -113,6 +157,7 @@ interface ProvisionResponseWire {
   topic_pattern: string;
   broadcast_topic: string;
   token: string;
+  password?: string;
 }
 
 /** Wire shape of a provision-app response. */
@@ -140,6 +185,7 @@ const DEFAULT_BASE_URL = '';
 /** The provisioning API surface consumed by the admin UI. */
 export interface ApiClient {
   provision(params: ProvisionParams): Promise<ProvisionResult>;
+  resetPassword(params: ResetPasswordParams): Promise<ResetPasswordResult>;
   deprovision(pair: AppUserPair): Promise<void>;
   listUsers(): Promise<UserSummary[]>;
   deleteUser(param: UserIdParam): Promise<void>;
@@ -180,7 +226,11 @@ export function createApiClient({
         payload && typeof payload.error === 'string'
           ? payload.error
           : `request failed (${response.status})`;
-      throw new ApiError({ status: response.status, message });
+      throw new ApiError({
+        status: response.status,
+        message,
+        retryAfterSeconds: parseRetryAfter(response.headers.get('Retry-After')),
+      });
     }
     return payload;
   }
@@ -199,7 +249,19 @@ export function createApiClient({
         topicPattern: wire.topic_pattern,
         broadcastTopic: wire.broadcast_topic,
         token: wire.token,
+        ...(typeof wire.password === 'string' && wire.password !== ''
+          ? { password: wire.password }
+          : {}),
       };
+    },
+
+    async resetPassword({ appId, email }: ResetPasswordParams): Promise<ResetPasswordResult> {
+      const wire = (await request({
+        path: '/v1/reset-password',
+        method: 'POST',
+        body: { app_id: appId, email },
+      })) as ResetPasswordResponseWire;
+      return { userId: wire.user_id, appId: wire.app_id, password: wire.password };
     },
 
     // userId here is the ntfy user id (e.g. "u_<hash>"), not the app's own

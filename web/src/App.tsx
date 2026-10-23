@@ -7,6 +7,7 @@ import type {
   ProvisionAppResult,
   ProvisionParams,
   ProvisionResult,
+  ResetPasswordParams,
   TestNotifyParams,
   UserSummary,
 } from './api/client';
@@ -217,6 +218,13 @@ function App({
     [client, refreshUsers],
   );
 
+  // Thin pass-through, like handleTestNotify: UsersTable owns the reveal and
+  // failure state, and the password is stored nowhere else.
+  const handleResetPassword = useCallback(
+    (params: ResetPasswordParams) => client.resetPassword(params),
+    [client],
+  );
+
   const handleDelete = useCallback(
     ({ userId }: { userId: string }) => {
       void client
@@ -349,6 +357,7 @@ function App({
         emailByPersonHash={emailByPersonHash}
         onDeprovision={handleDeprovision}
         onDelete={handleDelete}
+        onResetPassword={handleResetPassword}
       />
       {appsSectionEnabled && (
         <AppsTable
