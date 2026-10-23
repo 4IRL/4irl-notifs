@@ -102,6 +102,8 @@ type checkView struct {
 	DownSince     *string                `json:"down_since"`
 	DeadlineAt    string                 `json:"deadline_at"`
 	Destinations  []checkDestinationView `json:"destinations"`
+	OwnerKind     string                 `json:"owner_kind"`
+	OwnerAppID    *string                `json:"owner_app_id"`
 	CreatedAt     string                 `json:"created_at"`
 	UpdatedAt     string                 `json:"updated_at"`
 }
@@ -194,6 +196,7 @@ func (server *Server) handleCreateCheck(responseWriter http.ResponseWriter, requ
 		PeriodSeconds:    body.PeriodSeconds,
 		GraceSeconds:     body.GraceSeconds,
 		DestinationNames: body.Destinations,
+		OwnerKind:        registry.OwnerOperator,
 	})
 	if err != nil {
 		server.writeHeartbeatError(responseWriter, request, err)
@@ -323,6 +326,8 @@ func newCheckView(check heartbeat.StoredCheck, now time.Time) checkView {
 		DownSince:     formatUTC(heartbeat.ActiveDownSince(check)),
 		DeadlineAt:    heartbeat.Deadline(check).UTC().Format(time.RFC3339),
 		Destinations:  destinations,
+		OwnerKind:     check.OwnerKind,
+		OwnerAppID:    check.OwnerAppID,
 		CreatedAt:     check.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:     check.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -353,6 +358,12 @@ func (server *Server) writeHeartbeatError(responseWriter http.ResponseWriter, re
 		writeError(responseWriter, http.StatusConflict, errMsgCheckExists)
 	case errors.Is(err, registry.ErrUnknownDestination):
 		writeError(responseWriter, http.StatusBadRequest, errMsgUnknownDestination)
+	case errors.Is(err, registry.ErrCheckViolation):
+		// A CHECK the database enforces (an app-owned check's app_id must stay its owner's id) is a
+		// request the client can correct, not a server fault. The error text names the operation and the
+		// constraint (never row data), so a Go validator that drifts from a CHECK is not a silent 400.
+		server.logger.Warn("heartbeat request violated a data constraint", "error", err, "path", request.URL.Path)
+		writeError(responseWriter, http.StatusBadRequest, errMsgConstraintViolation)
 	case errors.Is(err, context.Canceled):
 		// The client went away: not a server fault, and a client that can
 		// disconnect at will must not be able to flood the error log. The response

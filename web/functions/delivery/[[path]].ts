@@ -3,7 +3,9 @@ import type { Env } from '../_proxy';
 import { jsonError } from '../_http';
 
 // Catch-all Pages Function for `/delivery/*` — the same-origin route to the
-// delivery-api. delivery-api has no auth of its own, so this Function (a) forwards
+// delivery-api. The app-facing routes (`/v1/messages`, heartbeat pings) need a per-app
+// key this Function never holds, so it never forwards them: the operator's send-test
+// goes to `/v1/admin/messages`. This Function (a) forwards
 // ONLY an explicit allowlist, (b) guards every non-GET against cross-site requests,
 // then (c) hands off to `proxyTo`, which authenticates the Access JWT and strips the
 // `/delivery` prefix. Order is allowlist -> guard -> proxyTo, so the guard runs
@@ -11,7 +13,6 @@ import { jsonError } from '../_http';
 
 const PREFIX = '/delivery';
 const ADMIN_PREFIX = `${PREFIX}/v1/admin/`;
-const MESSAGES_PATH = `${PREFIX}/v1/messages`;
 const READYZ_PATH = `${PREFIX}/readyz`;
 
 function notFound(): Response {
@@ -28,9 +29,6 @@ function isAllowlisted({ method, pathname }: { method: string; pathname: string 
   }
   if (pathname === READYZ_PATH) {
     return method === 'GET';
-  }
-  if (pathname === MESSAGES_PATH) {
-    return method === 'POST';
   }
   // Any method, but only on a segment boundary with at least one segment after it.
   return pathname.startsWith(ADMIN_PREFIX) && pathname.length > ADMIN_PREFIX.length;

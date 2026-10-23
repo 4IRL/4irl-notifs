@@ -71,13 +71,13 @@ describe('delivery proxy route', () => {
       },
     );
 
-    it('forwards POST /delivery/v1/messages?wait=10 to /v1/messages', async () => {
-      fetchMock.mockResolvedValue(jsonResponse({ status: 201, body: {} }));
+    it('forwards POST /delivery/v1/admin/messages?wait=10 to /v1/admin/messages', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ status: 202, body: {} }));
       await call({
-        path: '/delivery/v1/messages?wait=10',
+        path: '/delivery/v1/admin/messages?wait=10',
         init: { method: 'POST', headers: { ...JSON_HEADERS, ...SAME_ORIGIN }, body: '{}' },
       });
-      expect(fetchMock.mock.calls[0][0]).toBe(`${UPSTREAM}/v1/messages?wait=10`);
+      expect(fetchMock.mock.calls[0][0]).toBe(`${UPSTREAM}/v1/admin/messages?wait=10`);
     });
 
     it.each([409, 422, 503])('passes a %s upstream body through unchanged', async (status) => {
@@ -129,6 +129,51 @@ describe('delivery proxy route', () => {
         `${UPSTREAM}/v1/admin/scheduled-messages/0b1f6c2e-7a4d-4f4e-9c1a-2d5e8f3a9b10`,
       );
       expect(init.method).toBe('DELETE');
+    });
+
+    it('forwards the app identity admin paths: a body-less approve POST, and revoke and unbind', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ status: 201, body: {} }));
+      await call({
+        path: '/delivery/v1/admin/app-identity/requests/7/approve',
+        init: { method: 'POST', headers: { 'X-Requested-With': 'admin-ui' } },
+      });
+      await call({
+        path: '/delivery/v1/admin/app-identity/keys/3/revoke',
+        init: { method: 'POST', headers: SAME_ORIGIN },
+      });
+      await call({
+        path: '/delivery/v1/admin/app-identity/bindings/urls4irl',
+        init: { method: 'DELETE', headers: SAME_ORIGIN },
+      });
+      await call({ path: '/delivery/v1/admin/app-identity/requests' });
+      const forwarded = fetchMock.mock.calls.map((callArgs) => {
+        const [url, init] = callArgs as [string, RequestInit];
+        return `${init.method} ${url}`;
+      });
+      expect(forwarded).toEqual([
+        `POST ${UPSTREAM}/v1/admin/app-identity/requests/7/approve`,
+        `POST ${UPSTREAM}/v1/admin/app-identity/keys/3/revoke`,
+        `DELETE ${UPSTREAM}/v1/admin/app-identity/bindings/urls4irl`,
+        `GET ${UPSTREAM}/v1/admin/app-identity/requests`,
+      ]);
+    });
+
+    it('refuses an app identity approve POST that carries no cross-site guard header', async () => {
+      const response = await call({
+        path: '/delivery/v1/admin/app-identity/requests/7/approve',
+        init: { method: 'POST' },
+      });
+      expect(response.status).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('never forwards the app-facing exchange endpoint', async () => {
+      const response = await call({
+        path: '/delivery/v1/app-identity/exchange',
+        init: { method: 'POST', headers: { ...JSON_HEADERS, ...SAME_ORIGIN }, body: '{}' },
+      });
+      expect(response.status).toBe(404);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     const heartbeatRows: Array<{ method: string; path: string; body?: string }> = [
@@ -185,6 +230,8 @@ describe('delivery proxy route', () => {
   describe('negative allowlist', () => {
     const rows: Array<{ method: string; path: string }> = [
       { method: 'GET', path: '/delivery/v1/messages' },
+      { method: 'POST', path: '/delivery/v1/messages' },
+      { method: 'POST', path: '/delivery/v1/messages?wait=10' },
       { method: 'GET', path: '/delivery/healthz' },
       { method: 'GET', path: '/delivery/other' },
       { method: 'GET', path: '/delivery' },
@@ -239,6 +286,21 @@ describe('delivery proxy route', () => {
       { method: 'POST', path: '/delivery/v1/admin/..%5cheartbeats/urls4irl/nightly_backup' },
       { method: 'POST', path: '/delivery/v1/admin/..\\heartbeats/urls4irl/nightly_backup' },
       { method: 'POST', path: '/delivery/v1/admin/%2e%2e\\heartbeats/urls4irl/nightly_backup' },
+      // The app-scoped surface (`/v1/apps/{app_id}/...`) needs the calling app's own delivery
+      // key, so the admin proxy never forwards it either.
+      { method: 'GET', path: '/delivery/v1/apps/urls4irl/destinations' },
+      { method: 'POST', path: '/delivery/v1/apps/urls4irl/destinations' },
+      { method: 'DELETE', path: '/delivery/v1/apps/urls4irl/routes/1' },
+      { method: 'GET', path: '/delivery/v1/apps/urls4irl/checks' },
+      // The app-facing exchange stays unreachable from an admin-prefix path: dot-segments
+      // resolve out of the admin prefix, and encoded slashes are refused.
+      { method: 'POST', path: '/delivery/v1/app-identity/exchange' },
+      { method: 'POST', path: '/delivery/v1/admin/../app-identity/exchange' },
+      { method: 'POST', path: '/delivery/v1/admin/%2e%2e/app-identity/exchange' },
+      { method: 'POST', path: '/delivery/v1/admin/%2E%2E/app-identity/exchange' },
+      { method: 'POST', path: '/delivery/v1/admin/..%2fapp-identity/exchange' },
+      { method: 'POST', path: '/delivery/v1/admin/%2e%2e%2fapp-identity/exchange' },
+      { method: 'POST', path: '/delivery/v1/admin/..%2Fapp-identity/exchange' },
     ];
 
     it.each(rows)('$method $path -> 404 with no upstream fetch', async ({ method, path }) => {

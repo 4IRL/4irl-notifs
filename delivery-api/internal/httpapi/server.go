@@ -204,9 +204,12 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleGetPublisher))
 	server.mux.HandleFunc("DELETE /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleDeletePublisher))
 
-	// App-facing pings sit outside /v1/admin, like POST /v1/messages.
-	server.mux.HandleFunc("POST /v1/heartbeats/{app_id}/{name}", server.requireHeartbeats(server.handlePingCheck))
-	server.mux.HandleFunc("POST /v1/heartbeats/{app_id}/{name}/fail", server.requireHeartbeats(server.handleFailCheck))
+	// App-facing pings sit outside /v1/admin, like POST /v1/messages, and take the app key: the
+	// key's app must be the {app_id} the ping names.
+	server.mux.HandleFunc("POST /v1/heartbeats/{app_id}/{name}",
+		server.requireHeartbeats(server.requireAppKey(assertedAppIDFromPath, server.handlePingCheck)))
+	server.mux.HandleFunc("POST /v1/heartbeats/{app_id}/{name}/fail",
+		server.requireHeartbeats(server.requireAppKey(assertedAppIDFromPath, server.handleFailCheck)))
 	server.mux.HandleFunc("GET /v1/admin/heartbeats", server.requireHeartbeats(server.handleListChecks))
 	server.mux.HandleFunc("POST /v1/admin/heartbeats", server.requireHeartbeats(server.handleCreateCheck))
 	server.mux.HandleFunc("GET /v1/admin/heartbeats/{id}", server.requireHeartbeats(server.handleGetCheck))
@@ -224,11 +227,21 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /v1/admin/app-identity/keys/{id}/revoke", server.requireAppIdentity(server.handleRevokeIdentityKey))
 	server.mux.HandleFunc("DELETE /v1/admin/app-identity/bindings/{app_id}", server.requireAppIdentity(server.handleUnbindApp))
 
-	server.mux.HandleFunc("POST /v1/messages", server.requireMessages(server.handleCreateMessage))
-	server.mux.HandleFunc("GET /v1/messages/{id}", server.requireMessages(server.handleGetMessage))
-	server.mux.HandleFunc("GET /v1/messages", server.requireMessages(server.handleGetMessageByKey))
-	server.mux.HandleFunc("DELETE /v1/messages/{id}", server.requireMessages(server.handleCancelMessage))
-	server.mux.HandleFunc("DELETE /v1/messages", server.requireMessages(server.handleCancelMessageByKey))
+	// The app-facing message routes take the app key: the key's app must be the app_id the
+	// request asserts (in the body for a submit, in the query for a read or cancel).
+	server.mux.HandleFunc("POST /v1/messages",
+		server.requireMessages(server.requireAppKey(assertedAppIDFromBody, server.handleCreateMessage)))
+	server.mux.HandleFunc("GET /v1/messages/{id}",
+		server.requireMessages(server.requireAppKey(assertedAppIDFromQuery, server.handleGetMessage)))
+	server.mux.HandleFunc("GET /v1/messages",
+		server.requireMessages(server.requireAppKey(assertedAppIDFromQuery, server.handleGetMessageByKey)))
+	server.mux.HandleFunc("DELETE /v1/messages/{id}",
+		server.requireMessages(server.requireAppKey(assertedAppIDFromQuery, server.handleCancelMessage)))
+	server.mux.HandleFunc("DELETE /v1/messages",
+		server.requireMessages(server.requireAppKey(assertedAppIDFromQuery, server.handleCancelMessageByKey)))
+	// Operator submit (the admin UI's send-test): the POST /v1/messages contract with no app key,
+	// the operator asserting any app_id.
+	server.mux.HandleFunc("POST /v1/admin/messages", server.requireMessages(server.handleCreateMessage))
 	server.mux.HandleFunc("GET /v1/admin/scheduled-messages", server.requireMessages(server.handleListScheduledMessages))
 	server.mux.HandleFunc("DELETE /v1/admin/scheduled-messages/{id}", server.requireMessages(server.handleAdminCancelMessage))
 	server.mux.HandleFunc("GET /v1/admin/deliveries", server.requireMessages(server.handleListDeliveries))

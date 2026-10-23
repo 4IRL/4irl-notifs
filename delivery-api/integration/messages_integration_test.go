@@ -104,11 +104,39 @@ type attemptsResponse struct {
 }
 
 // apiRequest sends one request to an absolute API path (query string included)
-// with an optional JSON body and returns the status code and raw body.
+// with an optional JSON body and returns the status code and raw body. A request to an
+// app-facing path (/v1/messages, the heartbeat pings) is authenticated as the app the
+// request itself names, with a delivery key obtained through the dev token exchange (see
+// app_key_integration_test.go); every other path is sent with no Authorization header.
 func apiRequest(testInstance *testing.T, method, path string, body any) (int, []byte) {
 	testInstance.Helper()
+	authorization := ""
+	if isAppFacingPath(path) {
+		authorization = bearer(appKeyFor(testInstance, assertedAppID(path, body)))
+	}
+	return apiRequestWithAuthorization(testInstance, authorization, method, path, body)
+}
+
+// apiRequestWithAuthorization is apiRequest with the Authorization header chosen by the
+// caller, sent exactly as given (omitted when empty), for tests of the key check itself.
+func apiRequestWithAuthorization(
+	testInstance *testing.T, authorization, method, path string, body any,
+) (int, []byte) {
+	testInstance.Helper()
+	status, _, responseBody := apiResponse(testInstance, authorization, method, path, body)
+	return status, responseBody
+}
+
+// apiResponse is apiRequestWithAuthorization that also returns the response headers. A body
+// that is a []byte is sent as is (to send malformed or oversized JSON).
+func apiResponse(
+	testInstance *testing.T, authorization, method, path string, body any,
+) (int, http.Header, []byte) {
+	testInstance.Helper()
 	var requestBody io.Reader
-	if body != nil {
+	if raw, isRaw := body.([]byte); isRaw {
+		requestBody = bytes.NewReader(raw)
+	} else if body != nil {
 		encoded, marshalErr := json.Marshal(body)
 		if marshalErr != nil {
 			testInstance.Fatalf("encoding %s %s body: %v", method, path, marshalErr)
@@ -121,6 +149,9 @@ func apiRequest(testInstance *testing.T, method, path string, body any) (int, []
 	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	if authorization != "" {
+		request.Header.Set("Authorization", authorization)
 	}
 	// The wait=5 submit holds the connection for up to five seconds, so the shared admin
 	// client (5 s) is too tight; give it explicit headroom.
@@ -138,7 +169,7 @@ func apiRequest(testInstance *testing.T, method, path string, body any) (int, []
 	if readErr != nil {
 		testInstance.Fatalf("reading %s %s body: %v", method, path, readErr)
 	}
-	return response.StatusCode, responseBody
+	return response.StatusCode, response.Header, responseBody
 }
 
 func decodeBody(testInstance *testing.T, label string, body []byte, target any) {

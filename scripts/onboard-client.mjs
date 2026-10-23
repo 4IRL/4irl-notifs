@@ -1,17 +1,17 @@
 // Pluggable management target and HTTP client for declarative app onboarding.
 //
-// Step-8 seam: every caller above this module (manifest diffing, plan, apply, prune) depends
-// only on the management API interface returned by `createAdminApi(http)` — list/create/patch/
-// delete for destinations, routes and checks. None of that code ever builds a URL path, reads
-// `ONBOARD_URL`, or knows about Cloudflare Access headers; it only calls the interface's methods.
-// When generic-delivery master Step 8 ships app-managed destinations and checks, the only change
-// needed is a new `createAppScopedApi(http)` (the app's own endpoint and token, reached through
-// the same `resolveTarget`/`createHttp`) swapped in wherever `createAdminApi` is constructed
-// today. Manifest parsing, `computePlan` and `apply`'s action loop stay untouched.
+// Seam: every caller above this module (manifest diffing, plan, apply, prune) depends only on the
+// management API interface returned by `createAdminApi(http)` (operator, `/v1/admin`) or
+// `createAppScopedApi(http, appId)` (an app's own deploy, `/v1/apps/{app_id}`, with its delivery
+// key) — list/create/patch/delete for destinations, routes and checks. None of that code ever
+// builds a URL path, reads `ONBOARD_URL`, or knows about Cloudflare Access headers; it only calls
+// the interface's methods. The CLI swaps one factory for the other at its single construction
+// site; manifest parsing, `computePlan` and `apply`'s action loop are the same for both.
 //
-// `createAppApi(http)` is the one piece of this seam already app-facing today: `verify` always
+// `createAppApi(http)` is the other app-facing piece of this seam: `verify` always
 // calls it with the app's own token (`ONBOARD_APP_ACCESS_ID`/`ONBOARD_APP_ACCESS_SECRET`), never
-// the operator token.
+// the operator token, and with the app's delivery key (`ONBOARD_APP_KEY`, sent by `createHttp` as
+// `Authorization: Bearer`): every app-facing delivery-api endpoint requires it.
 
 // `URL.hostname` always returns the bracketed form for an IPv6 literal ('[::1]', never '::1'),
 // so only the bracketed form is ever reachable here.
@@ -81,12 +81,16 @@ export function resolveTarget({
 }
 
 /**
- * The injected-fetch HTTP layer: timeout, Cloudflare Access headers and error wrapping, all in
- * one place so `createAdminApi`/`createAppApi` never touch `fetch` directly.
+ * The injected-fetch HTTP layer: timeout, Cloudflare Access headers, the app key and error
+ * wrapping, all in one place so `createAdminApi`/`createAppApi` never touch `fetch` directly.
+ * `appKey` (a delivery `dak_…` app key) is sent as `Authorization: Bearer`, alongside the Access
+ * headers: Access is the network gate, the key is the app's identity. Absent, no `Authorization`
+ * header is sent (the operator admin API takes none).
  */
 export function createHttp({
   baseUrl,
   credentials,
+  appKey = null,
   fetchImpl = fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }) {
@@ -101,6 +105,9 @@ export function createHttp({
       headers['CF-Access-Client-Id'] = credentials.id;
       headers['CF-Access-Client-Secret'] = credentials.secret;
     }
+    if (appKey) {
+      headers.Authorization = `Bearer ${appKey}`;
+    }
 
     let response;
     try {
@@ -111,6 +118,15 @@ export function createHttp({
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
+      // `fetch` quotes the offending header value in the TypeError it throws for an invalid
+      // header (the Bearer key, the Access secret), so a TypeError never has its text surfaced.
+      // The one exception is the bare `fetch failed` undici raises for a network failure, which
+      // carries no request data and is the useful text.
+      if (err instanceof TypeError && err.message !== 'fetch failed') {
+        throw new Error(
+          `${method} ${path} failed: request could not be built (invalid header value or URL)`,
+        );
+      }
       throw new Error(`${method} ${path} failed: ${err.message}`);
     }
 
@@ -130,21 +146,26 @@ function encodeSegment(value) {
   return encodeURIComponent(String(value));
 }
 
-/** The management API interface — the Step-8 seam's contract (see top-of-file comment). */
-export function createAdminApi(http) {
+/**
+ * The management API interface — the seam's contract (see top-of-file comment). The admin and
+ * app-scoped endpoints mirror each other 1:1 under a different prefix, so both factories share this
+ * one implementation and differ only in `prefix`. `filterRows` (default: keep everything) is applied
+ * to every list result.
+ */
+function createManagementApi(http, prefix, { filterRows = (rows) => rows } = {}) {
   return {
     async listDestinations() {
-      const payload = await http.request({ method: 'GET', path: '/v1/admin/destinations' });
-      return payload?.destinations ?? [];
+      const payload = await http.request({ method: 'GET', path: `${prefix}/destinations` });
+      return filterRows(payload?.destinations ?? []);
     },
     async createDestination(body) {
-      const payload = await http.request({ method: 'POST', path: '/v1/admin/destinations', body });
+      const payload = await http.request({ method: 'POST', path: `${prefix}/destinations`, body });
       return payload?.destination;
     },
     async patchDestination(name, body) {
       const payload = await http.request({
         method: 'PATCH',
-        path: `/v1/admin/destinations/${encodeSegment(name)}`,
+        path: `${prefix}/destinations/${encodeSegment(name)}`,
         body,
       });
       return payload?.destination;
@@ -152,50 +173,74 @@ export function createAdminApi(http) {
     async deleteDestination(name) {
       await http.request({
         method: 'DELETE',
-        path: `/v1/admin/destinations/${encodeSegment(name)}`,
+        path: `${prefix}/destinations/${encodeSegment(name)}`,
       });
     },
 
     async listRoutes() {
-      const payload = await http.request({ method: 'GET', path: '/v1/admin/routes' });
-      return payload?.routes ?? [];
+      const payload = await http.request({ method: 'GET', path: `${prefix}/routes` });
+      return filterRows(payload?.routes ?? []);
     },
     async createRoute(body) {
-      const payload = await http.request({ method: 'POST', path: '/v1/admin/routes', body });
+      const payload = await http.request({ method: 'POST', path: `${prefix}/routes`, body });
       return payload?.route;
     },
     async patchRoute(id, body) {
       const payload = await http.request({
         method: 'PATCH',
-        path: `/v1/admin/routes/${encodeSegment(id)}`,
+        path: `${prefix}/routes/${encodeSegment(id)}`,
         body,
       });
       return payload?.route;
     },
     async deleteRoute(id) {
-      await http.request({ method: 'DELETE', path: `/v1/admin/routes/${encodeSegment(id)}` });
+      await http.request({ method: 'DELETE', path: `${prefix}/routes/${encodeSegment(id)}` });
     },
 
     async listChecks() {
-      const payload = await http.request({ method: 'GET', path: '/v1/admin/heartbeats' });
-      return payload?.checks ?? [];
+      const payload = await http.request({ method: 'GET', path: `${prefix}/heartbeats` });
+      return filterRows(payload?.checks ?? []);
     },
     async createCheck(body) {
-      const payload = await http.request({ method: 'POST', path: '/v1/admin/heartbeats', body });
+      const payload = await http.request({ method: 'POST', path: `${prefix}/heartbeats`, body });
       return payload?.check;
     },
     async patchCheck(id, body) {
       const payload = await http.request({
         method: 'PATCH',
-        path: `/v1/admin/heartbeats/${encodeSegment(id)}`,
+        path: `${prefix}/heartbeats/${encodeSegment(id)}`,
         body,
       });
       return payload?.check;
     },
     async deleteCheck(id) {
-      await http.request({ method: 'DELETE', path: `/v1/admin/heartbeats/${encodeSegment(id)}` });
+      await http.request({ method: 'DELETE', path: `${prefix}/heartbeats/${encodeSegment(id)}` });
     },
   };
+}
+
+/** The operator management API (`/v1/admin/...`). */
+export function createAdminApi(http) {
+  return createManagementApi(http, '/v1/admin');
+}
+
+/**
+ * The app-scoped management API (`/v1/apps/{app_id}/...`), the same interface as `createAdminApi`.
+ * The server derives ownership from the app key `http` sends, so every list returns only the
+ * app's own rows; as defense in depth every list fails closed and keeps a row only when it says it
+ * is app-owned by this app (`owner_kind === 'app'` and `owner_app_id === appId`), so a
+ * misbehaving server (or an operator-owned row with no owner fields) can never make `--prune`
+ * target another owner's object. `appId` is encoded into the path and must be non-empty: an
+ * empty one would collapse the path onto a different route.
+ */
+export function createAppScopedApi(http, appId) {
+  if (typeof appId !== 'string' || appId === '') {
+    throw new Error('createAppScopedApi requires a non-empty app id');
+  }
+  return createManagementApi(http, `/v1/apps/${encodeSegment(appId)}`, {
+    filterRows: (rows) =>
+      rows.filter((row) => row.owner_kind === 'app' && row.owner_app_id === appId),
+  });
 }
 
 /** The app-facing calls used by `verify`: a real test send, and a real heartbeat ping. */

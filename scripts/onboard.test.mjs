@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { ApiError, resolveTarget } from './onboard-client.mjs';
-import { main } from './onboard.mjs';
+import { main, parseArgs, runApply, runPlan, runVerify } from './onboard.mjs';
 
 afterEach(() => {
   process.exitCode = undefined;
@@ -326,14 +326,18 @@ function createFakeApi() {
   };
 }
 
+// A syntactically valid but made-up app key: the fake app API never sends it anywhere.
+const TEST_APP_KEY = 'dak_0000000000000000000000000000000000000000000';
+
 /** Builds `main`'s `deps`: real `resolveTarget`/`createHttp` (spied, so the real fail-closed
  * rules and timeout wiring still run) but `createAdminApi`/`createAppApi` always return the
  * fake, regardless of the dummy `http` they are handed. */
 function buildDeps(fake, { env = {}, now } = {}) {
   const resolveTargetCalls = [];
   const createHttpCalls = [];
+  const createAppScopedApiCalls = [];
   return {
-    env: { ONBOARD_URL: 'http://127.0.0.1:9999', ...env },
+    env: { ONBOARD_URL: 'http://127.0.0.1:9999', ONBOARD_APP_KEY: TEST_APP_KEY, ...env },
     now: now ?? (() => new Date('2026-01-01T00:00:00.000Z')),
     fetchImpl: () => {
       throw new Error('onboard.mjs must never call fetch directly in tests');
@@ -351,9 +355,15 @@ function buildDeps(fake, { env = {}, now } = {}) {
       };
     },
     createAdminApi: () => fake.adminApi,
+    // The app-scoped API has the same interface as the admin one; the fake serves both.
+    createAppScopedApi: (http, appId) => {
+      createAppScopedApiCalls.push({ appId });
+      return fake.adminApi;
+    },
     createAppApi: () => fake.appApi,
     resolveTargetCalls,
     createHttpCalls,
+    createAppScopedApiCalls,
   };
 }
 
@@ -1007,6 +1017,53 @@ describe('onboard.mjs management target resolution', () => {
     }
   });
 
+  it('verify hands ONBOARD_APP_KEY to createHttp, and plan/apply never do', async () => {
+    const dir = tmpDir();
+    writeManifest(dir, 'myapp.json', appManifest());
+    const fake = createFakeApi();
+    const deps = buildDeps(fake, { env: { MYAPP_OPS_WEBHOOK: 'wh-secret-value' } });
+
+    await captureOutput(() => main(['plan', path.join(dir, 'myapp.json')], deps));
+    await captureOutput(() => main(['verify', path.join(dir, 'myapp.json')], deps));
+    const appKeys = deps.createHttpCalls.map((c) => c.appKey);
+    assert.deepEqual(appKeys, [undefined, TEST_APP_KEY]);
+  });
+
+  it('verify fails closed without ONBOARD_APP_KEY before any target is resolved or request made', async () => {
+    const dir = tmpDir();
+    writeManifest(dir, 'myapp.json', appManifest());
+    const fake = createFakeApi();
+    const deps = buildDeps(fake, { env: { MYAPP_OPS_WEBHOOK: 'wh-secret-value' } });
+    for (const missing of [undefined, '', '   ']) {
+      if (missing === undefined) {
+        delete deps.env.ONBOARD_APP_KEY;
+      } else {
+        deps.env.ONBOARD_APP_KEY = missing;
+      }
+      await assert.rejects(
+        main(['verify', path.join(dir, 'myapp.json')], deps),
+        /ONBOARD_APP_KEY is required/,
+      );
+    }
+    assert.equal(deps.resolveTargetCalls.length, 0);
+    assert.equal(deps.createHttpCalls.length, 0);
+    assert.equal(fake.calls.length, 0);
+  });
+
+  it('verify reports the missing app key before an unset manifest secret', async () => {
+    const dir = tmpDir();
+    writeManifest(dir, 'myapp.json', appManifest());
+    const fake = createFakeApi();
+    // MYAPP_OPS_WEBHOOK is deliberately unset, and so is the app key.
+    const deps = buildDeps(fake, {});
+    delete deps.env.ONBOARD_APP_KEY;
+
+    await assert.rejects(
+      main(['verify', path.join(dir, 'myapp.json')], deps),
+      /ONBOARD_APP_KEY is required/,
+    );
+  });
+
   it('uses the 15000ms default timeout for plan/apply and 25000ms for verify', async () => {
     const dir = tmpDir();
     writeManifest(dir, 'myapp.json', appManifest());
@@ -1059,6 +1116,643 @@ describe('onboard.mjs lint dispatch', () => {
     assert.equal(process.exitCode, undefined);
     assert.ok(out.stdout.includes('1 manifests'));
     assert.equal(fake.calls.length, 0);
+  });
+});
+
+/** Writes `apps/myapp.json`-shaped files into a fresh dir and returns the path of the manifest
+ * given by `fileName`: an app repo keeps its manifest anywhere, under any name. */
+function appRepoManifest(manifest = appManifest(), fileName = 'notifs.json') {
+  const dir = tmpDir();
+  writeManifest(dir, fileName, manifest);
+  return { dir, manifestPath: path.join(dir, fileName) };
+}
+
+const APP_ENV = { MYAPP_OPS_WEBHOOK: 'wh-secret-value' };
+
+describe('onboard.mjs parseArgs: --manifest / --target app', () => {
+  it('parses the app target for plan/apply/verify and lint', () => {
+    assert.deepEqual(
+      parseArgs(['apply', '--manifest', 'm.json', '--target', 'app', '--env', 'prod', '--prune']),
+      {
+        command: 'apply',
+        manifestPath: 'm.json',
+        envName: 'prod',
+        prune: true,
+        resendSecrets: false,
+        target: 'app',
+      },
+    );
+    assert.equal(parseArgs(['verify', '--target', 'app', '--manifest', 'm.json']).target, 'app');
+    assert.deepEqual(parseArgs(['lint', '--manifest', 'm.json', '--target', 'app']), {
+      command: 'lint',
+      manifestPath: 'm.json',
+      target: 'app',
+    });
+  });
+
+  it('keeps the operator form unchanged: positional manifest, target operator', () => {
+    assert.equal(parseArgs(['plan', 'apps/myapp.json']).target, 'operator');
+    assert.deepEqual(parseArgs(['lint', 'apps']), { command: 'lint', dir: 'apps' });
+    assert.deepEqual(parseArgs(['lint']), { command: 'lint', dir: 'apps' });
+  });
+
+  it('rejects every inconsistent combination as a usage error', () => {
+    // Each argv is paired with the message fragment it must be rejected for, so a combination
+    // refused for the wrong reason cannot pass.
+    const bad = [
+      [['plan', '--manifest', 'm.json'], '--manifest requires --target app'],
+      [['plan', '--target', 'app'], '--target app requires --manifest'],
+      [['plan', '--manifest', 'm.json', '--target', 'operator'], '--target must be "app"'],
+      [['plan', 'm.json', '--manifest', 'm.json', '--target', 'app'], 'not a positional'],
+      [['plan', 'm.json', '--target', 'app'], '--target app requires --manifest'],
+      [['plan', '--manifest'], '--manifest requires a value'],
+      [['plan', '--manifest', '--target', 'app'], '--manifest requires a value'],
+      [['plan', '--manifest', 'm.json', '--target'], '--target requires a value'],
+      [['lint', '--manifest', 'm.json'], 'lint --manifest requires --target app'],
+      [['lint', '--target', 'app'], 'lint --manifest requires --target app'],
+      [
+        ['lint', 'apps', '--manifest', 'm.json', '--target', 'app'],
+        'lint --manifest takes no directory argument',
+      ],
+      [
+        ['lint', '--manifest', 'm.json', '--target', 'app', '--prune'],
+        'lint takes no flags other than',
+      ],
+      [
+        ['verify', '--manifest', 'm.json', '--target', 'app', '--prune'],
+        '--prune/--resend-secrets are not valid with verify',
+      ],
+    ];
+    for (const [argv, fragment] of bad) {
+      assert.throws(() => parseArgs(argv), new RegExp(fragment), argv.join(' '));
+    }
+  });
+
+  it('rejects a repeated --manifest or --target as a usage error', () => {
+    const repeated = [
+      [
+        ['plan', '--manifest', 'a.json', '--manifest', 'b.json', '--target', 'app'],
+        '--manifest given more than once',
+      ],
+      [
+        ['apply', '--manifest', 'a.json', '--target', 'app', '--target', 'app'],
+        '--target given more than once',
+      ],
+      [
+        ['verify', '--target', 'app', '--manifest', 'a.json', '--manifest', 'b.json'],
+        '--manifest given more than once',
+      ],
+      [
+        ['lint', '--manifest', 'a.json', '--manifest', 'b.json', '--target', 'app'],
+        '--manifest given more than once',
+      ],
+      [
+        ['lint', '--manifest', 'a.json', '--target', 'app', '--target', 'app'],
+        '--target given more than once',
+      ],
+    ];
+    for (const [argv, fragment] of repeated) {
+      assert.throws(() => parseArgs(argv), new RegExp(fragment), argv.join(' '));
+    }
+  });
+});
+
+describe('onboard.mjs --target app', () => {
+  it('plans and applies through the app-scoped API with the app key and app Access token, never the admin API', async () => {
+    const { manifestPath } = appRepoManifest();
+    const fake = createFakeApi();
+    const deps = buildDeps(fake, {
+      env: { ...APP_ENV, ONBOARD_APP_ACCESS_ID: 'app-id', ONBOARD_APP_ACCESS_SECRET: 'app-secret' },
+    });
+    deps.createAdminApi = () => {
+      throw new Error('--target app must never construct the admin API');
+    };
+
+    await captureOutput(() => main(['plan', '--manifest', manifestPath, '--target', 'app'], deps));
+    await captureOutput(() => main(['apply', '--manifest', manifestPath, '--target', 'app'], deps));
+    assert.equal(process.exitCode, undefined);
+
+    assert.deepEqual(deps.createAppScopedApiCalls, [{ appId: 'myapp' }, { appId: 'myapp' }]);
+    for (const call of deps.resolveTargetCalls) {
+      assert.equal(call.idVar, 'ONBOARD_APP_ACCESS_ID');
+      assert.equal(call.secretVar, 'ONBOARD_APP_ACCESS_SECRET');
+    }
+    for (const call of deps.createHttpCalls) {
+      assert.equal(call.appKey, TEST_APP_KEY);
+      assert.deepEqual(call.credentials, { id: 'app-id', secret: 'app-secret' });
+      assert.equal(call.timeoutMs, 15000);
+    }
+    assert.equal(deps.createHttpCalls.length, 2);
+    assert.deepEqual(
+      fake.calls.map((c) => c.method).filter((m) => m.startsWith('create')),
+      ['createDestination', 'createRoute', 'createCheck'],
+    );
+  });
+
+  it('re-running apply is a no-op plan with zero write calls', async () => {
+    const { manifestPath } = appRepoManifest();
+    const fake = createFakeApi();
+    const deps = buildDeps(fake, { env: APP_ENV });
+    const argv = ['apply', '--manifest', manifestPath, '--target', 'app'];
+
+    await captureOutput(() => main(argv, deps));
+    fake.calls.length = 0;
+    const second = await captureOutput(() => main(argv, deps));
+    assert.equal(process.exitCode, undefined);
+    assert.ok(second.stdout.includes('No changes.'));
+    const writes = fake.calls.filter((c) => /^(create|patch|delete)/.test(c.method));
+    assert.equal(writes.length, 0);
+  });
+
+  it('refuses to run without ONBOARD_APP_KEY before resolving any target or making any request', async () => {
+    const { manifestPath } = appRepoManifest();
+    for (const command of ['plan', 'apply', 'verify']) {
+      for (const missing of [undefined, '', '   ']) {
+        const fake = createFakeApi();
+        const deps = buildDeps(fake, { env: APP_ENV });
+        if (missing === undefined) {
+          delete deps.env.ONBOARD_APP_KEY;
+        } else {
+          deps.env.ONBOARD_APP_KEY = missing;
+        }
+        await assert.rejects(
+          main([command, '--manifest', manifestPath, '--target', 'app'], deps),
+          /ONBOARD_APP_KEY is required for --target app/,
+        );
+        assert.equal(deps.resolveTargetCalls.length, 0, command);
+        assert.equal(deps.createHttpCalls.length, 0, command);
+        assert.equal(deps.createAppScopedApiCalls.length, 0, command);
+        assert.equal(fake.calls.length, 0, command);
+      }
+    }
+  });
+
+  it('requires the app Access token pair for a non-loopback URL, and an operator pair does not satisfy it', async () => {
+    const { manifestPath } = appRepoManifest();
+    const remote = { ...APP_ENV, ONBOARD_URL: 'https://notifs.example.test' };
+    const argv = ['plan', '--manifest', manifestPath, '--target', 'app'];
+
+    const operatorPairOnly = buildDeps(createFakeApi(), {
+      env: { ...remote, ONBOARD_ACCESS_ID: 'op-id', ONBOARD_ACCESS_SECRET: 'op-secret' },
+    });
+    await assert.rejects(
+      main(argv, operatorPairOnly),
+      /ONBOARD_APP_ACCESS_ID\/ONBOARD_APP_ACCESS_SECRET are required for a non-loopback/,
+    );
+    assert.equal(operatorPairOnly.createHttpCalls.length, 0);
+
+    const halfSet = buildDeps(createFakeApi(), {
+      env: { ...remote, ONBOARD_APP_ACCESS_ID: 'app-id' },
+    });
+    await assert.rejects(main(argv, halfSet), /both or neither of ONBOARD_APP_ACCESS_ID/);
+
+    const complete = buildDeps(createFakeApi(), {
+      env: { ...remote, ONBOARD_APP_ACCESS_ID: 'app-id', ONBOARD_APP_ACCESS_SECRET: 'app-secret' },
+    });
+    await captureOutput(() => main(argv, complete));
+    assert.equal(process.exitCode, undefined);
+    assert.equal(complete.createHttpCalls[0].baseUrl, 'https://notifs.example.test');
+  });
+
+  it('still requires the app key on a loopback URL', async () => {
+    const { manifestPath } = appRepoManifest();
+    const deps = buildDeps(createFakeApi(), {
+      env: { ...APP_ENV, ONBOARD_URL: 'http://localhost:8300' },
+    });
+    delete deps.env.ONBOARD_APP_KEY;
+    await assert.rejects(
+      main(['plan', '--manifest', manifestPath, '--target', 'app'], deps),
+      /ONBOARD_APP_KEY is required/,
+    );
+  });
+
+  it('refuses the platform manifest', async () => {
+    const { manifestPath } = appRepoManifest({ platform: true }, '_platform.json');
+    const deps = buildDeps(createFakeApi(), {});
+    for (const command of ['plan', 'apply']) {
+      await assert.rejects(
+        main([command, '--manifest', manifestPath, '--target', 'app'], deps),
+        /takes an app manifest/,
+      );
+    }
+    assert.equal(deps.createHttpCalls.length, 0);
+  });
+
+  it('verify sends with the app key and the app Access token', async () => {
+    const { manifestPath } = appRepoManifest();
+    const fake = createFakeApi();
+    fake.queueSendMessage({
+      result: { message: { deliveries: [{ destination: 'myapp_ops', state: 'delivered' }] } },
+    });
+    fake.queuePingCheck({ result: { state: 'up' } });
+    const deps = buildDeps(fake, { env: APP_ENV });
+
+    const out = await captureOutput(() =>
+      main(['verify', '--manifest', manifestPath, '--target', 'app'], deps),
+    );
+    assert.equal(process.exitCode, undefined, out.stderr.join('\n'));
+    assert.equal(deps.createHttpCalls.length, 1);
+    assert.equal(deps.createHttpCalls[0].appKey, TEST_APP_KEY);
+    assert.equal(deps.createHttpCalls[0].timeoutMs, 25000);
+  });
+
+  it('--prune deletes only what the manifest no longer declares and skips the directory lint gate', async () => {
+    const { dir, manifestPath } = appRepoManifest();
+    // A stray file an app repo may well keep next to its manifest: lintDirectory would refuse the
+    // run over it; --target app must not look at siblings at all.
+    fs.writeFileSync(path.join(dir, 'notes.txt'), 'not a manifest');
+    const fake = createFakeApi();
+    fake.seedDestination({ name: 'myapp_old', type: 'discord', secrets: { webhook_url: 'x' } });
+    const deps = buildDeps(fake, { env: APP_ENV });
+
+    const out = await captureOutput(() =>
+      main(['apply', '--manifest', manifestPath, '--target', 'app', '--prune'], deps),
+    );
+    assert.equal(process.exitCode, undefined, out.stderr.join('\n'));
+    assert.deepEqual(
+      fake.calls.filter((c) => c.method === 'deleteDestination').map((c) => c.name),
+      ['myapp_old'],
+    );
+
+    // The same sibling makes the operator-mode prune refuse, proving the gate really was skipped.
+    const operatorDir = tmpDir();
+    writeManifest(operatorDir, 'myapp.json', appManifest());
+    fs.writeFileSync(path.join(operatorDir, 'notes.txt'), 'not a manifest');
+    const operatorDeps = buildDeps(createFakeApi(), { env: APP_ENV });
+    await captureOutput(() =>
+      main(['apply', path.join(operatorDir, 'myapp.json'), '--prune'], operatorDeps),
+    );
+    assert.equal(process.exitCode, 1);
+    assert.equal(operatorDeps.createHttpCalls.length, 0);
+  });
+
+  it('does not block on a `use` reference to an operator-owned destination, and says why', async () => {
+    const { manifestPath } = appRepoManifest(
+      appManifest({
+        destinations: [{ use: 'platform_alerts' }],
+        routes: [{ channel: 'ops', destinations: ['platform_alerts'] }],
+        heartbeats: [],
+      }),
+    );
+    const fake = createFakeApi();
+    const deps = buildDeps(fake, {});
+    const out = await captureOutput(() =>
+      main(['plan', '--manifest', manifestPath, '--target', 'app'], deps),
+    );
+    const stdout = out.stdout.join('\n');
+    assert.ok(!stdout.includes('blocking'), stdout);
+    assert.ok(stdout.includes('shared destinations (platform_alerts)'), stdout);
+    assert.ok(stdout.includes('+ create route'), stdout);
+  });
+
+  it('prints no operator-only manual steps and never the key or a secret', async () => {
+    const { manifestPath } = appRepoManifest();
+    const deps = buildDeps(createFakeApi(), { env: APP_ENV });
+    const out = await captureOutput(() =>
+      main(['apply', '--manifest', manifestPath, '--target', 'app'], deps),
+    );
+    const combined = `${out.stdout.join('\n')}\n${out.stderr.join('\n')}`;
+    assert.ok(!combined.includes('Cloudflare Access service token'), combined);
+    assert.ok(!combined.includes(TEST_APP_KEY));
+    assert.ok(!combined.includes('wh-secret-value'));
+    assert.ok(combined.includes('Manual steps:'));
+  });
+
+  it('turns a 409 on a name another owner holds into an actionable error without leaking secrets', async () => {
+    const { manifestPath } = appRepoManifest();
+    const fake = createFakeApi();
+    fake.failNextCreateDestination('myapp_ops', fake.apiError(409, 'destination already exists'));
+    const deps = buildDeps(fake, { env: APP_ENV });
+
+    const out = await captureOutput(() =>
+      main(['apply', '--manifest', manifestPath, '--target', 'app'], deps),
+    );
+    assert.equal(process.exitCode, 1);
+    const stderr = out.stderr.join('\n');
+    assert.ok(
+      stderr.includes('failed: create-destination myapp_ops: 409 destination already exists'),
+    );
+    assert.ok(stderr.includes('does not own'), stderr);
+    assert.ok(!stderr.includes(TEST_APP_KEY));
+    assert.ok(!stderr.includes('wh-secret-value'));
+  });
+
+  it('adds a hint to a 400 SSRF refusal and a 503 URL-check outage', async () => {
+    for (const [status, message, hint] of [
+      [400, 'secrets.webhook_url must resolve to public addresses', 'public addresses'],
+      [503, 'destination url check unavailable', 'retry the deploy'],
+    ]) {
+      const { manifestPath } = appRepoManifest();
+      const fake = createFakeApi();
+      fake.failNextCreateDestination('myapp_ops', fake.apiError(status, message));
+      const deps = buildDeps(fake, { env: APP_ENV });
+      const out = await captureOutput(() =>
+        main(['apply', '--manifest', manifestPath, '--target', 'app'], deps),
+      );
+      assert.equal(process.exitCode, 1);
+      const stderr = out.stderr.join('\n');
+      assert.ok(stderr.includes(`${status} ${message}`), stderr);
+      assert.ok(stderr.includes(hint), stderr);
+      process.exitCode = undefined;
+    }
+  });
+
+  it('reports a rejected key during listing with the status and a mint-a-new-key hint', async () => {
+    const { manifestPath } = appRepoManifest();
+    const deps = buildDeps(createFakeApi(), { env: APP_ENV });
+    deps.createAppScopedApi = () => ({
+      listDestinations: async () => {
+        throw new ApiError({ status: 401, method: 'GET', path: '/x', message: 'invalid app key' });
+      },
+      listRoutes: async () => [],
+      listChecks: async () => [],
+    });
+    await assert.rejects(
+      main(['plan', '--manifest', manifestPath, '--target', 'app'], deps),
+      /401 invalid app key \(.*redeploy to mint a new one\)/,
+    );
+  });
+
+  it('blames the app key only for the delivery-api own 401/403 texts, and stays neutral on a non-JSON refusal', async () => {
+    const { manifestPath } = appRepoManifest();
+    const cases = [
+      [401, 'invalid app key', /redeploy to mint a new one/, /Cloudflare Access/],
+      [401, 'app key required', /redeploy to mint a new one/, /Cloudflare Access/],
+      [403, 'app_id does not match app key', /does not belong to this manifest app_id/, /Access/],
+      [
+        401,
+        'HTTP 401',
+        /app key or the Cloudflare Access token \(ONBOARD_APP_ACCESS_ID\/SECRET\)/,
+        /redeploy to mint/,
+      ],
+      [
+        403,
+        'HTTP 403',
+        /app key or the Cloudflare Access token \(ONBOARD_APP_ACCESS_ID\/SECRET\)/,
+        /does not belong to this manifest/,
+      ],
+    ];
+    for (const [status, message, expected, unexpected] of cases) {
+      const deps = buildDeps(createFakeApi(), { env: APP_ENV });
+      deps.createAppScopedApi = () => ({
+        listDestinations: async () => {
+          throw new ApiError({ status, method: 'GET', path: '/x', message });
+        },
+        listRoutes: async () => [],
+        listChecks: async () => [],
+      });
+      await assert.rejects(
+        main(['plan', '--manifest', manifestPath, '--target', 'app'], deps),
+        (err) => {
+          assert.ok(err.message.startsWith(`${status} ${message} (`), err.message);
+          assert.match(err.message, expected);
+          assert.doesNotMatch(err.message, unexpected);
+          return true;
+        },
+        `${status} ${message}`,
+      );
+    }
+  });
+
+  it('gives a 409 on a DELETE its own hint: still referenced, not a name clash', async () => {
+    const { manifestPath } = appRepoManifest();
+    const fake = createFakeApi();
+    fake.seedDestination({ name: 'myapp_old', type: 'discord', secrets: { webhook_url: 'x' } });
+    const deps = buildDeps(fake, { env: APP_ENV });
+    deps.createAppScopedApi = () => ({
+      ...fake.adminApi,
+      deleteDestination: async (name) => {
+        throw new ApiError({
+          status: 409,
+          method: 'DELETE',
+          path: `/v1/apps/myapp/destinations/${name}`,
+          message: 'destination is in use',
+        });
+      },
+    });
+
+    const out = await captureOutput(() =>
+      main(['apply', '--manifest', manifestPath, '--target', 'app', '--prune'], deps),
+    );
+    assert.equal(process.exitCode, 1);
+    const stderr = out.stderr.join('\n');
+    assert.ok(stderr.includes('failed: delete-destination myapp_old: 409 destination is in use'));
+    assert.ok(stderr.includes('still referenced by a route or check this app cannot see'), stderr);
+    assert.ok(!stderr.includes('rename it in the manifest'), stderr);
+  });
+
+  it('treats a delete of an object that vanished concurrently as already deleted (app target only)', async () => {
+    // The object is removed, then the server answers 404, as a racing deploy would cause.
+    function vanishingApi(fake) {
+      return {
+        ...fake.adminApi,
+        deleteDestination: async (name) => {
+          await fake.adminApi.deleteDestination(name);
+          throw new ApiError({
+            status: 404,
+            method: 'DELETE',
+            path: `/x/destinations/${name}`,
+            message: 'destination not found',
+          });
+        },
+      };
+    }
+
+    const { manifestPath } = appRepoManifest();
+    const fake = createFakeApi();
+    fake.seedDestination({ name: 'myapp_old', type: 'discord', secrets: { webhook_url: 'x' } });
+    const deps = buildDeps(fake, { env: APP_ENV });
+    deps.createAppScopedApi = () => vanishingApi(fake);
+    const out = await captureOutput(() =>
+      main(['apply', '--manifest', manifestPath, '--target', 'app', '--prune'], deps),
+    );
+    assert.equal(process.exitCode, undefined, out.stderr.join('\n'));
+    assert.ok(
+      out.stderr.some((line) => line.includes('delete-destination myapp_old: already deleted')),
+      out.stderr.join('\n'),
+    );
+    assert.ok(!out.stderr.some((line) => line.includes('failed:')), out.stderr.join('\n'));
+
+    // Operator mode keeps failing the apply on the same 404.
+    const operatorDir = tmpDir();
+    writeManifest(operatorDir, 'myapp.json', appManifest());
+    const operatorFake = createFakeApi();
+    operatorFake.seedDestination({
+      name: 'myapp_old',
+      type: 'discord',
+      secrets: { webhook_url: 'x' },
+    });
+    const operatorDeps = buildDeps(operatorFake, { env: APP_ENV });
+    operatorDeps.createAdminApi = () => vanishingApi(operatorFake);
+    const operatorOut = await captureOutput(() =>
+      main(['apply', path.join(operatorDir, 'myapp.json'), '--prune'], operatorDeps),
+    );
+    assert.equal(process.exitCode, 1);
+    assert.ok(
+      operatorOut.stderr.some((line) => line.includes('failed: delete-destination myapp_old: 404')),
+      operatorOut.stderr.join('\n'),
+    );
+  });
+
+  it('surfaces a null manifest file as the friendly invalid-manifest error, not a TypeError', async () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'notifs.json'), 'null');
+    const deps = buildDeps(createFakeApi(), { env: APP_ENV });
+    for (const command of ['plan', 'apply']) {
+      await assert.rejects(
+        main([command, '--manifest', path.join(dir, 'notifs.json'), '--target', 'app'], deps),
+        /invalid manifest: \(root\): manifest must be a JSON object/,
+        command,
+      );
+    }
+    assert.equal(deps.createHttpCalls.length, 0);
+  });
+
+  it('rejects a malformed ONBOARD_APP_KEY before any target is resolved or request made, without echoing it', async () => {
+    const { manifestPath } = appRepoManifest();
+    const secretPart = 'SECRETPARTOFKEY';
+    const badKeys = [
+      `dak_${secretPart}\nabcdefghijklmnopqrstuvwxyzabcdefghij`,
+      `dak_${secretPart}`,
+      `dak_${'0'.repeat(42)}`,
+      `dak_${'0'.repeat(44)}`,
+      `xyz_${'0'.repeat(43)}`,
+      `dak_${'0'.repeat(42)}!`,
+    ];
+    for (const command of ['plan', 'apply', 'verify']) {
+      for (const badKey of badKeys) {
+        const fake = createFakeApi();
+        const deps = buildDeps(fake, { env: { ...APP_ENV, ONBOARD_APP_KEY: badKey } });
+        await assert.rejects(
+          main([command, '--manifest', manifestPath, '--target', 'app'], deps),
+          (err) => {
+            assert.match(err.message, /ONBOARD_APP_KEY is not a valid app delivery key/);
+            assert.ok(!err.message.includes(badKey.trim()), err.message);
+            assert.ok(!err.message.includes(secretPart), err.message);
+            return true;
+          },
+          `${command} ${JSON.stringify(badKey)}`,
+        );
+        assert.equal(deps.resolveTargetCalls.length, 0, command);
+        assert.equal(deps.createHttpCalls.length, 0, command);
+        assert.equal(deps.createAppScopedApiCalls.length, 0, command);
+        assert.equal(fake.calls.length, 0, command);
+      }
+    }
+  });
+
+  it('fails closed on an unknown target passed to runPlan/runApply/runVerify, and keeps an unset one operator', async () => {
+    const dir = tmpDir();
+    writeManifest(dir, 'myapp.json', appManifest());
+    const manifestPath = path.join(dir, 'myapp.json');
+    const manifest = appManifest();
+
+    for (const run of [runPlan, runApply, runVerify]) {
+      for (const target of ['bogus', '', null, 'APP', 'admin']) {
+        const fake = createFakeApi();
+        const deps = buildDeps(fake, { env: APP_ENV });
+        await assert.rejects(
+          run({ manifest, manifestPath, options: { target }, deps }),
+          /unknown onboard target/,
+          `${run.name} ${String(target)}`,
+        );
+        assert.equal(deps.resolveTargetCalls.length, 0);
+        assert.equal(deps.createHttpCalls.length, 0);
+        assert.equal(fake.calls.length, 0);
+      }
+    }
+
+    // `undefined` is the existing direct-caller default and still means the operator target.
+    const fake = createFakeApi();
+    const deps = buildDeps(fake, { env: APP_ENV });
+    await captureOutput(() => runPlan({ manifest, manifestPath, options: {}, deps }));
+    assert.ok(fake.calls.some((c) => c.method === 'listDestinations'));
+    assert.equal(deps.createAppScopedApiCalls.length, 0);
+  });
+
+  it('leaves operator-mode error text exactly as before', async () => {
+    const dir = tmpDir();
+    writeManifest(dir, 'myapp.json', appManifest());
+    const fake = createFakeApi();
+    fake.failNextCreateDestination('myapp_ops', fake.apiError(409, 'destination already exists'));
+    const deps = buildDeps(fake, { env: APP_ENV });
+    const out = await captureOutput(() => main(['apply', path.join(dir, 'myapp.json')], deps));
+    assert.equal(process.exitCode, 1);
+    assert.ok(
+      out.stderr
+        .join('\n')
+        .includes('failed: create-destination myapp_ops: 409 destination already exists\n'),
+    );
+    assert.equal(deps.createAppScopedApiCalls.length, 0);
+  });
+});
+
+describe('onboard.mjs lint --manifest --target app', () => {
+  function writeSiblingConflict() {
+    const dir = tmpDir();
+    // appc.json is valid and owns appc_ops. appd.json reuses the exact same name by mistake: a
+    // cross-manifest conflict only lintDirectory can see.
+    writeManifest(dir, 'appc.json', {
+      app_id: 'appc',
+      destinations: [{ name: 'appc_ops', type: 'discord', secrets: { webhook_url: { env: 'C' } } }],
+      routes: [{ channel: 'ops', destinations: ['appc_ops'] }],
+    });
+    writeManifest(dir, 'appd.json', {
+      app_id: 'appd',
+      destinations: [{ name: 'appc_ops', type: 'discord', secrets: { webhook_url: { env: 'D' } } }],
+      routes: [{ channel: 'ops', destinations: ['appc_ops'] }],
+    });
+    return dir;
+  }
+
+  it('runs the single-file schema check only: a sibling conflict that fails lint <dir> does not fail it', async () => {
+    const dir = writeSiblingConflict();
+
+    const dirOut = await captureOutput(() => main(['lint', dir]));
+    assert.equal(process.exitCode, 1);
+    assert.ok(dirOut.stdout.some((line) => line.includes('more than one file')));
+
+    process.exitCode = undefined;
+    const fake = createFakeApi();
+    const deps = buildDeps(fake, { env: {} });
+    const out = await captureOutput(() =>
+      main(['lint', '--manifest', path.join(dir, 'appc.json'), '--target', 'app'], deps),
+    );
+    assert.equal(process.exitCode, undefined, out.stdout.join('\n'));
+    assert.deepEqual(out.stdout, ['1 manifest']);
+    assert.equal(deps.resolveTargetCalls.length, 0);
+    assert.equal(deps.createHttpCalls.length, 0);
+    assert.equal(fake.calls.length, 0);
+  });
+
+  it('still fails the manifest itself on a schema error, whatever the file is called', async () => {
+    const { manifestPath } = appRepoManifest({ app_id: 'myapp', bogus: true }, 'anything.json');
+    const out = await captureOutput(() =>
+      main(['lint', '--manifest', manifestPath, '--target', 'app']),
+    );
+    assert.equal(process.exitCode, 1);
+    assert.ok(out.stdout.some((line) => line.startsWith(`${manifestPath}: bogus: unknown key`)));
+  });
+
+  it('accepts a differently named valid manifest, and fails an unreadable or platform one', async () => {
+    const ok = appRepoManifest(appManifest(), 'deploy-notifs.json');
+    await captureOutput(() => main(['lint', '--manifest', ok.manifestPath, '--target', 'app']));
+    assert.equal(process.exitCode, undefined);
+
+    const missing = path.join(tmpDir(), 'absent.json');
+    const missingOut = await captureOutput(() =>
+      main(['lint', '--manifest', missing, '--target', 'app']),
+    );
+    assert.equal(process.exitCode, 1);
+    assert.ok(missingOut.stdout.some((line) => line.includes('unreadable or invalid JSON')));
+
+    process.exitCode = undefined;
+    const platform = appRepoManifest({ platform: true }, '_platform.json');
+    const platformOut = await captureOutput(() =>
+      main(['lint', '--manifest', platform.manifestPath, '--target', 'app']),
+    );
+    assert.equal(process.exitCode, 1);
+    assert.ok(platformOut.stdout.some((line) => line.includes('takes an app manifest')));
   });
 });
 

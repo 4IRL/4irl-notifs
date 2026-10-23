@@ -26,7 +26,7 @@ const validCreateCheckBody = `{"app_id":"urls4irl","name":"nightly_backup","peri
 const sampleCheckJSON = `{"id":7,"app_id":"urls4irl","name":"nightly_backup","period_seconds":86400,"grace_seconds":7200,` +
 	`"paused":false,"state":"up","last_ping_at":"2026-10-16T12:00:00Z","last_ping_kind":"success","down_since":null,` +
 	`"deadline_at":"2026-10-17T14:00:00Z","destinations":[{"name":"ops_discord","type":"discord","enabled":true}],` +
-	`"created_at":"2026-10-14T12:00:00Z","updated_at":"2026-10-16T12:00:00Z"}`
+	`"owner_kind":"operator","owner_app_id":null,"created_at":"2026-10-14T12:00:00Z","updated_at":"2026-10-16T12:00:00Z"}`
 
 // sampleNow is the fixed clock every heartbeat test runs on: a minute after the
 // sample check's last ping.
@@ -179,6 +179,7 @@ func sampleCheck() heartbeat.StoredCheck {
 		LastPingAt:    timePointer(adminTimestamp),
 		LastPingKind:  stringPointer(heartbeat.PingSuccess),
 		Destinations:  []heartbeat.DestinationRef{{Name: "ops_discord", Type: "discord", Enabled: true}},
+		OwnerKind:     registry.OwnerOperator,
 		CreatedAt:     adminTimestamp.Add(-48 * time.Hour),
 		UpdatedAt:     adminTimestamp,
 	}
@@ -188,11 +189,13 @@ func sampleCheck() heartbeat.StoredCheck {
 // sampleNow clock, and returns the recorder.
 func serveHeartbeats(fake Heartbeats, logger *slog.Logger, method, path, body string) *httptest.ResponseRecorder {
 	server := NewServer(ServerConfig{
-		Heartbeats: fake,
-		Logger:     logger,
-		Now:        func() time.Time { return sampleNow },
+		Heartbeats:  fake,
+		AppIdentity: permissiveAppKeys(path, body),
+		Logger:      logger,
+		Now:         func() time.Time { return sampleNow },
 	})
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	authorizeAsApp(request)
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, request)
 	return recorder
@@ -481,10 +484,23 @@ func TestCreatePassesTheDecodedCheckToTheService(testInstance *testing.T) {
 	want := []heartbeat.NewCheck{{
 		AppID: "urls4irl", Name: "nightly_backup", PeriodSeconds: 86400, GraceSeconds: 7200,
 		DestinationNames: []string{"ops_discord", "ops_ntfy"},
+		OwnerKind:        registry.OwnerOperator,
 	}}
 	if !reflect.DeepEqual(fake.createCalls, want) {
 		testInstance.Fatalf("create calls = %+v, want %+v", fake.createCalls, want)
 	}
+}
+
+func TestGetCheckReportsAnAppOwner(testInstance *testing.T) {
+	check := sampleCheck()
+	check.OwnerKind = registry.OwnerApp
+	check.OwnerAppID = stringPointer("urls4irl")
+
+	recorder := serveHeartbeats(&fakeHeartbeats{getResult: check}, nil, http.MethodGet, "/v1/admin/heartbeats/7", "")
+
+	wantJSON := strings.Replace(sampleCheckJSON, `"owner_kind":"operator","owner_app_id":null`,
+		`"owner_kind":"app","owner_app_id":"urls4irl"`, 1)
+	assertResponse(testInstance, recorder, http.StatusOK, `{"check":`+wantJSON+`}`+"\n")
 }
 
 func TestCreateRejectsEachInvalidFieldByName(testInstance *testing.T) {
