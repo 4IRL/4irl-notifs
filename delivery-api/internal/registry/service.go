@@ -80,15 +80,23 @@ type Service struct {
 	logger *slog.Logger
 	// now is the clock behind secret-rotation expiry; tests replace it.
 	now func() time.Time
+	// urlChecker is the registration-time SSRF check for app-supplied destination
+	// URLs (app-scoped writes only). Nil means no checker is configured, and an
+	// app-scoped write that carries a URL then fails closed.
+	urlChecker DestinationURLChecker
 }
 
 // NewService builds a Service over store and sealer. A nil logger defaults to
 // slog.Default().
-func NewService(store Store, sealer *seal.Sealer, logger *slog.Logger) *Service {
+func NewService(store Store, sealer *seal.Sealer, logger *slog.Logger, options ...Option) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{store: store, sealer: sealer, logger: logger, now: time.Now}
+	service := &Service{store: store, sealer: sealer, logger: logger, now: time.Now}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 // CreateDestination validates, seals the secrets and stores a new destination.
@@ -115,6 +123,7 @@ func (service *Service) CreateDestination(ctx context.Context, input Destination
 		Config:        config,
 		SealedSecrets: sealed,
 		Enabled:       input.Enabled == nil || *input.Enabled,
+		OwnerKind:     OwnerOperator,
 	})
 	if storeErr != nil {
 		return DestinationView{}, storeErr
@@ -282,6 +291,7 @@ func (service *Service) CreateRoute(ctx context.Context, input RouteInput) (Rout
 		ChannelPattern:   input.ChannelPattern,
 		DestinationNames: slices.Clone(input.Destinations),
 		Enabled:          input.Enabled == nil || *input.Enabled,
+		OwnerKind:        OwnerOperator,
 	})
 	if storeErr != nil {
 		return RouteView{}, storeErr
@@ -314,40 +324,53 @@ func (service *Service) GetRoute(ctx context.Context, id int64) (RouteView, erro
 // UpdateRoute validates the fields present in patch before the store is called,
 // then applies them atomically. Destinations nil keeps the current set.
 func (service *Service) UpdateRoute(ctx context.Context, id int64, patch RoutePatch) (RouteView, error) {
-	if patch.AppPattern != nil {
-		if err := ValidateAppPattern(*patch.AppPattern); err != nil {
-			return RouteView{}, err
-		}
-	}
-	if patch.ChannelPattern != nil {
-		if err := ValidateChannelPattern(*patch.ChannelPattern); err != nil {
-			return RouteView{}, err
-		}
-	}
-	if patch.Destinations != nil {
-		if err := ValidateRouteDestinations(patch.Destinations); err != nil {
-			return RouteView{}, err
-		}
+	if err := validateRoutePatch(patch); err != nil {
+		return RouteView{}, err
 	}
 	stored, storeErr := service.store.UpdateRoute(ctx, id, func(current StoredRoute) (StoredRoute, error) {
-		if patch.AppPattern != nil {
-			current.AppPattern = *patch.AppPattern
-		}
-		if patch.ChannelPattern != nil {
-			current.ChannelPattern = *patch.ChannelPattern
-		}
-		if patch.Destinations != nil {
-			current.DestinationNames = slices.Clone(patch.Destinations)
-		}
-		if patch.Enabled != nil {
-			current.Enabled = *patch.Enabled
-		}
-		return current, nil
+		return applyRoutePatch(current, patch), nil
 	})
 	if storeErr != nil {
 		return RouteView{}, storeErr
 	}
 	return routeView(stored), nil
+}
+
+// validateRoutePatch validates the fields present in patch.
+func validateRoutePatch(patch RoutePatch) error {
+	if patch.AppPattern != nil {
+		if err := ValidateAppPattern(*patch.AppPattern); err != nil {
+			return err
+		}
+	}
+	if patch.ChannelPattern != nil {
+		if err := ValidateChannelPattern(*patch.ChannelPattern); err != nil {
+			return err
+		}
+	}
+	if patch.Destinations != nil {
+		if err := ValidateRouteDestinations(patch.Destinations); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyRoutePatch returns current with every field patch names replaced; the owner is never touched.
+func applyRoutePatch(current StoredRoute, patch RoutePatch) StoredRoute {
+	if patch.AppPattern != nil {
+		current.AppPattern = *patch.AppPattern
+	}
+	if patch.ChannelPattern != nil {
+		current.ChannelPattern = *patch.ChannelPattern
+	}
+	if patch.Destinations != nil {
+		current.DestinationNames = slices.Clone(patch.Destinations)
+	}
+	if patch.Enabled != nil {
+		current.Enabled = *patch.Enabled
+	}
+	return current
 }
 
 // DeleteRoute removes the route and reports whether it existed.
@@ -356,27 +379,37 @@ func (service *Service) DeleteRoute(ctx context.Context, id int64) (bool, error)
 }
 
 // Resolve returns the destinations an envelope fires, with secrets unsealed.
-// With a destinationName it returns exactly that destination: a missing one is
-// ErrUnknownDestination and a disabled one ErrDestinationDisabled. With an
-// empty destinationName it returns the enabled destinations of every enabled
-// route matching (appID, channel), de-duplicated and ordered by name; no match
-// is an empty non-nil slice. An unseal failure returns an error naming the
-// destination and never the secret. The result carries plaintext secrets and
-// must go to sinks only.
+// Only destinations usable by appID (operator-owned, or owned by appID) are
+// ever returned. With a destinationName it returns exactly that destination: a
+// missing one, or one appID may not use, is ErrUnknownDestination (the two are
+// indistinguishable to the caller) and a disabled one ErrDestinationDisabled.
+// With an empty destinationName it returns the enabled, usable destinations of
+// every enabled route matching (appID, channel), de-duplicated and ordered by
+// name; a matched destination appID may not use is dropped and logged as a
+// warning naming the route ids and the destination. No match is an empty
+// non-nil slice. An unseal failure returns an error naming the destination and
+// never the secret. The result carries plaintext secrets and must go to sinks
+// only.
 func (service *Service) Resolve(
 	ctx context.Context, appID, destinationName, channel string,
 ) ([]ResolvedDestination, error) {
 	if destinationName != "" {
-		return service.resolveNamed(ctx, destinationName)
+		return service.resolveNamed(ctx, appID, destinationName)
 	}
 	routes, routesErr := service.store.ListEnabledRoutes(ctx)
 	if routesErr != nil {
 		return nil, routesErr
 	}
-	destinationIDs := MatchRoutes(routes, appID, channel)
+	matches := MatchRoutes(routes, appID, channel)
 	resolved := []ResolvedDestination{}
-	if len(destinationIDs) == 0 {
+	if len(matches) == 0 {
 		return resolved, nil
+	}
+	destinationIDs := make([]int64, 0, len(matches))
+	routeIDsByDestination := make(map[int64][]int64, len(matches))
+	for _, match := range matches {
+		destinationIDs = append(destinationIDs, match.DestinationID)
+		routeIDsByDestination[match.DestinationID] = match.RouteIDs
 	}
 	stored, storeErr := service.store.GetDestinationsByID(ctx, destinationIDs)
 	if storeErr != nil {
@@ -386,6 +419,15 @@ func (service *Service) Resolve(
 		return strings.Compare(left.Name, right.Name)
 	})
 	for _, destination := range stored {
+		if !destination.UsableBy(appID) {
+			// Write-time validation keeps this from happening; a row that got
+			// here anyway (direct SQL, a bug) is dropped, never delivered.
+			service.logger.WarnContext(ctx, "route destination not usable by the message's app; dropped",
+				"app_id", appID, "route_ids", routeIDsByDestination[destination.ID],
+				"destination", destination.Name,
+				"owner_kind", destination.OwnerKind, "owner_app_id", ownerAppIDForLog(destination.OwnerAppID))
+			continue
+		}
 		if !destination.Enabled {
 			continue
 		}
@@ -398,14 +440,31 @@ func (service *Service) Resolve(
 	return resolved, nil
 }
 
-// resolveNamed resolves the one destination an envelope names explicitly.
-func (service *Service) resolveNamed(ctx context.Context, name string) ([]ResolvedDestination, error) {
+// ownerAppIDForLog renders an owner app id for a log line: the id, or empty
+// when there is none.
+func ownerAppIDForLog(ownerAppID *string) string {
+	if ownerAppID == nil {
+		return ""
+	}
+	return *ownerAppID
+}
+
+// resolveNamed resolves the one destination an envelope names explicitly. A
+// destination appID may not use reads as unknown, whether or not it is
+// disabled, so another app's destination is neither confirmed nor described.
+func (service *Service) resolveNamed(ctx context.Context, appID, name string) ([]ResolvedDestination, error) {
 	stored, storeErr := service.store.GetDestination(ctx, name)
 	if storeErr != nil {
 		if errors.Is(storeErr, ErrDestinationNotFound) {
 			return nil, ErrUnknownDestination
 		}
 		return nil, storeErr
+	}
+	if !stored.UsableBy(appID) {
+		service.logger.WarnContext(ctx, "named destination not usable by the message's app; treated as unknown",
+			"app_id", appID, "destination", name,
+			"owner_kind", stored.OwnerKind, "owner_app_id", ownerAppIDForLog(stored.OwnerAppID))
+		return nil, ErrUnknownDestination
 	}
 	if !stored.Enabled {
 		return nil, ErrDestinationDisabled
@@ -522,6 +581,8 @@ func (service *Service) destinationView(ctx context.Context, stored StoredDestin
 		DisabledReason: stored.DisabledReason,
 		Config:         cloneMap(stored.Config),
 		Secrets:        maskedSecrets,
+		OwnerKind:      stored.OwnerKind,
+		OwnerAppID:     stored.OwnerAppID,
 		CreatedAt:      stored.CreatedAt,
 		UpdatedAt:      stored.UpdatedAt,
 	}
@@ -537,6 +598,8 @@ func routeView(stored StoredRoute) RouteView {
 		ChannelPattern: stored.ChannelPattern,
 		Destinations:   destinations,
 		Enabled:        stored.Enabled,
+		OwnerKind:      stored.OwnerKind,
+		OwnerAppID:     stored.OwnerAppID,
 		CreatedAt:      stored.CreatedAt,
 		UpdatedAt:      stored.UpdatedAt,
 	}

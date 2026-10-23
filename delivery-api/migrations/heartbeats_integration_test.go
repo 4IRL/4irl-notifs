@@ -21,9 +21,9 @@ const (
 VALUES ($1, $2, $3, $4, $5, now(), $6, $7, $8, $9, $10)`
 )
 
-// TestHeartbeatsApplyOverExistingSchema loads the 0005 schema and applies 0006 on
-// top of it; the highest embedded version becomes 6 with no code edit, which is
-// what /readyz reports as expected_schema_version.
+// TestHeartbeatsApplyOverExistingSchema loads the 0005 schema and applies 0006 and
+// every later migration on top of it; the highest embedded version is what
+// /readyz reports as expected_schema_version.
 func TestHeartbeatsApplyOverExistingSchema(testInstance *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), registryTestBudget)
 	defer cancel()
@@ -33,15 +33,17 @@ func TestHeartbeatsApplyOverExistingSchema(testInstance *testing.T) {
 	if loadErr != nil {
 		testInstance.Fatalf("load migrations: %v", loadErr)
 	}
-	if got := migrate.ExpectedVersion(loaded); got != heartbeatsVersion {
-		testInstance.Fatalf("ExpectedVersion = %d, want %d", got, heartbeatsVersion)
+	expected := migrate.ExpectedVersion(loaded)
+	if expected < heartbeatsVersion {
+		testInstance.Fatalf("ExpectedVersion = %d, want at least %d", expected, heartbeatsVersion)
 	}
 	applied, runErr := migrate.Run(ctx, migrate.NewPGStore(pool), loaded, slog.New(slog.DiscardHandler))
 	if runErr != nil {
-		testInstance.Fatalf("apply 0006 over the 0005 schema: %v", runErr)
+		testInstance.Fatalf("apply 0006 and later over the 0005 schema: %v", runErr)
 	}
-	if applied != 1 {
-		testInstance.Fatalf("applied %d migrations over the 0005 schema, want exactly 1 (0006)", applied)
+	// Every migration from 0006 up to the newest is still pending on the 0005 schema.
+	if want := expected - (heartbeatsVersion - 1); applied != want {
+		testInstance.Fatalf("applied %d migrations over the 0005 schema, want %d (0006 through %04d)", applied, want, expected)
 	}
 }
 

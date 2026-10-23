@@ -17,7 +17,7 @@ const (
 	// checkScanTargets scans them.
 	checkColumns = `c.id, c.app_id, c.name, c.period_seconds, c.grace_seconds, c.state, c.paused, c.anchor_at,
 	c.last_ping_at, c.last_ping_kind, c.down_since, c.down_reason, c.alert_seq, c.pending_alert,
-	c.created_at, c.updated_at`
+	c.created_at, c.updated_at, c.owner_kind, c.owner_app_id`
 
 	// checkSelect and checkGroup bracket a WHERE clause: one row per check with
 	// its destination names, types and enabled flags aggregated in name order, so
@@ -61,18 +61,24 @@ func (store *PGStore) Create(ctx context.Context, check NewCheck, now time.Time)
 	now = storeTime(now)
 	var created StoredCheck
 	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		destinationIDs, resolveErr := resolveDestinationIDs(ctx, tx, check.DestinationNames)
+		destinationIDs, resolveErr := resolveDestinationIDs(ctx, tx, check.DestinationNames, check.AppID)
 		if resolveErr != nil {
 			return resolveErr
 		}
 
 		var checkID int64
 		if scanErr := tx.QueryRow(ctx,
-			`INSERT INTO heartbeat_checks (app_id, name, period_seconds, grace_seconds, anchor_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $5, $5) RETURNING id`,
-			check.AppID, check.Name, check.PeriodSeconds, check.GraceSeconds, now).Scan(&checkID); scanErr != nil {
-			if pgutil.ErrorCode(scanErr) == pgutil.SQLStateUniqueViolation {
+			`INSERT INTO heartbeat_checks (app_id, name, period_seconds, grace_seconds, anchor_at, created_at, updated_at, owner_kind, owner_app_id)
+VALUES ($1, $2, $3, $4, $5, $5, $5, $6, $7) RETURNING id`,
+			check.AppID, check.Name, check.PeriodSeconds, check.GraceSeconds, now,
+			ownerKindOrOperator(check.OwnerKind), check.OwnerAppID).Scan(&checkID); scanErr != nil {
+			switch pgutil.ErrorCode(scanErr) {
+			case pgutil.SQLStateUniqueViolation:
 				return ErrCheckExists
+			case pgutil.SQLStateCheckViolation:
+				// A CHECK the database enforces (an app-owned check's app_id must be its owner's id,
+				// say) is a request the client can correct, not a server fault.
+				return registry.CheckViolationError("insert heartbeat check", scanErr)
 			}
 			return pgutil.WrapDBError("insert heartbeat check", scanErr)
 		}
@@ -107,10 +113,32 @@ func (store *PGStore) List(ctx context.Context) ([]StoredCheck, error) {
 // sees the latest committed values and a concurrent Patch waits for
 // this one instead of overwriting fields it never named.
 func (store *PGStore) Patch(ctx context.Context, id int64, patch CheckPatch, now time.Time) (StoredCheck, error) {
+	return store.patch(ctx, id, patch, now, func(tx pgx.Tx) (StoredCheck, error) {
+		return lockCheckByID(ctx, tx, id)
+	})
+}
+
+// PatchOwnedBy implements Store.
+func (store *PGStore) PatchOwnedBy(
+	ctx context.Context, id int64, appID string, patch CheckPatch, now time.Time,
+) (StoredCheck, error) {
+	return store.patch(ctx, id, patch, now, func(tx pgx.Tx) (StoredCheck, error) {
+		return lockOwnedCheckByID(ctx, tx, id, appID)
+	})
+}
+
+// checkLocker row-locks the one check a write is about and returns its stored columns. A check the write
+// may not touch (absent, or not owned by the caller) is ErrCheckNotFound.
+type checkLocker func(tx pgx.Tx) (StoredCheck, error)
+
+// patch is Patch for the check lock locks.
+func (store *PGStore) patch(
+	ctx context.Context, id int64, patch CheckPatch, now time.Time, lock checkLocker,
+) (StoredCheck, error) {
 	now = storeTime(now)
 	var patched StoredCheck
 	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if _, lockErr := lockCheckByID(ctx, tx, id); lockErr != nil {
+		if _, lockErr := lock(tx); lockErr != nil {
 			return lockErr
 		}
 		current, loadErr := queryCheckByID(ctx, tx, id)
@@ -121,7 +149,7 @@ func (store *PGStore) Patch(ctx context.Context, id int64, patch CheckPatch, now
 		if validateErr := ValidateCheckUpdate(update); validateErr != nil {
 			return validateErr
 		}
-		replaced, replaceErr := replaceSchedule(ctx, tx, id, update, now)
+		replaced, replaceErr := replaceSchedule(ctx, tx, current.AppID, id, update, now)
 		if replaceErr != nil {
 			return replaceErr
 		}
@@ -136,8 +164,10 @@ func (store *PGStore) Patch(ctx context.Context, id int64, patch CheckPatch, now
 
 // replaceSchedule writes update's period, grace and destination set to the check
 // the caller already holds locked, and returns the reloaded check.
-func replaceSchedule(ctx context.Context, tx pgx.Tx, id int64, update CheckUpdate, now time.Time) (StoredCheck, error) {
-	destinationIDs, resolveErr := resolveDestinationIDs(ctx, tx, update.DestinationNames)
+func replaceSchedule(
+	ctx context.Context, tx pgx.Tx, appID string, id int64, update CheckUpdate, now time.Time,
+) (StoredCheck, error) {
+	destinationIDs, resolveErr := resolveDestinationIDs(ctx, tx, update.DestinationNames, appID)
 	if resolveErr != nil {
 		return StoredCheck{}, resolveErr
 	}
@@ -165,16 +195,54 @@ func (store *PGStore) Delete(ctx context.Context, id int64) (bool, error) {
 	return tag.RowsAffected() > 0, nil
 }
 
+// DeleteOwnedBy implements Store: the owner is part of the one DELETE statement.
+func (store *PGStore) DeleteOwnedBy(ctx context.Context, id int64, appID string) (bool, error) {
+	tag, execErr := store.pool.Exec(ctx,
+		`DELETE FROM heartbeat_checks WHERE id = $1 AND owner_kind = 'app' AND owner_app_id = $2`, id, appID)
+	if execErr != nil {
+		return false, pgutil.WrapDBError("delete app heartbeat check", execErr)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ListByOwner implements Store.
+func (store *PGStore) ListByOwner(ctx context.Context, appID string) ([]StoredCheck, error) {
+	return queryChecks(ctx, store.pool, "list app heartbeat checks",
+		" WHERE c.owner_kind = 'app' AND c.owner_app_id = $1", orderByName, appID)
+}
+
 // Pause implements Store.
 func (store *PGStore) Pause(ctx context.Context, id int64, now time.Time) (StoredCheck, error) {
 	now = storeTime(now)
-	return store.mutateByID(ctx, id, now, ApplyPause)
+	return store.mutate(ctx, now, func(tx pgx.Tx) (StoredCheck, error) {
+		return lockCheckByID(ctx, tx, id)
+	}, ApplyPause)
+}
+
+// PauseOwnedBy implements Store.
+func (store *PGStore) PauseOwnedBy(ctx context.Context, id int64, appID string, now time.Time) (StoredCheck, error) {
+	now = storeTime(now)
+	return store.mutate(ctx, now, func(tx pgx.Tx) (StoredCheck, error) {
+		return lockOwnedCheckByID(ctx, tx, id, appID)
+	}, ApplyPause)
 }
 
 // Resume implements Store.
 func (store *PGStore) Resume(ctx context.Context, id int64, now time.Time) (StoredCheck, error) {
 	now = storeTime(now)
-	return store.mutateByID(ctx, id, now, func(current StoredCheck) StoredCheck {
+	return store.mutate(ctx, now, func(tx pgx.Tx) (StoredCheck, error) {
+		return lockCheckByID(ctx, tx, id)
+	}, func(current StoredCheck) StoredCheck {
+		return ApplyResume(current, now)
+	})
+}
+
+// ResumeOwnedBy implements Store.
+func (store *PGStore) ResumeOwnedBy(ctx context.Context, id int64, appID string, now time.Time) (StoredCheck, error) {
+	now = storeTime(now)
+	return store.mutate(ctx, now, func(tx pgx.Tx) (StoredCheck, error) {
+		return lockOwnedCheckByID(ctx, tx, id, appID)
+	}, func(current StoredCheck) StoredCheck {
 		return ApplyResume(current, now)
 	})
 }
@@ -262,14 +330,14 @@ func (store *PGStore) ClearPendingAlert(ctx context.Context, id int64, alertSeq 
 	return tag.RowsAffected() > 0, nil
 }
 
-// mutateByID locks the check, applies mutate (a pure state-machine function) and
+// mutate locks the check with lock, applies mutate (a pure state-machine function) and
 // persists the result in one transaction.
-func (store *PGStore) mutateByID(
-	ctx context.Context, id int64, now time.Time, mutate func(StoredCheck) StoredCheck,
+func (store *PGStore) mutate(
+	ctx context.Context, now time.Time, lock checkLocker, mutate func(StoredCheck) StoredCheck,
 ) (StoredCheck, error) {
 	var saved StoredCheck
 	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		current, lockErr := lockCheckByID(ctx, tx, id)
+		current, lockErr := lock(tx)
 		if lockErr != nil {
 			return lockErr
 		}
@@ -304,6 +372,12 @@ WHERE id = $1`,
 // lockCheckByID row-locks the check, or returns ErrCheckNotFound.
 func lockCheckByID(ctx context.Context, tx pgx.Tx, id int64) (StoredCheck, error) {
 	return lockCheck(ctx, tx, `c.id = $1`, id)
+}
+
+// lockOwnedCheckByID row-locks the check only when the app appID owns it, so the owner is checked on the
+// locked row itself. Any other check, or an absent one, is ErrCheckNotFound.
+func lockOwnedCheckByID(ctx context.Context, tx pgx.Tx, id int64, appID string) (StoredCheck, error) {
+	return lockCheck(ctx, tx, `c.id = $1 AND c.owner_kind = 'app' AND c.owner_app_id = $2`, id, appID)
 }
 
 // lockCheck row-locks the one check matching where (FOR UPDATE) and returns its
@@ -351,8 +425,13 @@ func lockChecks(ctx context.Context, tx pgx.Tx, where string, args ...any) ([]St
 // resolveDestinationIDs maps destination names to ids, share-locking the rows so
 // a concurrent delete cannot slip in before the link rows are written. A name
 // with no row (a count mismatch against the distinct names) returns
-// registry.ErrUnknownDestination.
-func resolveDestinationIDs(ctx context.Context, tx pgx.Tx, names []string) ([]int64, error) {
+// registry.ErrUnknownDestination, and so does a destination the check's appID may
+// not use (see registry.DestinationUsableBy): the caller cannot tell an absent
+// destination from another app's. The SELECT only matches operator-owned rows
+// and rows owned by appID, so a foreign destination is simply not found (a count
+// mismatch) and is never share-locked; registry.DestinationUsableBy stays the
+// authoritative check on the returned rows.
+func resolveDestinationIDs(ctx context.Context, tx pgx.Tx, names []string, appID string) ([]int64, error) {
 	distinctNames := pgutil.Distinct(names)
 	// Fail closed even if the caller skipped ValidateDestinations: a check with no
 	// destinations would go down without ever alerting anywhere.
@@ -360,24 +439,32 @@ func resolveDestinationIDs(ctx context.Context, tx pgx.Tx, names []string) ([]in
 		return nil, &ValidationError{Message: "invalid destinations"}
 	}
 	rows, queryErr := tx.Query(ctx,
-		`SELECT id FROM destinations WHERE name = ANY($1) ORDER BY id FOR SHARE`, distinctNames)
+		`SELECT id, owner_kind, owner_app_id FROM destinations
+WHERE name = ANY($1) AND (owner_kind = 'operator' OR owner_app_id = $2) ORDER BY id FOR SHARE`,
+		distinctNames, appID)
 	if queryErr != nil {
 		return nil, pgutil.WrapDBError("resolve destinations", queryErr)
 	}
 	defer rows.Close()
 
 	destinationIDs := make([]int64, 0, len(distinctNames))
+	unusable := false
 	for rows.Next() {
 		var destinationID int64
-		if scanErr := rows.Scan(&destinationID); scanErr != nil {
+		var ownerKind string
+		var ownerAppID *string
+		if scanErr := rows.Scan(&destinationID, &ownerKind, &ownerAppID); scanErr != nil {
 			return nil, pgutil.WrapDBError("resolve destinations", scanErr)
+		}
+		if !registry.DestinationUsableBy(ownerKind, ownerAppID, appID) {
+			unusable = true
 		}
 		destinationIDs = append(destinationIDs, destinationID)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		return nil, pgutil.WrapDBError("resolve destinations", rowsErr)
 	}
-	if len(destinationIDs) != len(distinctNames) {
+	if unusable || len(destinationIDs) != len(distinctNames) {
 		return nil, registry.ErrUnknownDestination
 	}
 	return destinationIDs, nil
@@ -436,8 +523,17 @@ func checkScanTargets(check *StoredCheck) []any {
 		&check.ID, &check.AppID, &check.Name, &check.PeriodSeconds, &check.GraceSeconds,
 		&check.State, &check.Paused, &check.AnchorAt, &check.LastPingAt, &check.LastPingKind,
 		&check.DownSince, &check.DownReason, &check.AlertSeq, &check.PendingAlert,
-		&check.CreatedAt, &check.UpdatedAt,
+		&check.CreatedAt, &check.UpdatedAt, &check.OwnerKind, &check.OwnerAppID,
 	}
+}
+
+// ownerKindOrOperator maps an unset owner kind to the operator, so a caller that
+// never names an owner (every admin create) writes an operator-owned row.
+func ownerKindOrOperator(ownerKind string) string {
+	if ownerKind == "" {
+		return registry.OwnerOperator
+	}
+	return ownerKind
 }
 
 // scanCheck reads one row selected with checkSelect.

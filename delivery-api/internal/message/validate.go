@@ -12,13 +12,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/appid"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
-
-// appIDPattern matches an app_id: the same rule as provisioning-api and the
-// registry, and the SQL CHECK on messages.app_id.
-var appIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,62}$`)
 
 // channelPattern matches an exact channel: lowercase letters, digits and
 // underscores, 1-32 characters.
@@ -81,10 +78,11 @@ func ValidateEnvelope(envelope Envelope) error {
 	return ValidateDisplay(envelope.Display)
 }
 
-// ValidateAppID checks an app_id against the slug rule.
+// ValidateAppID checks an app_id against the shared slug rule (package appid), which is also
+// the SQL CHECK on messages.app_id.
 func ValidateAppID(appID string) error {
-	if !appIDPattern.MatchString(appID) {
-		return &ValidationError{Message: "invalid app_id"}
+	if validateErr := appid.ValidateAppID(appID); validateErr != nil {
+		return &ValidationError{Message: validateErr.Error()}
 	}
 	return nil
 }

@@ -45,7 +45,7 @@ func TestMatchRoutes(t *testing.T) {
 		routes  []StoredRoute
 		appID   string
 		channel string
-		want    []int64
+		want    []DestinationMatch
 	}{
 		{
 			name: "exact route",
@@ -53,17 +53,22 @@ func TestMatchRoutes(t *testing.T) {
 				{ID: 1, AppPattern: "u4i", ChannelPattern: "backup_done", DestinationIDs: []int64{10}, Enabled: true},
 			},
 			appID: "u4i", channel: "backup_done",
-			want: []int64{10},
+			want: []DestinationMatch{{DestinationID: 10, RouteIDs: []int64{1}}},
 		},
 		{
-			name: "overlapping routes union and dedupe ascending",
+			name: "overlapping routes union and dedupe ascending, keeping every matching route id",
 			routes: []StoredRoute{
 				{ID: 1, AppPattern: "u4i", ChannelPattern: "*", DestinationIDs: []int64{30, 10}, Enabled: true},
 				{ID: 2, AppPattern: "*", ChannelPattern: "backup_*", DestinationIDs: []int64{20, 10}, Enabled: true},
 				{ID: 3, AppPattern: "u4i", ChannelPattern: "backup_done", DestinationIDs: []int64{10, 5}, Enabled: true},
 			},
 			appID: "u4i", channel: "backup_done",
-			want: []int64{5, 10, 20, 30},
+			want: []DestinationMatch{
+				{DestinationID: 5, RouteIDs: []int64{3}},
+				{DestinationID: 10, RouteIDs: []int64{1, 2, 3}},
+				{DestinationID: 20, RouteIDs: []int64{2}},
+				{DestinationID: 30, RouteIDs: []int64{1}},
+			},
 		},
 		{
 			name: "disabled routes ignored",
@@ -72,7 +77,7 @@ func TestMatchRoutes(t *testing.T) {
 				{ID: 2, AppPattern: "*", ChannelPattern: "*", DestinationIDs: []int64{2}, Enabled: true},
 			},
 			appID: "a", channel: "b",
-			want: []int64{2},
+			want: []DestinationMatch{{DestinationID: 2, RouteIDs: []int64{2}}},
 		},
 		{
 			name: "star star matches everything",
@@ -80,15 +85,15 @@ func TestMatchRoutes(t *testing.T) {
 				{ID: 1, AppPattern: "*", ChannelPattern: "*", DestinationIDs: []int64{7}, Enabled: true},
 			},
 			appID: "anything", channel: "whatever",
-			want: []int64{7},
+			want: []DestinationMatch{{DestinationID: 7, RouteIDs: []int64{1}}},
 		},
 		{
-			name: "duplicate id inside one route",
+			name: "duplicate id inside one route lists the route once",
 			routes: []StoredRoute{
 				{ID: 1, AppPattern: "*", ChannelPattern: "*", DestinationIDs: []int64{1, 1}, Enabled: true},
 			},
 			appID: "a", channel: "b",
-			want: []int64{1},
+			want: []DestinationMatch{{DestinationID: 1, RouteIDs: []int64{1}}},
 		},
 		{
 			name: "only a disabled route matches",
@@ -96,7 +101,7 @@ func TestMatchRoutes(t *testing.T) {
 				{ID: 1, AppPattern: "*", ChannelPattern: "*", DestinationIDs: []int64{1}, Enabled: false},
 			},
 			appID: "a", channel: "b",
-			want: []int64{},
+			want: []DestinationMatch{},
 		},
 		{
 			name: "app mismatch",
@@ -104,7 +109,7 @@ func TestMatchRoutes(t *testing.T) {
 				{ID: 1, AppPattern: "other", ChannelPattern: "*", DestinationIDs: []int64{1}, Enabled: true},
 			},
 			appID: "u4i", channel: "x",
-			want: []int64{},
+			want: []DestinationMatch{},
 		},
 		{
 			name: "channel mismatch",
@@ -112,13 +117,13 @@ func TestMatchRoutes(t *testing.T) {
 				{ID: 1, AppPattern: "*", ChannelPattern: "backup_*", DestinationIDs: []int64{1}, Enabled: true},
 			},
 			appID: "u4i", channel: "restore_done",
-			want: []int64{},
+			want: []DestinationMatch{},
 		},
 		{
 			name:   "nil routes",
 			routes: nil,
 			appID:  "u4i", channel: "x",
-			want: []int64{},
+			want: []DestinationMatch{},
 		},
 		{
 			name: "route without destinations",
@@ -126,7 +131,7 @@ func TestMatchRoutes(t *testing.T) {
 				{ID: 1, AppPattern: "*", ChannelPattern: "*", DestinationIDs: nil, Enabled: true},
 			},
 			appID: "u4i", channel: "x",
-			want: []int64{},
+			want: []DestinationMatch{},
 		},
 	}
 	for _, test := range tests {
@@ -149,5 +154,46 @@ func TestMatchRoutesDoesNotMutateInput(t *testing.T) {
 	MatchRoutes(routes, "a", "b")
 	if !reflect.DeepEqual(routes[0].DestinationIDs, []int64{3, 1, 2}) {
 		t.Fatalf("input DestinationIDs mutated: %v", routes[0].DestinationIDs)
+	}
+}
+
+func TestDestinationUsableBy(t *testing.T) {
+	owner := "urls4irl"
+	emptyOwner := ""
+	tests := []struct {
+		name       string
+		ownerKind  string
+		ownerAppID *string
+		appID      string
+		want       bool
+	}{
+		{"operator owned is usable by any app", OwnerOperator, nil, "urls4irl", true},
+		{"operator owned is usable by another app", OwnerOperator, nil, "chores4irl", true},
+		{"operator owned is usable by the wildcard pattern", OwnerOperator, nil, "*", true},
+		{"app owned is usable by its owner", OwnerApp, &owner, "urls4irl", true},
+		{"app owned is not usable by another app", OwnerApp, &owner, "chores4irl", false},
+		{"app owned is not usable by a prefix of the owner", OwnerApp, &owner, "urls4", false},
+		{"app owned is not usable by a wildcard pattern", OwnerApp, &owner, "*", false},
+		{"app owned is not usable by a prefix wildcard pattern", OwnerApp, &owner, "urls4irl*", false},
+		{"app owned is not usable by an empty app id", OwnerApp, &owner, "", false},
+		{"app owned without an owner id is never usable", OwnerApp, nil, "urls4irl", false},
+		{"app owned with an empty owner id is never usable", OwnerApp, &emptyOwner, "", false},
+		{"operator owned carrying an owner id fails closed", OwnerOperator, &owner, "urls4irl", false},
+		{"operator owned carrying an owner id fails closed for another app", OwnerOperator, &owner, "chores4irl", false},
+		{"empty owner kind fails closed", "", nil, "urls4irl", false},
+		{"unknown owner kind fails closed", "person", nil, "urls4irl", false},
+		{"unknown owner kind with an owner id fails closed", "person", &owner, "urls4irl", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := DestinationUsableBy(test.ownerKind, test.ownerAppID, test.appID); got != test.want {
+				t.Fatalf("DestinationUsableBy(%q, %v, %q) = %v, want %v",
+					test.ownerKind, test.ownerAppID, test.appID, got, test.want)
+			}
+			destination := StoredDestination{OwnerKind: test.ownerKind, OwnerAppID: test.ownerAppID}
+			if got := destination.UsableBy(test.appID); got != test.want {
+				t.Fatalf("StoredDestination.UsableBy(%q) = %v, want %v", test.appID, got, test.want)
+			}
+		})
 	}
 }

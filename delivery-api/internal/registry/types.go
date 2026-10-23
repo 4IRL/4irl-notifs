@@ -21,6 +21,15 @@ const (
 	TypeWebhook = "webhook"
 )
 
+// Owner kinds: who manages a destination, route or heartbeat check. An
+// app-owned object carries the owning app id beside the kind.
+const (
+	// OwnerOperator is an object managed by the operator (the admin API).
+	OwnerOperator = "operator"
+	// OwnerApp is an object managed by exactly one app (its OwnerAppID).
+	OwnerApp = "app"
+)
+
 // RecipientDestinationName is the synthetic destination_name of a to.recipient
 // delivery; '@' is outside destinationNamePattern, so no operator destination
 // can collide with it.
@@ -52,6 +61,14 @@ var (
 	// rather than in the publisher package so dispatch and message can match it
 	// without importing publisher.
 	ErrNoPublisher = errors.New("app has no ntfy publisher")
+	// ErrCheckViolation means the database refused a write on a CHECK constraint
+	// (SQLSTATE 23514), for example an app-owned route whose app_pattern is not its
+	// owner's id. It is a client-correctable conflict, not a server fault.
+	ErrCheckViolation = errors.New("request violates a data constraint")
+	// ErrURLCheckUnavailable means an app-supplied destination URL had to be
+	// checked at registration time but no checker is configured. It fails closed:
+	// nothing is written.
+	ErrURLCheckUnavailable = errors.New("destination url check unavailable")
 )
 
 // ValidationError reports a request field that failed validation. Message is
@@ -74,8 +91,12 @@ type StoredDestination struct {
 	SealedSecrets  []byte `json:"-"`
 	Enabled        bool
 	DisabledReason *string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// OwnerKind is OwnerOperator or OwnerApp; an empty value is stored as
+	// OwnerOperator. OwnerAppID is set exactly when OwnerKind is OwnerApp.
+	OwnerKind  string
+	OwnerAppID *string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // StoredRoute is a route as persisted, with its destination ids and names
@@ -87,8 +108,12 @@ type StoredRoute struct {
 	DestinationIDs   []int64
 	DestinationNames []string
 	Enabled          bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// OwnerKind is OwnerOperator or OwnerApp; an empty value is stored as
+	// OwnerOperator. OwnerAppID is set exactly when OwnerKind is OwnerApp.
+	OwnerKind  string
+	OwnerAppID *string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // DestinationView is the public representation of a destination. Secrets are
@@ -100,6 +125,8 @@ type DestinationView struct {
 	DisabledReason *string           `json:"disabled_reason"`
 	Config         map[string]string `json:"config"`
 	Secrets        map[string]string `json:"secrets"`
+	OwnerKind      string            `json:"owner_kind"`
+	OwnerAppID     *string           `json:"owner_app_id"`
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`
 }
@@ -111,6 +138,8 @@ type RouteView struct {
 	ChannelPattern string    `json:"channel_pattern"`
 	Destinations   []string  `json:"destinations"`
 	Enabled        bool      `json:"enabled"`
+	OwnerKind      string    `json:"owner_kind"`
+	OwnerAppID     *string   `json:"owner_app_id"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }

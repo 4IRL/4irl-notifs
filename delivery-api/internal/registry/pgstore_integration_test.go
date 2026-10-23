@@ -105,6 +105,54 @@ func TestInsertAndGetDestination(testInstance *testing.T) {
 	}
 }
 
+func TestOwnerDefaultsToOperatorAndAppOwnerRoundTrips(testInstance *testing.T) {
+	ctx, store, _ := newTestStore(testInstance)
+
+	operatorOwned := mustInsertDestination(ctx, testInstance, store, "ops_ntfy")
+	if operatorOwned.OwnerKind != registry.OwnerOperator || operatorOwned.OwnerAppID != nil {
+		testInstance.Fatalf("default destination owner = %q/%v, want operator/nil", operatorOwned.OwnerKind, operatorOwned.OwnerAppID)
+	}
+
+	ownerApp := "urls4irl"
+	appDestination := sampleDestination("urls4irl_alerts")
+	appDestination.OwnerKind = registry.OwnerApp
+	appDestination.OwnerAppID = &ownerApp
+	if _, err := store.InsertDestination(ctx, appDestination); err != nil {
+		testInstance.Fatalf("insert app-owned destination: %v", err)
+	}
+	gotDestination, err := store.GetDestination(ctx, "urls4irl_alerts")
+	if err != nil {
+		testInstance.Fatalf("get app-owned destination: %v", err)
+	}
+	if gotDestination.OwnerKind != registry.OwnerApp || gotDestination.OwnerAppID == nil || *gotDestination.OwnerAppID != ownerApp {
+		testInstance.Fatalf("app-owned destination owner = %q/%v, want app/%s", gotDestination.OwnerKind, gotDestination.OwnerAppID, ownerApp)
+	}
+
+	operatorRoute := mustInsertRoute(ctx, testInstance, store, "*", "*", []string{"ops_ntfy"})
+	if operatorRoute.OwnerKind != registry.OwnerOperator || operatorRoute.OwnerAppID != nil {
+		testInstance.Fatalf("default route owner = %q/%v, want operator/nil", operatorRoute.OwnerKind, operatorRoute.OwnerAppID)
+	}
+	appRoute, routeErr := store.InsertRoute(ctx, registry.StoredRoute{
+		AppPattern:       ownerApp,
+		ChannelPattern:   "*",
+		DestinationNames: []string{"urls4irl_alerts"},
+		Enabled:          true,
+		OwnerKind:        registry.OwnerApp,
+		OwnerAppID:       &ownerApp,
+	})
+	if routeErr != nil {
+		testInstance.Fatalf("insert app-owned route: %v", routeErr)
+	}
+	if appRoute.OwnerKind != registry.OwnerApp || appRoute.OwnerAppID == nil || *appRoute.OwnerAppID != ownerApp {
+		testInstance.Fatalf("app-owned route owner = %q/%v, want app/%s", appRoute.OwnerKind, appRoute.OwnerAppID, ownerApp)
+	}
+
+	listed, listErr := store.ListRoutes(ctx)
+	if listErr != nil || len(listed) != 2 || listed[1].OwnerKind != registry.OwnerApp {
+		testInstance.Fatalf("ListRoutes = (%+v, %v), want both routes with the app-owned one second", listed, listErr)
+	}
+}
+
 func TestInsertDestinationWithNilConfigRoundTripsAsEmptyMap(testInstance *testing.T) {
 	ctx, store, _ := newTestStore(testInstance)
 
