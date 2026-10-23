@@ -161,6 +161,11 @@ basename, not `4irl-notifs-<slug>`) and the default ports 8090/8091, and `worktr
 it up. Passing `--env-file .worktree.env` does carry `COMPOSE_PROJECT_NAME` and the ports, but keep the
 make-only rule so there is one supported path.
 
+`make local-up` first runs `make dev-oidc-keys`, which generates the throwaway dev/CI OIDC signing key
+pair under `.local/dev-oidc/` (per worktree, gitignored via `/.local/`) that `delivery-api` bind-mounts
+as `jwks.json`. A raw `docker compose up` without `make dev-oidc-keys` having run in that checkout
+fails at startup, because the bind mount sets `create_host_path: false`.
+
 ## Remove
 
 Run inside the worktree:

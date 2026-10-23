@@ -33,6 +33,9 @@ dist/
 .worktree.env
 /.dev/
 
+# Throwaway dev/CI OIDC signing key pair (scripts/dev-oidc-keys.mjs); never committed
+/.local/
+
 # Personal local overrides (sandbox exclusions, per-machine permission tweaks)
 .claude/settings.local.json
 

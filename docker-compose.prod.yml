@@ -193,6 +193,10 @@ services:
       # ("scheduled message capacity reached"). The default must equal the code default
       # (message.DefaultMaxScheduledTotal). LOCKSTEP: keep in sync with docker-compose.yml.
       - DELIVERY_MAX_SCHEDULED_TOTAL=${DELIVERY_MAX_SCHEDULED_TOTAL:-100000}
+      # The audience a GitHub Actions OIDC token must be minted for (app identity exchange). The
+      # default must equal the code default (appidentity.DefaultAudience). LOCKSTEP: keep in sync
+      # with docker-compose.yml. Tokens are always verified against GitHub's published signing keys.
+      - DELIVERY_OIDC_AUDIENCE=${DELIVERY_OIDC_AUDIENCE:-notifs-delivery}
     secrets:
       - DELIVERY_DB_PASSWORD
       - DELIVERY_MASTER_KEY

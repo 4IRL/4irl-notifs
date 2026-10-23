@@ -13,3 +13,4 @@ delivery-api/bin/
 .claude/
 .worktree.env
 .dev/
+.local/

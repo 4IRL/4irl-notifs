@@ -27,6 +27,11 @@ jobs:
             provisioning-api/go.sum
             delivery-api/go.sum
 
+      # The local stack trusts a throwaway JWKS (dev mode) instead of GitHub's keys; it is generated
+      # fresh each run, gitignored, and also what the integration harness signs test tokens with.
+      - name: Generate dev OIDC keys
+        run: make dev-oidc-keys
+
       - name: Start local stack
         env:
           # A cap of 2 lets the live per-app 429 test run (it skips on a larger cap). Keep in sync

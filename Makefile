@@ -1,5 +1,5 @@
-.PHONY: help lint test local-up local-down local-logs dev-web dev-web-bg dev-web-stop notif-smoke-test \
-	go-test go-integration-test go-lint go-fmt \
+.PHONY: help lint test local-up local-down local-logs dev-oidc-keys dev-web dev-web-bg dev-web-stop notif-smoke-test \
+	go-test go-test-race go-integration-test go-lint go-fmt \
 	delivery-test delivery-integration-test delivery-lint delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	setup-web-dev setup-web-test setup-web-e2e setup-web-build setup-web-lint setup-web-format setup-web-pages-dev \
@@ -75,10 +75,15 @@ worktree-new: ## Create a worktree: make worktree-new name=<slug> [b=<branch>] [
 worktree-rm: ## Remove this worktree (run inside it)
 	@node scripts/worktree.mjs rm
 
-## Local stack (ntfy + provisioning-api + delivery-api + Postgres)
+## Local stack (ntfy + person-service + provisioning-api + delivery-api + Postgres)
 
-local-up: ## Bring up the local ntfy + person-service + provisioning-api + delivery-api (+ Postgres, migrate) stack
+# dev-oidc-keys first: docker-compose.yml bind-mounts .local/dev-oidc/jwks.json into delivery-api, and
+# a missing mount source would be created as an empty directory instead of failing.
+local-up: dev-oidc-keys ## Bring up the local ntfy + person-service + provisioning-api + delivery-api (+ Postgres, migrate) stack
 	$(COMPOSE) up -d --build
+
+dev-oidc-keys: ## Generate the throwaway dev/CI OIDC signing key pair under .local/dev-oidc/ (gitignored; idempotent)
+	node scripts/dev-oidc-keys.mjs
 
 local-down: ## Tear down the local stack
 	$(COMPOSE) down
@@ -199,16 +204,22 @@ delivery-fmt: ## Apply delivery-api Go formatting
 
 # Pinned exactly; `go run` fetches the module on first use, so it stays out of both go.mod files.
 # actionlint also runs shellcheck on each `run:` block when shellcheck is on PATH.
-workflows-lint: ## Lint GitHub Actions workflow YAML with actionlint
-	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 ./.github/workflows/*.yml
+# actionlint only understands workflow files (given an action.yml it just reports a missing "jobs"
+# section), so composite actions under .github/actions/ are linted through generated one-job wrapper
+# workflows in the gitignored .local/action-lint/ (see scripts/composite-action-lint.mjs). The node
+# script prints the wrapper paths it wrote (none when there is no composite action) and runs first;
+# its non-zero exit (a malformed action, a run step without shell:) fails the target before actionlint.
+workflows-lint: ## Lint GitHub Actions workflows and composite actions with actionlint
+	@wrappers=$$(node scripts/composite-action-lint.mjs) || exit 1; \
+	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 ./.github/workflows/*.yml $$wrappers
 
 ## Web (admin UI)
 
 web-test: ## Run frontend unit tests (Vitest)
 	cd web && npm test
 
-web-e2e: ## Run frontend e2e tests (Playwright)
-	cd web && npx playwright test
+web-e2e: ## Run frontend e2e tests (Playwright); E2E_ARGS=... passes extra args
+	cd web && npx playwright test $(E2E_ARGS)
 
 web-build: ## Production build (tsc -b + Vite)
 	cd web && npm run build
