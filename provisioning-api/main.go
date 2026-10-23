@@ -90,11 +90,12 @@ func main() {
 	logger.Info("ntfy publisher", "configured", publisher.Configured(), "url", ntfyPublishURL)
 
 	service := provisioning.NewService(provisioning.ServiceConfig{
-		Client:           ntfyClient,
-		GeneratePassword: provisioning.GenerateRandomPassword,
-		PersonClient:     personClient,
-		Publisher:        publisher,
-		Logger:           logger,
+		Client:                     ntfyClient,
+		GeneratePassword:           provisioning.GenerateRandomPassword,
+		GenerateSubscriberPassword: provisioning.GenerateSubscriberPassword,
+		PersonClient:               personClient,
+		Publisher:                  publisher,
+		Logger:                     logger,
 	})
 	server := httpapi.NewServer(httpapi.ServerConfig{Service: service, Logger: logger})
 

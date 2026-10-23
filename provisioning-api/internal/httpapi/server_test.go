@@ -50,6 +50,16 @@ type fakeProvisioningService struct {
 	setPasswordResult provisioning.SetPasswordResult
 	setPasswordErr    error
 	setPasswordCalls  []provisioning.SetPasswordRequest
+
+	resetPasswordResult provisioning.ResetPasswordResult
+	resetPasswordErr    error
+	resetPasswordCalls  []provisioning.ResetPasswordRequest
+}
+
+// ResetPassword records the request and returns the preconfigured result/error.
+func (fake *fakeProvisioningService) ResetPassword(_ context.Context, request provisioning.ResetPasswordRequest) (provisioning.ResetPasswordResult, error) {
+	fake.resetPasswordCalls = append(fake.resetPasswordCalls, request)
+	return fake.resetPasswordResult, fake.resetPasswordErr
 }
 
 // Provision records the request and returns the preconfigured result/error.
