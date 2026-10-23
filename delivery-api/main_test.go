@@ -400,6 +400,134 @@ func TestComposeSetsDeliveryNtfyURL(testInstance *testing.T) {
 	}
 }
 
+// TestRunServeFailsFastOnInvalidOIDCConfig verifies serve refuses to start, before binding its
+// listen address, on an OIDC configuration that could trust a key set production must not: a
+// static JWKS file without the dev flag, an unrecognised dev flag, or an invalid audience; it
+// also refuses an invalid pending-request TTL. The error names the variable and never echoes
+// the value.
+func TestRunServeFailsFastOnInvalidOIDCConfig(testInstance *testing.T) {
+	testCases := []struct {
+		name        string
+		env         map[string]string
+		wantMessage string
+		secret      string
+	}{
+		{
+			name:        "jwks file without the dev flag",
+			env:         map[string]string{"DELIVERY_OIDC_JWKS_FILE": "/secret-looking/jwks.json"},
+			wantMessage: "DELIVERY_OIDC_JWKS_FILE requires DELIVERY_OIDC_DEV_MODE=1",
+			secret:      "/secret-looking/jwks.json",
+		},
+		{
+			name:        "jwks file with the dev flag explicitly off",
+			env:         map[string]string{"DELIVERY_OIDC_JWKS_FILE": "/secret-looking/jwks.json", "DELIVERY_OIDC_DEV_MODE": "0"},
+			wantMessage: "DELIVERY_OIDC_JWKS_FILE requires DELIVERY_OIDC_DEV_MODE=1",
+			secret:      "/secret-looking/jwks.json",
+		},
+		{
+			name:        "unrecognised dev flag",
+			env:         map[string]string{"DELIVERY_OIDC_DEV_MODE": "secret-looking-value"},
+			wantMessage: "DELIVERY_OIDC_DEV_MODE",
+			secret:      "secret-looking-value",
+		},
+		{
+			name:        "invalid audience",
+			env:         map[string]string{"DELIVERY_OIDC_AUDIENCE": "secret looking value"},
+			wantMessage: "DELIVERY_OIDC_AUDIENCE",
+			secret:      "secret looking value",
+		},
+		{
+			name:        "invalid pending request ttl",
+			env:         map[string]string{"DELIVERY_PENDING_IDENTITY_REQUEST_DAYS": "secret-looking-days"},
+			wantMessage: "DELIVERY_PENDING_IDENTITY_REQUEST_DAYS",
+			secret:      "secret-looking-days",
+		},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			setDatabaseEnv(subTest)
+			subTest.Setenv("DELIVERY_MASTER_KEY", strings.Repeat("ab", 32))
+			subTest.Setenv("DELIVERY_MASTER_KEY_FILE", "")
+			subTest.Setenv("DELIVERY_PENDING_IDENTITY_REQUEST_DAYS", "")
+			subTest.Setenv("DELIVERY_OIDC_AUDIENCE", "")
+			subTest.Setenv("DELIVERY_OIDC_JWKS_FILE", "")
+			subTest.Setenv("DELIVERY_OIDC_DEV_MODE", "")
+			for name, value := range testCase.env {
+				subTest.Setenv(name, value)
+			}
+			address := reserveFreeAddress(subTest)
+			subTest.Setenv("LISTEN_ADDRESS", address)
+
+			ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+			defer cancel()
+			err := run(ctx, newTestLogger(), nil)
+
+			if err == nil {
+				subTest.Fatal("run returned nil, want an error")
+			}
+			if !strings.Contains(err.Error(), testCase.wantMessage) {
+				subTest.Fatalf("run error = %q, want it to contain %q", err, testCase.wantMessage)
+			}
+			if strings.Contains(err.Error(), testCase.secret) {
+				subTest.Fatalf("run error = %q, must not contain the value", err)
+			}
+
+			connection, dialErr := net.Dial("tcp", address)
+			if dialErr == nil {
+				_ = connection.Close()
+				subTest.Fatalf("dial %s succeeded, want connection refused (run must not bind before the OIDC check)", address)
+			}
+		})
+	}
+}
+
+// TestProdComposeSetsNeitherOIDCDevVariable pins the production stack to GitHub's real signing
+// keys: the dev-only JWKS file and dev-mode variables must not appear in docker-compose.prod.yml
+// at all (not even in a comment), so no edit can quietly turn them on there.
+func TestProdComposeSetsNeitherOIDCDevVariable(testInstance *testing.T) {
+	contents, readErr := os.ReadFile(filepath.Join("..", "docker-compose.prod.yml"))
+	if readErr != nil {
+		testInstance.Fatalf("read docker-compose.prod.yml: %v", readErr)
+	}
+	for _, variable := range []string{"DELIVERY_OIDC_JWKS_FILE", "DELIVERY_OIDC_DEV_MODE"} {
+		if strings.Contains(string(contents), variable) {
+			testInstance.Errorf("docker-compose.prod.yml mentions %s: the dev-only OIDC variables belong in docker-compose.yml only", variable)
+		}
+	}
+	if strings.Contains(string(contents), "dev-oidc") {
+		testInstance.Error("docker-compose.prod.yml mounts or references dev-oidc material")
+	}
+}
+
+// TestLocalComposeWiresTheDevOIDCKeySet pins the local stack to the throwaway JWKS that
+// scripts/dev-oidc-keys.mjs generates: the dev variables on delivery-api, and the file mounted
+// read-only where DELIVERY_OIDC_JWKS_FILE points.
+func TestLocalComposeWiresTheDevOIDCKeySet(testInstance *testing.T) {
+	contents, readErr := os.ReadFile(filepath.Join("..", "docker-compose.yml"))
+	if readErr != nil {
+		testInstance.Fatalf("read docker-compose.yml: %v", readErr)
+	}
+	// Whole trimmed lines, so a commented-out line does not satisfy the check.
+	lines := map[string]bool{}
+	for _, line := range strings.Split(string(contents), "\n") {
+		lines[strings.TrimSpace(line)] = true
+	}
+	for _, wantLine := range []string{
+		"- DELIVERY_OIDC_DEV_MODE=1",
+		"- DELIVERY_OIDC_JWKS_FILE=/run/dev-oidc/jwks.json",
+		"source: ./.local/dev-oidc/jwks.json",
+		"target: /run/dev-oidc/jwks.json",
+		"read_only: true",
+		// A missing source must fail the up, not become a directory.
+		"create_host_path: false",
+	} {
+		if !lines[wantLine] {
+			testInstance.Errorf("docker-compose.yml has no line %q", wantLine)
+		}
+	}
+}
+
 // TestBackgroundStopCancelsAndWaitsForEveryRunner verifies stop cancels the
 // context every runner shares and returns only after all of them have exited.
 func TestBackgroundStopCancelsAndWaitsForEveryRunner(testInstance *testing.T) {
