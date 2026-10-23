@@ -16,7 +16,7 @@ Guidance for Claude Code when working in this repository.
 - **Bot push script:** `~/code/.claude/scripts/gh-app-push.sh` (central; uses GIT_ASKPASS so the token never lands in argv/URL, authenticates as the shared `gpropersi-claude` App and derives the repo from `origin`)
 - **Bot gh wrapper:** `~/code/.claude/scripts/gh-bot.sh <args>` — the **central, repo-agnostic** wrapper (shared by every sub-repo). Runs any `gh` subcommand as this repo's bot (e.g. `gh-bot.sh pr create ...`, `gh-bot.sh api repos/4IRL/4irl-notifs ...`) with NO `$(...)` on the command line; it generates + injects the token internally, never printed. Invoke by **absolute path** from inside the repo (a relative `.claude/scripts/...` resolves to the sub-repo, not the central copy). Prefer this over inline `GH_TOKEN=$(...) gh ...`. Allowlisted (scoped) for `pr *`, `issue *`, `api graphql`, `api repos/*`, `label list`; `pr merge` is denied (the bot must not auto-merge to `main` — that triggers the deploy pipeline).
 - **Token generator:** `~/code/.claude/scripts/generate-gh-token.sh` — the central generator (shared `gpropersi-claude` App; auto-resolves this repo's installation from its owner). The repo-local `.claude/bot/generate-gh-token.sh` delegate takes precedence over it (central `gh-app-push.sh` / `gh-bot.sh` resolve it first). Only the shared private key `~/.claude/u4i-app.pem` lives outside git.
-- **Container runtime:** `docker compose -p $(COMPOSE_PROJECT_NAME) --project-directory . -f docker-compose.yml` (local stack: ntfy + provisioning-api + `delivery-postgres` + `delivery-migrate` + `delivery-api`; the project name and host ports come from the Makefile, defaulting to `4irl-notifs` / 8090 / 8091 / `DELIVERY_PORT` 8300 and overridden per worktree by `.worktree.env`; in a worktree start the stack only via `make local-up` / `make local-down`)
+- **Container runtime:** `docker compose -p $(COMPOSE_PROJECT_NAME) --project-directory . -f docker-compose.yml` (local stack: ntfy + local-only `person-service` + provisioning-api + `delivery-postgres` + `delivery-migrate` + `delivery-api`; the project name and host ports come from the Makefile, defaulting to `4irl-notifs` / 8090 / 8091 / `DELIVERY_PORT` 8300 and overridden per worktree by `.worktree.env`; in a worktree start the stack only via `make local-up` / `make local-down`)
 - **App URL (Playwright MCP):** `http://127.0.0.1:5173/` by default (Vite dev server; the port is `WEB_PORT` from `.worktree.env` in a worktree, run `make worktree-ports`; prod is Cloudflare Pages behind Cloudflare Access)
 - **Test login:** n/a (admin UI is behind Cloudflare Access Google/GitHub OAuth; per-app callers use Cloudflare Access Service Tokens)
 - **Commands:** (Makefile-first — always prefer `make <target>`; raw command shown for reference)
@@ -76,7 +76,8 @@ full design (problem, decisions, architecture).
 Components:
 - **ntfy** — self-hosted pub/sub notification server (topics, users, ACLs), deployed via Docker.
 - **provisioning-api** — barebones Go service that shells out to the `ntfy` CLI to expose
-  `provision(app_id, email)` / `deprovision(app_id, email-or-ntfy-user-id)` (identity is
+  `provision(app_id, email)` (returns a generated subscriber password once) / `reset-password(app_id, email)` /
+  `deprovision(app_id, email-or-ntfy-user-id)` (identity is
   email-keyed; the ntfy user derives from the email). Callable by the admin UI and by
   individual consuming apps, each authenticated via its own Cloudflare Access Service Token.
 - **delivery-api** — generic delivery service (Go + Postgres, with a one-shot `delivery-migrate`
@@ -111,7 +112,7 @@ shown for reference only.
 
 | Command | Description |
 |---|---|
-| `make local-up` / `make local-down` / `make local-logs` | Start / stop / follow-logs for the local stack (ntfy + provisioning-api + delivery-postgres / delivery-migrate / delivery-api) |
+| `make local-up` / `make local-down` / `make local-logs` | Start / stop / follow-logs for the local stack (ntfy + person-service + provisioning-api + delivery-postgres / delivery-migrate / delivery-api) |
 | `make go-test` (`go test ./...`) | Run Go unit tests |
 | `make go-integration-test` (`go test -tags integration ./...`) | Run Go integration tests (local stack must be up) |
 | `make go-lint` (`gofmt -l .` + `golangci-lint run`) | Check Go formatting + lint |
