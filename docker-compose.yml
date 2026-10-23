@@ -182,6 +182,25 @@ services:
       # ("scheduled message capacity reached"). The default must equal the code default
       # (message.DefaultMaxScheduledTotal). LOCKSTEP: keep in sync with docker-compose.prod.yml.
       - DELIVERY_MAX_SCHEDULED_TOTAL=${DELIVERY_MAX_SCHEDULED_TOTAL:-100000}
+      # The audience a GitHub Actions OIDC token must be minted for (app identity exchange). The
+      # default must equal the code default (appidentity.DefaultAudience). LOCKSTEP: keep in sync
+      # with docker-compose.prod.yml.
+      - DELIVERY_OIDC_AUDIENCE=${DELIVERY_OIDC_AUDIENCE:-notifs-delivery}
+      # DEV-ONLY, THIS FILE ONLY: the local stack cannot get real GitHub tokens, so it trusts the
+      # throwaway key set that scripts/dev-oidc-keys.mjs writes to .local/dev-oidc/ (make local-up
+      # generates it first; never committed). docker-compose.prod.yml must set neither variable;
+      # TestProdComposeSetsNeitherOIDCDevVariable fails if it does.
+      - DELIVERY_OIDC_DEV_MODE=1
+      - DELIVERY_OIDC_JWKS_FILE=/run/dev-oidc/jwks.json
+    volumes:
+      # Long form with create_host_path: false, so a raw `docker compose up` before the key set
+      # exists fails loudly instead of Docker creating a root-owned directory at the source.
+      - type: bind
+        source: ./.local/dev-oidc/jwks.json
+        target: /run/dev-oidc/jwks.json
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       provisioning-api:
         condition: service_healthy
