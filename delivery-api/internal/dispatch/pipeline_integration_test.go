@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/appidentity"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
@@ -668,16 +669,34 @@ func TestPipelineRefusesADestinationTypeWithNoSinkAt422(testInstance *testing.T)
 		testInstance.Fatalf("Submit error = %v, want ErrUnsupportedDestinationType", submitErr)
 	}
 
-	server := httpapi.NewServer(httpapi.ServerConfig{Messages: live.messages, Logger: slog.New(slog.DiscardHandler)})
+	server := httpapi.NewServer(httpapi.ServerConfig{
+		Messages: live.messages, AppIdentity: pipelineAppKeys{}, Logger: slog.New(slog.DiscardHandler),
+	})
 	requestBody := `{"app_id":"` + pipelineAppID + `","channel":"` + ntfyChannel + `","idempotency_key":"unsupported-2",` +
 		`"payload":{"order":42},"display":{"title":"Hello","body":"Body"}}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+pipelineAppKey)
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != wantStatus || recorder.Body.String() != wantErrorBody {
 		testInstance.Fatalf("POST /v1/messages = %d %q, want %d %q", recorder.Code, recorder.Body.String(), wantStatus, wantErrorBody)
 	}
+}
+
+// pipelineAppKey is a well-formed (made-up) app key; pipelineAppKeys resolves it to
+// pipelineAppID. It embeds the interface so only the one method the HTTP server's key check
+// calls needs stating: any other identity method would panic on the nil embedded value, which is
+// right for a test that must never reach it.
+const pipelineAppKey = "dak_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
+
+type pipelineAppKeys struct{ httpapi.AppIdentity }
+
+func (pipelineAppKeys) ResolveKey(_ context.Context, key string) (appidentity.ResolvedKey, error) {
+	if key != pipelineAppKey {
+		return appidentity.ResolvedKey{}, appidentity.ErrInvalidKey
+	}
+	return appidentity.ResolvedKey{ID: 1, AppID: pipelineAppID, Hint: "dak_abcd"}, nil
 }
 
 // callSignalingReleaser reports every finished ReleaseDue call, so a test can

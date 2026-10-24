@@ -250,7 +250,10 @@ func (server *Server) requireMessages(handler http.HandlerFunc) http.HandlerFunc
 	}
 }
 
-// handleCreateMessage serves POST /v1/messages (202). ?wait=N (0-10 seconds)
+// handleCreateMessage serves POST /v1/messages (202) and the operator's POST
+// /v1/admin/messages, which differ only in the route's auth: the app route sits behind
+// requireAppKey (the body's app_id is the key's app), the operator route behind the
+// Access /v1/admin split. ?wait=N (0-10 seconds)
 // holds the response until every delivery has had a first attempt or the wait
 // elapses; a duplicate never waits.
 func (server *Server) handleCreateMessage(responseWriter http.ResponseWriter, request *http.Request) {

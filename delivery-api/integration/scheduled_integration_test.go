@@ -366,36 +366,46 @@ func TestScheduledSendLifecycle(testInstance *testing.T) {
 	assertDeliverAtRejections(testInstance, fixture, suffix)
 }
 
-// assertCancelRejections covers the 400s of both cancel forms.
+// assertCancelRejections covers the 400s of both cancel forms, and the 403 a malformed app_id
+// now gets: it can never be the caller's own (an app key's app id is always well formed), so
+// the app-key check refuses it before the handler's own validation sees it.
 func assertCancelRejections(testInstance *testing.T, fixture scheduledFixture, messageID, idempotencyKey string) {
 	testInstance.Helper()
 	testCases := []struct {
-		name    string
-		path    string
-		wantMsg string
+		name       string
+		path       string
+		wantStatus int
+		wantMsg    string
 	}{
-		{name: "by id without app_id", path: fmt.Sprintf("%s/%s", messagesPath, messageID), wantMsg: "app_id is required"},
+		{
+			name: "by id without app_id", path: fmt.Sprintf("%s/%s", messagesPath, messageID),
+			wantStatus: http.StatusBadRequest, wantMsg: "app_id is required",
+		},
 		{
 			name: "by id with a malformed app_id", path: cancelByIDPath("BAD%20APP", messageID),
-			wantMsg: "invalid app_id",
+			wantStatus: http.StatusForbidden, wantMsg: "app_id does not match app key",
 		},
-		{name: "by key without anything", path: messagesPath, wantMsg: "app_id and idempotency_key are required"},
+		{
+			name: "by key without anything", path: messagesPath,
+			wantStatus: http.StatusBadRequest, wantMsg: "app_id and idempotency_key are required",
+		},
 		{
 			name: "by key without a key", path: fmt.Sprintf("%s?app_id=%s", messagesPath, fixture.appID),
-			wantMsg: "app_id and idempotency_key are required",
+			wantStatus: http.StatusBadRequest, wantMsg: "app_id and idempotency_key are required",
 		},
 		{
 			name: "by key with a malformed app_id", path: cancelByKeyPath("BAD%20APP", idempotencyKey),
-			wantMsg: "invalid app_id",
+			wantStatus: http.StatusForbidden, wantMsg: "app_id does not match app key",
 		},
 		{
-			name: "by key with a malformed key",
-			path: fmt.Sprintf("%s?app_id=%s&idempotency_key=bad%%20key", messagesPath, fixture.appID), wantMsg: "invalid idempotency_key",
+			name:       "by key with a malformed key",
+			path:       fmt.Sprintf("%s?app_id=%s&idempotency_key=bad%%20key", messagesPath, fixture.appID),
+			wantStatus: http.StatusBadRequest, wantMsg: "invalid idempotency_key",
 		},
 	}
 	for _, testCase := range testCases {
 		status, body := apiRequest(testInstance, http.MethodDelete, testCase.path, nil)
-		requireStatus(testInstance, "DELETE "+testCase.name, status, http.StatusBadRequest, body)
+		requireStatus(testInstance, "DELETE "+testCase.name, status, testCase.wantStatus, body)
 		requireErrorMessage(testInstance, "DELETE "+testCase.name, body, testCase.wantMsg)
 	}
 }

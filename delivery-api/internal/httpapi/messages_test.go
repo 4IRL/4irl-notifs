@@ -169,10 +169,15 @@ func failingMessages(err error) *fakeMessages {
 }
 
 // serveMessages sends one request to a Server built around fake and returns the
-// recorder.
+// recorder. The request carries an app key that resolves to whichever app the request
+// itself asserts, so requireAppKey is satisfied and every test keeps exercising the
+// handler it was written for (see permissiveAppKeys).
 func serveMessages(fake Messages, logger *slog.Logger, method, path, body string) *httptest.ResponseRecorder {
-	server := NewServer(ServerConfig{Messages: fake, Logger: logger})
+	server := NewServer(ServerConfig{
+		Messages: fake, Logger: logger, AppIdentity: permissiveAppKeys(path, body),
+	})
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	authorizeAsApp(request)
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, request)
 	return recorder
@@ -816,42 +821,59 @@ func (recorder *deadlineRecorder) SetReadDeadline(deadline time.Time) error {
 	return nil
 }
 
-// TestBodyReadDeadlineIsSetThenClearedForEveryDecodeJSONCaller proves both the
-// message and the admin handlers bound the body read, and that the deadline is
-// cleared again so it cannot cut short the work after the decode (a ?wait).
-func TestBodyReadDeadlineIsSetThenClearedForEveryDecodeJSONCaller(testInstance *testing.T) {
+// TestBodyReadDeadlineIsSetThenClearedForEveryBodyRead proves every body read of the
+// message and admin handlers is bounded, and that each deadline is cleared again so it
+// cannot cut short the work after the read (a ?wait). The app-key submit reads its body
+// twice (requireAppKey's own read, then decodeJSON), so it sets and clears twice.
+func TestBodyReadDeadlineIsSetThenClearedForEveryBodyRead(testInstance *testing.T) {
 	testCases := []struct {
-		name   string
-		server *Server
-		path   string
-		body   string
+		name      string
+		server    *Server
+		path      string
+		body      string
+		withKey   bool
+		wantReads int
 	}{
 		{
-			name: "submit", server: NewServer(ServerConfig{Messages: &fakeMessages{submitResult: sampleStoredMessage()}}),
-			path: "/v1/messages", body: validSubmitBody,
+			name: "app submit reads the body in requireAppKey and in decodeJSON",
+			server: NewServer(ServerConfig{
+				Messages: &fakeMessages{submitResult: sampleStoredMessage()}, AppIdentity: permissiveAppKeys("", validSubmitBody),
+			}),
+			path: "/v1/messages", body: validSubmitBody, withKey: true, wantReads: 2,
+		},
+		{
+			name:   "admin submit reads the body once",
+			server: NewServer(ServerConfig{Messages: &fakeMessages{submitResult: sampleStoredMessage()}}),
+			path:   "/v1/admin/messages", body: validSubmitBody, wantReads: 1,
 		},
 		{
 			name: "admin", server: NewServer(ServerConfig{Registry: &fakeRegistry{}}),
-			path: "/v1/admin/routes", body: validCreateRouteBody,
+			path: "/v1/admin/routes", body: validCreateRouteBody, wantReads: 1,
 		},
 	}
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
 			recorder := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 			request := httptest.NewRequest(http.MethodPost, testCase.path, strings.NewReader(testCase.body))
-			started := time.Now()
+			if testCase.withKey {
+				authorizeAsApp(request)
+			}
 
+			started := time.Now()
 			testCase.server.Handler().ServeHTTP(recorder, request)
 
-			if len(recorder.deadlines) != 2 {
-				subTest.Fatalf("deadlines set = %v, want a deadline then a clear", recorder.deadlines)
+			if len(recorder.deadlines) != 2*testCase.wantReads {
+				subTest.Fatalf("deadlines set = %v, want %d (a deadline then a clear per body read)",
+					recorder.deadlines, 2*testCase.wantReads)
 			}
-			if recorder.deadlines[0].Before(started.Add(bodyReadTimeout)) ||
-				recorder.deadlines[0].After(time.Now().Add(bodyReadTimeout)) {
-				subTest.Fatalf("first deadline = %v, want about %v from now", recorder.deadlines[0], bodyReadTimeout)
-			}
-			if !recorder.deadlines[1].IsZero() {
-				subTest.Fatalf("second deadline = %v, want the zero time (cleared)", recorder.deadlines[1])
+			for read := 0; read < testCase.wantReads; read++ {
+				setAt, clearedAt := recorder.deadlines[2*read], recorder.deadlines[2*read+1]
+				if setAt.Before(started.Add(bodyReadTimeout)) || setAt.After(time.Now().Add(bodyReadTimeout)) {
+					subTest.Fatalf("deadline %d = %v, want about %v from now", read, setAt, bodyReadTimeout)
+				}
+				if !clearedAt.IsZero() {
+					subTest.Fatalf("clear %d = %v, want the zero time (cleared)", read, clearedAt)
+				}
 			}
 		})
 	}
