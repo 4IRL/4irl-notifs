@@ -218,6 +218,7 @@ func TestProbePatchKindGuard(testInstance *testing.T) {
 		"token": {AccessToken: heartbeat.AccessTokenPatch{
 			Action: heartbeat.AccessTokenReplace, Token: *probeTestToken(),
 		}},
+		"token clear": {AccessToken: heartbeat.AccessTokenPatch{Action: heartbeat.AccessTokenClear}},
 	} {
 		_, pushErr := stack.store.Patch(stack.ctx, push.ID, patch, created)
 		if !errors.As(pushErr, &validation) {
@@ -226,6 +227,70 @@ func TestProbePatchKindGuard(testInstance *testing.T) {
 	}
 	if after := stack.get(testInstance, push.ID); after.Probe != nil {
 		testInstance.Fatalf("a push check gained probe state")
+	}
+}
+
+func TestProbeCreateRejectsATokenOnAPushCheck(testInstance *testing.T) {
+	stack := newFixture(testInstance)
+
+	_, createErr := stack.store.Create(stack.ctx, heartbeat.NewCheck{
+		AppID: "billing", Name: "push", PeriodSeconds: 600, GraceSeconds: 300, AccessToken: probeTestToken(),
+	}, created)
+
+	var validation *heartbeat.ValidationError
+	if !errors.As(createErr, &validation) {
+		testInstance.Fatalf("push create with a token error = %v, want *ValidationError", createErr)
+	}
+	if rows := stack.count(testInstance, "heartbeat_checks"); rows != 0 {
+		testInstance.Fatalf("heartbeat_checks rows = %d after a rejected create, want 0", rows)
+	}
+}
+
+func TestProbeFailedPatchRollsBackEverything(testInstance *testing.T) {
+	badTimeout := heartbeat.MaxProbeTimeoutSeconds + 1
+	scenarios := []struct {
+		name         string
+		sealerless   bool
+		patch        heartbeat.CheckPatch
+		wantValidate bool
+	}{
+		{"token replace without a sealer", true, heartbeat.CheckPatch{AccessToken: heartbeat.AccessTokenPatch{
+			Action: heartbeat.AccessTokenReplace, Token: heartbeat.AccessToken{ClientID: "new-id", ClientSecret: "new-secret"},
+		}}, false},
+		{"timeout out of range", false, heartbeat.CheckPatch{
+			Probe: &heartbeat.ProbePatch{TimeoutSeconds: &badTimeout},
+		}, true},
+	}
+	for _, scenario := range scenarios {
+		testInstance.Run(scenario.name, func(subTest *testing.T) {
+			stack := newFixture(subTest)
+			probe := stack.probeCheck(subTest, "site", probeTestToken())
+			stack.record(subTest, probe, 1, failing(heartbeat.ReasonTimeout, 0), created.Add(time.Minute))
+			before := stack.get(subTest, probe.ID)
+			sealedBefore := stack.sealedBytes(subTest, probe.ID)
+			store := stack.store
+			if scenario.sealerless {
+				store = heartbeat.NewPGStore(stack.pool, nil)
+			}
+
+			_, patchErr := store.Patch(stack.ctx, probe.ID, scenario.patch, created.Add(2*time.Minute))
+
+			var validation *heartbeat.ValidationError
+			if patchErr == nil || errors.As(patchErr, &validation) != scenario.wantValidate {
+				subTest.Fatalf("patch error = %v, want an error (ValidationError: %v)", patchErr, scenario.wantValidate)
+			}
+			after := stack.get(subTest, probe.ID)
+			if after.Probe.ConfigVersion != before.Probe.ConfigVersion ||
+				after.Probe.ConsecutiveFailures != before.Probe.ConsecutiveFailures ||
+				after.Probe.LastResult == nil ||
+				!after.Probe.NextProbeAt.Equal(before.Probe.NextProbeAt) || !after.AnchorAt.Equal(before.AnchorAt) ||
+				after.Probe.Config.TimeoutSeconds != before.Probe.Config.TimeoutSeconds {
+				subTest.Fatalf("failed patch changed the check: before %+v after %+v", before.Probe, after.Probe)
+			}
+			if !slices.Equal(stack.sealedBytes(subTest, probe.ID), sealedBefore) {
+				subTest.Fatalf("failed patch changed the sealed token bytes")
+			}
+		})
 	}
 }
 
