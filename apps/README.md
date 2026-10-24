@@ -7,6 +7,20 @@ the real destinations/routes/checks to match), `verify` (send a real test messag
 a real ping per heartbeat) or `lint` (check every manifest here, offline, no network call — this
 is what `make onboard-lint` runs on every pull request).
 
+## Where manifests live
+
+Each app's own manifest lives in **that app's own repository**, not here. The app's deploy applies
+it with the app's delivery key against its app-scoped API
+(`node scripts/onboard.mjs apply --manifest <path> --target app`, run by the `notifs-app` action),
+so an app manages only its own destinations, routes and heartbeat checks. The manifest can have any
+file name and sit anywhere in the app repo; `node scripts/onboard.mjs lint --manifest <path>
+--target app` checks its schema offline.
+
+This directory keeps the **`_platform.json`** manifest, which stays operator-applied
+(`make onboard app=_platform`). The `<app_id>.json` form below is still accepted here by
+`make onboard` and `make onboard-lint` for an operator-applied app, but it is no longer the route
+for a new app.
+
 ## The two file kinds
 
 - `<app_id>.json` — an **app manifest**. One file per app; the file's basename must equal its own

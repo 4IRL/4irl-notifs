@@ -31,7 +31,8 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
 - **Watched from outside:** an independent Cloudflare Worker probes the platform every 5 minutes, so an
   outage of it does not go quietly.
 - **Cheaper with every app:** a new sink or a stricter safety rule is built once and every integrated
-  app inherits it; joining costs a service token, a route and a `curl`.
+  app inherits it; joining costs a service token, a manifest and one deploy step in the app's repo, one
+  operator approval, and a `curl`.
 
 The full case, and the step-by-step path for onboarding a new app, is in
 [`docs/app-integration-guide.md`](docs/app-integration-guide.md).
@@ -39,10 +40,13 @@ The full case, and the step-by-step path for onboarding a new app, is in
 ## Local stack
 
 ```bash
-docker compose --project-directory . -f docker-compose.yml up -d
+make local-up
 ```
 
-Or `make local-up` / `make local-down`. ntfy listens on `http://127.0.0.1:8090` by default
+`make local-up` first generates the throwaway dev OIDC signing keys (`make dev-oidc-keys`), then
+starts the stack; stop it with `make local-down`. The raw form,
+`docker compose --project-directory . -f docker-compose.yml up -d`, needs `make dev-oidc-keys` run
+first on a fresh checkout (docker-compose.yml bind-mounts `.local/dev-oidc/jwks.json`). ntfy listens on `http://127.0.0.1:8090` by default
 (override with `NTFY_PORT`; config: `ntfy/server.yml`; auth database on the `ntfy-auth` named
 volume, shared with the provisioning-api container). The same stack also runs `delivery-postgres`,
 `delivery-migrate` and `delivery-api` (`http://127.0.0.1:8300` by default, override with
@@ -66,6 +70,10 @@ delivery-api runtime configuration (environment):
 | `DELIVERY_RETENTION_DAYS` | `30` | Days a message is kept before the retention sweeper deletes it (integer 1-3650; a message with a `pending` or `scheduled` delivery is never deleted; age counts from the later of `created_at` and `deliver_at`, and a cancelled message ages from `cancelled_at`; an invalid value fails startup) |
 | `DELIVERY_MAX_SCHEDULED_PER_APP` | `1000` | Most scheduled (`deliver_at`) messages one app may hold; a new scheduled submit over it is a `429` (integer 1-100000; an invalid value fails startup) |
 | `DELIVERY_MAX_SCHEDULED_TOTAL` | `100000` | Most scheduled messages all apps may hold together; a new scheduled submit over it is a `429` `scheduled message capacity reached`, distinct from the per-app `too many scheduled messages` (integer 1-10000000; an invalid value fails startup; the per-app cap is checked first) |
+| `DELIVERY_OIDC_AUDIENCE` | `notifs-delivery` | The `aud` a GitHub Actions OIDC token must carry for the app identity exchange (printable non-space ASCII, 1-200 characters). The `notifs-app` action's `audience` input must equal it. Production sets only this variable |
+| `DELIVERY_PENDING_IDENTITY_REQUEST_DAYS` | `7` | Days a pending app identity request may go without a refresh (a repeat exchange with the same claims) before the periodic cleanup deletes it, freeing a slot under the 20-request pending cap (integer 1-365; an invalid value, including `0`, fails startup) |
+| `DELIVERY_OIDC_DEV_MODE` | unset | **Local and CI only, never production.** `1` allows `DELIVERY_OIDC_JWKS_FILE`; empty, `0` or `1` are the valid values (anything else fails startup) |
+| `DELIVERY_OIDC_JWKS_FILE` | unset | **Local and CI only, never production.** A static JWKS file the verifier trusts instead of GitHub's keys (`make dev-oidc-keys` writes one under `.local/dev-oidc/`); setting it without `DELIVERY_OIDC_DEV_MODE=1` fails startup |
 
 The live per-app cap (`429`) integration case needs a small cap (2 to 5) on the stack, and skips otherwise.
 Start the stack and run the suite with the same value:

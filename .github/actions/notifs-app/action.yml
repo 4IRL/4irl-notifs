@@ -1,0 +1,97 @@
+name: 'notifs app deploy'
+description: >-
+  Exchanges the workflow run's GitHub OIDC token for a fresh notifs delivery key (dak_...), then
+  applies the app's onboarding manifest with it. Needs `permissions: id-token: write` on the
+  calling job. The first run only files an identity request and fails until the operator approves
+  it in the admin UI.
+
+inputs:
+  app_id:
+    description: The app's id (the manifest's app_id).
+    required: true
+  delivery_url:
+    description: Base URL of delivery-api, e.g. https://delivery.example.com (https only).
+    required: true
+  access_client_id:
+    description: Cloudflare Access service-token client id that lets this app reach delivery-api.
+    required: true
+  access_client_secret:
+    description: Cloudflare Access service-token client secret (pass a repository secret).
+    required: true
+  manifest:
+    description: >-
+      Path to the app's onboarding manifest, relative to the workspace. When set, it is linted and
+      then applied (or only planned, see `apply`) with the new key. When empty, only the exchange
+      runs and the `key` output is for the deploy's own use.
+    required: false
+    default: ''
+  apply:
+    description: >-
+      'true' applies the manifest; 'false' only prints the plan (a dry run). Ignored without a
+      manifest. Note: the key exchange runs on every run, including 'false' dry runs, so each run
+      mints a new key and supersedes the app's previous key (which stays valid for 24 hours).
+    required: false
+    default: 'true'
+  audience:
+    description: >-
+      OIDC audience to request. Must equal the server's DELIVERY_OIDC_AUDIENCE; the default matches
+      the server's default.
+    required: false
+    default: 'notifs-delivery'
+
+outputs:
+  key:
+    description: The new delivery key (masked in logs). Pass it to the deploy as a secret.
+    value: ${{ steps.exchange.outputs.key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+      with:
+        node-version: '24'
+
+    - name: Exchange GitHub OIDC token for a delivery key
+      id: exchange
+      shell: bash
+      env:
+        NOTIFS_APP_ID: ${{ inputs.app_id }}
+        NOTIFS_DELIVERY_URL: ${{ inputs.delivery_url }}
+        NOTIFS_ACCESS_CLIENT_ID: ${{ inputs.access_client_id }}
+        NOTIFS_ACCESS_CLIENT_SECRET: ${{ inputs.access_client_secret }}
+        NOTIFS_AUDIENCE: ${{ inputs.audience }}
+      run: |
+        node "$GITHUB_ACTION_PATH/../../../scripts/notifs-app-exchange.mjs"
+
+    - name: Lint the manifest
+      if: inputs.manifest != ''
+      shell: bash
+      env:
+        NOTIFS_MANIFEST: ${{ inputs.manifest }}
+      run: |
+        node "$GITHUB_ACTION_PATH/../../../scripts/onboard.mjs" lint --manifest "$NOTIFS_MANIFEST" --target app
+
+    - name: Apply the manifest
+      if: inputs.manifest != '' && inputs.apply == 'true'
+      shell: bash
+      env:
+        NOTIFS_MANIFEST: ${{ inputs.manifest }}
+        ONBOARD_URL: ${{ inputs.delivery_url }}
+        ONBOARD_APP_ACCESS_ID: ${{ inputs.access_client_id }}
+        ONBOARD_APP_ACCESS_SECRET: ${{ inputs.access_client_secret }}
+        ONBOARD_APP_KEY: ${{ steps.exchange.outputs.key }}
+      run: |
+        node "$GITHUB_ACTION_PATH/../../../scripts/onboard.mjs" apply --manifest "$NOTIFS_MANIFEST" --target app
+
+    - name: Plan the manifest (dry run)
+      if: inputs.manifest != '' && inputs.apply != 'true'
+      shell: bash
+      env:
+        NOTIFS_MANIFEST: ${{ inputs.manifest }}
+        ONBOARD_URL: ${{ inputs.delivery_url }}
+        ONBOARD_APP_ACCESS_ID: ${{ inputs.access_client_id }}
+        ONBOARD_APP_ACCESS_SECRET: ${{ inputs.access_client_secret }}
+        ONBOARD_APP_KEY: ${{ steps.exchange.outputs.key }}
+      run: |
+        node "$GITHUB_ACTION_PATH/../../../scripts/onboard.mjs" plan --manifest "$NOTIFS_MANIFEST" --target app
