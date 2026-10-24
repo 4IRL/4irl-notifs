@@ -32,6 +32,8 @@ const (
 	// occur for a check the state machine moved, but an alert body must never
 	// panic on a missing pointer.
 	bodyUnknown = "unknown"
+	// bodyUnrecognisedReason is the down body for a nil or unknown down reason.
+	bodyUnrecognisedReason = "Check is down; reason unrecognised."
 
 	// StartupHoldOff is how long after a Service is built its Tick leaves overdue
 	// checks alone: one grace window, the smallest a check can have
@@ -94,6 +96,12 @@ func NewService(config ServiceConfig) *Service {
 	}
 	service.holdOffUntil = service.now().Add(StartupHoldOff)
 	return service
+}
+
+// HoldOffUntil is when the startup hold-off ends: before it, Tick does not
+// advance overdue checks and a probe result must not take a check down.
+func (service *Service) HoldOffUntil() time.Time {
+	return service.holdOffUntil
 }
 
 // Create validates and persists a new check in state new, its deadline clock
@@ -282,8 +290,7 @@ func buildAlertEnvelope(check StoredCheck, kind string, destination string) (mes
 		payload.Type = payloadTypeRecovered
 		display.Title = "Heartbeat recovered: " + subject
 		display.Priority = priorityRecovered
-		display.Body = fmt.Sprintf("Ping received at %s; down since %s.",
-			valueOr(lastPing, bodyUnknown), valueOr(downSince, bodyUnknown))
+		display.Body = recoveredBody(check, lastPing, downSince)
 	default:
 		return message.Envelope{}, fmt.Errorf("unknown alert kind %q", kind)
 	}
@@ -303,16 +310,71 @@ func buildAlertEnvelope(check StoredCheck, kind string, destination string) (mes
 	}, nil
 }
 
-// downBody is the down alert's body: the reported failure, or the last ping
-// time of a check that missed its deadline.
+// probeReasonLabels is the human label of each probe result reason in a down
+// alert body.
+var probeReasonLabels = map[string]string{
+	ReasonHTTPStatus:   "unexpected HTTP status",
+	ReasonTimeout:      "timed out",
+	ReasonBodyMismatch: "body did not match",
+	ReasonBlocked:      "blocked address",
+	ReasonTLS:          "TLS error",
+	ReasonScheme:       "non-HTTPS URL",
+	ReasonNetwork:      "network error",
+	ReasonConfig:       "access credential error",
+}
+
+// downBody is the down alert's body, chosen by the check's kind and down reason.
+// An absent or unrecognised reason (unreachable under the table CHECKs) gets a
+// generic line, never a claim about pings. A probe's detail comes from
+// Probe.DownDetail only (already sanitised; sanitised again here so a body can
+// never carry a URL path, query or credential).
 func downBody(check StoredCheck, lastPing *string) string {
-	if check.DownReason != nil && *check.DownReason == ReasonFail {
-		return fmt.Sprintf("Failure reported at %s.", valueOr(lastPing, bodyUnknown))
+	if check.DownReason == nil {
+		return bodyUnrecognisedReason
 	}
-	return fmt.Sprintf("No ping since %s (period %s, grace %s).",
-		valueOr(lastPing, bodyCreation),
-		time.Duration(check.PeriodSeconds)*time.Second,
-		time.Duration(check.GraceSeconds)*time.Second)
+	reason := *check.DownReason
+	if check.Kind() == KindProbe {
+		return probeDownBody(check, reason)
+	}
+	switch reason {
+	case ReasonFail:
+		return fmt.Sprintf("Failure reported at %s.", valueOr(lastPing, bodyUnknown))
+	case ReasonMissed:
+		return fmt.Sprintf("No ping since %s (period %s, grace %s).",
+			valueOr(lastPing, bodyCreation),
+			time.Duration(check.PeriodSeconds)*time.Second,
+			time.Duration(check.GraceSeconds)*time.Second)
+	default:
+		return bodyUnrecognisedReason
+	}
+}
+
+// probeDownBody is the down body of a probe check.
+func probeDownBody(check StoredCheck, reason string) string {
+	if reason == ReasonMissed {
+		return fmt.Sprintf("Check went down at %s; no probe result was recorded (the prober may be stalled).",
+			valueOr(formatTime(check.DownSince), bodyUnknown))
+	}
+	label, known := probeReasonLabels[reason]
+	if !known {
+		return bodyUnrecognisedReason
+	}
+	if check.Probe.DownDetail != nil {
+		if detail := SanitizeProbeDetail(*check.Probe.DownDetail); detail != "" {
+			return fmt.Sprintf("Probe failed (%s): %s.", label, detail)
+		}
+	}
+	return fmt.Sprintf("Probe failed (%s).", label)
+}
+
+// recoveredBody is the recovered alert's body.
+func recoveredBody(check StoredCheck, lastPing *string, downSince *string) string {
+	verb := "Ping received"
+	if check.Kind() == KindProbe {
+		verb = "Probe succeeded"
+	}
+	return fmt.Sprintf("%s at %s; down since %s.",
+		verb, valueOr(lastPing, bodyUnknown), valueOr(downSince, bodyUnknown))
 }
 
 // formatTime renders a timestamp as RFC3339 UTC, or nil for a nil time.

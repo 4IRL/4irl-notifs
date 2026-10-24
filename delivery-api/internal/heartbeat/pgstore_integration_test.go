@@ -15,6 +15,7 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/pgtest"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
 )
 
 const pgStoreTestBudget = 60 * time.Second
@@ -29,6 +30,7 @@ type fixture struct {
 	pool     *pgxpool.Pool
 	store    *heartbeat.PGStore
 	registry *registry.PGStore
+	sealer   *seal.Sealer
 }
 
 func newFixture(testInstance *testing.T) fixture {
@@ -36,11 +38,16 @@ func newFixture(testInstance *testing.T) fixture {
 	ctx, cancel := context.WithTimeout(context.Background(), pgStoreTestBudget)
 	testInstance.Cleanup(cancel)
 	pool := pgtest.IsolatedPool(ctx, testInstance)
+	sealer, sealErr := seal.New([]byte("0123456789abcdef0123456789abcdef"))
+	if sealErr != nil {
+		testInstance.Fatalf("seal.New: %v", sealErr)
+	}
 	return fixture{
 		ctx:      ctx,
 		pool:     pool,
-		store:    heartbeat.NewPGStore(pool),
+		store:    heartbeat.NewPGStore(pool, sealer),
 		registry: registry.NewPGStore(pool),
+		sealer:   sealer,
 	}
 }
 

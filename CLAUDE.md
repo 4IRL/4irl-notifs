@@ -31,7 +31,7 @@ Guidance for Claude Code when working in this repository.
   | UI/e2e tests | `make web-e2e` (`npx playwright test` in `web/`; `E2E_ARGS=...` passes extra args) |
   | JS/unit tests | `make web-test` (`npm test` in `web/`, Vitest) |
   | Build | `make web-build` (`tsc -b` + Vite → `dist/`) |
-  | Lint / format | `make go-lint` / `make go-fmt` (Go); `make web-lint` / `make web-format` (frontend); `make scripts-lint` / `make scripts-format` (`scripts/`); `make delivery-lint` / `make delivery-fmt` (delivery-api Go) |
+  | Lint / format | `make go-lint` / `make go-fmt` (Go); `make web-lint` / `make web-format` (frontend); `make scripts-lint` / `make scripts-format` (`scripts/`); `make delivery-lint` / `make delivery-fmt` (delivery-api Go); `make delivery-vet-integration` (`go vet -tags integration`, the compile check for integration-tagged delivery-api files that `delivery-lint` skips) |
   | Setup page (`setup-web/`) | `make setup-web-dev` (dev server) / `make setup-web-test` (Vitest) / `make setup-web-e2e` (Playwright) / `make setup-web-build` / `make setup-web-lint` / `make setup-web-format` / `make setup-web-pages-dev` (wrangler Pages parity) |
   | Workflow YAML lint | `make workflows-lint` (actionlint, pinned; part of `make lint`; also lints composite actions under `.github/actions/*/action.yml` through generated wrappers in `.local/action-lint/`; needs node (wrapper generation) and Go (actionlint), no npm install) |
   | Admin UI dev server | `make dev-web` (foreground) / `make dev-web-bg` + `make dev-web-stop` (detached) |
@@ -126,6 +126,7 @@ shown for reference only.
 | `make delivery-test` (`go test ./...` in `delivery-api/`) | Run delivery-api Go unit tests |
 | `make delivery-integration-test` (`go test -p 1 -tags integration ./...`) | Run delivery-api integration tests (local stack must be up) |
 | `make delivery-lint` / `make delivery-fmt` (`gofmt -l .` + `golangci-lint run` / `gofmt -w .`) | Check / apply delivery-api Go formatting + lint |
+| `make delivery-vet-integration` (`go vet -tags integration ./...` in `delivery-api/`) | Vet delivery-api including integration-tagged files (`delivery-lint` does not compile them) |
 | `make workflows-lint` (`actionlint`, pinned `v1.7.12`) | Lint the GitHub Actions workflow YAML and the composite actions under `.github/actions/*/action.yml` (through generated wrappers in `.local/action-lint/`; needs node (wrapper generation) and Go (actionlint), no npm install) |
 | `make web-test` (`npm test`) | Run frontend unit tests (Vitest) |
 | `make web-e2e` (`npx playwright test`) | Run frontend e2e tests (Playwright); `E2E_ARGS=...` passes extra args |

@@ -714,6 +714,8 @@ func TestWriteHeartbeatErrorBranches(testInstance *testing.T) {
 		{name: "check not found", err: heartbeat.ErrCheckNotFound, wantStatus: 404, wantBody: `{"error":"check not found"}`},
 		{name: "wrapped check not found", err: fmt.Errorf("get: %w", heartbeat.ErrCheckNotFound), wantStatus: 404, wantBody: `{"error":"check not found"}`},
 		{name: "check exists", err: heartbeat.ErrCheckExists, wantStatus: 409, wantBody: `{"error":"check already exists"}`},
+		{name: "probe check ping", err: heartbeat.ErrProbeCheckPing, wantStatus: 409, wantBody: `{"error":"check is a probe check"}`},
+		{name: "wrapped probe check ping", err: fmt.Errorf("ping: %w", heartbeat.ErrProbeCheckPing), wantStatus: 409, wantBody: `{"error":"check is a probe check"}`},
 		{name: "unknown destination", err: registry.ErrUnknownDestination, wantStatus: 400, wantBody: `{"error":"unknown destination"}`},
 		{name: "wrapped unknown destination", err: fmt.Errorf("link: %w", registry.ErrUnknownDestination), wantStatus: 400, wantBody: `{"error":"unknown destination"}`},
 		{name: "anything else", err: errors.New("boom"), wantStatus: 500, wantBody: `{"error":"internal error"}`},

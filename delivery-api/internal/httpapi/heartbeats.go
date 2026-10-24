@@ -18,6 +18,7 @@ const (
 	errMsgCheckNotFound          = "check not found"
 	errMsgCheckExists            = "check already exists"
 	errMsgCheckIdentityImmutable = "app_id and name are immutable"
+	errMsgProbeCheckPing         = "check is a probe check"
 )
 
 // Path value names of the heartbeat routes. The check id of the admin routes
@@ -356,6 +357,8 @@ func (server *Server) writeHeartbeatError(responseWriter http.ResponseWriter, re
 		writeError(responseWriter, http.StatusNotFound, errMsgCheckNotFound)
 	case errors.Is(err, heartbeat.ErrCheckExists):
 		writeError(responseWriter, http.StatusConflict, errMsgCheckExists)
+	case errors.Is(err, heartbeat.ErrProbeCheckPing):
+		writeError(responseWriter, http.StatusConflict, errMsgProbeCheckPing)
 	case errors.Is(err, registry.ErrUnknownDestination):
 		writeError(responseWriter, http.StatusBadRequest, errMsgUnknownDestination)
 	case errors.Is(err, registry.ErrCheckViolation):

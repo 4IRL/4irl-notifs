@@ -1,6 +1,6 @@
 .PHONY: help lint test local-up local-down local-logs dev-oidc-keys dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-test-race go-integration-test go-lint go-fmt \
-	delivery-test delivery-integration-test delivery-lint delivery-fmt workflows-lint \
+	delivery-test delivery-integration-test delivery-lint delivery-vet-integration delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	setup-web-dev setup-web-test setup-web-e2e setup-web-build setup-web-lint setup-web-format setup-web-pages-dev \
 	worker-test worker-build worker-deploy watchdog-test watchdog-build scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm \
@@ -196,6 +196,9 @@ delivery-integration-test: ## Run delivery-api integration tests (local stack mu
 delivery-lint: ## Check delivery-api Go formatting and lint
 	@UNFORMATTED="$$(cd delivery-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }
 	cd delivery-api && golangci-lint run
+
+delivery-vet-integration: ## Vet delivery-api including integration-tagged files
+	cd delivery-api && go vet -tags integration ./...
 
 delivery-fmt: ## Apply delivery-api Go formatting
 	cd delivery-api && gofmt -w .
