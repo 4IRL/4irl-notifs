@@ -6,7 +6,8 @@
 // heartbeat pings under /v1/heartbeats, the operator heartbeat check
 // endpoints under /v1/admin/heartbeats, the app identity token exchange under
 // /v1/app-identity and the operator identity endpoints under
-// /v1/admin/app-identity.
+// /v1/admin/app-identity, and the app-scoped destination endpoints under
+// /v1/apps/{app_id}/destinations.
 package httpapi
 
 import (
@@ -68,6 +69,24 @@ type Registry interface {
 	DeleteRoute(ctx context.Context, id int64) (bool, error)
 }
 
+// AppRegistry is the app-scoped destination and route surface the /v1/apps/{app_id}/destinations and
+// /v1/apps/{app_id}/routes endpoints call. *registry.Service satisfies it. Every method takes the caller's
+// app id (from its app key) and confines the call to destinations and routes that app owns: another
+// owner's destination or route reads as not found.
+type AppRegistry interface {
+	CreateAppDestination(ctx context.Context, appID string, input registry.DestinationInput) (registry.DestinationView, error)
+	ListAppDestinations(ctx context.Context, appID string) ([]registry.DestinationView, error)
+	GetAppDestination(ctx context.Context, appID, name string) (registry.DestinationView, error)
+	UpdateAppDestination(ctx context.Context, appID, name string, patch registry.DestinationPatch) (registry.DestinationView, error)
+	DeleteAppDestination(ctx context.Context, appID, name string) error
+	RotateAppWebhookSecret(ctx context.Context, appID, name string, overlapHours int) (registry.DestinationView, string, error)
+	CreateAppRoute(ctx context.Context, appID string, input registry.RouteInput) (registry.RouteView, error)
+	ListAppRoutes(ctx context.Context, appID string) ([]registry.RouteView, error)
+	GetAppRoute(ctx context.Context, appID string, id int64) (registry.RouteView, error)
+	UpdateAppRoute(ctx context.Context, appID string, id int64, patch registry.RoutePatch) (registry.RouteView, error)
+	DeleteAppRoute(ctx context.Context, appID string, id int64) error
+}
+
 // ServerConfig configures a Server. Logger defaults to slog.Default() when nil.
 type ServerConfig struct {
 	// Logger receives internal-error diagnostics; defaults to slog.Default().
@@ -83,6 +102,14 @@ type ServerConfig struct {
 	// service exists: a typed-nil pointer stored here is a non-nil interface
 	// and would bypass that guard.
 	Registry Registry
+	// AppRegistry backs the app-scoped /v1/apps/{app_id}/destinations endpoints. When
+	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
+	// caveat as Registry applies.
+	AppRegistry AppRegistry
+	// AppHeartbeats backs the app-scoped /v1/apps/{app_id}/heartbeats endpoints. When
+	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
+	// caveat as Registry applies.
+	AppHeartbeats AppHeartbeats
 	// Messages backs the /v1/messages and /v1/admin/deliveries endpoints. When
 	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
 	// caveat as Registry applies.
@@ -112,12 +139,15 @@ type Server struct {
 	readiness   ReadinessChecker
 	checker     CheckerFreshness
 	registry    Registry
-	messages    Messages
-	publishers  Publishers
-	heartbeats  Heartbeats
-	appIdentity AppIdentity
-	now         func() time.Time
-	mux         *http.ServeMux
+	appRegistry AppRegistry
+	// appHeartbeats backs the app-scoped heartbeat check endpoints.
+	appHeartbeats AppHeartbeats
+	messages      Messages
+	publishers    Publishers
+	heartbeats    Heartbeats
+	appIdentity   AppIdentity
+	now           func() time.Time
+	mux           *http.ServeMux
 }
 
 // readinessResponseBody is the /readyz JSON body when the database answered.
@@ -160,16 +190,18 @@ func NewServer(config ServerConfig) *Server {
 	}
 
 	server := &Server{
-		logger:      logger,
-		readiness:   config.Readiness,
-		checker:     config.HeartbeatChecker,
-		registry:    config.Registry,
-		messages:    config.Messages,
-		publishers:  config.Publishers,
-		heartbeats:  config.Heartbeats,
-		appIdentity: config.AppIdentity,
-		now:         config.Now,
-		mux:         http.NewServeMux(),
+		logger:        logger,
+		readiness:     config.Readiness,
+		checker:       config.HeartbeatChecker,
+		registry:      config.Registry,
+		appRegistry:   config.AppRegistry,
+		appHeartbeats: config.AppHeartbeats,
+		messages:      config.Messages,
+		publishers:    config.Publishers,
+		heartbeats:    config.Heartbeats,
+		appIdentity:   config.AppIdentity,
+		now:           config.Now,
+		mux:           http.NewServeMux(),
 	}
 	if server.now == nil {
 		server.now = time.Now
@@ -199,6 +231,33 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /v1/admin/routes/{id}", server.requireRegistry(server.handleGetRoute))
 	server.mux.HandleFunc("PATCH /v1/admin/routes/{id}", server.requireRegistry(server.handleUpdateRoute))
 	server.mux.HandleFunc("DELETE /v1/admin/routes/{id}", server.requireRegistry(server.handleDeleteRoute))
+
+	// App-scoped destination CRUD: the app key's app must be the {app_id} in the path, and every call
+	// is confined to the destinations that app owns.
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/destinations", server.appScoped(server.handleAppCreateDestination))
+	server.mux.HandleFunc("GET /v1/apps/{app_id}/destinations", server.appScoped(server.handleAppListDestinations))
+	server.mux.HandleFunc("GET /v1/apps/{app_id}/destinations/{name}", server.appScoped(server.handleAppGetDestination))
+	server.mux.HandleFunc("PATCH /v1/apps/{app_id}/destinations/{name}", server.appScoped(server.handleAppUpdateDestination))
+	server.mux.HandleFunc("DELETE /v1/apps/{app_id}/destinations/{name}", server.appScoped(server.handleAppDeleteDestination))
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/destinations/{name}/rotate-secret", server.appScoped(server.handleAppRotateSecret))
+
+	// App-scoped route CRUD: same gate, confined to the routes the app owns (each one's app_pattern is the
+	// app's own id).
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/routes", server.appScoped(server.handleAppCreateRoute))
+	server.mux.HandleFunc("GET /v1/apps/{app_id}/routes", server.appScoped(server.handleAppListRoutes))
+	server.mux.HandleFunc("GET /v1/apps/{app_id}/routes/{id}", server.appScoped(server.handleAppGetRoute))
+	server.mux.HandleFunc("PATCH /v1/apps/{app_id}/routes/{id}", server.appScoped(server.handleAppUpdateRoute))
+	server.mux.HandleFunc("DELETE /v1/apps/{app_id}/routes/{id}", server.appScoped(server.handleAppDeleteRoute))
+
+	// App-scoped heartbeat check CRUD: same gate, confined to the checks the app owns (each one's app_id
+	// is the app's own id).
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/heartbeats", server.appHeartbeatScoped(server.handleAppCreateCheck))
+	server.mux.HandleFunc("GET /v1/apps/{app_id}/heartbeats", server.appHeartbeatScoped(server.handleAppListChecks))
+	server.mux.HandleFunc("GET /v1/apps/{app_id}/heartbeats/{id}", server.appHeartbeatScoped(server.handleAppGetCheck))
+	server.mux.HandleFunc("PATCH /v1/apps/{app_id}/heartbeats/{id}", server.appHeartbeatScoped(server.handleAppUpdateCheck))
+	server.mux.HandleFunc("DELETE /v1/apps/{app_id}/heartbeats/{id}", server.appHeartbeatScoped(server.handleAppDeleteCheck))
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/heartbeats/{id}/pause", server.appHeartbeatScoped(server.handleAppPauseCheck))
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/heartbeats/{id}/resume", server.appHeartbeatScoped(server.handleAppResumeCheck))
 
 	server.mux.HandleFunc("POST /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleMintPublisher))
 	server.mux.HandleFunc("GET /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleGetPublisher))
