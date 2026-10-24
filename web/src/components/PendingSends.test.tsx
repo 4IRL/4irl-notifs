@@ -75,6 +75,12 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     deleteHeartbeat: vi.fn(),
     pauseHeartbeat: vi.fn(),
     resumeHeartbeat: vi.fn(),
+    listIdentityRequests: vi.fn().mockResolvedValue([]),
+    approveIdentityRequest: vi.fn(),
+    rejectIdentityRequest: vi.fn(),
+    listIdentityBindings: vi.fn().mockResolvedValue([]),
+    revokeIdentityKey: vi.fn(),
+    unbindApp: vi.fn(),
     ...overrides,
   };
 }

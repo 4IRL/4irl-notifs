@@ -36,6 +36,8 @@ describe('delivery api client', () => {
     disabled_reason: null,
     config: { url: 'https://example.com/hook' },
     secrets: { signing_secret: '****' },
+    owner_kind: 'operator',
+    owner_app_id: null,
     created_at: '2026-10-17T10:00:00Z',
     updated_at: '2026-10-17T11:00:00Z',
   };
@@ -46,6 +48,8 @@ describe('delivery api client', () => {
     channel_pattern: '*',
     destinations: ['ops_webhook'],
     enabled: true,
+    owner_kind: 'operator',
+    owner_app_id: null,
     created_at: '2026-10-17T10:00:00Z',
     updated_at: '2026-10-17T11:00:00Z',
   };
@@ -85,10 +89,97 @@ describe('delivery api client', () => {
         disabledReason: null,
         config: { url: 'https://example.com/hook' },
         secrets: { signing_secret: '****' },
+        ownerKind: 'operator',
+        ownerAppId: null,
         createdAt: '2026-10-17T10:00:00Z',
         updatedAt: '2026-10-17T11:00:00Z',
       },
     ]);
+  });
+
+  describe('owner mapping', () => {
+    const checkWireBase = {
+      id: 1,
+      app_id: 'chores4irl',
+      name: 'daily',
+      period_seconds: 60,
+      grace_seconds: 60,
+      paused: false,
+      state: 'up',
+      last_ping_at: null,
+      last_ping_kind: null,
+      down_since: null,
+      deadline_at: '2026-10-19T20:02:00Z',
+      destinations: [],
+      created_at: '2026-10-17T10:00:00Z',
+      updated_at: '2026-10-17T10:00:00Z',
+    };
+
+    /** Every list call the client has, with its wire row (owner fields removed) and reader. */
+    const lists = [
+      {
+        name: 'destinations',
+        wire: destinationWire,
+        respond: (row: unknown) => ({ destinations: [row] }),
+        read: () => makeClient().listDestinations(),
+      },
+      {
+        name: 'routes',
+        wire: routeWire,
+        respond: (row: unknown) => ({ routes: [row] }),
+        read: () => makeClient().listRoutes(),
+      },
+      {
+        name: 'checks',
+        wire: checkWireBase,
+        respond: (row: unknown) => ({ checks: [row] }),
+        read: () => makeClient().listHeartbeats(),
+      },
+    ];
+
+    function withOwner({ wire, owner }: { wire: object; owner: object }): Record<string, unknown> {
+      const bare: Record<string, unknown> = { ...wire };
+      delete bare.owner_kind;
+      delete bare.owner_app_id;
+      return { ...bare, ...owner };
+    }
+
+    it.each(lists)('maps an app owner on $name', async ({ wire, respond, read }) => {
+      const row = withOwner({ wire, owner: { owner_kind: 'app', owner_app_id: 'chores4irl' } });
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: respond(row) }));
+
+      expect((await read())[0]).toMatchObject({ ownerKind: 'app', ownerAppId: 'chores4irl' });
+    });
+
+    it.each(lists)('maps an operator owner on $name', async ({ wire, respond, read }) => {
+      const row = withOwner({ wire, owner: { owner_kind: 'operator', owner_app_id: null } });
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: respond(row) }));
+
+      expect((await read())[0]).toMatchObject({ ownerKind: 'operator', ownerAppId: null });
+    });
+
+    const malformedOwners: Array<[string, object]> = [
+      ['absent fields', {}],
+      ['an unrecognised kind', { owner_kind: 'robot', owner_app_id: null }],
+      ['an empty kind', { owner_kind: '', owner_app_id: null }],
+      ['a null kind', { owner_kind: null, owner_app_id: null }],
+      ['an app owner without an id', { owner_kind: 'app', owner_app_id: null }],
+      ['an app owner with an empty id', { owner_kind: 'app', owner_app_id: '' }],
+      ['an operator owner carrying an app id', { owner_kind: 'operator', owner_app_id: 'x' }],
+    ];
+
+    describe.each(lists)('$name', ({ wire, respond, read }) => {
+      it.each(malformedOwners)('reads %s as unknown, never operator', async (_label, owner) => {
+        fetchMock.mockResolvedValueOnce(
+          jsonResponse({ body: respond(withOwner({ wire, owner })) }),
+        );
+
+        const [row] = await read();
+
+        expect(row.ownerKind).toBe('unknown');
+        expect(row.ownerAppId).toBeNull();
+      });
+    });
   });
 
   it('coerces null config and secrets to empty maps', async () => {
@@ -217,7 +308,7 @@ describe('delivery api client', () => {
     await client.sendTest({ destination: 'ops_webhook' });
     const second = lastCall();
 
-    expect(first.url).toBe('https://admin.test/delivery/v1/messages?wait=10');
+    expect(first.url).toBe('https://admin.test/delivery/v1/admin/messages?wait=10');
     expect(first.init.method).toBe('POST');
     const firstBody = JSON.parse(first.init.body as string);
     const secondBody = JSON.parse(second.init.body as string);
@@ -478,6 +569,8 @@ describe('delivery api client', () => {
       down_since: null,
       deadline_at: '2026-10-19T20:02:00Z',
       destinations: [{ name: 'ops_discord', type: 'discord', enabled: true }],
+      owner_kind: 'operator',
+      owner_app_id: null,
       created_at: '2026-10-17T10:00:00Z',
       updated_at: '2026-10-18T18:02:00Z',
     };
@@ -495,6 +588,8 @@ describe('delivery api client', () => {
       downSince: null,
       deadlineAt: '2026-10-19T20:02:00Z',
       destinations: [{ name: 'ops_discord', type: 'discord', enabled: true }],
+      ownerKind: 'operator',
+      ownerAppId: null,
       createdAt: '2026-10-17T10:00:00Z',
       updatedAt: '2026-10-18T18:02:00Z',
     };
@@ -611,6 +706,254 @@ describe('delivery api client', () => {
         constructor: ApiError,
         status: 404,
         message: 'heartbeat check not found',
+      });
+    });
+  });
+
+  describe('app identities', () => {
+    const requestWire = {
+      id: 7,
+      app_id: 'urls4irl',
+      github_repository: '4IRL/urls4irl',
+      github_repository_id: 812345678,
+      workflow_path: '.github/workflows/prod-deploy.yml',
+      git_ref: 'refs/heads/main',
+      environment: 'production',
+      github_run_id: '14022',
+      status: 'pending',
+      created_at: '2026-10-21T18:04:00Z',
+      updated_at: '2026-10-21T18:04:00Z',
+    };
+
+    const requestSummary = {
+      id: 7,
+      appId: 'urls4irl',
+      githubRepository: '4IRL/urls4irl',
+      githubRepositoryId: 812345678,
+      workflowPath: '.github/workflows/prod-deploy.yml',
+      gitRef: 'refs/heads/main',
+      environment: 'production',
+      githubRunId: '14022',
+      status: 'pending',
+      createdAt: '2026-10-21T18:04:00Z',
+      updatedAt: '2026-10-21T18:04:00Z',
+    };
+
+    const keyWire = {
+      id: 3,
+      app_id: 'urls4irl',
+      key_hint: 'dak_7Q2m',
+      state: 'active',
+      created_at: '2026-10-21T16:40:00Z',
+      superseded_at: null,
+      revoked_at: null,
+      revoked_reason: null,
+      last_used_at: '2026-10-21T18:00:00Z',
+    };
+
+    const keySummary = {
+      id: 3,
+      appId: 'urls4irl',
+      keyHint: 'dak_7Q2m',
+      state: 'active',
+      createdAt: '2026-10-21T16:40:00Z',
+      supersededAt: null,
+      revokedAt: null,
+      revokedReason: null,
+      lastUsedAt: '2026-10-21T18:00:00Z',
+    };
+
+    const bindingWire = {
+      app_id: 'urls4irl',
+      github_repository: '4IRL/urls4irl',
+      github_repository_id: 812345678,
+      github_owner_id: 55,
+      workflow_path: '.github/workflows/prod-deploy.yml',
+      git_ref: 'refs/heads/main',
+      environment: null,
+      approved_at: '2026-10-21T18:06:00Z',
+      keys: [keyWire],
+    };
+
+    const bindingSummary = {
+      appId: 'urls4irl',
+      githubRepository: '4IRL/urls4irl',
+      githubRepositoryId: 812345678,
+      githubOwnerId: 55,
+      workflowPath: '.github/workflows/prod-deploy.yml',
+      gitRef: 'refs/heads/main',
+      environment: null,
+      approvedAt: '2026-10-21T18:06:00Z',
+      keys: [keySummary],
+    };
+
+    it('listIdentityRequests GETs the admin list and maps snake_case to camelCase', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: { requests: [requestWire] } }));
+
+      const requests = await makeClient().listIdentityRequests();
+
+      const { url, init, headers } = lastCall();
+      expect(url).toBe('https://admin.test/delivery/v1/admin/app-identity/requests');
+      expect(init.method).toBe('GET');
+      expect(headers['X-Requested-With']).toBeUndefined();
+      expect(requests).toEqual([requestSummary]);
+    });
+
+    it('listIdentityRequests maps a null list to an empty array and a missing environment to null', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: { requests: null } }));
+      expect(await makeClient().listIdentityRequests()).toEqual([]);
+
+      const { environment: omitted, ...withoutEnvironment } = requestWire;
+      expect(omitted).toBe('production');
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: { requests: [withoutEnvironment] } }));
+      const [mapped] = await makeClient().listIdentityRequests();
+      expect(mapped.environment).toBeNull();
+    });
+
+    it('maps an unrecognised request status or key state to unknown (fail closed)', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ body: { requests: [{ ...requestWire, status: 'approved' }] } }),
+      );
+      const [request] = await makeClient().listIdentityRequests();
+      expect(request.status).toBe('unknown');
+
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          body: { bindings: [{ ...bindingWire, keys: [{ ...keyWire, state: 'frozen' }] }] },
+        }),
+      );
+      const [binding] = await makeClient().listIdentityBindings();
+      expect(binding.keys[0].state).toBe('unknown');
+    });
+
+    it('approveIdentityRequest POSTs the approve path and maps the binding', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ status: 201, body: { binding: { ...bindingWire, keys: [] } } }),
+      );
+
+      const binding = await makeClient().approveIdentityRequest({ id: 7 });
+
+      const { url, init, headers } = lastCall();
+      expect(url).toBe('https://admin.test/delivery/v1/admin/app-identity/requests/7/approve');
+      expect(init.method).toBe('POST');
+      expect(headers['X-Requested-With']).toBe('admin-ui');
+      expect(init.body).toBeUndefined();
+      expect(binding).toEqual({ ...bindingSummary, keys: [] });
+    });
+
+    it('rejectIdentityRequest POSTs the reject path and maps the request', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ body: { request: { ...requestWire, status: 'rejected' } } }),
+      );
+
+      const rejected = await makeClient().rejectIdentityRequest({ id: 7 });
+
+      expect(lastCall().url).toBe(
+        'https://admin.test/delivery/v1/admin/app-identity/requests/7/reject',
+      );
+      expect(lastCall().init.method).toBe('POST');
+      expect(lastCall().headers['X-Requested-With']).toBe('admin-ui');
+      expect(rejected).toEqual({ ...requestSummary, status: 'rejected' });
+    });
+
+    it('listIdentityBindings GETs the admin list and maps bindings with their keys', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: { bindings: [bindingWire] } }));
+
+      const bindings = await makeClient().listIdentityBindings();
+
+      expect(lastCall().url).toBe('https://admin.test/delivery/v1/admin/app-identity/bindings');
+      expect(lastCall().init.method).toBe('GET');
+      expect(bindings).toEqual([bindingSummary]);
+    });
+
+    it('listIdentityBindings maps null bindings and null keys to empty arrays', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: { bindings: null } }));
+      expect(await makeClient().listIdentityBindings()).toEqual([]);
+
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ body: { bindings: [{ ...bindingWire, keys: null }] } }),
+      );
+      const [binding] = await makeClient().listIdentityBindings();
+      expect(binding.keys).toEqual([]);
+    });
+
+    it('never maps a key value, even one a misbehaving server sends', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          body: {
+            bindings: [{ ...bindingWire, keys: [{ ...keyWire, key: 'dak_SECRETSECRETSECRET' }] }],
+          },
+        }),
+      );
+
+      const bindings = await makeClient().listIdentityBindings();
+
+      expect(JSON.stringify(bindings)).not.toContain('SECRETSECRET');
+      expect(Object.keys(bindings[0].keys[0]).sort()).toEqual(Object.keys(keySummary).sort());
+    });
+
+    it('revokeIdentityKey POSTs the revoke path and maps the key', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          body: {
+            key: {
+              ...keyWire,
+              state: 'revoked',
+              revoked_at: '2026-10-22T09:00:00Z',
+              revoked_reason: 'operator',
+            },
+          },
+        }),
+      );
+
+      const revoked = await makeClient().revokeIdentityKey({ id: 3 });
+
+      expect(lastCall().url).toBe(
+        'https://admin.test/delivery/v1/admin/app-identity/keys/3/revoke',
+      );
+      expect(lastCall().init.method).toBe('POST');
+      expect(lastCall().headers['X-Requested-With']).toBe('admin-ui');
+      expect(revoked).toEqual({
+        ...keySummary,
+        state: 'revoked',
+        revokedAt: '2026-10-22T09:00:00Z',
+        revokedReason: 'operator',
+      });
+    });
+
+    it('unbindApp DELETEs the binding path and maps the result', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: { app_id: 'urls4irl', deleted: true } }));
+
+      const result = await makeClient().unbindApp({ appId: 'urls4irl' });
+
+      expect(lastCall().url).toBe(
+        'https://admin.test/delivery/v1/admin/app-identity/bindings/urls4irl',
+      );
+      expect(lastCall().init.method).toBe('DELETE');
+      expect(lastCall().headers['X-Requested-With']).toBe('admin-ui');
+      expect(result).toEqual({ appId: 'urls4irl', deleted: true });
+    });
+
+    it('unbindApp percent-encodes the app id and maps deleted:false', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: { app_id: 'a b', deleted: false } }));
+
+      const result = await makeClient().unbindApp({ appId: 'a b' });
+
+      expect(lastCall().url).toBe(
+        'https://admin.test/delivery/v1/admin/app-identity/bindings/a%20b',
+      );
+      expect(result).toEqual({ appId: 'a b', deleted: false });
+    });
+
+    it('throws ApiError with the server message on a 409 approve', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ status: 409, body: { error: 'request is not pending' } }),
+      );
+
+      await expect(makeClient().approveIdentityRequest({ id: 7 })).rejects.toMatchObject({
+        constructor: ApiError,
+        status: 409,
+        message: 'request is not pending',
       });
     });
   });

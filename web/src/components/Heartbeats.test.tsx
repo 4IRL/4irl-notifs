@@ -38,6 +38,8 @@ function buildCheck(overrides: Partial<HeartbeatCheck> & { id: number }): Heartb
     downSince: null,
     deadlineAt: '2099-01-01T10:00:00Z',
     destinations: [{ name: 'ops_discord', type: 'discord', enabled: true }],
+    ownerKind: 'operator',
+    ownerAppId: null,
     createdAt: '2026-10-17T10:00:00Z',
     updatedAt: '2026-10-18T08:01:00Z',
     ...overrides,
@@ -68,6 +70,12 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     deleteHeartbeat: vi.fn().mockResolvedValue(undefined),
     pauseHeartbeat: vi.fn(),
     resumeHeartbeat: vi.fn(),
+    listIdentityRequests: vi.fn().mockResolvedValue([]),
+    approveIdentityRequest: vi.fn(),
+    rejectIdentityRequest: vi.fn(),
+    listIdentityBindings: vi.fn().mockResolvedValue([]),
+    revokeIdentityKey: vi.fn(),
+    unbindApp: vi.fn(),
     ...overrides,
   };
 }
@@ -411,7 +419,8 @@ describe('Heartbeats row rendering', () => {
   it('renders no state sub-line for a Down check with neither a failure ping nor a down-since', async () => {
     await renderAtNow([{ ...DOWN_MISSED, downSince: null }]);
 
-    const stateCell = within(rowOf(3)).getAllByRole('cell')[0];
+    // Check is the pinned first column; State is the second.
+    const stateCell = within(rowOf(3)).getAllByRole('cell')[1];
     expect(within(stateCell).getByText(strings.heartbeatStateDown)).toBeInTheDocument();
     expect(stateCell.querySelector('.heartbeats__sub')).toBeNull();
   });
@@ -422,6 +431,133 @@ describe('Heartbeats row rendering', () => {
     expect(screen.getAllByRole('status')).toHaveLength(2);
     expect(summary()).toHaveTextContent('0 of 1 check down');
     expect(resultLine()).toBeEmptyDOMElement();
+  });
+});
+
+describe('Heartbeats owner column', () => {
+  const APP_OWNED = buildCheck({
+    id: 11,
+    appId: 'chores4irl',
+    name: 'daily',
+    ownerKind: 'app',
+    ownerAppId: 'chores4irl',
+  });
+  const OPERATOR_OWNED = buildCheck({ id: 12, appId: 'chores4irl', name: 'manual' });
+  const UNKNOWN_OWNED = buildCheck({
+    id: 13,
+    appId: 'chores4irl',
+    name: 'mystery',
+    ownerKind: 'unknown',
+    ownerAppId: null,
+  });
+  const managedNote = strings.ownerManagedNote({ appId: 'chores4irl' });
+
+  async function renderOwned() {
+    const client = buildClient({
+      listHeartbeats: vi.fn().mockResolvedValue([APP_OWNED, OPERATOR_OWNED, UNKNOWN_OWNED]),
+    });
+    renderSection(client);
+    await screen.findByRole('table');
+    return client;
+  }
+
+  it('has an Owner column header after Check, with Check as the pinned first column', async () => {
+    await renderOwned();
+
+    const headers = screen.getAllByRole('columnheader').map((header) => header.textContent);
+    expect(headers.slice(0, 3)).toEqual([
+      strings.columnHeartbeatCheck,
+      strings.columnHeartbeatState,
+      strings.columnOwner,
+    ]);
+    // The first column carries the pin hook, in the header and in every row.
+    expect(screen.getAllByRole('columnheader')[0]).toHaveClass('admin-table__lead');
+    expect(within(rowOf(11)).getAllByRole('cell')[0]).toHaveClass('admin-table__lead');
+  });
+
+  it('shows a text badge with a hidden Owner prefix per row, distinct from the check app id', async () => {
+    await renderOwned();
+
+    const appCell = within(rowOf(11)).getByText(strings.ownerApp({ appId: 'chores4irl' }));
+    expect(appCell).toHaveTextContent(strings.ownerApp({ appId: 'chores4irl' }));
+    expect(appCell.parentElement).toHaveTextContent(
+      `${strings.ownerPrefix}${strings.ownerApp({ appId: 'chores4irl' })}`,
+    );
+    // The Check column still shows the bare app id, outside any Owner badge.
+    expect(within(rowOf(11)).getByText('chores4irl')).not.toHaveTextContent(strings.ownerPrefix);
+
+    const operatorBadge = within(rowOf(12)).getByText(strings.ownerOperator);
+    expect(operatorBadge.parentElement).toHaveTextContent(
+      `${strings.ownerPrefix}${strings.ownerOperator}`,
+    );
+
+    const unknownBadge = within(rowOf(13)).getByText(strings.ownerUnknown);
+    expect(unknownBadge.parentElement).toHaveTextContent(
+      `${strings.ownerPrefix}${strings.ownerUnknown}`,
+    );
+    expect(within(rowOf(13)).queryByText(strings.ownerOperator)).toBeNull();
+  });
+
+  it('notes app-owned and unknown rows, not operator rows', async () => {
+    await renderOwned();
+
+    // The line under the buttons is the short form, never the long text, and has no `title`.
+    expect(within(rowOf(11)).getByText(strings.ownerManagedInlineNote)).not.toHaveAttribute(
+      'title',
+    );
+    expect(within(rowOf(11)).queryByText(managedNote)).toBeNull();
+    expect(within(rowOf(13)).getByText(strings.ownerUnknownInlineNote)).toBeInTheDocument();
+    expect(within(rowOf(13)).queryByText(strings.ownerUnknownNote)).toBeNull();
+    expect(within(rowOf(12)).queryByText(strings.ownerManagedInlineNote)).toBeNull();
+    expect(within(rowOf(12)).queryByText(strings.ownerUnknownInlineNote)).toBeNull();
+  });
+
+  it('repeats the note as the Delete and Pause confirm notice on an app-owned row only', async () => {
+    const user = userEvent.setup();
+    await renderOwned();
+
+    await user.click(button(`Delete ${label(APP_OWNED)}`));
+    expect(within(rowOf(11)).getAllByText(managedNote)).toHaveLength(1);
+    expect(within(rowOf(11)).getAllByText(strings.ownerManagedInlineNote)).toHaveLength(1);
+    await user.click(button(`Cancel Delete ${label(APP_OWNED)}`));
+
+    await user.click(button(`Pause ${label(APP_OWNED)}`));
+    expect(
+      within(rowOf(11)).getByText(`${strings.pauseHeartbeatNotice} ${managedNote}`),
+    ).toBeInTheDocument();
+    await user.click(button(`Keep running ${label(APP_OWNED)}`));
+
+    // An unknown owner is never treated as safe: its confirms warn too.
+    await user.click(button(`Delete ${label(UNKNOWN_OWNED)}`));
+    expect(within(rowOf(13)).getAllByText(strings.ownerUnknownNote)).toHaveLength(1);
+    await user.click(button(`Cancel Delete ${label(UNKNOWN_OWNED)}`));
+    await user.click(button(`Pause ${label(UNKNOWN_OWNED)}`));
+    expect(
+      within(rowOf(13)).getByText(`${strings.pauseHeartbeatNotice} ${strings.ownerUnknownNote}`),
+    ).toBeInTheDocument();
+    await user.click(button(`Keep running ${label(UNKNOWN_OWNED)}`));
+
+    // The operator's own row confirms with no owner note, and Pause shows only its own notice.
+    await user.click(button(`Pause ${label(OPERATOR_OWNED)}`));
+    expect(within(rowOf(12)).getByText(strings.pauseHeartbeatNotice)).toBeInTheDocument();
+    await user.click(button(`Keep running ${label(OPERATOR_OWNED)}`));
+    await user.click(button(`Delete ${label(OPERATOR_OWNED)}`));
+    expect(button(`Confirm delete ${label(OPERATOR_OWNED)}`)).toBeInTheDocument();
+    expect(rowOf(12).querySelector('.confirm-button__notice')).toBeNull();
+  });
+
+  it('keeps an open editor row spanning the whole table', async () => {
+    const user = userEvent.setup();
+    await renderOwned();
+
+    await user.click(button(`Edit ${label(APP_OWNED)}`));
+
+    const headerCount = screen.getAllByRole('columnheader').length;
+    const editorCell = screen.getByRole('form', { name: /^Edit / }).closest('td');
+    expect(editorCell).toHaveAttribute('colspan', String(headerCount));
+    // The form sits in the pinned wrapper, so it fits the scroll wrapper and wraps normally.
+    expect(editorCell).toHaveClass('admin-table__editor-cell');
+    expect(editorCell?.querySelector('.admin-table__editor')).not.toBeNull();
   });
 });
 
@@ -784,6 +920,83 @@ describe('Heartbeats pause, resume and delete', () => {
     expect(button(`Pause ${label(CHECK_1)}`)).toHaveFocus();
   });
 
+  it.each([
+    { verb: 'Pause', dismiss: (name: string) => `Keep running ${name}` },
+    { verb: 'Delete', dismiss: (name: string) => `Cancel Delete ${name}` },
+  ])(
+    'an open $verb confirm hides the row’s other buttons, leaves row 2 alone and restores them on dismiss and Escape',
+    async ({ verb, dismiss }) => {
+      const user = userEvent.setup();
+      renderSection(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1, CHECK_2]) }));
+      const name = label(CHECK_1);
+      const rowButtons = [`Edit ${name}`, `Pause ${name}`, `Delete ${name}`];
+      const present = () =>
+        rowButtons.filter(
+          (rowButton) => screen.queryByRole('button', { name: rowButton }) !== null,
+        );
+
+      await user.click(await screen.findByRole('button', { name: `${verb} ${name}` }));
+      expect(button(`Confirm ${verb.toLowerCase()} ${name}`)).toHaveFocus();
+      expect(present()).toEqual([]);
+      // The hidden buttons stay mounted, so the row's focus keys still resolve.
+      expect(screen.getByLabelText(`Edit ${name}`)).toHaveAttribute('hidden');
+      for (const other of [`Edit ${label(CHECK_2)}`, `Pause ${label(CHECK_2)}`]) {
+        expect(button(other)).toBeVisible();
+      }
+
+      await user.click(button(dismiss(name)));
+      expect(present()).toEqual(rowButtons);
+      expect(button(`${verb} ${name}`)).toHaveFocus();
+
+      await user.click(button(`${verb} ${name}`));
+      expect(present()).toEqual([]);
+      await user.keyboard('{Escape}');
+      expect(present()).toEqual(rowButtons);
+      expect(button(`${verb} ${name}`)).toHaveFocus();
+    },
+  );
+
+  it('an open Delete confirm on a paused check hides Resume too, and Escape brings it back', async () => {
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({
+        listHeartbeats: vi.fn().mockResolvedValue([{ ...CHECK_1, paused: true }, CHECK_2]),
+      }),
+    );
+    const name = label(CHECK_1);
+
+    await user.click(await screen.findByRole('button', { name: `Delete ${name}` }));
+    for (const hidden of [`Edit ${name}`, `Resume ${name}`]) {
+      expect(screen.queryByRole('button', { name: hidden }), hidden).toBeNull();
+    }
+    expect(screen.getByLabelText(`Resume ${name}`)).toHaveAttribute('hidden');
+    await user.keyboard('{Escape}');
+
+    for (const shown of [`Edit ${name}`, `Resume ${name}`, `Delete ${name}`]) {
+      expect(button(shown)).toBeVisible();
+    }
+  });
+
+  it('confirming a delete runs it once and keeps the row’s buttons in view', async () => {
+    const user = userEvent.setup();
+    const deleting = deferred<undefined>();
+    const deleteHeartbeat = vi.fn().mockReturnValue(deleting.promise);
+    renderSection(
+      buildClient({
+        listHeartbeats: vi.fn().mockResolvedValue([CHECK_1, CHECK_2]),
+        deleteHeartbeat,
+      }),
+    );
+
+    await user.click(await screen.findByRole('button', { name: `Delete ${label(CHECK_1)}` }));
+    await user.click(button(`Confirm delete ${label(CHECK_1)}`));
+
+    expect(deleteHeartbeat).toHaveBeenCalledTimes(1);
+    expect(deleteHeartbeat).toHaveBeenCalledWith({ id: 1 });
+    expect(button(`Edit ${label(CHECK_1)}`)).toBeVisible();
+    expect(button(`Pause ${label(CHECK_1)}`)).toBeVisible();
+  });
+
   it('gives two rows mid-confirm distinguishable dismiss buttons', async () => {
     const user = userEvent.setup();
     renderSection(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1, CHECK_2]) }));
@@ -797,7 +1010,11 @@ describe('Heartbeats pause, resume and delete', () => {
     }
     expect(screen.queryByRole('button', { name: strings.keepHeartbeatRunning })).toBeNull();
 
-    // Delete's dismiss is distinguishable too.
+    // Delete's dismiss is distinguishable too. (An open pair hides its row's other buttons, so
+    // the Pause confirms are dismissed first.)
+    for (const check of [CHECK_1, CHECK_2]) {
+      await user.click(button(`Keep running ${label(check)}`));
+    }
     await user.click(button(`Delete ${label(CHECK_1)}`));
     await user.click(button(`Delete ${label(CHECK_2)}`));
     expect(button(`Cancel Delete ${label(CHECK_1)}`)).toHaveTextContent(strings.cancelAction);
@@ -1050,6 +1267,8 @@ function destination(
     disabledReason: null,
     config: { topic: 'family_alerts' },
     secrets: {},
+    ownerKind: 'operator',
+    ownerAppId: null,
     createdAt: '2026-10-01T00:00:00Z',
     updatedAt: '2026-10-01T00:00:00Z',
     ...overrides,
@@ -1564,7 +1783,9 @@ describe('Heartbeats edit check', () => {
     await openEditor();
 
     const form = editForm();
-    expect(form.closest('td')).toHaveAttribute('colspan', '6');
+    // The editor spans every column: State, Check, Owner, Last ping, Schedule, Alerts to, Actions.
+    expect(screen.getAllByRole('columnheader')).toHaveLength(7);
+    expect(form.closest('td')).toHaveAttribute('colspan', '7');
     expect(form.closest('tr')).not.toHaveAttribute('data-check-id');
     expect(screen.getByLabelText(strings.heartbeatPeriodLabel)).toHaveFocus();
     // 86400 s is shown as 24 hours (days start at two), and 24 hours converts back to 86400 s.

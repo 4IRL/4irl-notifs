@@ -619,6 +619,14 @@ interface DeliveryMockSeed {
   cancelError?: { status: number; message: string };
   /** Heartbeat checks, as the admin list returns them. */
   heartbeats?: Json[];
+  /** App identity requests, as the operator list returns them. */
+  identityRequests?: Json[];
+  /** Approved app identities with their keys, as the operator list returns them. */
+  identityBindings?: Json[];
+  /** When set, approving any request fails with this status and message. */
+  approveError?: { status: number; message: string };
+  /** When set, revoking any key fails with this status and message. */
+  revokeError?: { status: number; message: string };
 }
 
 interface DeliveryMock {
@@ -639,19 +647,30 @@ const READY_BODY: Json = {
   heartbeat_checker: { last_tick_at: '2026-10-17T08:12:30Z', stale: false },
 };
 
+/** The wire owner fields; the default is the operator, as admin create always makes. */
+interface OwnerWireSeed {
+  ownerKind?: string | null;
+  ownerAppId?: string | null;
+}
+
+function ownerWire({ ownerKind = 'operator', ownerAppId = null }: OwnerWireSeed): Json {
+  return { owner_kind: ownerKind, owner_app_id: ownerAppId };
+}
+
 function destinationWire({
   name,
   type,
   enabled = true,
   config = {},
   secrets = {},
+  ...owner
 }: {
   name: string;
   type: string;
   enabled?: boolean;
   config?: Json;
   secrets?: Json;
-}): Json {
+} & OwnerWireSeed): Json {
   return {
     name,
     type,
@@ -659,6 +678,31 @@ function destinationWire({
     disabled_reason: enabled ? null : 'disabled by an operator',
     config,
     secrets,
+    ...ownerWire(owner),
+    created_at: TIMESTAMP,
+    updated_at: TIMESTAMP,
+  };
+}
+
+function routeWire({
+  id,
+  appPattern = 'urls4irl',
+  channelPattern = 'alerts*',
+  destinations = ['hook1'],
+  ...owner
+}: {
+  id: number;
+  appPattern?: string;
+  channelPattern?: string;
+  destinations?: string[];
+} & OwnerWireSeed): Json {
+  return {
+    id,
+    app_pattern: appPattern,
+    channel_pattern: channelPattern,
+    destinations,
+    enabled: true,
+    ...ownerWire(owner),
     created_at: TIMESTAMP,
     updated_at: TIMESTAMP,
   };
@@ -717,6 +761,7 @@ function heartbeatWire({
   graceSeconds = 3600,
   deadlineAt = '2099-01-02T08:00:00Z',
   destinations = [{ name: 'hook1', type: 'webhook', enabled: true }],
+  ...owner
 }: {
   id: number;
   appId?: string;
@@ -730,7 +775,7 @@ function heartbeatWire({
   graceSeconds?: number;
   deadlineAt?: string;
   destinations?: Array<{ name: string; type: string; enabled: boolean }>;
-}): Json {
+} & OwnerWireSeed): Json {
   return {
     id,
     app_id: appId,
@@ -744,8 +789,75 @@ function heartbeatWire({
     down_since: downSince,
     deadline_at: deadlineAt,
     destinations,
+    ...ownerWire(owner),
     created_at: TIMESTAMP,
     updated_at: TIMESTAMP,
+  };
+}
+
+function identityRequestWire({
+  id,
+  appId,
+  status = 'pending',
+  repository = `4IRL/${appId}`,
+  environment = 'production',
+}: {
+  id: number;
+  appId: string;
+  status?: string;
+  repository?: string;
+  environment?: string | null;
+}): Json {
+  return {
+    id,
+    app_id: appId,
+    github_repository: repository,
+    github_repository_id: 812345000 + id,
+    workflow_path: '.github/workflows/prod-deploy.yml',
+    git_ref: 'refs/heads/main',
+    environment,
+    github_run_id: String(14000 + id),
+    status,
+    created_at: TIMESTAMP,
+    updated_at: TIMESTAMP,
+  };
+}
+
+function identityKeyWire({
+  id,
+  appId,
+  hint,
+  state = 'active',
+}: {
+  id: number;
+  appId: string;
+  hint: string;
+  state?: string;
+}): Json {
+  return {
+    id,
+    app_id: appId,
+    key_hint: hint,
+    state,
+    created_at: TIMESTAMP,
+    superseded_at: state === 'superseded' ? TIMESTAMP : null,
+    revoked_at: state === 'revoked' ? TIMESTAMP : null,
+    revoked_reason: state === 'revoked' ? 'operator' : null,
+    last_used_at: null,
+  };
+}
+
+function identityBindingWire({ appId, keys = [] }: { appId: string; keys?: Json[] }): Json {
+  return {
+    app_id: appId,
+    github_repository: `4IRL/${appId}`,
+    github_repository_id: 812345678,
+    github_owner_id: 55,
+    workflow_path: '.github/workflows/prod-deploy.yml',
+    git_ref: 'refs/heads/main',
+    environment: 'production',
+    approved_at: TIMESTAMP,
+    keys,
   };
 }
 
@@ -802,6 +914,693 @@ async function expectCenteredInRow({
   expect(Math.abs(badgeCentre - rowCentre)).toBeLessThanOrEqual(2);
 }
 
+/** Asserts the document itself never scrolls sideways: only a table wrapper may. */
+async function expectNoPageOverflow(page: Page): Promise<void> {
+  const overflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth);
+}
+
+/** Scrolls a table wrapper as far right as it goes and returns where it landed. */
+async function scrollWrapperToEnd(wrapper: Locator): Promise<number> {
+  return wrapper.evaluate(async (element) => {
+    element.scrollLeft = element.scrollWidth;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    return element.scrollLeft;
+  });
+}
+
+/**
+ * Asserts a control is reachable by scrolling the wrapper sideways: scrolled so its start sits
+ * just right of the pinned first column, it is inside the wrapper's visible box, not under the
+ * pinned column and below the pinned titles. (A row's controls can sit far left in a wide
+ * Actions cell, so "the end of the scroll" is not where every control lands.)
+ */
+async function expectReachableByScrolling({
+  wrapper,
+  control,
+}: {
+  wrapper: Locator;
+  control: Locator;
+}): Promise<void> {
+  await control.evaluate(async (element) => {
+    const scroller = element.closest('.admin-table__scroll');
+    const lead = scroller?.querySelector('tbody .admin-table__lead');
+    if (!(scroller instanceof HTMLElement) || lead === null || lead === undefined) {
+      throw new Error('control is not inside a pinned table wrapper');
+    }
+    const gap = element.getBoundingClientRect().left - lead.getBoundingClientRect().right - 8;
+    scroller.scrollLeft += gap;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  const box = await control.boundingBox();
+  const wrapperBox = await wrapper.boundingBox();
+  const leadBox = await wrapper.locator('tbody .admin-table__lead').first().boundingBox();
+  const headerBox = await wrapper.locator('thead th').first().boundingBox();
+  if (box === null || wrapperBox === null || leadBox === null || headerBox === null) {
+    throw new Error('control, wrapper, pinned column or pinned titles have no bounding box');
+  }
+  // Not under the pinned column, and starting inside the visible part of the wrapper.
+  expect(box.x).toBeGreaterThanOrEqual(leadBox.x + leadBox.width - 1);
+  expect(box.x).toBeLessThan(wrapperBox.x + wrapperBox.width - 24);
+  // Not under the pinned titles.
+  expect(box.y).toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1);
+  // Leave the wrapper as found, so a later click is not made against a scrolled table.
+  await wrapper.evaluate((element) => {
+    element.scrollLeft = 0;
+  });
+}
+
+/** The Actions cell of every ordinary row: its last cell (inline-editor rows have none). */
+const ACTIONS_CELL = 'tbody tr:not(:has(.admin-table__editor-cell)) > td:last-child';
+
+/** What an Actions cell offers that must never be left under the pinned column. */
+const ACTIONS_ITEM = 'button, [class*="pill"]';
+
+/**
+ * Scrolls a table wrapper to its start or its end and returns every way the row actions
+ * (buttons and status pills in the last cell) or the pinned first column are not fully
+ * visible there. At the end each action must lie wholly right of the pinned column and inside
+ * the scrollport; at the start the pinned column must lie wholly inside the scrollport and
+ * take no more than `maxLeadShare` of it. No violations means the layout holds. At the end it
+ * also counts the rows whose whole cluster fits beside the pinned column (judged control by
+ * control) and those too wide (judged by their trailing control), so a test can tell the two
+ * branches really ran.
+ */
+async function pinnedLayoutViolations({
+  wrapper,
+  position,
+  maxLeadShare,
+}: {
+  wrapper: Locator;
+  position: 'start' | 'end';
+  maxLeadShare: number;
+}): Promise<{ violations: string[]; whole: number; clipped: number }> {
+  return wrapper.evaluate(
+    async (scroller, { position, maxLeadShare, cellSelector, itemSelector }) => {
+      scroller.scrollLeft = position === 'end' ? scroller.scrollWidth : 0;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const portLeft = scroller.getBoundingClientRect().left + scroller.clientLeft;
+      const portRight = portLeft + scroller.clientWidth;
+      const corner = scroller.querySelector('thead .admin-table__lead');
+      if (corner === null) {
+        return { violations: ['no pinned corner cell'], whole: 0, clipped: 0 };
+      }
+      const leadRight = corner.getBoundingClientRect().right;
+      const found: string[] = [];
+      if (position === 'start') {
+        for (const lead of Array.from(scroller.querySelectorAll('.admin-table__lead'))) {
+          const box = lead.getBoundingClientRect();
+          if (box.left < portLeft - 0.5 || box.right > portRight + 0.5) {
+            found.push(`pinned cell outside the scrollport: ${box.left}..${box.right}`);
+          }
+        }
+        const share = (leadRight - portLeft) / scroller.clientWidth;
+        if (share > maxLeadShare) {
+          found.push(`pinned column takes ${share.toFixed(2)} of the scrollport`);
+        }
+        return { violations: found, whole: 0, clipped: 0 };
+      }
+      let items = 0;
+      let whole = 0;
+      let clipped = 0;
+      const visibleWidth = portRight - leadRight;
+      for (const cell of Array.from(scroller.querySelectorAll(cellSelector))) {
+        const boxes = Array.from(cell.querySelectorAll(itemSelector))
+          .map((item) => ({
+            box: item.getBoundingClientRect(),
+            label: (item.getAttribute('aria-label') ?? item.textContent ?? '').trim(),
+          }))
+          .filter(({ box }) => box.width > 0);
+        if (boxes.length === 0) {
+          continue;
+        }
+        items += boxes.length;
+        const clusterWidth =
+          Math.max(...boxes.map(({ box }) => box.right)) -
+          Math.min(...boxes.map(({ box }) => box.left));
+        const trailing = boxes.reduce((last, next) =>
+          next.box.right > last.box.right ? next : last,
+        );
+        // A row's actions that fit beside the pinned column are all wholly visible; a longer
+        // cluster still ends in view (its last control wholly visible, no blank space after
+        // it) and each control in it is reached by scrolling back (see the focus checks).
+        const cellPadding = Number.parseFloat(getComputedStyle(cell).paddingRight);
+        const fits = clusterWidth + cellPadding <= visibleWidth;
+        if (fits) {
+          whole += 1;
+        } else {
+          clipped += 1;
+        }
+        const judged = fits ? boxes : [trailing];
+        for (const { box, label } of judged) {
+          if (box.left < leadRight - 0.5 || box.right > portRight + 0.5) {
+            found.push(
+              `${label}: ${box.left.toFixed(0)}..${box.right.toFixed(0)} not within ` +
+                `${leadRight.toFixed(0)}..${portRight.toFixed(0)}`,
+            );
+          }
+        }
+        if (trailing.box.right < portRight - 40) {
+          found.push(
+            `${trailing.label}: blank space after it, ends at ${trailing.box.right.toFixed(0)} ` +
+              `of ${portRight.toFixed(0)}`,
+          );
+        }
+      }
+      if (items === 0) {
+        found.push('no row actions found');
+      }
+      return { violations: found, whole, clipped };
+    },
+    { position, maxLeadShare, cellSelector: ACTIONS_CELL, itemSelector: ACTIONS_ITEM },
+  );
+}
+
+/**
+ * Tabs through every button of each row (the Keys column's Revoke included) from the wrapper's
+ * start edge, then focuses the first one from the far end, and returns every focused button
+ * that is not wholly right of the pinned column and inside the scrollport, plus how many
+ * focused buttons were checked (so a test can tell the loop was not vacuous).
+ */
+async function focusedActionViolations({
+  page,
+  wrapper,
+}: {
+  page: Page;
+  wrapper: Locator;
+}): Promise<{ violations: string[]; checks: number }> {
+  const found: string[] = [];
+  let checks = 0;
+  const check = async (): Promise<void> => {
+    checks += 1;
+    const problem = await wrapper.evaluate(async (scroller) => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !scroller.contains(active)) {
+        return 'focus left the wrapper';
+      }
+      const portLeft = scroller.getBoundingClientRect().left + scroller.clientLeft;
+      const portRight = portLeft + scroller.clientWidth;
+      const leadRight =
+        scroller.querySelector('thead .admin-table__lead')?.getBoundingClientRect().right ??
+        Infinity;
+      const box = active.getBoundingClientRect();
+      const label = (active.getAttribute('aria-label') ?? active.textContent ?? '').trim();
+      if (box.left < leadRight - 0.5 || box.right > portRight + 0.5) {
+        return `${label}: ${box.left.toFixed(0)}..${box.right.toFixed(0)} not within ${leadRight.toFixed(0)}..${portRight.toFixed(0)} (scrolled ${scroller.scrollLeft} of ${scroller.scrollWidth - scroller.clientWidth})`;
+      }
+      return null;
+    });
+    if (problem !== null) {
+      found.push(problem);
+    }
+  };
+  const rows = wrapper.locator(ACTIONS_CELL.replace(/ > td:last-child$/, ''));
+  const rowCount = await rows.count();
+  for (let index = 0; index < rowCount; index += 1) {
+    const buttons = rows.nth(index).locator('button');
+    const count = await buttons.count();
+    if (count === 0) {
+      continue;
+    }
+    await wrapper.evaluate((scroller) => {
+      scroller.scrollLeft = 0;
+    });
+    await buttons.first().focus();
+    await check();
+    for (let step = 1; step < count; step += 1) {
+      await page.keyboard.press('Tab');
+      await check();
+    }
+    // From the far end: focusing the row's first button scrolls back, clear of the column.
+    await wrapper.evaluate((scroller) => {
+      scroller.scrollLeft = scroller.scrollWidth;
+    });
+    await buttons.first().focus();
+    await check();
+  }
+  return { violations: found, checks };
+}
+
+/**
+ * Asserts an open inline editor spans the whole table yet stays in view: it sits at the
+ * wrapper's start edge, no wider than the wrapper, even with the wrapper scrolled to its end.
+ */
+async function expectEditorInView({
+  wrapper,
+  form,
+}: {
+  wrapper: Locator;
+  form: Locator;
+}): Promise<void> {
+  expect(await scrollWrapperToEnd(wrapper)).toBeGreaterThan(0);
+  const formBox = await form.boundingBox();
+  const wrapperBox = await wrapper.boundingBox();
+  const cellBox = await form.locator('xpath=ancestor::td[1]').boundingBox();
+  const tableBox = await wrapper.locator('table').boundingBox();
+  if (formBox === null || wrapperBox === null || cellBox === null || tableBox === null) {
+    throw new Error('editor, wrapper, cell or table has no bounding box');
+  }
+  // The cell spans the whole (scrolling) table ...
+  expect(cellBox.width).toBeGreaterThanOrEqual(tableBox.width - 1);
+  // ... while the form itself stays inside the visible part of the wrapper.
+  expect(formBox.x).toBeGreaterThanOrEqual(wrapperBox.x - 1);
+  expect(formBox.x + formBox.width).toBeLessThanOrEqual(wrapperBox.x + wrapperBox.width + 1);
+}
+
+/**
+ * Asserts a desktop (fine pointer) button keeps the compact table-button size: the 44px touch
+ * target is only for coarse pointers and the narrow layout's kebab and menu items.
+ */
+async function expectCompactButton(locator: Locator): Promise<void> {
+  const box = await locator.boundingBox();
+  expect(box?.height ?? Infinity).toBeLessThan(40);
+  expect(box?.height ?? 0).toBeGreaterThan(20);
+}
+
+/** Asserts a touch control is at least 44x44. */
+async function expectTouchTarget(locator: Locator): Promise<void> {
+  const box = await locator.boundingBox();
+  expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
+}
+
+/** The Actions kebab of the row named `row` (narrow layout only). */
+function rowKebab({ page, row }: { page: Page; row: string }): Locator {
+  return page.getByRole('button', { name: `Actions for ${row}`, exact: true });
+}
+
+/** A row's menu. It is portalled to <body>, so it is found from the page, not the table. */
+function rowMenu({ page, row }: { page: Page; row: string }): Locator {
+  return page.getByRole('menu', { name: `Actions for ${row}`, exact: true });
+}
+
+/** Opens a row's menu with a click and returns it, once visible. */
+async function openRowMenu({ page, row }: { page: Page; row: string }): Promise<Locator> {
+  await rowKebab({ page, row }).click();
+  const menu = rowMenu({ page, row });
+  await expect(menu).toBeVisible();
+  return menu;
+}
+
+/** Asserts a box lies wholly inside the viewport. */
+async function expectInViewport({
+  page,
+  locator,
+}: {
+  page: Page;
+  locator: Locator;
+}): Promise<void> {
+  const box = await locator.boundingBox();
+  const viewport = page.viewportSize();
+  if (box === null || viewport === null) {
+    throw new Error('element or viewport has no size');
+  }
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+}
+
+/**
+ * Asserts nothing clips or covers an element: what is painted just inside each of its four
+ * corners is the element itself (or something in it).
+ */
+async function expectFullyPainted(locator: Locator): Promise<void> {
+  const painted = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const inset = 3;
+    return [
+      [rect.left + inset, rect.top + inset],
+      [rect.right - inset, rect.top + inset],
+      [rect.left + inset, rect.bottom - inset],
+      [rect.right - inset, rect.bottom - inset],
+    ].map(([x, y]) => {
+      const hit = document.elementFromPoint(x, y);
+      return hit !== null && element.contains(hit);
+    });
+  });
+  expect(painted).toEqual([true, true, true, true]);
+}
+
+/** The element that has focus, described for an assertion message, or `body`. */
+async function focusedDescription(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    return active === null
+      ? 'none'
+      : `${active.tagName.toLowerCase()}:${active.getAttribute('aria-label') ?? active.textContent?.trim().slice(0, 40) ?? ''}`;
+  });
+}
+
+/**
+ * Asserts the narrow-layout (<= 30rem) table contract on one wrapper at its current size:
+ *  - it scrolls both ways inside itself, and the page never scrolls sideways;
+ *  - the column titles stay pinned to its top while it scrolls, opaque and painted above rows;
+ *  - the first column is NOT pinned: it scrolls away like every other column and its cells
+ *    show their whole text (no ellipsis, nothing clipped by the cell);
+ *  - the kebab column is pinned to the wrapper's end edge at every scroll position, opaque,
+ *    painted over the scrolling cells, below the title row's corner cell;
+ *  - the body rows carry no buttons but the kebab (no inline row buttons, no notes, errors or
+ *    confirms widening the table) and no cell wraps.
+ * Needs enough rows to overflow vertically. Leaves the wrapper scrolled.
+ */
+async function expectCompactTable({ wrapper }: { wrapper: Locator }): Promise<void> {
+  expect(await maxRenderedLines({ root: wrapper, skip: '.admin-table__editor-cell' })).toBe(1);
+
+  const report = await wrapper.evaluate(async (element) => {
+    element.scrollIntoView({ block: 'start' });
+    const style = getComputedStyle(element);
+    const alphaOf = (target: Element): number => {
+      const color = getComputedStyle(target).backgroundColor;
+      const channels = /^rgba?\(([^)]+)\)$/.exec(color)?.[1].split(',') ?? [];
+      if (channels.length === 3) {
+        return 1;
+      }
+      return channels.length === 4 ? Number(channels[3]) : Number.NaN;
+    };
+    const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const scrollsBothWays =
+      element.scrollWidth > element.clientWidth && element.scrollHeight > element.clientHeight;
+    element.scrollTop = 160;
+    element.scrollLeft = 120;
+    await frame();
+
+    const wrapperRect = element.getBoundingClientRect();
+    const portRight = wrapperRect.left + element.clientLeft + element.clientWidth;
+    const headers = Array.from(element.querySelectorAll('thead th'));
+    const headerBottom = Math.max(
+      ...headers.map((header) => header.getBoundingClientRect().bottom),
+    );
+    /** True when what is painted at the middle of `target` is `target` (or inside it). */
+    const paintedAtCentre = (target: Element): boolean | null => {
+      const rect = target.getBoundingClientRect();
+      if (
+        rect.top < headerBottom ||
+        rect.bottom > Math.min(wrapperRect.bottom, window.innerHeight) ||
+        rect.width < 4
+      ) {
+        return null;
+      }
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return hit !== null && target.contains(hit);
+    };
+    const kebabInfo = ({ cell, header }: { cell: Element; header: boolean }) => {
+      const rect = cell.getBoundingClientRect();
+      const computed = getComputedStyle(cell);
+      return {
+        header,
+        position: computed.position,
+        alpha: alphaOf(cell),
+        zIndex: Number(computed.zIndex),
+        gapRight: portRight - rect.right,
+        width: rect.width,
+        painted: header ? null : paintedAtCentre(cell.querySelector('button') ?? cell),
+      };
+    };
+    const kebabsNow = () => [
+      ...Array.from(element.querySelectorAll('thead th.admin-table__kebab')).map((cell) =>
+        kebabInfo({ cell, header: true }),
+      ),
+      ...Array.from(element.querySelectorAll('tbody td.admin-table__kebab')).map((cell) =>
+        kebabInfo({ cell, header: false }),
+      ),
+    ];
+    const kebabsMiddle = kebabsNow();
+    const leadCells = Array.from(element.querySelectorAll('tbody td.admin-table__lead'));
+    const leads = leadCells.map((cell) => {
+      const computed = getComputedStyle(cell);
+      return {
+        position: computed.position,
+        // Pinned would keep it at the wrapper's start edge; unpinned, 120px of scroll moves it.
+        gapLeft: cell.getBoundingClientRect().left - wrapperRect.left,
+        // No ellipsis, nothing clipped: the cell is as wide as its content.
+        clipped: cell.scrollWidth > cell.clientWidth + 1,
+        textOverflow: computed.textOverflow,
+        overflow: computed.overflowX,
+        maxWidth: computed.maxWidth,
+      };
+    });
+    const leadCorner = element.querySelector('thead th.admin-table__lead');
+
+    // At the far end the kebab column is still on the end edge.
+    element.scrollLeft = element.scrollWidth;
+    await frame();
+    const kebabsAtEnd = kebabsNow();
+
+    return {
+      overflow: { x: style.overflowX, y: style.overflowY },
+      scrollsBothWays,
+      scrolled: { top: element.scrollTop },
+      pageScrollLeft: document.documentElement.scrollLeft,
+      headers: headers.map((header) => ({
+        position: getComputedStyle(header).position,
+        alpha: alphaOf(header),
+        gapTop: header.getBoundingClientRect().top - wrapperRect.top,
+        zIndex: Number(getComputedStyle(header).zIndex),
+      })),
+      cornerPosition: leadCorner === null ? null : getComputedStyle(leadCorner).position,
+      leads,
+      kebabsMiddle,
+      kebabsAtEnd,
+      // Every body button is a kebab: no inline buttons, no confirm pairs.
+      strayButtons: Array.from(element.querySelectorAll('tbody button'))
+        .filter((button) => !button.classList.contains('row-menu__trigger'))
+        .map((button) => (button.textContent ?? '').trim()),
+      // No cell may wrap (the editor row aside).
+      wrappingCells: Array.from(element.querySelectorAll('th, td:not(.admin-table__editor-cell)'))
+        .filter((cell) => getComputedStyle(cell).whiteSpace !== 'nowrap')
+        .map((cell) => cell.className || cell.tagName),
+    };
+  });
+
+  expect(report.overflow).toEqual({ x: 'auto', y: 'auto' });
+  expect(report.scrollsBothWays).toBe(true);
+  expect(report.scrolled.top).toBeGreaterThan(0);
+  expect(report.pageScrollLeft).toBe(0);
+
+  // Titles: pinned to the wrapper's top, opaque, above the rows.
+  expect(report.headers.length).toBeGreaterThan(2);
+  for (const header of report.headers) {
+    expect(header.position).toBe('sticky');
+    expect(header.alpha).toBe(1);
+    expect(Math.abs(header.gapTop)).toBeLessThanOrEqual(1);
+  }
+
+  // The first column scrolls away and shows every character of its cells.
+  expect(report.leads.length).toBeGreaterThan(4);
+  for (const lead of report.leads) {
+    expect(lead.position).toBe('static');
+    expect(lead.gapLeft).toBeLessThan(0);
+    expect(lead.clipped).toBe(false);
+    expect(lead.textOverflow).not.toBe('ellipsis');
+    expect(lead.overflow).toBe('visible');
+    expect(lead.maxWidth).toBe('none');
+  }
+  // ... and so does its title (the corner is a plain pinned title here, not a pinned column).
+  expect(report.cornerPosition).toBe('sticky');
+
+  // Kebab column: on the end edge, opaque, painted, below the corner, at both scroll ends.
+  for (const kebabs of [report.kebabsMiddle, report.kebabsAtEnd]) {
+    const header = kebabs.find((kebab) => kebab.header);
+    const cells = kebabs.filter((kebab) => !kebab.header);
+    expect(header).toBeDefined();
+    expect(cells.length).toBeGreaterThan(4);
+    expect(Math.abs(header?.gapRight ?? NaN)).toBeLessThanOrEqual(1);
+    for (const cell of cells) {
+      expect(cell.position).toBe('sticky');
+      expect(cell.alpha).toBe(1);
+      expect(Math.abs(cell.gapRight)).toBeLessThanOrEqual(1);
+      expect(cell.width).toBeLessThanOrEqual(56);
+      expect(cell.zIndex).toBeLessThan(header?.zIndex ?? 0);
+      expect(cell.painted).not.toBe(false);
+    }
+    // At least some kebabs were really hit-tested over the scrolling cells.
+    expect(cells.filter((cell) => cell.painted === true).length).toBeGreaterThan(2);
+  }
+  expect(report.strayButtons).toEqual([]);
+  expect(report.wrappingCells).toEqual([]);
+}
+
+/**
+ * Asserts the roomy-layout pinned-table contract on one wrapper at its current size: it
+ * scrolls both ways inside itself, the column titles stay pinned to its top while it scrolls
+ * vertically and sideways, the first column stays at its start edge, both are opaque and
+ * painted above the scrolling rows, no cell wraps (computed `white-space: nowrap`, text on one
+ * line, action buttons on one line), an ordinary first-column value is never truncated and a
+ * pathologically long one is capped (60% of the wrapper, at most 32rem) with its full value in
+ * `title`. Needs enough rows to overflow vertically, and at least one first-column value
+ * longer than the cap. Leaves the wrapper scrolled.
+ */
+async function expectPinnedTable({ wrapper }: { wrapper: Locator }): Promise<void> {
+  // No wrapped text anywhere in the table (the editor row wraps by design).
+  expect(await maxRenderedLines({ root: wrapper, skip: '.admin-table__editor-cell' })).toBe(1);
+
+  const report = await wrapper.evaluate(async (element) => {
+    element.scrollIntoView({ block: 'start' });
+    const style = getComputedStyle(element);
+    // NaN when the colour is not parseable, so a surprise fails the assertion below.
+    const alphaOf = (target: Element): number => {
+      const color = getComputedStyle(target).backgroundColor;
+      const channels = /^rgba?\(([^)]+)\)$/.exec(color)?.[1].split(',') ?? [];
+      if (channels.length === 3) {
+        return 1;
+      }
+      return channels.length === 4 ? Number(channels[3]) : Number.NaN;
+    };
+    const scrollsBothWays =
+      element.scrollWidth > element.clientWidth && element.scrollHeight > element.clientHeight;
+    element.scrollTop = 160;
+    element.scrollLeft = 120;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    const wrapperRect = element.getBoundingClientRect();
+    const headers = Array.from(element.querySelectorAll('thead th'));
+    const headerBottom = Math.max(
+      ...headers.map((header) => header.getBoundingClientRect().bottom),
+    );
+    const leadRight =
+      element.querySelector('thead .admin-table__lead')?.getBoundingClientRect().right ?? 0;
+    const visibleRight = Math.min(wrapperRect.right, window.innerWidth);
+    /** What is painted at the middle of the part of `target` that is on screen, or null. */
+    const hitAtVisibleCentre = ({
+      target,
+      minLeft,
+    }: {
+      target: Element;
+      minLeft: number;
+    }): Element | null => {
+      const rect = target.getBoundingClientRect();
+      const left = Math.max(rect.left, minLeft);
+      const right = Math.min(rect.right, visibleRight);
+      const top = Math.max(rect.top, wrapperRect.top);
+      const bottom = Math.min(rect.bottom, wrapperRect.bottom, window.innerHeight);
+      if (right - left < 4 || bottom - top < 4) {
+        return null;
+      }
+      return document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+    };
+    const headerHits = headers.map((header) => {
+      const hit = hitAtVisibleCentre({
+        target: header,
+        // The corner cell is the pinned column itself; every other title is judged where it
+        // shows, to the right of that column.
+        minLeft: header.classList.contains('admin-table__lead') ? wrapperRect.left : leadRight,
+      });
+      return hit === null ? null : hit.closest('th') === header;
+    });
+    const cells = Array.from(element.querySelectorAll('th, td:not(.admin-table__editor-cell)'));
+    const buttonRows = Array.from(element.querySelectorAll('tbody td'))
+      .map((cell) => Array.from(cell.querySelectorAll(':scope > div > button')))
+      .filter((buttons) => buttons.length > 1);
+    return {
+      overflow: { x: style.overflowX, y: style.overflowY },
+      scrollsBothWays,
+      scrolled: { top: element.scrollTop, left: element.scrollLeft },
+      pageScrollLeft: document.documentElement.scrollLeft,
+      wrapperWidth: wrapperRect.width,
+      remPx: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+      headers: headers.map((header, index) => ({
+        position: getComputedStyle(header).position,
+        alpha: alphaOf(header),
+        gapTop: header.getBoundingClientRect().top - wrapperRect.top,
+        // null: this header is scrolled out of sight or under the pinned column.
+        painted: headerHits[index],
+      })),
+      leads: Array.from(element.querySelectorAll('.admin-table__lead')).map((cell) => {
+        const rect = cell.getBoundingClientRect();
+        // Body cells below the titles are hit at their middle, never a scrolled neighbour.
+        const hit =
+          cell.tagName === 'TH' || rect.top < headerBottom
+            ? null
+            : hitAtVisibleCentre({ target: cell, minLeft: wrapperRect.left });
+        return {
+          header: cell.tagName === 'TH',
+          position: getComputedStyle(cell).position,
+          alpha: alphaOf(cell),
+          gapLeft: rect.left - wrapperRect.left,
+          width: rect.width,
+          painted: hit === null ? null : hit.closest('td') === cell,
+          truncated: cell.scrollWidth > cell.clientWidth + 1,
+          title: cell.getAttribute('title'),
+          text: (cell.textContent ?? '').trim(),
+        };
+      }),
+      // Every body cell that scrolls (not pinned) is a different, non-sticky cell.
+      scrollingCellsAreNotSticky: Array.from(
+        element.querySelectorAll('tbody td:not(.admin-table__lead):not(.admin-table__editor-cell)'),
+      ).every((cell) => getComputedStyle(cell).position === 'static'),
+      // No cell may wrap: computed white-space is nowrap everywhere (the editor row aside).
+      wrappingCells: cells
+        .filter((cell) => getComputedStyle(cell).whiteSpace !== 'nowrap')
+        .map((cell) => cell.className || cell.tagName),
+      // Buttons side by side in an Actions cell share a top edge (a flex-wrap would stack them).
+      stackedButtonRows: buttonRows.filter(
+        (buttons) =>
+          new Set(buttons.map((button) => Math.round(button.getBoundingClientRect().top))).size > 1,
+      ).length,
+      buttonRowCount: buttonRows.length,
+    };
+  });
+
+  expect(report.overflow).toEqual({ x: 'auto', y: 'auto' });
+  expect(report.scrollsBothWays).toBe(true);
+  expect(report.scrolled.top).toBeGreaterThan(0);
+  expect(report.scrolled.left).toBeGreaterThan(0);
+  // The wrapper scrolled, not the page.
+  expect(report.pageScrollLeft).toBe(0);
+  expect(report.headers.length).toBeGreaterThan(2);
+  for (const header of report.headers) {
+    expect(header.position).toBe('sticky');
+    expect(header.alpha).toBe(1);
+    // Still at the wrapper's top edge although the rows scrolled up under it.
+    expect(Math.abs(header.gapTop)).toBeLessThanOrEqual(1);
+    expect(header.painted).not.toBe(false);
+  }
+  // At least the corner and one more title were really hit-tested, over the scrolled rows.
+  expect(report.headers.filter((header) => header.painted === true).length).toBeGreaterThan(1);
+  // The title row and every body row have a pinned first cell.
+  expect(report.leads.filter((lead) => lead.header)).toHaveLength(1);
+  expect(report.leads.length).toBeGreaterThan(4);
+  const cap = Math.min(report.wrapperWidth * 0.6, 32 * report.remPx);
+  for (const lead of report.leads) {
+    expect(lead.position).toBe('sticky');
+    expect(lead.alpha).toBe(1);
+    // Still at the wrapper's start edge although the table scrolled sideways.
+    expect(Math.abs(lead.gapLeft)).toBeLessThanOrEqual(1);
+    expect(lead.painted).not.toBe(false);
+    // Only a pathological identifier reaches the cap (plus a pixel of rounding).
+    expect(lead.width).toBeLessThanOrEqual(cap + 1);
+  }
+  expect(report.leads.some((lead) => !lead.header && lead.painted === true)).toBe(true);
+  // The seeded long identifier really reached the cap, so the cap is what held it, and it is
+  // the only kind of value that is truncated; its full value is in `title`.
+  const bodyLeads = report.leads.filter((lead) => !lead.header);
+  expect(Math.max(...bodyLeads.map((lead) => lead.width))).toBeGreaterThan(cap - 2);
+  for (const lead of bodyLeads) {
+    // The full value travels in `title`, for the one that is cut off to be readable.
+    expect(lead.title ?? '').not.toBe('');
+    expect(lead.text).toContain(lead.title ?? '');
+    if (lead.text.includes('very_long_identifier')) {
+      expect((lead.title ?? '').length).toBeGreaterThan(80);
+    }
+    // (Every cell of the column is as wide as the capped one, so judge each by its content.)
+    if (lead.text.includes('very_long_identifier')) {
+      expect(lead.truncated, `"${lead.text}" (${lead.width}px) is capped`).toBe(true);
+    } else {
+      expect(lead.truncated, `"${lead.text}" is not truncated`).toBe(false);
+    }
+  }
+  // The Actions cell and every other column scroll away.
+  expect(report.scrollingCellsAreNotSticky).toBe(true);
+  expect(report.wrappingCells).toEqual([]);
+  expect(report.stackedButtonRows).toBe(0);
+}
+
 async function mockProvisioning(page: Page): Promise<void> {
   await page.route('**/v1/users', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"users":[]}' });
@@ -826,6 +1625,8 @@ async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<De
   };
   let scheduled = [...(seed.scheduled ?? [])];
   let heartbeats = [...(seed.heartbeats ?? [])];
+  let identityRequests = [...(seed.identityRequests ?? [])];
+  let identityBindings = [...(seed.identityBindings ?? [])];
   let nextRouteId = 100;
   let nextHeartbeatId = 100;
 
@@ -918,6 +1719,11 @@ async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<De
         await reply({ route, status: 404, body: { error: 'destination does not exist' } });
         return;
       }
+      if (method === 'DELETE' && destinationMatch[2] === undefined) {
+        destinations.splice(destinations.indexOf(target), 1);
+        await route.fulfill({ status: 204 });
+        return;
+      }
       if (method === 'PATCH' && destinationMatch[2] === undefined) {
         const body = recorded.body as Json;
         if (typeof body.enabled === 'boolean') {
@@ -949,6 +1755,7 @@ async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<De
         const created = {
           id: (nextRouteId += 1),
           ...body,
+          ...ownerWire({}),
           created_at: TIMESTAMP,
           updated_at: TIMESTAMP,
         };
@@ -956,6 +1763,17 @@ async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<De
         await reply({ route, status: 201, body: { route: created } });
         return;
       }
+    }
+    const routeMatch = /^\/delivery\/v1\/admin\/routes\/(\d+)$/.exec(pathname);
+    if (method === 'DELETE' && routeMatch !== null) {
+      const index = routes.findIndex((candidate) => candidate.id === Number(routeMatch[1]));
+      if (index === -1) {
+        await reply({ route, status: 404, body: { error: 'route does not exist' } });
+        return;
+      }
+      routes.splice(index, 1);
+      await route.fulfill({ status: 204 });
+      return;
     }
     if (method === 'GET' && pathname === '/delivery/v1/admin/deliveries') {
       const state = url.searchParams.get('state') ?? '';
@@ -1111,7 +1929,92 @@ async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<De
         return;
       }
     }
-    if (method === 'POST' && pathname === '/delivery/v1/messages') {
+    if (method === 'GET' && pathname === '/delivery/v1/admin/app-identity/requests') {
+      await reply({ route, body: { requests: identityRequests } });
+      return;
+    }
+    if (method === 'GET' && pathname === '/delivery/v1/admin/app-identity/bindings') {
+      await reply({ route, body: { bindings: identityBindings } });
+      return;
+    }
+    const identityRequestMatch =
+      /^\/delivery\/v1\/admin\/app-identity\/requests\/(\d+)\/(approve|reject)$/.exec(pathname);
+    if (method === 'POST' && identityRequestMatch !== null) {
+      const id = Number(identityRequestMatch[1]);
+      const action = identityRequestMatch[2];
+      const found = identityRequests.find((candidate) => candidate.id === id);
+      if (found === undefined) {
+        await reply({ route, status: 404, body: { error: 'request not found' } });
+        return;
+      }
+      if (seed.approveError !== undefined && action === 'approve') {
+        await reply({
+          route,
+          status: seed.approveError.status,
+          body: { error: seed.approveError.message },
+        });
+        return;
+      }
+      if (action === 'approve') {
+        identityRequests = identityRequests.filter((candidate) => candidate.id !== id);
+        const binding = identityBindingWire({ appId: found.app_id as string });
+        identityBindings = [...identityBindings, binding];
+        await reply({ route, status: 201, body: { binding } });
+        return;
+      }
+      const rejected = { ...found, status: 'rejected' };
+      identityRequests = identityRequests.map((candidate) =>
+        candidate.id === id ? rejected : candidate,
+      );
+      await reply({ route, body: { request: rejected } });
+      return;
+    }
+    const identityKeyMatch = /^\/delivery\/v1\/admin\/app-identity\/keys\/(\d+)\/revoke$/.exec(
+      pathname,
+    );
+    if (method === 'POST' && identityKeyMatch !== null) {
+      if (seed.revokeError !== undefined) {
+        await reply({
+          route,
+          status: seed.revokeError.status,
+          body: { error: seed.revokeError.message },
+        });
+        return;
+      }
+      const id = Number(identityKeyMatch[1]);
+      const existing = identityBindings
+        .flatMap((binding) => binding.keys as Json[])
+        .find((identityKey) => identityKey.id === id);
+      if (existing === undefined) {
+        await reply({ route, status: 404, body: { error: 'key not found' } });
+        return;
+      }
+      const revoked = {
+        ...existing,
+        state: 'revoked',
+        revoked_at: TIMESTAMP,
+        revoked_reason: 'operator',
+      };
+      identityBindings = identityBindings.map((binding) => ({
+        ...binding,
+        keys: (binding.keys as Json[]).map((identityKey) =>
+          identityKey.id === id ? revoked : identityKey,
+        ),
+      }));
+      await reply({ route, body: { key: revoked } });
+      return;
+    }
+    const identityBindingMatch = /^\/delivery\/v1\/admin\/app-identity\/bindings\/([^/]+)$/.exec(
+      pathname,
+    );
+    if (method === 'DELETE' && identityBindingMatch !== null) {
+      const appId = decodeURIComponent(identityBindingMatch[1]);
+      const deleted = identityBindings.some((binding) => binding.app_id === appId);
+      identityBindings = identityBindings.filter((binding) => binding.app_id !== appId);
+      await reply({ route, body: { app_id: appId, deleted } });
+      return;
+    }
+    if (method === 'POST' && pathname === '/delivery/v1/admin/messages') {
       await reply({
         route,
         status: 201,
@@ -1144,6 +2047,92 @@ async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<De
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Every way an admin table's Actions column does not fit its wrapper without sideways
+ * scrolling: the wrapper scrolls, a button or an extra line (owner note, test result, row
+ * error) sticks out of its cell's content box or the wrapper, an extra line is cut off, or the
+ * column gets narrower when the extra lines are hidden (so they are what widens it). Judge it
+ * with every row idle (no confirm open); an open confirm is judged on its own, by the
+ * "open confirm" tests below.
+ */
+async function actionsFitViolations({
+  wrapper,
+  extraLines,
+}: {
+  wrapper: Locator;
+  /** Selector of the lines under the buttons that must stay inside the cell. */
+  extraLines: string;
+}): Promise<string[]> {
+  return wrapper.evaluate(
+    (scroller, selectors) => {
+      const problems: string[] = [];
+      const port = scroller.getBoundingClientRect();
+      if (scroller.scrollWidth > scroller.clientWidth) {
+        problems.push(
+          `wrapper scrolls sideways (${scroller.scrollWidth} > ${scroller.clientWidth})`,
+        );
+      }
+      const cells = [...scroller.querySelectorAll(selectors.cell)];
+      if (cells.length === 0) {
+        return ['no Actions cells found'];
+      }
+      for (const cell of cells) {
+        const cellBox = cell.getBoundingClientRect();
+        const style = getComputedStyle(cell);
+        const contentLeft = cellBox.left + parseFloat(style.paddingLeft);
+        const contentRight = cellBox.right - parseFloat(style.paddingRight);
+        if (cellBox.right > port.right + 0.5) {
+          problems.push(`actions cell ends at ${cellBox.right} past the wrapper at ${port.right}`);
+        }
+        for (const button of cell.querySelectorAll('button')) {
+          const box = button.getBoundingClientRect();
+          if (box.right > contentRight + 0.5 || box.right > port.right + 0.5) {
+            problems.push(`a button ends at ${box.right}, past its cell or the wrapper`);
+          }
+        }
+        for (const line of cell.querySelectorAll(selectors.lines)) {
+          const box = line.getBoundingClientRect();
+          if (box.width > 0 && (box.right > contentRight + 0.5 || box.left < contentLeft - 0.5)) {
+            problems.push(`"${line.textContent}" sticks out of its cell`);
+          }
+          // No extra line is ever cut off: the owner note is short enough to show in full,
+          // and a result or an error wraps.
+          const cutOff =
+            line.scrollWidth > line.clientWidth + 1 || line.scrollHeight > line.clientHeight + 1;
+          if (cutOff) {
+            problems.push(`"${line.textContent}" is cut off`);
+          }
+        }
+      }
+      // Hiding the extra lines must not narrow the column: the buttons alone set its width.
+      // The owner note is the one exception: it is a short line shown in full, so it may set
+      // the width (the wrapper still must not scroll, checked above).
+      const widths = () => cells.map((cell) => cell.getBoundingClientRect().width);
+      const withLines = widths();
+      const lines = [...scroller.querySelectorAll<HTMLElement>(selectors.lines)].filter(
+        (line) => !line.classList.contains('admin-table__note'),
+      );
+      const shown = lines.map((line) => line.style.display);
+      for (const line of lines) {
+        line.style.display = 'none';
+      }
+      const withoutLines = widths();
+      for (const [index, line] of lines.entries()) {
+        line.style.display = shown[index];
+      }
+      for (const [index, width] of withLines.entries()) {
+        if (width > withoutLines[index] + 0.5) {
+          problems.push(
+            `the extra lines widen the Actions column from ${withoutLines[index]}px to ${width}px`,
+          );
+        }
+      }
+      return problems;
+    },
+    { cell: ACTIONS_CELL, lines: extraLines },
+  );
+}
 
 test.describe('admin UI Delivery tab', () => {
   test.beforeEach(async ({ page }) => {
@@ -1184,7 +2173,9 @@ test.describe('admin UI Delivery tab', () => {
     // Send a test delivery.
     await page.getByRole('button', { name: 'Send test to hook1', exact: true }).click();
     await expect(page.getByText('HTTP 200')).toBeVisible();
-    const sendTest = mock.mutations.find((request) => request.pathname === '/delivery/v1/messages');
+    const sendTest = mock.mutations.find(
+      (request) => request.pathname === '/delivery/v1/admin/messages',
+    );
     expect(sendTest?.method).toBe('POST');
     expect(sendTest?.search).toBe('?wait=10');
     const envelope = sendTest?.body as {
@@ -1401,7 +2392,7 @@ test.describe('admin UI Delivery tab', () => {
       name: 'Pause urls4irl/nightly_backup',
       exact: true,
     });
-    expect((await pause.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+    await expectCompactButton(pause);
 
     // Keep running sends nothing.
     await pause.click();
@@ -1525,7 +2516,7 @@ test.describe('admin UI Delivery tab', () => {
     const section = page.getByRole('region', { name: 'Heartbeats' });
     const add = section.getByRole('button', { name: 'Add check', exact: true });
     await expect(add).toBeEnabled();
-    expect((await add.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+    await expectCompactButton(add);
     await add.click();
 
     const form = section.getByRole('form', { name: 'Add check' });
@@ -1668,7 +2659,7 @@ test.describe('admin UI Delivery tab', () => {
     expect(mock.unmocked).toEqual([]);
   });
 
-  test('heartbeats: the forms fit at 390px with 44px controls and a reachable Actions cell', async ({
+  test('heartbeats at 390px: one kebab per row holds every action, cells stay on one line and the forms stay in view', async ({
     page,
   }) => {
     const mock = await mockDelivery(page, {
@@ -1680,40 +2671,91 @@ test.describe('admin UI Delivery tab', () => {
       heartbeats: [
         heartbeatWire({ id: 1, name: 'nightly_backup' }),
         heartbeatWire({ id: 2, name: 'reaper', paused: true }),
+        heartbeatWire({ id: 3, name: 'owned', ownerKind: 'app', ownerAppId: 'chores4irl' }),
+        heartbeatWire({ id: 4, name: 'mystery', ownerKind: null }),
       ],
     });
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/#delivery');
     const section = page.getByRole('region', { name: 'Heartbeats' });
-    const noOverflow = async () => {
-      const overflow = await page.evaluate(() => ({
-        scrollWidth: document.documentElement.scrollWidth,
-        clientWidth: document.documentElement.clientWidth,
-      }));
-      expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth);
-    };
     const wrapper = section.locator('.heartbeats__scroll');
     await expect(wrapper).toBeVisible();
-    await noOverflow();
+    await expectNoPageOverflow(page);
 
-    // The Actions cell stays reachable without scrolling the wrapper.
-    for (const name of [
-      'Edit urls4irl/nightly_backup',
-      'Pause urls4irl/nightly_backup',
-      'Delete urls4irl/nightly_backup',
-    ]) {
-      const box = await section.getByRole('button', { name, exact: true }).boundingBox();
-      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
-      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    // Nothing in the table wraps, and the wrapper (not the page) is what scrolls sideways.
+    expect(await maxRenderedLines({ root: wrapper })).toBe(1);
+    const sizes = await wrapper.evaluate((element) => ({
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }));
+    expect(sizes.scrollWidth).toBeGreaterThan(sizes.clientWidth);
+
+    // The Actions cell is the kebab and nothing else: no inline buttons, no notes, no confirms.
+    await expect(wrapper.locator('tbody button')).toHaveCount(4);
+    await expect(wrapper.locator('tbody .row-menu__trigger')).toHaveCount(4);
+    await expect(
+      section.getByRole('button', { name: /^(Edit|Pause|Resume|Delete) urls4irl/ }),
+    ).toHaveCount(0);
+    for (const row of ['nightly_backup', 'reaper', 'owned', 'mystery']) {
+      const kebab = rowKebab({ page, row: `urls4irl/${row}` });
+      await expectTouchTarget(kebab);
+      // Pinned at the wrapper's end edge: wholly visible without scrolling the wrapper.
+      const box = await kebab.boundingBox();
+      const wrapperBox = await wrapper.boundingBox();
+      if (box === null || wrapperBox === null) {
+        throw new Error('kebab or wrapper has no bounding box');
+      }
+      expect(box.x + box.width).toBeLessThanOrEqual(wrapperBox.x + wrapperBox.width);
+      expect(box.x).toBeGreaterThanOrEqual(wrapperBox.x);
     }
-    expect(await wrapper.evaluate((element) => element.scrollLeft)).toBe(0);
 
-    // The add card: no page overflow, 44px fields and buttons.
+    // A paused check offers Resume (one selection), a running one Pause.
+    let menu = await openRowMenu({ page, row: 'urls4irl/reaper' });
+    await expect(menu.getByRole('menuitem', { name: 'Resume urls4irl/reaper' })).toBeVisible();
+    await expect(menu.getByRole('menuitem', { name: /^Pause / })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    // A row with an owner note (app-owned, unknown): the short note is the menu's first line
+    // and the long one is in the Pause and Delete confirms, which wrap inside the viewport;
+    // the table row's text stays on one line throughout.
+    for (const check of ['owned', 'mystery']) {
+      const row = section.getByRole('row', { name: new RegExp(`urls4irl\\s*/\\s*${check}`) });
+      menu = await openRowMenu({ page, row: `urls4irl/${check}` });
+      const note = menu.locator('[role="presentation"]').first();
+      await expect(note).toHaveText(
+        check === 'owned'
+          ? 'Edits are overridden on next deploy'
+          : 'Owner unknown — edits may be overridden',
+      );
+      await expect(menu).not.toContainText(
+        check === 'owned' ? 'Managed by chores4irl' : 'deploy may manage this',
+      );
+      await menu.getByRole('menuitem', { name: `Pause urls4irl/${check}`, exact: true }).click();
+      const confirm = page.getByRole('group', { name: `Pause urls4irl/${check}`, exact: true });
+      await expect(confirm).toContainText('No alerts are sent while paused.');
+      await expect(confirm).toContainText(
+        check === 'owned' ? 'Managed by chores4irl' : 'deploy may manage this',
+      );
+      await expectInViewport({ page, locator: confirm });
+      await expectFullyPainted(confirm);
+      for (const name of [`Confirm pause urls4irl/${check}`, `Keep running urls4irl/${check}`]) {
+        await expectTouchTarget(confirm.getByRole('button', { name, exact: true }));
+      }
+      expect(await maxRenderedLines({ root: row })).toBe(1);
+      await page
+        .getByRole('button', { name: `Keep running urls4irl/${check}`, exact: true })
+        .click();
+      await expect(menu).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expectNoPageOverflow(page);
+    }
+
+    // The add card: no page overflow, 44px fields and buttons (the form is not the table).
     await section.getByRole('button', { name: 'Add check', exact: true }).click();
     const addForm = section.getByRole('form', { name: 'Add check' });
     await expect(addForm).toBeVisible();
-    await noOverflow();
+    await expectNoPageOverflow(page);
     for (const control of [
       addForm.getByLabel('App ID'),
       addForm.getByLabel('Period', { exact: true }),
@@ -1727,13 +2769,16 @@ test.describe('admin UI Delivery tab', () => {
       expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
     }
 
-    // The inline editor is sized to the visible width and does not scroll the page.
-    await section
-      .getByRole('button', { name: 'Edit urls4irl/nightly_backup', exact: true })
-      .click();
+    // The inline editor, opened from the menu, spans the table but is sized to the visible
+    // width, takes focus, and neither scrolls the page nor sits under anything, wherever the
+    // wrapper is scrolled.
+    menu = await openRowMenu({ page, row: 'urls4irl/nightly_backup' });
+    await menu.getByRole('menuitem', { name: 'Edit urls4irl/nightly_backup', exact: true }).click();
     const editForm = section.getByRole('form', { name: 'Edit urls4irl/nightly_backup' });
     await expect(editForm).toBeVisible();
-    await noOverflow();
+    await expect(editForm.locator(':focus')).toHaveCount(1);
+    await expectNoPageOverflow(page);
+    await expectEditorInView({ wrapper, form: editForm });
     const editBox = await editForm.boundingBox();
     expect(editBox?.x ?? -1).toBeGreaterThanOrEqual(0);
     expect((editBox?.x ?? 0) + (editBox?.width ?? 0)).toBeLessThanOrEqual(390);
@@ -1746,8 +2791,482 @@ test.describe('admin UI Delivery tab', () => {
       expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
       expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
     }
-    // Opening the editor leaves the table's own Actions reachable.
-    expect(await wrapper.evaluate((element) => element.scrollLeft)).toBe(0);
+    await expectNoPageOverflow(page);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats at 390px: pause is two-step in the menu, resume one selection, delete hands focus to a neighbour kebab', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      heartbeats: [
+        heartbeatWire({ id: 1, name: 'nightly_backup' }),
+        heartbeatWire({
+          id: 2,
+          name: 'reaper',
+          state: 'new',
+          lastPingAt: null,
+          lastPingKind: null,
+        }),
+      ],
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Heartbeats' });
+    const first = 'urls4irl/nightly_backup';
+    // Pause: Keep running sends nothing; Confirm pauses and focus stays on the kebab.
+    let menu = await openRowMenu({ page, row: first });
+    await menu.getByRole('menuitem', { name: `Pause ${first}`, exact: true }).click();
+    await page.getByRole('button', { name: `Keep running ${first}`, exact: true }).click();
+    await expect(menu.getByRole('menuitem', { name: `Pause ${first}` })).toBeFocused();
+    expect(mock.mutations).toEqual([]);
+    await menu.getByRole('menuitem', { name: `Pause ${first}`, exact: true }).click();
+    await page.getByRole('button', { name: `Confirm pause ${first}`, exact: true }).click();
+    await expect(menu).toBeHidden();
+    await expect(rowKebab({ page, row: first })).toBeFocused();
+    await expect(
+      section.getByText(`Paused ${first}. Its alerts are suppressed until you resume it.`),
+    ).toBeVisible();
+
+    // Resume is one selection.
+    menu = await openRowMenu({ page, row: first });
+    await menu.getByRole('menuitem', { name: `Resume ${first}`, exact: true }).click();
+    await expect(rowKebab({ page, row: first })).toBeFocused();
+    await expect(section.getByText(`Resumed ${first}.`)).toBeVisible();
+    expect(mock.mutations.map((request) => request.pathname)).toEqual([
+      '/delivery/v1/admin/heartbeats/1/pause',
+      '/delivery/v1/admin/heartbeats/1/resume',
+    ]);
+
+    // Delete the last row: focus lands on the neighbour's kebab.
+    menu = await openRowMenu({ page, row: 'urls4irl/reaper' });
+    await menu.getByRole('menuitem', { name: 'Delete urls4irl/reaper', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirm delete urls4irl/reaper', exact: true }).click();
+    await expect(section.getByText('Deleted urls4irl/reaper.')).toBeVisible();
+    await expect(rowKebab({ page, row: first })).toBeFocused();
+    expect(mock.mutations[2].method).toBe('DELETE');
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: approve, reject, revoke and unbind move focus as designed and show hints only', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRequests: [
+        identityRequestWire({ id: 1, appId: 'urls4irl' }),
+        identityRequestWire({ id: 2, appId: 'chores4irl' }),
+        identityRequestWire({ id: 3, appId: 'oldapp', status: 'rejected' }),
+      ],
+      identityBindings: [
+        identityBindingWire({
+          appId: 'tasktracker',
+          keys: [
+            identityKeyWire({ id: 11, appId: 'tasktracker', hint: 'dak_7Q2m' }),
+            identityKeyWire({
+              id: 12,
+              appId: 'tasktracker',
+              hint: 'dak_Kf09',
+              state: 'superseded',
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    await expect(section.getByText('2 requests awaiting approval')).toBeVisible();
+    // A request already rejected on load has only its status pill, never Approve.
+    await expect(section.locator('tr[data-request-id="3"]').getByRole('button')).toHaveCount(0);
+    await expect(section.getByText('Superseded', { exact: true })).toBeVisible();
+
+    // Approve removes the row and focus moves to the neighbouring request's Approve.
+    const approve = section.getByRole('button', {
+      name: 'Approve identity request for urls4irl',
+      exact: true,
+    });
+    await expectCompactButton(approve);
+    await approve.click();
+    await expect(
+      section.getByText('Approved urls4irl for 4IRL/urls4irl. Its next deploy receives a key.'),
+    ).toBeVisible();
+    await expect(
+      section.getByRole('button', { name: 'Approve identity request for chores4irl', exact: true }),
+    ).toBeFocused();
+    await expect(
+      section.getByRole('button', { name: 'Unbind urls4irl', exact: true }),
+    ).toBeVisible();
+    await expect(section.getByText('1 request awaiting approval')).toBeVisible();
+
+    // Reject needs a confirm; the row's Actions become the Rejected pill and focus goes to the heading.
+    await section
+      .getByRole('button', { name: 'Reject identity request for chores4irl', exact: true })
+      .click();
+    await expect(
+      section.getByText('The deploy keeps failing until a new request is approved.'),
+    ).toBeVisible();
+    await section
+      .getByRole('button', { name: 'Confirm reject identity request for chores4irl', exact: true })
+      .click();
+    await expect(section.getByRole('heading', { name: 'Requests' })).toBeFocused();
+    await expect(section.locator('tr[data-request-id="2"]').getByRole('button')).toHaveCount(0);
+
+    // Revoke needs a confirm; the key's button becomes a pill and focus goes to that app's Unbind.
+    await section
+      .getByRole('button', { name: 'Revoke key dak_7Q2m for tasktracker', exact: true })
+      .click();
+    await section
+      .getByRole('button', { name: 'Confirm revoke key dak_7Q2m for tasktracker', exact: true })
+      .click();
+    await expect(
+      section.getByRole('button', { name: 'Unbind tasktracker', exact: true }),
+    ).toBeFocused();
+    await expect(
+      section.getByRole('button', { name: 'Revoke key dak_7Q2m for tasktracker', exact: true }),
+    ).toHaveCount(0);
+
+    // Unbind removes the row; focus goes to the neighbouring binding's first control.
+    await section.getByRole('button', { name: 'Unbind tasktracker', exact: true }).click();
+    await section.getByRole('button', { name: 'Confirm unbind tasktracker', exact: true }).click();
+    await expect(section.getByText('Unbound tasktracker. Its keys are revoked.')).toBeVisible();
+    await expect(
+      section.getByRole('button', { name: 'Unbind urls4irl', exact: true }),
+    ).toBeFocused();
+
+    // Only a key's hint was ever on the page.
+    await expect(page.locator('body')).not.toContainText(/dak_[A-Za-z0-9_-]{9,}/);
+    expect(mock.mutations.map((request) => `${request.method} ${request.pathname}`)).toEqual([
+      'POST /delivery/v1/admin/app-identity/requests/1/approve',
+      'POST /delivery/v1/admin/app-identity/requests/2/reject',
+      'POST /delivery/v1/admin/app-identity/keys/11/revoke',
+      'DELETE /delivery/v1/admin/app-identity/bindings/tasktracker',
+    ]);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: an approve that answers 409 shows the server error and keeps focus on the row', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRequests: [identityRequestWire({ id: 1, appId: 'urls4irl' })],
+      approveError: { status: 409, message: 'request is not pending' },
+    });
+
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    const approve = section.getByRole('button', {
+      name: 'Approve identity request for urls4irl',
+      exact: true,
+    });
+    await approve.click();
+
+    const row = section.locator('tr[data-request-id="1"]');
+    await expect(row.getByRole('alert')).toHaveText('Could not approve: request is not pending');
+    await expect(approve).toBeFocused();
+    await expect(approve).not.toHaveAttribute('aria-disabled', 'true');
+    expect(mock.mutations).toHaveLength(1);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: an approve refused for overlapping an approved app id shows the reason and keeps the request', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRequests: [identityRequestWire({ id: 1, appId: 'urls4irl_beta' })],
+      approveError: { status: 409, message: 'app id overlaps an approved app id' },
+    });
+
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    const approve = section.getByRole('button', {
+      name: 'Approve identity request for urls4irl_beta',
+      exact: true,
+    });
+    await approve.click();
+
+    const row = section.locator('tr[data-request-id="1"]');
+    await expect(row.getByRole('alert')).toHaveText(
+      'Could not approve: app id overlaps an approved app id',
+    );
+    await expect(approve).toBeFocused();
+    await expect(approve).not.toHaveAttribute('aria-disabled', 'true');
+    expect(mock.mutations).toHaveLength(1);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: a failed load shows an error and Retry recovers', async ({ page }) => {
+    const mock = await mockDelivery(page, {
+      identityRequests: [identityRequestWire({ id: 1, appId: 'urls4irl' })],
+    });
+    let failures = 1;
+    await page.route('**/delivery/v1/admin/app-identity/requests', async (route) => {
+      if (failures > 0) {
+        failures -= 1;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'delivery-api unavailable' }),
+        });
+        return;
+      }
+      await route.fallback();
+    });
+
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    await expect(section.getByRole('alert')).toContainText(
+      'Could not load app identities (delivery-api unavailable).',
+    );
+    await section.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(
+      section.getByRole('button', { name: 'Approve identity request for urls4irl', exact: true }),
+    ).toBeVisible();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities at 390px: every action is in a row menu, the rows keep their colours and nothing wraps or widens', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRequests: [
+        identityRequestWire({ id: 1, appId: 'urls4irl' }),
+        identityRequestWire({ id: 2, appId: 'oldapp', status: 'rejected' }),
+        identityRequestWire({ id: 3, appId: 'mystery', status: 'weird' }),
+      ],
+      identityBindings: [
+        identityBindingWire({
+          appId: 'tasktracker',
+          keys: [
+            identityKeyWire({ id: 11, appId: 'tasktracker', hint: 'dak_7Q2m' }),
+            identityKeyWire({ id: 13, appId: 'tasktracker', hint: 'dak_a1Zx', state: 'revoked' }),
+          ],
+        }),
+      ],
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    const wrappers = section.locator('.app-identities__scroll');
+    await expect(wrappers).toHaveCount(2);
+    await expectNoPageOverflow(page);
+
+    // Nothing wraps (the unrecognised-status note included), and each wrapper, not the page,
+    // is what scrolls sideways.
+    for (let index = 0; index < 2; index += 1) {
+      expect(await maxRenderedLines({ root: wrappers.nth(index) })).toBe(1);
+      const sizes = await wrappers.nth(index).evaluate((element) => ({
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      }));
+      expect(sizes.scrollWidth).toBeGreaterThan(sizes.clientWidth);
+    }
+    // The unrecognised status explains itself under its pill (its Actions cell is empty), the
+    // rejected row has no kebab, and no inline Approve / Reject / Revoke / Unbind button exists.
+    await expect(section.locator('tr[data-request-id="3"]')).toContainText(
+      'does not recognise the status',
+    );
+    await expect(section.locator('tr[data-request-id="2"] button')).toHaveCount(0);
+    await expect(section.locator('tr[data-request-id="3"] button')).toHaveCount(0);
+    // The rejected row's pill (its status; there is no Actions pill any more) is visible and
+    // unclipped without scrolling the wrapper sideways.
+    const rejectedPill = section
+      .locator('tr[data-request-id="2"]')
+      .getByText('Rejected', { exact: true });
+    await expect(rejectedPill).toBeVisible();
+    const pillBox = await rejectedPill.boundingBox();
+    const requestsBox = await wrappers.nth(0).boundingBox();
+    if (pillBox === null || requestsBox === null) {
+      throw new Error('pill or wrapper has no bounding box');
+    }
+    expect(pillBox.x).toBeGreaterThanOrEqual(requestsBox.x);
+    expect(pillBox.x + pillBox.width).toBeLessThanOrEqual(requestsBox.x + requestsBox.width);
+    await expect(
+      section.getByRole('button', { name: /^(Approve|Reject|Revoke|Unbind) /, exact: false }),
+    ).toHaveCount(0);
+
+    // The key rows read in full beside their app: pill, hint and last use, one line each.
+    await expect(section.getByText('dak_7Q2m…')).toBeVisible();
+
+    // Approve, Reject, Revoke and Unbind are items of the row menus.
+    let menu = await openRowMenu({ page, row: 'urls4irl' });
+    for (const name of [
+      'Approve identity request for urls4irl',
+      'Reject identity request for urls4irl',
+    ]) {
+      await expectTouchTarget(menu.getByRole('menuitem', { name, exact: true }));
+    }
+    await page.keyboard.press('Escape');
+    menu = await openRowMenu({ page, row: 'tasktracker' });
+    // The revoked key has no Revoke item.
+    await expect(menu.getByRole('menuitem')).toHaveCount(2);
+    for (const name of ['Revoke key dak_7Q2m for tasktracker', 'Unbind tasktracker']) {
+      await expectTouchTarget(menu.getByRole('menuitem', { name, exact: true }));
+    }
+    await page.keyboard.press('Escape');
+
+    // The pending row is one accent colour across every cell, the pinned kebab included (it
+    // is opaque, so scrolled cells never show through it); other rows are the page background.
+    const background = (locator: Locator) =>
+      locator.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return { background: style.backgroundColor, position: style.position };
+      });
+    const pendingRow = section.locator('tr[data-request-id="1"]');
+    expect(await background(pendingRow.locator('td').first())).toEqual({
+      background: 'rgb(42, 35, 32)',
+      position: 'static',
+    });
+    expect(await background(pendingRow.locator('td.admin-table__kebab'))).toEqual({
+      background: 'rgb(42, 35, 32)',
+      position: 'sticky',
+    });
+    expect(await background(section.locator('tr[data-request-id="2"] td').first())).toEqual({
+      background: 'rgb(26, 26, 26)',
+      position: 'static',
+    });
+
+    // A Reject confirm is a step inside the menu: it adds nothing to the table.
+    const widthBefore = await wrappers.nth(0).evaluate((element) => element.scrollWidth);
+    menu = await openRowMenu({ page, row: 'urls4irl' });
+    await menu.getByRole('menuitem', { name: 'Reject identity request for urls4irl' }).click();
+    const confirm = page.getByRole('group', {
+      name: 'Reject identity request for urls4irl',
+      exact: true,
+    });
+    await expect(confirm).toContainText(
+      'The deploy keeps failing until a new request is approved.',
+    );
+    await expectInViewport({ page, locator: confirm });
+    for (const name of [
+      'Confirm reject identity request for urls4irl',
+      'Cancel reject identity request for urls4irl',
+    ]) {
+      await expectTouchTarget(confirm.getByRole('button', { name, exact: true }));
+    }
+    expect(await wrappers.nth(0).evaluate((element) => element.scrollWidth)).toBe(widthBefore);
+    expect(await maxRenderedLines({ root: wrappers.nth(0) })).toBe(1);
+    await page
+      .getByRole('button', { name: 'Cancel reject identity request for urls4irl', exact: true })
+      .click();
+    await expect(menu).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expectNoPageOverflow(page);
+    expect(mock.mutations).toEqual([]);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities at 390px: approve, reject, revoke and unbind from the menus move focus as designed', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRequests: [
+        identityRequestWire({ id: 1, appId: 'urls4irl' }),
+        identityRequestWire({ id: 2, appId: 'chores4irl' }),
+      ],
+      identityBindings: [
+        identityBindingWire({
+          appId: 'tasktracker',
+          keys: [identityKeyWire({ id: 11, appId: 'tasktracker', hint: 'dak_7Q2m' })],
+        }),
+      ],
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+
+    // Approve removes the row; focus moves to the neighbouring request's kebab.
+    let menu = await openRowMenu({ page, row: 'urls4irl' });
+    await menu.getByRole('menuitem', { name: 'Approve identity request for urls4irl' }).click();
+    await expect(
+      section.getByText('Approved urls4irl for 4IRL/urls4irl. Its next deploy receives a key.'),
+    ).toBeVisible();
+    await expect(rowKebab({ page, row: 'chores4irl' })).toBeFocused();
+    await expect(rowKebab({ page, row: 'urls4irl' })).toBeVisible();
+
+    // Reject needs a confirm in the menu; the row loses its kebab and focus goes to the heading.
+    menu = await openRowMenu({ page, row: 'chores4irl' });
+    await menu.getByRole('menuitem', { name: 'Reject identity request for chores4irl' }).click();
+    await page
+      .getByRole('button', { name: 'Confirm reject identity request for chores4irl', exact: true })
+      .click();
+    await expect(section.getByRole('heading', { name: 'Requests' })).toBeFocused();
+    await expect(section.locator('tr[data-request-id="2"] button')).toHaveCount(0);
+
+    // Revoke needs a confirm in the menu; focus returns to that app's kebab (it holds Unbind).
+    menu = await openRowMenu({ page, row: 'tasktracker' });
+    await menu.getByRole('menuitem', { name: 'Revoke key dak_7Q2m for tasktracker' }).click();
+    await page
+      .getByRole('button', { name: 'Confirm revoke key dak_7Q2m for tasktracker', exact: true })
+      .click();
+    await expect(rowKebab({ page, row: 'tasktracker' })).toBeFocused();
+    menu = await openRowMenu({ page, row: 'tasktracker' });
+    await expect(menu.getByRole('menuitem')).toHaveCount(1);
+
+    // Unbind removes the row; focus goes to the neighbouring binding's kebab.
+    await menu.getByRole('menuitem', { name: 'Unbind tasktracker' }).click();
+    await page.getByRole('button', { name: 'Confirm unbind tasktracker', exact: true }).click();
+    await expect(section.getByText('Unbound tasktracker. Its keys are revoked.')).toBeVisible();
+    await expect(rowKebab({ page, row: 'urls4irl' })).toBeFocused();
+
+    await expect(page.locator('body')).not.toContainText(/dak_[A-Za-z0-9_-]{9,}/);
+    expect(mock.mutations.map((request) => `${request.method} ${request.pathname}`)).toEqual([
+      'POST /delivery/v1/admin/app-identity/requests/1/approve',
+      'POST /delivery/v1/admin/app-identity/requests/2/reject',
+      'POST /delivery/v1/admin/app-identity/keys/11/revoke',
+      'DELETE /delivery/v1/admin/app-identity/bindings/tasktracker',
+    ]);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: a long revoke error reads in the menu, flags the kebab and never widens the table at 390px', async ({
+    page,
+  }) => {
+    const longMessage = 'revoke-unavailable-'.repeat(12);
+    const mock = await mockDelivery(page, {
+      identityBindings: [
+        identityBindingWire({
+          appId: 'tasktracker',
+          keys: [identityKeyWire({ id: 11, appId: 'tasktracker', hint: 'dak_7Q2m' })],
+        }),
+      ],
+      revokeError: { status: 503, message: longMessage },
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    const wrapper = section.locator('.app-identities__scroll');
+    const widthBefore = await wrapper.evaluate((element) => element.scrollWidth);
+    // The key row has no Revoke button of its own at this width.
+    await expect(
+      section.getByRole('button', { name: 'Revoke key dak_7Q2m for tasktracker', exact: true }),
+    ).toHaveCount(0);
+
+    const menu = await openRowMenu({ page, row: 'tasktracker' });
+    await menu.getByRole('menuitem', { name: 'Revoke key dak_7Q2m for tasktracker' }).click();
+    await page
+      .getByRole('button', { name: 'Confirm revoke key dak_7Q2m for tasktracker', exact: true })
+      .click();
+
+    // Announced (visually hidden alert), flagged on the kebab, focus stays on the kebab ...
+    const alert = page.getByRole('alert');
+    await expect(alert).toContainText('Could not revoke: revoke-unavailable-');
+    const kebab = rowKebab({ page, row: 'tasktracker' });
+    await expect(kebab).toHaveAttribute('data-has-error', 'true');
+    await expect(kebab).toBeFocused();
+    // ... and nothing about the table grew: the error is not in the row.
+    expect(await wrapper.evaluate((element) => element.scrollWidth)).toBe(widthBefore);
+    expect(await maxRenderedLines({ root: wrapper, skip: '.row-menu__sr' })).toBe(1);
+    await expectNoPageOverflow(page);
+
+    // The text is in the menu, which wraps it inside the viewport.
+    const errorMenu = await openRowMenu({ page, row: 'tasktracker' });
+    await expect(errorMenu).toContainText('Could not revoke: revoke-unavailable-');
+    await expectInViewport({ page, locator: errorMenu });
+    await expectFullyPainted(errorMenu);
     expect(mock.unmocked).toEqual([]);
   });
 
@@ -1869,17 +3388,7 @@ test.describe('admin UI Delivery tab', () => {
           secrets: { url: 'https://hooks.example.com/****', signing_secret: '****' },
         }),
       ],
-      routes: [
-        {
-          id: 1,
-          app_pattern: 'urls4irl',
-          channel_pattern: 'alerts*',
-          destinations: ['hook1'],
-          enabled: true,
-          created_at: TIMESTAMP,
-          updated_at: TIMESTAMP,
-        },
-      ],
+      routes: [routeWire({ id: 1 })],
     });
 
     await page.setViewportSize({ width: 1280, height: 900 });
@@ -1891,6 +3400,919 @@ test.describe('admin UI Delivery tab', () => {
     });
     const routeRow = page.locator('.routes__table tbody tr').first();
     await expectCenteredInRow({ badge: routeRow.locator('.routes__pill'), row: routeRow });
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('owner badges: operator, app-owned and unknown rows are centred and noted', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [
+        destinationWire({ name: 'ops_hook', type: 'webhook' }),
+        destinationWire({
+          name: 'chores4irl_hook',
+          type: 'webhook',
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        destinationWire({ name: 'mystery_hook', type: 'webhook', ownerKind: null }),
+      ],
+      routes: [
+        routeWire({ id: 1, destinations: ['ops_hook'] }),
+        routeWire({
+          id: 2,
+          appPattern: 'chores4irl',
+          destinations: ['chores4irl_hook'],
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        routeWire({ id: 3, destinations: ['ops_hook'], ownerKind: 'robot' }),
+      ],
+      heartbeats: [
+        heartbeatWire({ id: 1, name: 'nightly_backup', destinations: [] }),
+        heartbeatWire({
+          id: 2,
+          appId: 'chores4irl',
+          name: 'daily',
+          destinations: [],
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        heartbeatWire({
+          id: 3,
+          name: 'mystery',
+          destinations: [],
+          ownerKind: 'app',
+          ownerAppId: null,
+        }),
+      ],
+    });
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/#delivery');
+
+    const managed =
+      "Managed by chores4irl's deploy — operator edits are reverted on its next deploy.";
+    // The line under the row's buttons is the short form: no app id (the badge names it), and
+    // the long text stays in the confirm notice and the row menu.
+    const managedInline = 'Edits are overridden on next deploy';
+    const unknownInline = 'Owner unknown — edits may be overridden';
+    for (const table of ['.destinations__table', '.routes__table', '.heartbeats__table']) {
+      const body = page.locator(`${table} tbody tr`);
+      await expect(body).toHaveCount(3);
+      const operator = body.nth(0);
+      const app = body.nth(1);
+      const unknown = body.nth(2);
+
+      await expect(operator.locator('.owner-badge--operator')).toHaveText('Owner: Operator');
+      await expect(operator.locator('.admin-table__note')).toHaveCount(0);
+      await expect(app.locator('.owner-badge--app')).toHaveText('Owner: App · chores4irl');
+      await expect(app.locator('.admin-table__note')).toHaveText(managedInline);
+      await expect(app.getByText(managed)).toHaveCount(0);
+      await expect(unknown.locator('.owner-badge--unknown')).toHaveText('Owner: Unknown');
+      await expect(unknown.locator('.owner-badge--operator')).toHaveCount(0);
+      await expect(unknown.locator('.admin-table__note')).toHaveText(unknownInline);
+
+      for (const row of [operator, app, unknown]) {
+        await expectCenteredInRow({ badge: row.locator('.owner-badge'), row });
+        // Roomy layout: the one badge lives in the Owner column, never also under the value.
+        await expect(row.locator('.owner-badge')).toHaveCount(1);
+        await expect(row.locator('.admin-table__owner-line')).toHaveCount(0);
+      }
+      // The Owner column header is present and the visible badge text is real text.
+      await expect(
+        page.locator(`${table} thead`).getByRole('columnheader', { name: 'Owner' }),
+      ).toBeVisible();
+    }
+
+    // The Check column keeps the bare app id; only the Owner badge carries the prefix.
+    const checkRow = page.locator('.heartbeats__table tbody tr').nth(1);
+    await expect(checkRow.locator('.heartbeats__mono').first()).toHaveText('chores4irl');
+
+    // Deleting an app-owned row repeats the note on the confirm.
+    await page.getByRole('button', { name: 'Delete route 2', exact: true }).click();
+    await expect(
+      page.locator('.routes__table tbody tr').nth(1).locator('.confirm-button__notice'),
+    ).toHaveText(managed);
+    await page.getByRole('button', { name: 'Cancel Delete route 2', exact: true }).click();
+
+    // An open editor row spans every column, Owner included.
+    await page.getByRole('button', { name: 'Edit chores4irl_hook', exact: true }).click();
+    const headerCount = await page.locator('.destinations__table thead th').count();
+    const editorCell = page.locator('.destinations__table tbody td[colspan]');
+    await expect(editorCell).toHaveAttribute('colspan', String(headerCount));
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('owner badges at 390px: the badge sits under the first cell value, in view at scroll 0, with no Owner column', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [
+        destinationWire({ name: 'ops_hook', type: 'webhook' }),
+        destinationWire({
+          name: 'chores4irl_hook',
+          type: 'webhook',
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        destinationWire({ name: 'mystery_hook', type: 'webhook', ownerKind: null }),
+      ],
+      routes: [
+        routeWire({ id: 1, destinations: ['ops_hook'] }),
+        routeWire({
+          id: 2,
+          appPattern: 'chores4irl',
+          destinations: ['chores4irl_hook'],
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        routeWire({ id: 3, destinations: ['ops_hook'], ownerKind: 'robot' }),
+      ],
+      heartbeats: [
+        heartbeatWire({ id: 1, name: 'nightly_backup', destinations: [] }),
+        heartbeatWire({
+          id: 2,
+          appId: 'chores4irl',
+          name: 'daily',
+          destinations: [],
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        heartbeatWire({
+          id: 3,
+          name: 'mystery',
+          destinations: [],
+          ownerKind: 'app',
+          ownerAppId: null,
+        }),
+      ],
+      identityBindings: [
+        identityBindingWire({
+          appId: 'tasktracker',
+          keys: [identityKeyWire({ id: 11, appId: 'tasktracker', hint: 'dak_7Q2m' })],
+        }),
+      ],
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+
+    const expectedBadges = [
+      { kind: 'operator', text: 'Owner: Operator' },
+      { kind: 'app', text: 'Owner: App · chores4irl' },
+      { kind: 'unknown', text: 'Owner: Unknown' },
+    ];
+    // Each table's columns on the phone: the Owner column is gone (its badge moved under the
+    // first cell's value), the Actions column (the kebab) stays.
+    const tables = [
+      { table: '.destinations__table', scroll: '.destinations__scroll', columns: 5 },
+      { table: '.routes__table', scroll: '.routes__scroll', columns: 5 },
+      { table: '.heartbeats__table', scroll: '.heartbeats__scroll', columns: 6 },
+    ];
+    for (const { table, scroll, columns } of tables) {
+      const wrapper = page.locator(scroll);
+      await expect(wrapper).toBeVisible();
+      await wrapper.scrollIntoViewIfNeeded();
+      await expect(page.locator(`${table} thead th`)).toHaveCount(columns);
+      await expect(
+        page.locator(`${table} thead`).getByRole('columnheader', { name: 'Owner' }),
+      ).toHaveCount(0);
+      const rows = page.locator(`${table} tbody tr`);
+      await expect(rows).toHaveCount(3);
+      // Exactly one badge per row, never a second copy beside the first cell.
+      await expect(page.locator(`${table} tbody .owner-badge`)).toHaveCount(3);
+
+      for (const [index, { kind, text }] of expectedBadges.entries()) {
+        const row = rows.nth(index);
+        await expect(row.locator('td')).toHaveCount(columns);
+        const firstCell = row.locator('td').first();
+        const badge = firstCell.locator(`.owner-badge--${kind}`);
+        await expect(badge).toHaveText(text);
+        await expect(row.locator('.owner-badge--operator')).toHaveCount(
+          kind === 'operator' ? 1 : 0,
+        );
+
+        // Visible at scroll position 0: no sideways scrolling needed to see who owns the row
+        // (the scroll-into-view is vertical only; it would move scrollLeft if the badge were
+        // off to the side, which the assertion after it catches).
+        await badge.scrollIntoViewIfNeeded();
+        expect(await wrapper.evaluate((element) => element.scrollLeft)).toBe(0);
+        const badgeBox = await badge.boundingBox();
+        const wrapperBox = await wrapper.boundingBox();
+        if (badgeBox === null || wrapperBox === null) {
+          throw new Error('badge or wrapper has no bounding box');
+        }
+        expect(badgeBox.x).toBeGreaterThanOrEqual(wrapperBox.x);
+        expect(badgeBox.x + badgeBox.width).toBeLessThanOrEqual(
+          Math.min(wrapperBox.x + wrapperBox.width, 390),
+        );
+        expect(badgeBox.y).toBeGreaterThanOrEqual(wrapperBox.y);
+        expect(badgeBox.y + badgeBox.height).toBeLessThanOrEqual(wrapperBox.y + wrapperBox.height);
+        // Nothing (the pinned header, the kebab column) covers the badge's centre.
+        expect(
+          await badge.evaluate((element) => {
+            const rect = element.getBoundingClientRect();
+            const hit = document.elementFromPoint(
+              rect.left + rect.width / 2,
+              rect.top + rect.height / 2,
+            );
+            return hit !== null && element.contains(hit);
+          }),
+        ).toBe(true);
+
+        // Its own line, under the value (never beside it) and never wrapping.
+        const layout = await firstCell.evaluate((cell) => {
+          const line = cell.querySelector('.admin-table__owner-line');
+          const pill = cell.querySelector('.owner-badge');
+          if (line === null || pill === null) {
+            throw new Error('first cell has no owner line');
+          }
+          let valueBottom = 0;
+          const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            if ((node.textContent ?? '').trim() === '' || line.contains(node)) {
+              continue;
+            }
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            valueBottom = Math.max(valueBottom, range.getBoundingClientRect().bottom);
+          }
+          return {
+            lineDisplay: getComputedStyle(line).display,
+            valueBottom,
+            badgeTop: pill.getBoundingClientRect().top,
+          };
+        });
+        expect(layout.lineDisplay).toBe('block');
+        // One pill-high line: the badge never wraps.
+        expect(badgeBox.height).toBeLessThan(30);
+        expect(layout.valueBottom).toBeGreaterThan(0);
+        expect(layout.valueBottom).toBeLessThanOrEqual(layout.badgeTop + 1);
+      }
+    }
+
+    // An open editor row spans every column of the narrow table (the kebab's included) and
+    // stays inside the visible width.
+    for (const { row, editName, table, scroll, columns } of [
+      {
+        row: 'chores4irl_hook',
+        editName: 'Edit chores4irl_hook',
+        table: '.destinations__table',
+        scroll: '.destinations__scroll',
+        columns: 5,
+      },
+      {
+        row: 'route 2',
+        editName: 'Edit route 2',
+        table: '.routes__table',
+        scroll: '.routes__scroll',
+        columns: 5,
+      },
+      {
+        row: 'chores4irl/daily',
+        editName: 'Edit chores4irl/daily',
+        table: '.heartbeats__table',
+        scroll: '.heartbeats__scroll',
+        columns: 6,
+      },
+    ]) {
+      const menu = await openRowMenu({ page, row });
+      await menu.getByRole('menuitem', { name: editName, exact: true }).click();
+      const editorCell = page.locator(`${table} tbody td[colspan]`);
+      await expect(editorCell).toHaveAttribute('colspan', String(columns));
+      await expect(page.locator(`${table} thead th`)).toHaveCount(columns);
+      await expectEditorInView({
+        wrapper: page.locator(scroll),
+        form: editorCell.locator('form'),
+      });
+    }
+
+    // App identities (no Owner column): the "approved ... UTC" sub-line under the app id is
+    // wholly visible at scroll 0, clear of the sticky kebab column.
+    const bindingsWrapper = page
+      .locator('.app-identities__scroll')
+      .filter({ has: page.locator('tr[data-app-id="tasktracker"]') });
+    await bindingsWrapper.scrollIntoViewIfNeeded();
+    expect(await bindingsWrapper.evaluate((element) => element.scrollLeft)).toBe(0);
+    const approved = bindingsWrapper
+      .locator('tbody .app-identities__sub')
+      .filter({ hasText: /^approved .+ UTC$/ });
+    await expect(approved).toHaveCount(1);
+    const approvedBox = await approved.boundingBox();
+    const kebabBox = await rowKebab({ page, row: 'tasktracker' }).boundingBox();
+    if (approvedBox === null || kebabBox === null) {
+      throw new Error('approved line or kebab has no bounding box');
+    }
+    expect(approvedBox.x).toBeGreaterThanOrEqual(0);
+    expect(approvedBox.x + approvedBox.width).toBeLessThanOrEqual(kebabBox.x);
+    // Nothing (the sticky kebab column included) is painted over the end of the line.
+    expect(
+      await approved.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.right - 2, rect.top + rect.height / 2);
+        return hit !== null && element.contains(hit);
+      }),
+    ).toBe(true);
+    await expectNoPageOverflow(page);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  /**
+   * Seed for the table-layout tests: enough rows that every wrapper scrolls both ways, with
+   * row 4 of each table carrying a first-column value far longer than any column cap.
+   */
+  function manyRowsSeed(rows: number): DeliveryMockSeed {
+    const numbered = <T>(build: (index: number) => T): T[] =>
+      Array.from({ length: rows }, (_, index) => build(index + 1));
+    const long = ({ length, prefix }: { length: number; prefix: string }): string =>
+      length === 4
+        ? `${prefix}_${'very_long_identifier_'.repeat(4)}${length}`
+        : `${prefix}_${length}`;
+    return {
+      destinations: numbered((n) =>
+        destinationWire({
+          name: long({ length: n, prefix: 'dest' }),
+          type: 'webhook',
+          secrets: { url: 'https://hooks.example.com/****', signing_secret: '****' },
+          ...(n === 2 ? { ownerKind: 'app', ownerAppId: 'chores4irl' } : {}),
+        }),
+      ),
+      routes: numbered((n) =>
+        routeWire({
+          id: n,
+          appPattern: long({ length: n, prefix: 'app' }),
+          destinations: ['dest_1', 'dest_2', 'dest_3'],
+        }),
+      ),
+      heartbeats: numbered((n) =>
+        heartbeatWire({ id: n, name: long({ length: n, prefix: 'check' }) }),
+      ),
+      identityRequests: numbered((n) =>
+        identityRequestWire({ id: n, appId: long({ length: n, prefix: 'app' }) }),
+      ),
+      identityBindings: numbered((n) =>
+        identityBindingWire({
+          appId: long({ length: n, prefix: 'bound' }),
+          keys: [
+            identityKeyWire({
+              id: n,
+              appId: long({ length: n, prefix: 'bound' }),
+              hint: `dak_${n}`,
+            }),
+          ],
+        }),
+      ),
+    };
+  }
+
+  function tableWrappers(page: Page): Locator[] {
+    return [
+      page.locator('.destinations__scroll'),
+      page.locator('.routes__scroll'),
+      page.locator('.heartbeats__scroll'),
+      page.locator('.app-identities__scroll').nth(0),
+      page.locator('.app-identities__scroll').nth(1),
+    ];
+  }
+
+  test('admin tables at 390px: titles and the kebab column stay pinned, the first column scrolls and shows every value in full', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, manyRowsSeed(16));
+
+    // Tall enough that the wrapper (75vh) is fully on screen when scrolled to.
+    await page.setViewportSize({ width: 390, height: 1000 });
+    await page.goto('/#delivery');
+    for (const wrapper of tableWrappers(page)) {
+      await expect(wrapper).toBeVisible();
+      // Bounded height: this is what lets the titles pin to the wrapper rather than the page.
+      expect(await wrapper.evaluate((element) => getComputedStyle(element).maxHeight)).not.toBe(
+        'none',
+      );
+
+      // Keyboard focus never lands under the pinned titles: with the first row's kebab
+      // scrolled just out of sight above the wrapper, focusing it scrolls it back by the
+      // minimum, which leaves it below the titles only because of the wrapper's scroll-padding.
+      const control = wrapper.locator('tbody tr button').first();
+      await control.evaluate((element) => {
+        const scroller = element.closest('.admin-table__scroll');
+        if (!(scroller instanceof HTMLElement)) {
+          throw new Error('control is not inside a table wrapper');
+        }
+        scroller.scrollIntoView({ block: 'start' });
+        scroller.scrollTop +=
+          element.getBoundingClientRect().top - scroller.getBoundingClientRect().top + 12;
+      });
+      await control.focus();
+      const controlBox = await control.boundingBox();
+      const headerBox = await wrapper.locator('thead th').first().boundingBox();
+      expect(controlBox?.y ?? -1).toBeGreaterThanOrEqual(
+        (headerBox?.y ?? Infinity) + (headerBox?.height ?? 0) - 1,
+      );
+      // The kebab is a 44px target that nothing covers while focused, and the page did not move.
+      await expectTouchTarget(control);
+      await expectFullyPainted(control);
+
+      await expectCompactTable({ wrapper });
+      await expectNoPageOverflow(page);
+    }
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('admin tables at 390px: Tab visits exactly one stop per row, its kebab, which stays in view without Tab ever scrolling the wrapper', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, manyRowsSeed(6));
+
+    await page.setViewportSize({ width: 390, height: 1000 });
+    await page.goto('/#delivery');
+    for (const wrapper of tableWrappers(page)) {
+      await expect(wrapper).toBeVisible();
+      await wrapper.scrollIntoViewIfNeeded();
+      const kebabs = wrapper.locator('tbody .row-menu__trigger');
+      const count = await kebabs.count();
+      expect(count).toBe(6);
+      await kebabs.first().focus();
+      for (let index = 0; index < count; index += 1) {
+        await expect(kebabs.nth(index)).toBeFocused();
+        // Wholly inside the visible part of the wrapper, whatever the scroll position.
+        const box = await kebabs.nth(index).boundingBox();
+        const wrapperBox = await wrapper.boundingBox();
+        if (box === null || wrapperBox === null) {
+          throw new Error('kebab or wrapper has no bounding box');
+        }
+        expect(box.x).toBeGreaterThanOrEqual(wrapperBox.x);
+        expect(box.x + box.width).toBeLessThanOrEqual(wrapperBox.x + wrapperBox.width);
+        await expectFullyPainted(kebabs.nth(index));
+        if (index < count - 1) {
+          // The very next Tab stop is the next row's kebab: no other control in between.
+          await page.keyboard.press('Tab');
+        }
+      }
+      // Focusing a pinned kebab must not drag the wrapper sideways (the row text would be
+      // scrolled away from the control that is focused).
+      expect(await wrapper.evaluate((element) => element.scrollLeft)).toBe(0);
+    }
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('admin tables at 390px: every row menu opens fully inside the viewport, even for the last row, and is keyboard operable', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, manyRowsSeed(12));
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+    const wrappers = tableWrappers(page);
+    const cases = [
+      {
+        wrapper: wrappers[0],
+        first: 'dest_1',
+        second: 'dest_2',
+        last: 'dest_12',
+        itemsOf: (row: string) => [
+          `Send test to ${row}`,
+          `Edit ${row}`,
+          `Disable ${row}`,
+          `Delete ${row}`,
+        ],
+      },
+      {
+        wrapper: wrappers[1],
+        first: 'route 1',
+        second: 'route 2',
+        last: 'route 12',
+        itemsOf: (row: string) => [`Edit ${row}`, `Delete ${row}`],
+      },
+      {
+        wrapper: wrappers[2],
+        first: 'urls4irl/check_1',
+        second: 'urls4irl/check_2',
+        last: 'urls4irl/check_12',
+        itemsOf: (row: string) => [`Edit ${row}`, `Pause ${row}`, `Delete ${row}`],
+      },
+      {
+        wrapper: wrappers[3],
+        first: 'app_1',
+        second: 'app_2',
+        last: 'app_12',
+        itemsOf: (row: string) => [
+          `Approve identity request for ${row}`,
+          `Reject identity request for ${row}`,
+        ],
+      },
+      {
+        wrapper: wrappers[4],
+        first: 'bound_1',
+        second: 'bound_2',
+        last: 'bound_12',
+        itemsOf: (row: string) => [
+          `Revoke key dak_${row.replace('bound_', '')} for ${row}`,
+          `Unbind ${row}`,
+        ],
+      },
+    ];
+    for (const { wrapper, first, second, last, itemsOf } of cases) {
+      await expect(wrapper).toBeVisible();
+      for (const row of [first, last]) {
+        const items = itemsOf(row);
+        // The first row sits at the top of its wrapper; the last at the bottom of the page's
+        // viewport, where there is no room below for a menu.
+        await wrapper.evaluate((element, atEnd) => {
+          element.scrollTop = atEnd ? element.scrollHeight : 0;
+          element.scrollIntoView({ block: atEnd ? 'end' : 'start' });
+        }, row === last);
+        const kebab = rowKebab({ page, row });
+        await expectTouchTarget(kebab);
+        const menu = await openRowMenu({ page, row });
+        expect(await kebab.getAttribute('aria-expanded')).toBe('true');
+
+        // The popover is not clipped by the table wrapper: inside the viewport, painted whole.
+        await expectInViewport({ page, locator: menu });
+        await expectFullyPainted(menu);
+        const menuBox = await menu.boundingBox();
+        const kebabBox = await kebab.boundingBox();
+        if (menuBox === null || kebabBox === null) {
+          throw new Error('menu or kebab has no bounding box');
+        }
+        // Right-aligned to the kebab, which is pinned at the wrapper's end edge.
+        expect(Math.abs(menuBox.x + menuBox.width - (kebabBox.x + kebabBox.width))).toBeLessThan(2);
+        if (row === last) {
+          // No room below: it flips above the kebab.
+          expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(kebabBox.y + 1);
+        } else {
+          expect(menuBox.y).toBeGreaterThanOrEqual(kebabBox.y + kebabBox.height - 1);
+        }
+
+        // Every action is in the menu, each a 44px target.
+        for (const name of items) {
+          const item = menu.getByRole('menuitem', { name, exact: true });
+          await expect(item).toBeVisible();
+          await expectTouchTarget(item);
+        }
+        // Arrow keys move through the items; focus starts on the first.
+        const all = menu.getByRole('menuitem');
+        await expect(all.first()).toBeFocused();
+        await page.keyboard.press('ArrowDown');
+        await expect(all.nth(1)).toBeFocused();
+        await page.keyboard.press('End');
+        await expect(all.last()).toBeFocused();
+        await page.keyboard.press('Home');
+        await expect(all.first()).toBeFocused();
+        if (row === last) {
+          // The destructive confirm step (the last item of every table) is a taller popover:
+          // at the bottom of the viewport it too stays inside it, flipped above the kebab.
+          const destructive = items.at(-1) ?? '';
+          await menu.getByRole('menuitem', { name: destructive, exact: true }).click();
+          const step = page.getByRole('group', { name: destructive, exact: true });
+          await expect(step).toBeVisible();
+          await expectInViewport({ page, locator: step });
+          await expectFullyPainted(step);
+          const stepBox = await step.boundingBox();
+          expect((stepBox?.y ?? Infinity) + (stepBox?.height ?? 0)).toBeLessThanOrEqual(
+            kebabBox.y + 1,
+          );
+          // Escape backs out to the list first.
+          await page.keyboard.press('Escape');
+          await expect(step).toBeHidden();
+          await expect(menu).toBeVisible();
+        }
+        // Escape closes it and returns focus to the kebab.
+        await page.keyboard.press('Escape');
+        await expect(menu).toBeHidden();
+        await expect(kebab).toBeFocused();
+        expect(await kebab.getAttribute('aria-expanded')).toBe('false');
+      }
+
+      // Dismissal, on the first row: a press outside, a scroll of the wrapper, a scroll of the
+      // page, and Tab (which carries focus on from the kebab, out of the menu).
+      await wrapper.evaluate((element) => {
+        element.scrollTop = 0;
+        element.scrollIntoView({ block: 'start' });
+      });
+      const kebab = rowKebab({ page, row: first });
+      // A press outside: a click at a fixed point (the page margin) scrolls nothing, so only
+      // the outside-press handler can have closed the menu.
+      let menu = await openRowMenu({ page, row: first });
+      const scrollBefore = await page.evaluate(() => window.scrollY);
+      await page.mouse.click(2, 2);
+      await expect(menu).toBeHidden();
+      expect(await page.evaluate(() => window.scrollY)).toBe(scrollBefore);
+
+      menu = await openRowMenu({ page, row: first });
+      await wrapper.evaluate((element) => element.scrollBy({ left: 30 }));
+      await expect(menu).toBeHidden();
+      await wrapper.evaluate((element) => {
+        element.scrollLeft = 0;
+      });
+
+      menu = await openRowMenu({ page, row: first });
+      // Scroll the page (whichever way there is room) so the document really moves.
+      await page.evaluate(() => window.scrollTo(0, window.scrollY > 40 ? window.scrollY - 40 : 80));
+      await expect(menu).toBeHidden();
+      await wrapper.evaluate((element) => {
+        element.scrollIntoView({ block: 'start' });
+      });
+
+      await kebab.focus();
+      await page.keyboard.press('Enter');
+      menu = rowMenu({ page, row: first });
+      await expect(menu).toBeVisible();
+      await page.keyboard.press('Tab');
+      await expect(menu).toBeHidden();
+      // Tab carried on from the kebab: the next row's kebab has focus, not <body>, the page
+      // or the (portalled) menu.
+      await expect(rowKebab({ page, row: second })).toBeFocused();
+      expect(await focusedDescription(page)).not.toMatch(/^(body|none)/);
+
+      // Only one menu is ever open.
+      await wrapper.evaluate((element) => {
+        element.scrollIntoView({ block: 'start' });
+      });
+      await openRowMenu({ page, row: first });
+      await rowKebab({ page, row: last }).dispatchEvent('click');
+      await expect(page.getByRole('menu')).toHaveCount(1);
+      await page.keyboard.press('Escape');
+    }
+    await expectNoPageOverflow(page);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('destinations and routes at 390px: Disable and Delete ask inside the menu, Escape and Cancel back out, and focus lands on a kebab', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [
+        destinationWire({ name: 'hook1', type: 'webhook' }),
+        destinationWire({ name: 'hook2', type: 'webhook' }),
+      ],
+      routes: [routeWire({ id: 1 }), routeWire({ id: 2, appPattern: 'chores4irl' })],
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+    // Roomy-layout buttons are not in the DOM at all (not merely hidden): every button in a body
+    // row is a kebab.
+    await expect(page.locator('.destinations__table tbody button')).toHaveCount(2);
+    await expect(
+      page.locator('.destinations__table tbody button:not(.row-menu__trigger)'),
+    ).toHaveCount(0);
+    await expect(page.locator('.routes__table tbody button')).toHaveCount(2);
+    await expect(page.locator('.routes__table tbody button:not(.row-menu__trigger)')).toHaveCount(
+      0,
+    );
+
+    // Disable: the confirm is a step inside the menu; Escape backs out of it, then Cancel.
+    let menu = await openRowMenu({ page, row: 'hook1' });
+    await menu.getByRole('menuitem', { name: 'Disable hook1', exact: true }).click();
+    const confirm = page.getByRole('group', { name: 'Disable hook1', exact: true });
+    await expect(confirm).toContainText('Disable hook1?');
+    await expect(confirm.getByRole('button', { name: 'Confirm disable hook1' })).toBeFocused();
+    await expectInViewport({ page, locator: confirm });
+    await page.keyboard.press('Escape');
+    await expect(confirm).toBeHidden();
+    await expect(menu).toBeVisible();
+    await menu.getByRole('menuitem', { name: 'Disable hook1', exact: true }).click();
+    await page.getByRole('button', { name: 'Cancel Disable hook1', exact: true }).click();
+    await expect(menu).toBeVisible();
+    expect(mock.mutations).toEqual([]);
+    // ... and the keyboard completes it: select Disable, then Enter on the focused Confirm.
+    await menu.getByRole('menuitem', { name: 'Disable hook1', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Confirm disable hook1' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(menu).toBeHidden();
+    await expect(rowKebab({ page, row: 'hook1' })).toBeFocused();
+    expect(mock.mutations.map((request) => `${request.method} ${request.pathname}`)).toEqual([
+      'PATCH /delivery/v1/admin/destinations/hook1',
+    ]);
+
+    // Enable is one selection.
+    menu = await openRowMenu({ page, row: 'hook1' });
+    await menu.getByRole('menuitem', { name: 'Enable hook1', exact: true }).click();
+    await expect(menu).toBeHidden();
+    await expect(rowKebab({ page, row: 'hook1' })).toBeFocused();
+    expect(mock.mutations).toHaveLength(2);
+
+    // Send test: the result reads in the row's Status cell, not in the (closed) menu.
+    menu = await openRowMenu({ page, row: 'hook1' });
+    await menu.getByRole('menuitem', { name: 'Send test to hook1', exact: true }).click();
+    await expect(
+      page.locator('.destinations__table tbody tr').first().getByText('HTTP 200'),
+    ).toBeVisible();
+
+    // Delete, with the keyboard alone: Enter opens the menu, End reaches Delete, Enter asks,
+    // Enter on the focused Confirm deletes. Focus moves to the neighbour row's kebab.
+    await rowKebab({ page, row: 'hook1' }).focus();
+    await page.keyboard.press('Enter');
+    menu = rowMenu({ page, row: 'hook1' });
+    await expect(menu).toBeVisible();
+    await page.keyboard.press('End');
+    await expect(menu.getByRole('menuitem', { name: 'Delete hook1', exact: true })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('button', { name: 'Confirm delete hook1' })).toBeFocused();
+    expect(mock.mutations).toHaveLength(3);
+    await page.keyboard.press('Enter');
+    await expect(rowKebab({ page, row: 'hook1' })).toHaveCount(0);
+    await expect(rowKebab({ page, row: 'hook2' })).toBeFocused();
+    expect(mock.mutations.at(-1)?.method).toBe('DELETE');
+
+    // A route: the same, with the same focus hand-off.
+    menu = await openRowMenu({ page, row: 'route 1' });
+    await menu.getByRole('menuitem', { name: 'Delete route 1', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirm delete route 1', exact: true }).click();
+    await expect(rowKebab({ page, row: 'route 1' })).toHaveCount(0);
+    await expect(rowKebab({ page, row: 'route 2' })).toBeFocused();
+    expect(mock.mutations.at(-1)?.pathname).toBe('/delivery/v1/admin/routes/1');
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('admin tables at 800px keep the roomy layout: inline compact buttons, pinned first column, nothing truncated but a pathological value', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, manyRowsSeed(16));
+
+    await page.setViewportSize({ width: 800, height: 1000 });
+    await page.goto('/#delivery');
+    // No kebab anywhere: the inline buttons are the row actions, at the compact size.
+    await expect(page.locator('.row-menu__trigger')).toHaveCount(0);
+    await expectCompactButton(
+      page.getByRole('button', { name: 'Send test to dest_1', exact: true }),
+    );
+    await expectCompactButton(page.getByRole('button', { name: 'Edit route 1', exact: true }));
+    for (const wrapper of tableWrappers(page)) {
+      await expect(wrapper).toBeVisible();
+      await expectPinnedTable({ wrapper });
+      await expectNoPageOverflow(page);
+    }
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test.describe('on a touch screen', () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+    test('the narrow layout keeps 44px targets: kebabs, menu items and the section buttons', async ({
+      page,
+    }) => {
+      const mock = await mockDelivery(page, {
+        destinations: [destinationWire({ name: 'hook1', type: 'webhook' })],
+        heartbeats: [heartbeatWire({ id: 1, name: 'nightly_backup' })],
+      });
+
+      await page.goto('/#delivery');
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+      await expectTouchTarget(rowKebab({ page, row: 'hook1' }));
+      await expectTouchTarget(rowKebab({ page, row: 'urls4irl/nightly_backup' }));
+      const heartbeats = page.getByRole('region', { name: 'Heartbeats' });
+      await expectTouchTarget(heartbeats.getByRole('button', { name: 'Add check', exact: true }));
+      await expectTouchTarget(
+        heartbeats.getByRole('button', { name: 'Refresh heartbeats', exact: true }),
+      );
+      const menu = await openRowMenu({ page, row: 'hook1' });
+      for (const item of await menu.getByRole('menuitem').all()) {
+        await expectTouchTarget(item);
+      }
+      expect(mock.unmocked).toEqual([]);
+    });
+  });
+
+  test.describe('on a wide touch screen', () => {
+    test.use({ viewport: { width: 800, height: 900 }, hasTouch: true, isMobile: true });
+
+    test('the roomy layout keeps the inline row buttons at 44px', async ({ page }) => {
+      const mock = await mockDelivery(page, {
+        destinations: [destinationWire({ name: 'hook1', type: 'webhook' })],
+        routes: [routeWire({ id: 1 })],
+        heartbeats: [heartbeatWire({ id: 1, name: 'nightly_backup' })],
+        identityRequests: [identityRequestWire({ id: 1, appId: 'urls4irl' })],
+        identityBindings: [
+          identityBindingWire({
+            appId: 'tasktracker',
+            keys: [identityKeyWire({ id: 11, appId: 'tasktracker', hint: 'dak_7Q2m' })],
+          }),
+        ],
+      });
+
+      await page.goto('/#delivery');
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+      await expect(page.locator('.row-menu__trigger')).toHaveCount(0);
+      for (const name of [
+        'Send test to hook1',
+        'Edit hook1',
+        'Delete hook1',
+        'Edit route 1',
+        'Pause urls4irl/nightly_backup',
+        'Approve identity request for urls4irl',
+        'Unbind tasktracker',
+        'Revoke key dak_7Q2m for tasktracker',
+      ]) {
+        await expectTouchTarget(page.getByRole('button', { name, exact: true }));
+      }
+      expect(mock.unmocked).toEqual([]);
+    });
+  });
+
+  test('the layout switches exactly at the 30rem breakpoint: kebabs at 480px, inline buttons at 481px', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [destinationWire({ name: 'hook1', type: 'webhook' })],
+      routes: [routeWire({ id: 1 })],
+      heartbeats: [heartbeatWire({ id: 1, name: 'nightly_backup' })],
+      identityRequests: [identityRequestWire({ id: 1, appId: 'urls4irl' })],
+    });
+
+    await page.setViewportSize({ width: 480, height: 900 });
+    await page.goto('/#delivery');
+    await expect(page.locator('.row-menu__trigger')).toHaveCount(4);
+    await expect(
+      page.locator(
+        ':is(.destinations__table, .routes__table, .heartbeats__table, .app-identities__table) tbody button:not(.row-menu__trigger)',
+      ),
+    ).toHaveCount(0);
+    // The first column is not pinned at the narrow width ...
+    expect(
+      await page
+        .locator('.destinations__table tbody .admin-table__lead')
+        .first()
+        .evaluate((element) => getComputedStyle(element).position),
+    ).toBe('static');
+
+    // ... and the very next pixel is the roomy layout, first column pinned, with no kebab.
+    await page.setViewportSize({ width: 481, height: 900 });
+    await expect(page.locator('.row-menu__trigger')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Delete hook1', exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Approve identity request for urls4irl', exact: true }),
+    ).toBeVisible();
+    expect(
+      await page
+        .locator('.destinations__table tbody .admin-table__lead')
+        .first()
+        .evaluate((element) => getComputedStyle(element).position),
+    ).toBe('sticky');
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('destinations and routes: the inline editors span the table and stay in view at 390px', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [
+        destinationWire({
+          name: 'hook1',
+          type: 'webhook',
+          secrets: { url: 'https://hooks.example.com/****', signing_secret: '****' },
+        }),
+      ],
+      routes: [routeWire({ id: 1 })],
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+
+    // The destination editor.
+    const destinationWrapper = page.locator('.destinations__scroll');
+    const destinationMenu = await openRowMenu({ page, row: 'hook1' });
+    await destinationMenu.getByRole('menuitem', { name: 'Edit hook1', exact: true }).click();
+    await expect(destinationMenu).toBeHidden();
+    const destinationForm = destinationWrapper.locator('.admin-table__editor form');
+    await expect(destinationForm).toBeVisible();
+    // Opened from the menu, the editor takes focus and is in view.
+    await expect(destinationForm.locator(':focus')).toHaveCount(1);
+    await expectEditorInView({ wrapper: destinationWrapper, form: destinationForm });
+    // It wraps like a form (no cell-wide single line) and never scrolls the page.
+    await expectNoPageOverflow(page);
+    const destinationFormBox = await destinationForm.boundingBox();
+    expect(destinationFormBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((destinationFormBox?.x ?? 0) + (destinationFormBox?.width ?? 0)).toBeLessThanOrEqual(
+      390,
+    );
+    for (const control of [
+      destinationForm.getByRole('button', { name: 'Save hook1', exact: true }),
+      destinationForm.getByRole('button', { name: 'Close', exact: true }),
+    ]) {
+      const box = await control.boundingBox();
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    }
+    await destinationForm.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(destinationForm).toBeHidden();
+    // Closing hands focus back to the row's kebab.
+    await expect(rowKebab({ page, row: 'hook1' })).toBeFocused();
+
+    // The route editor.
+    const routeWrapper = page.locator('.routes__scroll');
+    const routeMenu = await openRowMenu({ page, row: 'route 1' });
+    await routeMenu.getByRole('menuitem', { name: 'Edit route 1', exact: true }).click();
+    const routeForm = routeWrapper.locator('.admin-table__editor form');
+    await expect(routeForm).toBeVisible();
+    await expect(routeForm.locator(':focus')).toHaveCount(1);
+    await expectEditorInView({ wrapper: routeWrapper, form: routeForm });
+    await expectNoPageOverflow(page);
+    const routeFormBox = await routeForm.boundingBox();
+    expect(routeFormBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((routeFormBox?.x ?? 0) + (routeFormBox?.width ?? 0)).toBeLessThanOrEqual(390);
     expect(mock.unmocked).toEqual([]);
   });
 
@@ -1981,6 +4403,11 @@ test.describe('admin UI Delivery tab', () => {
 
   test('has no document-level horizontal overflow at 390px', async ({ page }) => {
     const longSnippet = 'upstream-error-'.repeat(40);
+    // An app-owned row at 390px: a long app id stays on one line inside the Owner badge
+    // (the table wrapper scrolls instead of the page), and the Delete and Disable confirms
+    // (which carry the managed note) stay on one line too.
+    const LONG_OWNER_APP_ID = 'a-very-long-app-identifier-for-an-owner-badge';
+    const managedNote = `Managed by ${LONG_OWNER_APP_ID}'s deploy — operator edits are reverted on its next deploy.`;
     const mock = await mockDelivery(page, {
       destinations: [
         destinationWire({
@@ -1992,18 +4419,25 @@ test.describe('admin UI Delivery tab', () => {
           name: 'ops_discord',
           type: 'discord',
           secrets: { webhook_url: 'https://discord.com/****' },
+          ownerKind: 'app',
+          ownerAppId: LONG_OWNER_APP_ID,
         }),
       ],
       routes: [
-        {
+        routeWire({
           id: 1,
-          app_pattern: 'urls4irl',
-          channel_pattern: 'alerts*',
           destinations: ['hook1', 'ops_discord'],
-          enabled: true,
-          created_at: TIMESTAMP,
-          updated_at: TIMESTAMP,
-        },
+          ownerKind: 'app',
+          ownerAppId: LONG_OWNER_APP_ID,
+        }),
+      ],
+      heartbeats: [
+        heartbeatWire({
+          id: 1,
+          name: 'nightly_backup',
+          ownerKind: 'app',
+          ownerAppId: LONG_OWNER_APP_ID,
+        }),
       ],
       deliveries: { dead: [deliveryWire({ id: 7 })] },
       scheduled: [scheduledWire({ id: 'msg-1', key: `digest-${'x'.repeat(40)}` })],
@@ -2025,7 +4459,8 @@ test.describe('admin UI Delivery tab', () => {
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/#delivery');
-    await expect(page.getByRole('cell', { name: 'ops_discord', exact: true })).toBeVisible();
+    // The cell also carries its Owner badge on its second line.
+    await expect(page.getByRole('cell', { name: /^ops_discord Owner: App · / })).toBeVisible();
     await expect(page.getByRole('cell', { name: 'alerts*', exact: true })).toBeVisible();
     const log = page.getByRole('region', { name: 'Delivery log' });
     await log.getByRole('button', { name: 'Show attempts for delivery 7', exact: true }).click();
@@ -2087,6 +4522,782 @@ test.describe('admin UI Delivery tab', () => {
       clientWidth: document.documentElement.clientWidth,
     }));
     expect(after.scrollWidth).toBeLessThanOrEqual(after.clientWidth);
+
+    // The app-owned destination's Delete confirm carries the managed note: its
+    // controls stay at least 44px tall and the page still never scrolls sideways.
+    const ownedRow = page
+      .locator('.destinations__table tbody tr')
+      .filter({ hasText: 'ops_discord' })
+      .first();
+    await expect(ownedRow.locator('.owner-badge--app')).toContainText(LONG_OWNER_APP_ID);
+    // The long id never wraps inside its badge, so the badge stays a single pill.
+    expect(await maxRenderedLines({ root: ownedRow.locator('.owner-badge--app') })).toBe(1);
+    expect(
+      await ownedRow
+        .locator('.owner-badge--app')
+        .evaluate((element) => getComputedStyle(element).whiteSpace),
+    ).toBe('nowrap');
+    expect(
+      (await ownedRow.locator('.owner-badge--app').boundingBox())?.height ?? Infinity,
+    ).toBeLessThan(30);
+    // The row's only control is its kebab; the short owner note (the menu's first line) and
+    // the Delete confirm that carries the long managed note live in the menu, so they cannot
+    // widen the table or the page.
+    const widthBefore = await page
+      .locator('.destinations__scroll')
+      .evaluate((element) => element.scrollWidth);
+    const ownedMenu = await openRowMenu({ page, row: 'ops_discord' });
+    await expect(ownedMenu.getByText('Edits are overridden on next deploy')).toBeVisible();
+    await expect(ownedMenu.getByText(managedNote)).toHaveCount(0);
+    await ownedMenu.getByRole('menuitem', { name: 'Delete ops_discord', exact: true }).click();
+    const ownedConfirm = page.getByRole('group', { name: 'Delete ops_discord', exact: true });
+    await expect(ownedConfirm).toContainText(managedNote);
+    // The popover may wrap its text (a sentence), stays inside the viewport and has 44px
+    // controls.
+    await expectInViewport({ page, locator: ownedConfirm });
+    for (const name of ['Confirm delete ops_discord', 'Cancel Delete ops_discord']) {
+      await expectTouchTarget(ownedConfirm.getByRole('button', { name, exact: true }));
+    }
+    expect(await maxRenderedLines({ root: ownedRow })).toBe(1);
+    expect(
+      await page.locator('.destinations__scroll').evaluate((element) => element.scrollWidth),
+    ).toBe(widthBefore);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    // Same for the app-owned route's Delete confirm.
+    const ownedRoute = page.locator('.routes__table tbody tr').first();
+    const routeMenu = await openRowMenu({ page, row: 'route 1' });
+    await expect(routeMenu.getByText('Edits are overridden on next deploy')).toBeVisible();
+    await expect(routeMenu.getByText(managedNote)).toHaveCount(0);
+    await routeMenu.getByRole('menuitem', { name: 'Delete route 1', exact: true }).click();
+    const routeConfirm = page.getByRole('group', { name: 'Delete route 1', exact: true });
+    await expect(routeConfirm).toContainText(managedNote);
+    await expectInViewport({ page, locator: routeConfirm });
+    for (const name of ['Confirm delete route 1', 'Cancel Delete route 1']) {
+      await expectTouchTarget(routeConfirm.getByRole('button', { name, exact: true }));
+    }
+    expect(await maxRenderedLines({ root: ownedRoute })).toBe(1);
+    const afterConfirm = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(afterConfirm.scrollWidth).toBeLessThanOrEqual(afterConfirm.clientWidth);
     expect(mock.unmocked).toEqual([]);
   });
+
+  test('destinations, routes and heartbeats at 1280px: the inline buttons read as bare verbs and the Actions cell fits with no sideways scroll, whatever the note, test result or error says', async ({
+    page,
+  }) => {
+    const longReason =
+      'receiver returned a non-retryable error: connection refused by the remote host after three attempts, giving up';
+    const longError = `delete refused by the server: ${'upstream is unavailable, try again later. '.repeat(3)}`;
+    const mock = await mockDelivery(page, {
+      destinations: [
+        destinationWire({
+          name: 'hook1',
+          type: 'webhook',
+          secrets: { url: 'https://hooks.example.com/****', signing_secret: '****' },
+        }),
+        destinationWire({
+          name: 'chores4irl_hook',
+          type: 'webhook',
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        destinationWire({ name: 'mystery_hook', type: 'webhook', ownerKind: null }),
+      ],
+      routes: [
+        routeWire({ id: 1, destinations: ['hook1'] }),
+        routeWire({
+          id: 2,
+          appPattern: 'chores4irl',
+          destinations: ['chores4irl_hook'],
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        routeWire({ id: 3, destinations: ['hook1'], ownerKind: null }),
+      ],
+      heartbeats: [
+        heartbeatWire({ id: 1, name: 'nightly_backup' }),
+        heartbeatWire({
+          id: 2,
+          appId: 'chores4irl',
+          name: 'daily',
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        heartbeatWire({ id: 3, name: 'mystery', ownerKind: null }),
+      ],
+    });
+    // A dead test delivery with a long reason, and a server error for each table's first delete.
+    await page.route('**/delivery/v1/admin/messages**', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          message: {
+            message_id: 'b3a1c6f0-1111-4222-8333-444455556666',
+            status: 'dead',
+            deliveries: [
+              {
+                id: 1,
+                destination: 'hook1',
+                state: 'dead',
+                dead_reason: longReason,
+                attempt_count: 3,
+                last_status_code: null,
+                next_attempt_at: null,
+                delivered_at: null,
+              },
+            ],
+          },
+        }),
+      });
+    });
+    await page.route(
+      /\/delivery\/v1\/admin\/(destinations\/hook1|routes\/1|heartbeats\/1)$/,
+      async (route) => {
+        if (route.request().method() !== 'DELETE') {
+          await route.fallback();
+          return;
+        }
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: longError }),
+        });
+      },
+    );
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/#delivery');
+
+    const tables = [
+      {
+        name: 'Destinations',
+        wrapper: page.locator('.destinations__scroll'),
+        lines: '.destinations__sub, .destinations__result, .destinations__row-error',
+        firstRowVisible: ['Test', 'Edit', 'Disable', 'Delete'],
+        firstRowNames: ['Send test to hook1', 'Edit hook1', 'Disable hook1', 'Delete hook1'],
+      },
+      {
+        name: 'Routes',
+        wrapper: page.locator('.routes__scroll'),
+        lines: '.routes__sub, .routes__row-error',
+        firstRowVisible: ['Edit', 'Delete'],
+        firstRowNames: ['Edit route 1', 'Delete route 1'],
+      },
+      {
+        name: 'Heartbeats',
+        wrapper: page.locator('.heartbeats__scroll'),
+        lines: '.heartbeats__sub, .heartbeats__row-error',
+        firstRowVisible: ['Edit', 'Pause', 'Delete'],
+        firstRowNames: [
+          'Edit urls4irl/nightly_backup',
+          'Pause urls4irl/nightly_backup',
+          'Delete urls4irl/nightly_backup',
+        ],
+      },
+    ];
+    for (const table of tables) {
+      await expect(table.wrapper).toBeVisible();
+      await table.wrapper.scrollIntoViewIfNeeded();
+      // The row already names its object: each button shows the bare verb, and is still called
+      // by the verb plus the object.
+      const first = table.wrapper.locator('tbody tr').first().locator('button');
+      await expect(first).toHaveText(table.firstRowVisible);
+      for (const [index, name] of table.firstRowNames.entries()) {
+        await expect(first.nth(index)).toHaveAttribute('aria-label', name);
+      }
+      // The owner note (an app-owned row's, and an unknown owner's) is a short single line,
+      // fully visible: no ellipsis, no clipping, no `title` fallback.
+      const notes = table.wrapper.locator('.admin-table__note');
+      await expect(notes).toHaveCount(2);
+      await expect(notes.nth(0)).toHaveText('Edits are overridden on next deploy');
+      await expect(notes.nth(1)).toHaveText('Owner unknown — edits may be overridden');
+      for (const note of await notes.all()) {
+        await expect(note).not.toHaveAttribute('title', /.+/);
+        const shown = await note.evaluate((element) => ({
+          textOverflow: getComputedStyle(element).textOverflow,
+          whiteSpace: getComputedStyle(element).whiteSpace,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        }));
+        expect(shown.textOverflow).not.toBe('ellipsis');
+        expect(shown.whiteSpace).toBe('nowrap');
+        expect(shown.scrollWidth).toBeLessThanOrEqual(shown.clientWidth);
+      }
+      await expect
+        .poll(() => actionsFitViolations({ wrapper: table.wrapper, extraLines: table.lines }), {
+          message: `${table.name} idle`,
+        })
+        .toEqual([]);
+    }
+
+    // A long test result under Test, and a long error under Delete, do not widen the cell.
+    await page.getByRole('button', { name: 'Send test to hook1', exact: true }).click();
+    await expect(page.getByText(longReason)).toBeVisible();
+    await expect
+      .poll(
+        () => actionsFitViolations({ wrapper: tables[0].wrapper, extraLines: tables[0].lines }),
+        { message: 'Destinations with a long test result' },
+      )
+      .toEqual([]);
+    for (const [index, table] of tables.entries()) {
+      const target = ['hook1', 'route 1', 'urls4irl/nightly_backup'][index];
+      await table.wrapper.getByRole('button', { name: `Delete ${target}`, exact: true }).click();
+      await table.wrapper
+        .getByRole('button', { name: `Confirm delete ${target}`, exact: true })
+        .click();
+      await expect(table.wrapper.getByText(longError.trim())).toBeVisible();
+      await expect
+        .poll(() => actionsFitViolations({ wrapper: table.wrapper, extraLines: table.lines }), {
+          message: `${table.name} with a long row error`,
+        })
+        .toEqual([]);
+    }
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  // An open destructive confirm must not make its table wider: the row's other inline buttons
+  // step aside (hidden, still mounted) so the confirm pair takes their place, and the long
+  // notice wraps under the pair inside the cell instead of widening it.
+  const CONFIRM_SEED: DeliveryMockSeed = {
+    destinations: [
+      destinationWire({
+        name: 'hook1',
+        type: 'webhook',
+        secrets: { url: 'https://hooks.example.com/****', signing_secret: '****' },
+      }),
+      destinationWire({
+        name: 'chores4irl_hook',
+        type: 'webhook',
+        ownerKind: 'app',
+        ownerAppId: 'chores4irl',
+      }),
+      destinationWire({ name: 'mystery_hook', type: 'webhook', ownerKind: null }),
+      destinationWire({ name: 'off_hook', type: 'webhook', enabled: false }),
+    ],
+    routes: [
+      routeWire({ id: 1, destinations: ['hook1'] }),
+      routeWire({
+        id: 2,
+        appPattern: 'chores4irl',
+        destinations: ['chores4irl_hook'],
+        ownerKind: 'app',
+        ownerAppId: 'chores4irl',
+      }),
+      routeWire({ id: 3, destinations: ['hook1'], ownerKind: null }),
+    ],
+    heartbeats: [
+      heartbeatWire({ id: 1, name: 'nightly_backup' }),
+      heartbeatWire({
+        id: 2,
+        appId: 'chores4irl',
+        name: 'daily',
+        ownerKind: 'app',
+        ownerAppId: 'chores4irl',
+      }),
+      heartbeatWire({ id: 3, name: 'mystery', ownerKind: null }),
+      heartbeatWire({ id: 4, name: 'stopped', paused: true }),
+    ],
+    identityRequests: [
+      identityRequestWire({ id: 1, appId: 'urls4irl' }),
+      identityRequestWire({ id: 2, appId: 'chores4irl' }),
+    ],
+    identityBindings: [
+      identityBindingWire({
+        appId: 'tasktracker',
+        keys: [identityKeyWire({ id: 11, appId: 'tasktracker', hint: 'dak_7Q2m' })],
+      }),
+      identityBindingWire({ appId: 'notifier' }),
+    ],
+  };
+
+  // Unbind is the one confirm whose pair is wider than its row's only idle button, so the
+  // Actions column has to grow by the difference. Without keys the bindings table has room for
+  // it (the Keys column is the one that gives); with keys it already fills the wrapper.
+  const UNBIND_SEED: DeliveryMockSeed = {
+    ...CONFIRM_SEED,
+    identityBindings: [
+      identityBindingWire({ appId: 'notifier' }),
+      identityBindingWire({ appId: 'mailer' }),
+    ],
+  };
+
+  type ConfirmTable =
+    'destinations' | 'routes' | 'heartbeats' | 'identityRequests' | 'identityBindings';
+
+  interface ConfirmCase {
+    label: string;
+    /** The table's wrapper. */
+    wrapper: (page: Page) => Locator;
+    /** Accessible name of the trigger that opens the confirm. */
+    trigger: string;
+    /** Accessible name of the confirm button. */
+    confirm: string;
+    /** The row's other inline buttons, which step aside while the confirm is open. */
+    siblings: string[];
+    /** The cell that holds the trigger (the Actions cell, or the Keys cell for Revoke). */
+    cell: string;
+    mutation: RegExp;
+    seed?: DeliveryMockSeed;
+    /** The table and row to keep when the case also runs with a single row (the common case). */
+    single?: { table: ConfirmTable; keep: (row: Json) => boolean };
+    /**
+     * The table's idle row is within a font's width of the wrapper, so a wider sans (DejaVu Sans
+     * on the CI runner) already scrolls it sideways before anything is opened. Such a case asserts
+     * only that the open confirm adds no scroll beyond the idle one.
+     */
+    idleMayScroll?: boolean;
+  }
+
+  const CONFIRM_CASES: ConfirmCase[] = [
+    {
+      label: 'destinations Delete (app-owned)',
+      wrapper: (page) => page.locator('.destinations__scroll'),
+      trigger: 'Delete chores4irl_hook',
+      confirm: 'Confirm delete chores4irl_hook',
+      siblings: ['Send test to chores4irl_hook', 'Edit chores4irl_hook', 'Disable chores4irl_hook'],
+      cell: 'td.admin-table__actions',
+      mutation: /^DELETE \/delivery\/v1\/admin\/destinations\/chores4irl_hook$/,
+      single: { table: 'destinations', keep: (row) => row.name === 'chores4irl_hook' },
+    },
+    {
+      label: 'destinations Disable (unknown owner)',
+      wrapper: (page) => page.locator('.destinations__scroll'),
+      trigger: 'Disable mystery_hook',
+      confirm: 'Confirm disable mystery_hook',
+      siblings: ['Send test to mystery_hook', 'Edit mystery_hook', 'Delete mystery_hook'],
+      cell: 'td.admin-table__actions',
+      mutation: /^PATCH \/delivery\/v1\/admin\/destinations\/mystery_hook$/,
+    },
+    {
+      label: 'destinations Delete (disabled destination)',
+      wrapper: (page) => page.locator('.destinations__scroll'),
+      trigger: 'Delete off_hook',
+      confirm: 'Confirm delete off_hook',
+      siblings: ['Send test to off_hook', 'Edit off_hook', 'Enable off_hook'],
+      cell: 'td.admin-table__actions',
+      mutation: /^DELETE \/delivery\/v1\/admin\/destinations\/off_hook$/,
+    },
+    {
+      label: 'routes Delete (app-owned)',
+      wrapper: (page) => page.locator('.routes__scroll'),
+      trigger: 'Delete route 2',
+      confirm: 'Confirm delete route 2',
+      siblings: ['Edit route 2'],
+      cell: 'td.admin-table__actions',
+      mutation: /^DELETE \/delivery\/v1\/admin\/routes\/2$/,
+      single: { table: 'routes', keep: (row) => row.id === 2 },
+    },
+    {
+      label: 'heartbeats Pause (app-owned)',
+      wrapper: (page) => page.locator('.heartbeats__scroll'),
+      trigger: 'Pause chores4irl/daily',
+      confirm: 'Confirm pause chores4irl/daily',
+      siblings: ['Edit chores4irl/daily', 'Delete chores4irl/daily'],
+      cell: 'td.admin-table__actions',
+      mutation: /^POST \/delivery\/v1\/admin\/heartbeats\/2\/pause$/,
+      single: { table: 'heartbeats', keep: (row) => row.id === 2 },
+    },
+    {
+      label: 'heartbeats Delete (app-owned)',
+      wrapper: (page) => page.locator('.heartbeats__scroll'),
+      trigger: 'Delete chores4irl/daily',
+      confirm: 'Confirm delete chores4irl/daily',
+      siblings: ['Edit chores4irl/daily', 'Pause chores4irl/daily'],
+      cell: 'td.admin-table__actions',
+      mutation: /^DELETE \/delivery\/v1\/admin\/heartbeats\/2$/,
+    },
+    {
+      label: 'heartbeats Delete (paused check)',
+      wrapper: (page) => page.locator('.heartbeats__scroll'),
+      trigger: 'Delete urls4irl/stopped',
+      confirm: 'Confirm delete urls4irl/stopped',
+      siblings: ['Edit urls4irl/stopped', 'Resume urls4irl/stopped'],
+      cell: 'td.admin-table__actions',
+      mutation: /^DELETE \/delivery\/v1\/admin\/heartbeats\/4$/,
+    },
+    {
+      label: 'app identity requests Reject',
+      wrapper: (page) => page.locator('.app-identities__scroll').first(),
+      trigger: 'Reject identity request for chores4irl',
+      confirm: 'Confirm reject identity request for chores4irl',
+      siblings: ['Approve identity request for chores4irl'],
+      cell: 'td.admin-table__actions',
+      mutation: /^POST \/delivery\/v1\/admin\/app-identity\/requests\/2\/reject$/,
+      single: { table: 'identityRequests', keep: (row) => row.id === 2 },
+    },
+    {
+      label: 'app identity bindings Unbind',
+      wrapper: (page) => page.locator('.app-identities__scroll').nth(1),
+      trigger: 'Unbind notifier',
+      confirm: 'Confirm unbind notifier',
+      siblings: [],
+      cell: 'td.admin-table__actions',
+      mutation: /^DELETE \/delivery\/v1\/admin\/app-identity\/bindings\/notifier$/,
+      seed: UNBIND_SEED,
+      single: { table: 'identityBindings', keep: (row) => row.app_id === 'notifier' },
+    },
+    {
+      label: 'app identity keys Revoke',
+      wrapper: (page) => page.locator('.app-identities__scroll').nth(1),
+      trigger: 'Revoke key dak_7Q2m for tasktracker',
+      confirm: 'Confirm revoke key dak_7Q2m for tasktracker',
+      siblings: [],
+      cell: 'td.admin-table__fill',
+      mutation: /^POST \/delivery\/v1\/admin\/app-identity\/keys\/11\/revoke$/,
+      idleMayScroll: true,
+    },
+  ];
+
+  /** The names of every rendered (not display:none) button in a table wrapper. */
+  async function renderedButtons(wrapper: Locator): Promise<string[]> {
+    return wrapper
+      .getByRole('button')
+      .evaluateAll((buttons) =>
+        buttons
+          .filter((button) => button.getClientRects().length > 0)
+          .map((button) => button.getAttribute('aria-label') ?? button.textContent ?? ''),
+      );
+  }
+
+  /**
+   * How far the wrapper overflows sideways, the cell's width, whether the controls share one
+   * line, and every control or notice that sticks out of the cell's content box (either side)
+   * or the wrapper, or whose notice is cut off.
+   */
+  async function confirmFit(cell: Locator): Promise<{
+    overflow: number;
+    cellWidth: number;
+    /** The width a cell needs to hold its controls: their span plus the cell's padding and gap. */
+    pairWidth: number;
+    oneLine: boolean;
+    stickingOut: string[];
+  }> {
+    return cell.evaluate((element) => {
+      const scroller = element.closest<HTMLElement>('.admin-table__scroll');
+      if (scroller === null) {
+        throw new Error('the cell is not inside an admin table wrapper');
+      }
+      const port = scroller.getBoundingClientRect();
+      const cellBox = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      const contentLeft = cellBox.left + parseFloat(style.paddingLeft);
+      const contentRight = cellBox.right - parseFloat(style.paddingRight);
+      const stickingOut: string[] = [];
+      const buttons: DOMRect[] = [];
+      for (const part of element.querySelectorAll<HTMLElement>('button, .confirm-button__notice')) {
+        if (part.getClientRects().length === 0) {
+          continue;
+        }
+        const box = part.getBoundingClientRect();
+        if (part.tagName === 'BUTTON') {
+          buttons.push(box);
+        }
+        if (
+          box.right > contentRight + 0.5 ||
+          box.left < contentLeft - 0.5 ||
+          box.right > port.right + 0.5
+        ) {
+          stickingOut.push(`${part.textContent} spans ${box.left}..${box.right}`);
+        }
+        if (part.classList.contains('confirm-button__notice')) {
+          if (
+            getComputedStyle(part).textOverflow === 'ellipsis' ||
+            part.scrollWidth > part.clientWidth + 1
+          ) {
+            stickingOut.push(`${part.textContent} is cut off`);
+          }
+        }
+      }
+      const group = element.querySelector('.confirm-button__group');
+      const gap = group === null ? 0 : parseFloat(getComputedStyle(group).columnGap) || 0;
+      const span =
+        buttons.length === 0
+          ? 0
+          : Math.max(...buttons.map((box) => box.right)) -
+            Math.min(...buttons.map((box) => box.left));
+      return {
+        overflow: scroller.scrollWidth - scroller.clientWidth,
+        cellWidth: cellBox.width,
+        pairWidth: span + gap + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight),
+        oneLine: buttons.every((box) => Math.abs(box.top - buttons[0].top) < 1),
+        stickingOut,
+      };
+    });
+  }
+
+  const CONFIRM_RUNS = CONFIRM_CASES.flatMap((confirmCase) =>
+    confirmCase.single === undefined
+      ? [{ confirmCase, oneRow: false }]
+      : [
+          { confirmCase, oneRow: false },
+          { confirmCase, oneRow: true },
+        ],
+  );
+
+  for (const { confirmCase, oneRow } of CONFIRM_RUNS) {
+    test(`${confirmCase.label}${oneRow ? ' in a one-row table' : ''} at 1280px: the open confirm hides the row's other buttons and never widens the table`, async ({
+      page,
+    }) => {
+      const baseSeed = confirmCase.seed ?? CONFIRM_SEED;
+      const { single } = confirmCase;
+      const seed: DeliveryMockSeed =
+        oneRow && single !== undefined
+          ? { ...baseSeed, [single.table]: (baseSeed[single.table] ?? []).filter(single.keep) }
+          : baseSeed;
+      const mock = await mockDelivery(page, seed);
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await page.goto('/#delivery');
+
+      const wrapper = confirmCase.wrapper(page);
+      await expect(wrapper).toBeVisible();
+      await wrapper.scrollIntoViewIfNeeded();
+      const trigger = wrapper.getByRole('button', { name: confirmCase.trigger, exact: true });
+      const confirm = wrapper.getByRole('button', { name: confirmCase.confirm, exact: true });
+      // The row is found by its trigger or, while the pair is open, by its confirm button.
+      const escaped = [confirmCase.trigger, confirmCase.confirm].map((name) =>
+        name.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&'),
+      );
+      const row = wrapper.locator('tbody tr').filter({
+        has: page.getByRole('button', { name: new RegExp(`^(${escaped.join('|')})$`) }),
+      });
+      const cell = row.locator(confirmCase.cell);
+      const cancel = row.locator('.confirm-button__cancel');
+      const siblings = confirmCase.siblings.map((name) =>
+        row.getByRole('button', { name, exact: true }),
+      );
+
+      const idle = await confirmFit(cell);
+      const allowedOverflow = confirmCase.idleMayScroll === true ? idle.overflow : 0;
+      if (confirmCase.idleMayScroll !== true) {
+        expect(idle.overflow).toBeLessThanOrEqual(0);
+      }
+      const idleButtons = await renderedButtons(wrapper);
+      for (const name of [confirmCase.trigger, ...confirmCase.siblings]) {
+        expect(idleButtons).toContain(name);
+      }
+
+      const assertOpen = async () => {
+        await expect(confirm).toBeVisible();
+        await expect(confirm).toBeFocused();
+        await expect(cancel).toBeVisible();
+        for (const sibling of siblings) {
+          await expect(sibling).toBeHidden();
+        }
+        await expect(trigger).toBeHidden();
+        const open = await confirmFit(cell);
+        expect(open.stickingOut).toEqual([]);
+        expect(open.oneLine, 'Confirm and Cancel wrap onto two lines').toBe(true);
+        expect(open.overflow, 'the wrapper scrolls sideways').toBeLessThanOrEqual(allowedOverflow);
+        // Never wider than idle, unless the pair itself is wider than the buttons it replaced
+        // (Unbind's lone button, a one-row table): then only as wide as the pair needs.
+        expect(open.cellWidth, 'the cell got wider than idle or its pair').toBeLessThanOrEqual(
+          Math.max(idle.cellWidth, open.pairWidth) + 0.5,
+        );
+        // Every other row keeps all of its buttons, in view.
+        const away = [confirmCase.trigger, ...confirmCase.siblings];
+        const names = await renderedButtons(wrapper);
+        const stillThere = idleButtons.filter((name) => !away.includes(name));
+        expect(names.filter((name) => stillThere.includes(name))).toEqual(stillThere);
+        expect(names).toHaveLength(stillThere.length + 2);
+        await expectNoPageOverflow(page);
+      };
+      const assertRestored = async () => {
+        await expect(confirm).toHaveCount(0);
+        await expect(trigger).toBeVisible();
+        await expect(trigger).toBeFocused();
+        for (const sibling of siblings) {
+          await expect(sibling).toBeVisible();
+        }
+        expect(await renderedButtons(wrapper)).toEqual(idleButtons);
+      };
+
+      // Escape backs out, Cancel backs out; both restore the row and return focus to the trigger.
+      await trigger.click();
+      await assertOpen();
+      await page.keyboard.press('Escape');
+      await assertRestored();
+      await trigger.click();
+      await assertOpen();
+      await cancel.click();
+      await assertRestored();
+      expect(mock.mutations).toEqual([]);
+
+      // Confirm runs the action exactly once.
+      await trigger.click();
+      await assertOpen();
+      await confirm.click();
+      await expect
+        .poll(() =>
+          mock.mutations.filter((request) =>
+            confirmCase.mutation.test(`${request.method} ${request.pathname}`),
+          ),
+        )
+        .toHaveLength(1);
+      // A late duplicate would land within a frame or two of the first request.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+      expect(mock.mutations).toHaveLength(1);
+      expect(mock.unmocked).toEqual([]);
+    });
+  }
+
+  for (const { label, width, height, maxLeadShare, scrolls } of [
+    // Just above the narrow breakpoint (30rem): the roomy layout with its inline buttons, in the
+    // least room it ever gets, so the pinned first column really competes with the actions.
+    // (`maxLeadShare` restates the column's cap, 60% of the wrapper or 32rem, plus rounding;
+    // the point of this test is the actions' visibility beside it, not the cap.)
+    // (The inline buttons read as bare verbs, so their cluster is narrow: only a viewport this
+    // close to the breakpoint still leaves a row wider than what is left of the wrapper.)
+    { label: '490px', width: 490, height: 1000, maxLeadShare: 0.62, scrolls: true },
+    { label: 'desktop', width: 1280, height: 900, maxLeadShare: 0.45, scrolls: false },
+  ]) {
+    test(`admin tables: row actions stay fully visible clear of the pinned column at both scroll ends and under Tab at ${label}`, async ({
+      page,
+    }) => {
+      const longName = `very_long_identifier_${'very_long_identifier_'.repeat(3)}`;
+      const mock = await mockDelivery(page, {
+        destinations: [
+          destinationWire({
+            name: 'hook1',
+            type: 'webhook',
+            secrets: { url: 'https://hooks.example.com/****', signing_secret: '****' },
+          }),
+          destinationWire({
+            name: 'ops_discord',
+            type: 'discord',
+            ownerKind: 'app',
+            ownerAppId: 'chores4irl',
+          }),
+          // (A destination's own buttons carry its name, so its name stays short.)
+          destinationWire({ name: 'family_ntfy_relay', type: 'ntfy' }),
+        ],
+        routes: [
+          routeWire({ id: 1, destinations: ['hook1', 'ops_discord'] }),
+          routeWire({
+            id: 2,
+            appPattern: 'chores4irl',
+            destinations: ['ops_discord'],
+            ownerKind: 'app',
+            ownerAppId: 'chores4irl',
+          }),
+          routeWire({ id: 3, appPattern: longName, destinations: ['hook1'] }),
+        ],
+        heartbeats: [
+          heartbeatWire({ id: 1, name: 'nightly_backup' }),
+          heartbeatWire({ id: 2, name: 'reaper', paused: true }),
+          heartbeatWire({
+            id: 3,
+            appId: 'chores4irl',
+            name: 'owned',
+            ownerKind: 'app',
+            ownerAppId: 'chores4irl',
+          }),
+          heartbeatWire({ id: 4, name: 'mystery', ownerKind: null }),
+          heartbeatWire({ id: 5, name: longName }),
+        ],
+        identityRequests: [
+          identityRequestWire({ id: 1, appId: 'urls4irl' }),
+          identityRequestWire({ id: 2, appId: 'oldapp', status: 'rejected' }),
+          identityRequestWire({ id: 3, appId: 'mystery', status: 'weird' }),
+          identityRequestWire({ id: 4, appId: longName }),
+        ],
+        identityBindings: [
+          identityBindingWire({
+            appId: 'tasktracker',
+            keys: [
+              identityKeyWire({ id: 11, appId: 'tasktracker', hint: 'dak_7Q2m' }),
+              identityKeyWire({ id: 13, appId: 'tasktracker', hint: 'dak_a1Zx', state: 'revoked' }),
+            ],
+          }),
+          identityBindingWire({
+            appId: longName,
+            keys: [identityKeyWire({ id: 21, appId: longName, hint: 'dak_9Zz9' })],
+          }),
+        ],
+      });
+
+      await page.setViewportSize({ width, height });
+      await page.goto('/#delivery');
+      const wrappers = [
+        page.locator('.destinations__scroll'),
+        page.locator('.routes__scroll'),
+        page.locator('.heartbeats__scroll'),
+        page.locator('.app-identities__scroll').nth(0),
+        page.locator('.app-identities__scroll').nth(1),
+      ];
+      let wholeRows = 0;
+      let clippedRows = 0;
+      for (const wrapper of wrappers) {
+        await expect(wrapper).toBeVisible();
+        await wrapper.scrollIntoViewIfNeeded();
+        // The trailing cell of every row and of the title row is the shared Actions cell
+        // (what trailing-aligns its controls).
+        expect(
+          await wrapper.evaluate(
+            (scroller, cellSelector) =>
+              Array.from(scroller.querySelectorAll(`${cellSelector}, thead th:last-child`)).filter(
+                (cell) => !cell.classList.contains('admin-table__actions'),
+              ).length,
+            ACTIONS_CELL,
+          ),
+        ).toBe(0);
+        // Scrolled all the way along, every Actions button and pill lies wholly right of the
+        // pinned column (the row's start may be scrolled away, never its controls) ...
+        const name = await wrapper.getAttribute('class');
+        const sizes = await wrapper.evaluate((element) => ({
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        }));
+        if (scrolls) {
+          // The wrapper really scrolls sideways, so "the end" differs from "the start".
+          expect(sizes.scrollWidth, `${name} scrolls`).toBeGreaterThan(sizes.clientWidth);
+        }
+        const end = await pinnedLayoutViolations({ wrapper, position: 'end', maxLeadShare });
+        expect.soft(end.violations, `${name} at the end`).toEqual([]);
+        wholeRows += end.whole;
+        clippedRows += end.clipped;
+        // ... and scrolled back, the pinned column is wholly visible and not over-wide.
+        const start = await pinnedLayoutViolations({ wrapper, position: 'start', maxLeadShare });
+        expect.soft(start.violations, `${name} at the start`).toEqual([]);
+        // Keyboard focus on any button (Revoke in the Keys column too) scrolls it fully clear
+        // of the pinned column.
+        const focus = await focusedActionViolations({ page, wrapper });
+        expect.soft(focus.violations, `${name} under focus`).toEqual([]);
+        expect(focus.checks, `${name} focus checks ran`).toBeGreaterThan(0);
+        await expectNoPageOverflow(page);
+      }
+      // Both judgements really ran: rows whose cluster fits beside the pinned column (every
+      // control wholly visible) and, on a phone, rows whose cluster is wider than what is
+      // left (judged by the trailing control).
+      expect(wholeRows).toBeGreaterThan(0);
+      if (scrolls) {
+        expect(clippedRows).toBeGreaterThan(0);
+      }
+
+      // The Revoke buttons sit in the Keys column (not the last): reachable by scrolling.
+      const identities = page.getByRole('region', { name: 'App identities' });
+      for (const name of [
+        'Revoke key dak_7Q2m for tasktracker',
+        `Revoke key dak_9Zz9 for ${longName}`,
+      ]) {
+        await expectReachableByScrolling({
+          wrapper: wrappers[4],
+          control: identities.getByRole('button', { name, exact: true }),
+        });
+      }
+      expect(mock.unmocked).toEqual([]);
+    });
+  }
 });

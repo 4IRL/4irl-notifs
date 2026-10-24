@@ -428,7 +428,7 @@ export function HeartbeatForm({
   );
 
   if (isEdit) {
-    return <div className="destination-form heartbeat-form__editor">{form}</div>;
+    return <div className="destination-form">{form}</div>;
   }
   return (
     <section className="destination-form" aria-labelledby="add-heartbeat-heading">

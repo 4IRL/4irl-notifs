@@ -22,6 +22,7 @@ import type { DeliveryApiClient } from './api/deliveryClient';
 import { AppTabs } from './components/AppTabs';
 import { DeliveryStatusCard } from './components/DeliveryStatusCard';
 import { DeliveryLog } from './components/DeliveryLog';
+import { AppIdentities } from './components/AppIdentities';
 import { DeliveryRegistry } from './components/DeliveryRegistry';
 import { Heartbeats } from './components/Heartbeats';
 import { PendingSends } from './components/PendingSends';
@@ -58,6 +59,8 @@ interface AppProps {
   pendingSendsEnabled?: boolean;
   /** VITE_HEARTBEATS_ENABLED (and destinationsEnabled): the Heartbeats section. */
   heartbeatsEnabled?: boolean;
+  /** VITE_APP_IDENTITIES_ENABLED: the App identities section. */
+  appIdentitiesEnabled?: boolean;
 }
 
 function App({
@@ -69,6 +72,7 @@ function App({
   deliveryLogEnabled = false,
   pendingSendsEnabled = false,
   heartbeatsEnabled = false,
+  appIdentitiesEnabled = false,
 }: AppProps) {
   // The destinations list as the Destinations section last reported it. Lifted
   // here so DeliveryRegistry (Routes) and Heartbeats share the one fetch.
@@ -393,7 +397,11 @@ function App({
   const heartbeatsSectionEnabled = destinationsEnabled && heartbeatsEnabled;
   const tabsEnabled =
     deliveryClient !== undefined &&
-    (destinationsEnabled || deliveryLogEnabled || pendingSendsEnabled || heartbeatsSectionEnabled);
+    (destinationsEnabled ||
+      deliveryLogEnabled ||
+      pendingSendsEnabled ||
+      heartbeatsSectionEnabled ||
+      appIdentitiesEnabled);
 
   return (
     <div className="app">
@@ -407,6 +415,7 @@ function App({
           delivery={
             <>
               {destinationsEnabled && <DeliveryStatusCard client={deliveryClient} />}
+              {appIdentitiesEnabled && <AppIdentities client={deliveryClient} />}
               {destinationsEnabled && (
                 <DeliveryRegistry
                   client={deliveryClient}

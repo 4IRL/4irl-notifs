@@ -20,37 +20,12 @@
   overflow-wrap: anywhere;
 }
 
-.destinations__scroll {
-  overflow-x: auto;
-  max-width: 100%;
-}
-
-.destinations__table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.destinations__table th,
-.destinations__table td {
-  padding: var(--space-2) var(--space-3);
-  text-align: left;
-  vertical-align: middle;
-  border-bottom: 1px solid var(--border);
-}
-
-.destinations__table th {
-  color: var(--text);
-  font-size: 0.75rem;
-  font-variant: small-caps;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
+/* The table layout (nowrap cells, scroll wrapper, pinned titles and first column) is
+   shared: see adminTable.css. */
 .destinations__name,
 .destinations__target {
   font-family: var(--mono);
   font-size: 0.8125rem;
-  overflow-wrap: anywhere;
 }
 
 .destinations__sub {
@@ -58,18 +33,16 @@
   margin-top: var(--space-1);
   font-size: 0.75rem;
   color: var(--text);
-  overflow-wrap: anywhere;
 }
 
 .destinations__actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--space-2);
 }
 
 .destinations__button {
-  min-height: 2.75rem;
   border-radius: var(--radius);
   padding: var(--space-1) var(--space-2);
   font-size: 0.8125rem;
@@ -101,8 +74,15 @@
   color: var(--text);
 }
 
-.destinations .confirm-button__cancel {
-  min-height: 2.75rem;
+/* Compact buttons by default; a touch screen gets the 44px target. (The narrow-layout row
+   menu has its own 44px controls.) */
+@media (pointer: coarse) {
+  .destinations__button,
+  .destinations .confirm-button__cancel {
+    min-height: 2.75rem;
+    /* A bare verb ("Test", "Edit") is narrower than a touch target. */
+    min-width: 2.75rem;
+  }
 }
 
 .destinations__pill {
@@ -139,7 +119,6 @@
   align-items: center;
   gap: var(--space-2);
   font-size: 0.8125rem;
-  overflow-wrap: anywhere;
 }
 
 .destinations__result:not(:empty) {
@@ -154,7 +133,6 @@
   padding: var(--space-2) var(--space-3);
   color: var(--danger);
   font-size: 0.8125rem;
-  overflow-wrap: anywhere;
 }
 
 .destinations__reveal {

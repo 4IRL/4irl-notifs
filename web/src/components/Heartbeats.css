@@ -51,101 +51,25 @@
   overflow-wrap: anywhere;
 }
 
-/* The wrapper scrolls horizontally when the table is wider than the space it
-   has. The left-edge fade (`local` attachment) appears only once scrolled away
-   from the start; the end edge is signalled by the Actions cell's shadow. */
-.heartbeats__scroll {
-  overflow-x: auto;
-  max-width: 100%;
-  /* Lets the inline editor size itself to the visible width (100cqw), so it
-     neither widens the max-content table nor needs horizontal scrolling. */
-  container-type: inline-size;
-  background:
-    linear-gradient(to right, var(--bg) 30%, transparent) left center / 2rem 100% no-repeat local,
-    radial-gradient(
-        farthest-side at 0 50%,
-        color-mix(in srgb, var(--text) 35%, transparent),
-        transparent
-      )
-      left center / 0.75rem 100% no-repeat scroll;
-}
-
-/* `separate` (not `collapse`) so the sticky Actions cell keeps its row
-   separator. Cells never wrap: the table is as wide as its content (filling
-   the wrapper when there is room) and the wrapper scrolls when there is not. */
-.heartbeats__table {
-  width: max-content;
-  min-width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-}
-
-.heartbeats__table th,
-.heartbeats__table td {
-  padding: var(--space-2) var(--space-3);
-  text-align: left;
-  vertical-align: middle;
-  white-space: nowrap;
-  border-bottom: 1px solid var(--border);
-}
-
-.heartbeats__table th {
-  color: var(--text);
-  font-size: 0.75rem;
-  font-variant: small-caps;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-/* The Check column takes the spare width when the table is wider than its
-   content, so the Actions cell keeps its content width. */
-.heartbeats__fill {
-  width: 100%;
-}
-
-/* The Actions cell stays at the inline end of the scroll wrapper (no @media) so
-   Pause / Resume / Delete are reachable without horizontal scrolling; opaque so
-   scrolled content never shows through. */
-.heartbeats__actions-cell {
-  position: sticky;
-  inset-inline-end: 0;
-  /* The page background, not the card surface: the table sits directly on the page,
-     so a lighter cell would read as a panel. The edge shadow is dark; one built from
-     the (light) text colour glows on a dark theme. */
-  background: var(--bg);
-  box-shadow: -0.5rem 0 0.5rem -0.5rem rgb(0 0 0 / 60%);
-}
-
-/* Re-enables wrapping for the row error and the confirm notice inside the
-   capped cell; the buttons keep their labels on one line. */
+/* The table layout (nowrap cells, scroll wrapper, pinned titles and first column, inline
+   editor row) is shared: see adminTable.css. The Actions cell scrolls with the row: the
+   Edit / Pause / Resume / Delete buttons stay on one line; the owner note and a row error sit
+   under them and never widen the cell. */
 .heartbeats__actions {
-  white-space: normal;
-  width: max-content;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--space-2);
-  max-width: 14rem;
+}
+
+/* The owner note sits under the actions. */
+.heartbeats__actions + .heartbeats__sub {
+  margin-top: var(--space-1);
 }
 
 /* The add card sits between the hints and the list. */
 .heartbeats > .destination-form {
   margin-bottom: var(--space-3);
-}
-
-/* The inline edit row: wrapping text, no side padding (the editor is sized to
-   the scroll wrapper and pinned to its start edge), and not sticky. */
-.heartbeats__table td.heartbeats__editor-cell {
-  white-space: normal;
-  padding-inline: 0;
-}
-
-.heartbeat-form__editor {
-  position: sticky;
-  inset-inline-start: 0;
-  box-sizing: border-box;
-  width: 100%;
-  width: 100cqw;
 }
 
 .heartbeats time {
@@ -162,7 +86,8 @@
   color: var(--text-h);
 }
 
-.heartbeats__fill .heartbeats__name {
+/* The Check cell reads "app / name" on one line. */
+.heartbeats__check .heartbeats__name {
   display: inline;
 }
 
@@ -212,8 +137,18 @@
 
 .heartbeats__button,
 .heartbeats .confirm-button__cancel {
-  min-height: 2.75rem;
   white-space: nowrap;
+}
+
+/* Compact buttons by default; a touch screen gets the 44px target. (The narrow-layout row
+   menu has its own 44px controls.) */
+@media (pointer: coarse) {
+  .heartbeats__button,
+  .heartbeats .confirm-button__cancel {
+    min-height: 2.75rem;
+    /* A bare verb ("Edit") is narrower than a touch target. */
+    min-width: 2.75rem;
+  }
 }
 
 .heartbeats__button {
@@ -265,17 +200,14 @@
   outline-offset: 2px;
 }
 
-/* Inside the width-capped actions wrapper (full-width flex line) so a long
-   server message wraps there instead of widening the sticky Actions cell. */
+/* A server message sits under the buttons and wraps within the width they give the cell
+   (see adminTable.css). */
 .heartbeats__row-error {
-  flex: 1 1 100%;
-  min-width: 0;
-  margin: 0;
+  margin: var(--space-2) 0 0;
   border: 1px solid var(--danger);
   background: var(--danger-bg);
   border-radius: var(--radius);
   padding: var(--space-2) var(--space-3);
   color: var(--danger);
   font-size: 0.8125rem;
-  overflow-wrap: anywhere;
 }

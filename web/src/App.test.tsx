@@ -95,6 +95,12 @@ function buildFakeDeliveryClient(overrides: Partial<DeliveryApiClient> = {}): De
     deleteHeartbeat: vi.fn(),
     pauseHeartbeat: vi.fn(),
     resumeHeartbeat: vi.fn(),
+    listIdentityRequests: vi.fn().mockResolvedValue([]),
+    approveIdentityRequest: vi.fn(),
+    rejectIdentityRequest: vi.fn(),
+    listIdentityBindings: vi.fn().mockResolvedValue([]),
+    revokeIdentityKey: vi.fn(),
+    unbindApp: vi.fn(),
     ...overrides,
   };
 }
@@ -432,6 +438,45 @@ describe('App', () => {
     expect(listUsers).toHaveBeenCalledTimes(1);
     expect(personClient.listPeople).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('backs out of the Users reset-password confirm on Escape without resetting or revealing a password', async () => {
+    const user = userEvent.setup();
+    const client = buildFakeClient({
+      listUsers: vi.fn().mockResolvedValue([
+        {
+          userId: 'u_76gzqgp4byjl6dje',
+          apps: ['urls4irl'],
+          topicPatterns: ['urls4irl-76gzqgp4byjl6dje-*'],
+        },
+      ]),
+    });
+    const personClient = buildFakePersonClient({
+      listPeople: vi.fn().mockResolvedValue([
+        {
+          personHash: '76gzqgp4byjl6dje',
+          email: 'alice@example.com',
+          createdAt: '2026-07-19T18:12:03Z',
+        },
+      ]),
+    });
+    render(<App client={client} personClient={personClient} />);
+    const users = sectionByHeading(strings.usersHeading);
+    const triggerName = strings.resetPasswordTriggerNamed({ user: 'alice@example.com' });
+
+    await user.click(await within(users).findByRole('button', { name: triggerName }));
+    expect(within(users).getByText(strings.resetPasswordNotice)).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    expect(within(users).queryByText(strings.resetPasswordNotice)).not.toBeInTheDocument();
+    expect(
+      within(users).queryByRole('button', {
+        name: strings.resetPasswordConfirmNamed({ user: 'alice@example.com' }),
+      }),
+    ).not.toBeInTheDocument();
+    expect(within(users).getByRole('button', { name: triggerName })).toHaveFocus();
+    expect(client.resetPassword).not.toHaveBeenCalled();
+    expect(within(users).queryByDisplayValue('abcd-efgh-ijkm-npqr')).not.toBeInTheDocument();
   });
 
   it('offers no Reset action when the email is not known (no person client)', async () => {
@@ -1008,6 +1053,72 @@ describe('App Delivery tab', () => {
     ).not.toBeInTheDocument();
   });
 
+  describe('App identities section', () => {
+    it('mounts on the Delivery tab on its own flag, after the status card and before Destinations', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient();
+      render(
+        <App
+          client={buildFakeClient()}
+          deliveryClient={deliveryClient}
+          destinationsEnabled
+          appIdentitiesEnabled
+        />,
+      );
+
+      await screen.findByText(strings.usersEmpty);
+      expect(deliveryClient.listIdentityRequests).not.toHaveBeenCalled();
+
+      await user.click(tab(strings.tabDelivery));
+      const statusCard = await screen.findByRole('heading', {
+        name: strings.deliveryStatusHeading,
+      });
+      const identities = await screen.findByRole('heading', { name: strings.identitiesHeading });
+      const destinations = await screen.findByRole('heading', {
+        name: strings.destinationsHeading,
+      });
+
+      expect(
+        statusCard.compareDocumentPosition(identities) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        identities.compareDocumentPosition(destinations) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(await screen.findByText(strings.identitiesRequestsEmpty)).toBeInTheDocument();
+      expect(deliveryClient.listIdentityRequests).toHaveBeenCalledTimes(1);
+      expect(deliveryClient.listIdentityBindings).toHaveBeenCalledTimes(1);
+    });
+
+    it('is absent when the flag is off', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient();
+      render(
+        <App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />,
+      );
+
+      await user.click(tab(strings.tabDelivery));
+      await screen.findByRole('heading', { name: strings.routesHeading });
+
+      expect(screen.queryByRole('heading', { name: strings.identitiesHeading })).toBeNull();
+      expect(deliveryClient.listIdentityRequests).not.toHaveBeenCalled();
+    });
+
+    it('shows the Delivery tab with only its flag on, without needing Destinations', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient();
+      render(
+        <App client={buildFakeClient()} deliveryClient={deliveryClient} appIdentitiesEnabled />,
+      );
+
+      await user.click(tab(strings.tabDelivery));
+
+      expect(
+        await screen.findByRole('heading', { name: strings.identitiesHeading }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: strings.routesHeading })).toBeNull();
+    });
+  });
+
   describe('Heartbeats section', () => {
     function destination(name: string, enabled = true): DestinationSummary {
       return {
@@ -1017,6 +1128,8 @@ describe('App Delivery tab', () => {
         disabledReason: null,
         config: { topic: 'family_alerts' },
         secrets: {},
+        ownerKind: 'operator',
+        ownerAppId: null,
         createdAt: '2026-10-01T00:00:00Z',
         updatedAt: '2026-10-01T00:00:00Z',
       };

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -32,6 +32,8 @@ function buildDestination(name: string, enabled = true): DestinationSummary {
     disabledReason: null,
     config: { topic: 'family_alerts' },
     secrets: {},
+    ownerKind: 'operator',
+    ownerAppId: null,
     createdAt: '2026-10-01T00:00:00Z',
     updatedAt: '2026-10-01T00:00:00Z',
   };
@@ -43,6 +45,8 @@ function buildRoute(overrides: Partial<RouteSummary> & { id: number }): RouteSum
     channelPattern: 'alerts*',
     destinations: ['ops_discord'],
     enabled: true,
+    ownerKind: 'operator',
+    ownerAppId: null,
     createdAt: '2026-10-01T00:00:00Z',
     updatedAt: '2026-10-01T00:00:00Z',
     ...overrides,
@@ -73,6 +77,12 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     deleteHeartbeat: vi.fn(),
     pauseHeartbeat: vi.fn(),
     resumeHeartbeat: vi.fn(),
+    listIdentityRequests: vi.fn().mockResolvedValue([]),
+    approveIdentityRequest: vi.fn(),
+    rejectIdentityRequest: vi.fn(),
+    listIdentityBindings: vi.fn().mockResolvedValue([]),
+    revokeIdentityKey: vi.fn(),
+    unbindApp: vi.fn(),
     ...overrides,
   };
 }
@@ -152,6 +162,120 @@ describe('RoutesSection list', () => {
     slow.resolve([buildRoute({ id: 99 })]);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByRole('button', { name: 'Edit route 99' })).toBeNull();
+  });
+});
+
+describe('owner column', () => {
+  const managedNote = strings.ownerManagedNote({ appId: 'chores4irl' });
+
+  async function renderOwned() {
+    const client = buildClient({
+      listRoutes: vi.fn().mockResolvedValue([
+        buildRoute({ id: 1 }),
+        buildRoute({
+          id: 2,
+          appPattern: 'chores4irl',
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        buildRoute({ id: 3, ownerKind: 'unknown', ownerAppId: null }),
+      ]),
+    });
+    renderSection({ client });
+    await screen.findByRole('button', { name: 'Edit route 1' });
+    return client;
+  }
+
+  function rowOf(id: number): HTMLElement {
+    // By label, not role: an open confirm hides the row's Edit button from the accessibility tree.
+    const row = screen.getByLabelText(`Edit route ${id}`).closest('tr');
+    if (row === null) {
+      throw new Error(`row ${id} not found`);
+    }
+    return row;
+  }
+
+  it('has an Owner column header after Channel', async () => {
+    await renderOwned();
+
+    const headers = screen.getAllByRole('columnheader').map((header) => header.textContent);
+    expect(headers.slice(0, 3)).toEqual([
+      strings.columnRouteApp,
+      strings.columnRouteChannel,
+      strings.columnOwner,
+    ]);
+  });
+
+  it('shows Operator, App · <id> and Unknown badges with a hidden Owner prefix', async () => {
+    await renderOwned();
+
+    const operatorBadge = within(rowOf(1)).getByText(strings.ownerOperator);
+    expect(operatorBadge.parentElement).toHaveTextContent(
+      `${strings.ownerPrefix}${strings.ownerOperator}`,
+    );
+    const appBadge = within(rowOf(2)).getByText(strings.ownerApp({ appId: 'chores4irl' }));
+    expect(appBadge.parentElement).toHaveTextContent(
+      `${strings.ownerPrefix}${strings.ownerApp({ appId: 'chores4irl' })}`,
+    );
+    const unknownBadge = within(rowOf(3)).getByText(strings.ownerUnknown);
+    expect(unknownBadge.parentElement).toHaveTextContent(
+      `${strings.ownerPrefix}${strings.ownerUnknown}`,
+    );
+    expect(within(rowOf(3)).queryByText(strings.ownerOperator)).toBeNull();
+  });
+
+  it('notes app-owned and unknown rows, not operator rows', async () => {
+    await renderOwned();
+
+    // The line under the buttons is the short form, never the long text, and has no `title`.
+    expect(within(rowOf(2)).getByText(strings.ownerManagedInlineNote)).not.toHaveAttribute('title');
+    expect(within(rowOf(2)).queryByText(managedNote)).toBeNull();
+    expect(within(rowOf(3)).getByText(strings.ownerUnknownInlineNote)).toBeInTheDocument();
+    expect(within(rowOf(3)).queryByText(strings.ownerUnknownNote)).toBeNull();
+    expect(within(rowOf(1)).queryByText(strings.ownerManagedInlineNote)).toBeNull();
+    expect(within(rowOf(1)).queryByText(strings.ownerUnknownInlineNote)).toBeNull();
+  });
+
+  it('repeats the note as the Delete confirm notice on an app-owned row only', async () => {
+    const user = userEvent.setup();
+    await renderOwned();
+
+    await user.click(button('Delete route 2'));
+    expect(within(rowOf(2)).getAllByText(managedNote)).toHaveLength(1);
+    expect(within(rowOf(2)).getAllByText(strings.ownerManagedInlineNote)).toHaveLength(1);
+
+    // An unknown owner is never treated as safe: its confirm warns too.
+    await user.click(button('Delete route 3'));
+    expect(within(rowOf(3)).getAllByText(strings.ownerUnknownNote)).toHaveLength(1);
+
+    // The operator's own row confirms with no notice at all.
+    await user.click(button('Delete route 1'));
+    expect(button('Confirm delete route 1')).toBeInTheDocument();
+    expect(rowOf(1).querySelector('.confirm-button__notice')).toBeNull();
+  });
+
+  it('keeps an open editor row spanning the whole table', async () => {
+    const user = userEvent.setup();
+    await renderOwned();
+
+    await user.click(button('Edit route 2'));
+
+    const headerCount = screen.getAllByRole('columnheader').length;
+    const editorCell = screen.getByLabelText(strings.routeAppLabel).closest('td');
+    expect(editorCell).toHaveAttribute('colspan', String(headerCount));
+    // The form sits in the pinned wrapper, so it fits the scroll wrapper and wraps normally.
+    expect(editorCell).toHaveClass('admin-table__editor-cell');
+    expect(editorCell?.querySelector('.admin-table__editor')).not.toBeNull();
+  });
+
+  it('pins the App column in the header and in every row, never the Actions cell', async () => {
+    await renderOwned();
+
+    const headers = screen.getAllByRole('columnheader');
+    expect(headers[0]).toHaveClass('admin-table__lead');
+    expect(within(rowOf(1)).getAllByRole('cell')[0]).toHaveClass('admin-table__lead');
+    expect(headers[headers.length - 1]).not.toHaveClass('admin-table__lead');
+    expect(screen.getByRole('table')).toHaveClass('admin-table');
   });
 });
 
@@ -418,6 +542,37 @@ describe('delete route', () => {
     await user.click(button('Confirm delete route 1'));
     expect((await screen.findByRole('alert')).textContent).toBe('boom');
     expect(button('Delete route 1')).toBeTruthy();
+  });
+
+  it('hides the row’s Edit while its confirm is open, leaves other rows alone, restores it on Cancel and Escape, and runs the delete once on Confirm', async () => {
+    const user = userEvent.setup();
+    const listRoutes = vi.fn().mockResolvedValue([buildRoute({ id: 1 }), buildRoute({ id: 2 })]);
+    const client = buildClient({ listRoutes });
+    renderSection({ client });
+    await user.click(await screen.findByRole('button', { name: 'Delete route 1' }));
+
+    expect(button('Confirm delete route 1')).toHaveFocus();
+    expect(screen.queryByRole('button', { name: 'Edit route 1' })).toBeNull();
+    // The hidden button stays mounted, so the row's focus key still resolves.
+    expect(screen.getByLabelText('Edit route 1')).toHaveAttribute('hidden');
+    expect(button('Edit route 2')).toBeVisible();
+    expect(button('Delete route 2')).toBeVisible();
+
+    await user.click(button(strings.cancelActionNamed({ subject: 'Delete route 1' })));
+    expect(button('Edit route 1')).toBeVisible();
+    expect(button('Delete route 1')).toHaveFocus();
+
+    await user.click(button('Delete route 1'));
+    expect(screen.queryByRole('button', { name: 'Edit route 1' })).toBeNull();
+    await user.keyboard('{Escape}');
+    expect(button('Edit route 1')).toBeVisible();
+    expect(button('Delete route 1')).toHaveFocus();
+
+    await user.click(button('Delete route 1'));
+    await user.click(button('Confirm delete route 1'));
+    expect(client.deleteRoute).toHaveBeenCalledTimes(1);
+    expect(client.deleteRoute).toHaveBeenCalledWith({ id: 1 });
+    expect(button('Edit route 2')).toBeVisible();
   });
 });
 

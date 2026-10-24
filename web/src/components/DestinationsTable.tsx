@@ -2,12 +2,21 @@ import { Fragment, useEffect, useRef } from 'react';
 import type { JSX } from 'react';
 
 import type { DestinationSummary, RotateSecretResult } from '../api/deliveryClient';
+import { useCompactTable } from '../hooks/useCompactTable';
 import { strings } from '../strings';
 import { ConfirmButton } from './ConfirmButton';
 import { hasUnreadableSecrets } from './destinationFields';
 import { formatUtc } from './formatUtc';
 import { EditDestinationForm } from './EditDestinationForm';
 import type { EditDestinationSubmission } from './EditDestinationForm';
+import { OwnerBadge } from './OwnerBadge';
+import { ownerInlineNoteOf, ownerNoteOf } from './ownership';
+import { RowActionsMenu } from './RowActionsMenu';
+import type { RowMenuItem } from './RowActionsMenu';
+import { destinationActionLabels } from './rowActionLabels';
+import { useConfirmingRows } from './useConfirmingRows';
+import { revealFocusedControl } from './adminTableFocus';
+import './adminTable.css';
 import './DestinationsTable.css';
 
 /** Mutating actions that carry a per-row busy flag. */
@@ -46,7 +55,18 @@ interface DestinationsTableProps {
   onRotate: (params: { name: string; overlapHours: number }) => Promise<RotateSecretResult>;
 }
 
-const COLUMN_COUNT = 5;
+// The editor and reveal rows span every column of the layout in use, Actions included:
+// Name, Owner, Type, Target, Status, Actions when roomy; the narrow layout drops Owner.
+const WIDE_COLUMN_COUNT = 6;
+const COMPACT_COLUMN_COUNT = 5;
+
+type DestinationColumn = 'name' | 'owner' | 'type' | 'target' | 'status';
+
+// Roomy layout: the table's natural order.
+const WIDE_COLUMNS: DestinationColumn[] = ['name', 'owner', 'type', 'target', 'status'];
+// Narrow layout: identity and state first, so the first screen shows what the row is. No Owner
+// column here: the owner badge sits under the name in the first cell, in view without scrolling.
+const COMPACT_COLUMNS: DestinationColumn[] = ['name', 'status', 'type', 'target'];
 
 function targetOf(destination: DestinationSummary): string {
   if (destination.type === 'ntfy') {
@@ -69,7 +89,18 @@ function stateLabel(state: string): { label: string; modifier: string } {
   }
 }
 
-function TestResultLine({ result }: { result: TestResult | undefined }): JSX.Element {
+/**
+ * `underButtons`: the line sits in the Actions cell, under the row's buttons, where it must fit
+ * the width the buttons give the cell rather than widen it (see adminTable.css).
+ */
+function TestResultLine({
+  result,
+  underButtons,
+}: {
+  result: TestResult | undefined;
+  underButtons: boolean;
+}): JSX.Element {
+  const aux = underButtons ? ' admin-table__aux' : '';
   let content: JSX.Element | null = null;
   if (result?.kind === 'delivery') {
     const pill = stateLabel(result.state);
@@ -93,11 +124,11 @@ function TestResultLine({ result }: { result: TestResult | undefined }): JSX.Ele
   return (
     <>
       {/* Always rendered, text-only changes, so assistive tech announces the result. */}
-      <div role="status" aria-live="polite" className="destinations__result">
+      <div role="status" aria-live="polite" className={`destinations__result${aux}`}>
         {content}
       </div>
       {result?.kind === 'error' && (
-        <p role="alert" className="destinations__row-error">
+        <p role="alert" className={`destinations__row-error${aux}`}>
           {result.message}
         </p>
       )}
@@ -158,16 +189,55 @@ export function DestinationsTable({
   onSave,
   onRotate,
 }: DestinationsTableProps): JSX.Element {
+  const compact = useCompactTable();
+  const { isSteppedAside, reportConfirming } = useConfirmingRows();
+  const columns = compact ? COMPACT_COLUMNS : WIDE_COLUMNS;
+  const columnCount = compact ? COMPACT_COLUMN_COUNT : WIDE_COLUMN_COUNT;
+  const headers: Record<DestinationColumn, JSX.Element> = {
+    name: (
+      <th key="name" scope="col" className="admin-table__lead">
+        {strings.columnDestName}
+      </th>
+    ),
+    owner: (
+      <th key="owner" scope="col">
+        {strings.columnOwner}
+      </th>
+    ),
+    type: (
+      <th key="type" scope="col">
+        {strings.columnDestType}
+      </th>
+    ),
+    target: (
+      <th key="target" scope="col" className="admin-table__fill">
+        {strings.columnDestTarget}
+      </th>
+    ),
+    status: (
+      <th key="status" scope="col">
+        {strings.columnDestStatus}
+      </th>
+    ),
+  };
+
   return (
-    <div className="destinations__scroll">
-      <table className="destinations__table">
+    <div
+      className="admin-table__scroll destinations__scroll"
+      onFocus={revealFocusedControl}
+      role="group"
+      aria-labelledby="destinations-heading"
+      tabIndex={0}
+    >
+      <table className="admin-table destinations__table">
         <thead>
           <tr>
-            <th scope="col">{strings.columnDestName}</th>
-            <th scope="col">{strings.columnDestType}</th>
-            <th scope="col">{strings.columnDestTarget}</th>
-            <th scope="col">{strings.columnDestStatus}</th>
-            <th scope="col" aria-label={strings.columnDestActions} />
+            {columns.map((column) => headers[column])}
+            <th
+              scope="col"
+              className={`admin-table__actions${compact ? ' admin-table__kebab' : ''}`}
+              aria-label={strings.columnDestActions}
+            />
           </tr>
         </thead>
         <tbody>
@@ -180,142 +250,275 @@ export function DestinationsTable({
             const testBusy = isBusy({ action: 'test', name });
             const testBlocked = !destination.enabled || testBusy;
             const toggleBusy = isBusy({ action: 'toggle', name });
+            const deleteBusy = isBusy({ action: 'delete', name });
             const rowError = rowErrors[name];
+            const ownerNote = ownerNoteOf(destination);
+            const ownerInlineNote = ownerInlineNoteOf(destination);
+            // While one of the row's destructive confirms is open, its other buttons step aside
+            // so the pair takes their place and the Actions cell never gets wider than idle.
+            const steppedAside = isSteppedAside({ rowKey: name });
+
+            // The visible text is the bare verb (the row names the destination); the accessible
+            // name keeps the destination. A busy action shows its progress text for both.
+            const labels = destinationActionLabels({ name, editing: isEditing });
+
+            const menuItems: RowMenuItem[] = [
+              {
+                id: 'test',
+                label: testBusy ? strings.sendTestToSending : labels.test.visible,
+                ariaLabel: testBusy ? undefined : labels.test.accessible,
+                disabled: testBlocked,
+                onSelect: () => onSendTest(name),
+              },
+            ];
+            if (!unreadable) {
+              menuItems.push({
+                id: 'edit',
+                label: labels.edit.visible,
+                ariaLabel: labels.edit.accessible,
+                expanded: isEditing,
+                onSelect: () => onToggleEditor(name),
+              });
+            }
+            if (destination.enabled) {
+              menuItems.push({
+                id: 'disable',
+                label: toggleBusy ? strings.disablingDestination : labels.disable.visible,
+                ariaLabel: toggleBusy ? undefined : labels.disable.accessible,
+                tone: 'danger',
+                disabled: toggleBusy,
+                confirm: {
+                  confirmLabel: labels.confirmDisable.visible,
+                  confirmAriaLabel: labels.confirmDisable.accessible,
+                  cancelLabel: labels.cancelDisable.visible,
+                  cancelAriaLabel: labels.cancelDisable.accessible,
+                  notice: ownerNote ?? undefined,
+                  onConfirm: () => onSetEnabled({ name, enabled: false }),
+                },
+              });
+            } else {
+              menuItems.push({
+                id: 'enable',
+                label: toggleBusy ? strings.enablingDestination : labels.enable.visible,
+                ariaLabel: toggleBusy ? undefined : labels.enable.accessible,
+                disabled: toggleBusy,
+                onSelect: () => onSetEnabled({ name, enabled: true }),
+              });
+            }
+            menuItems.push({
+              id: 'delete',
+              label: deleteBusy ? strings.deletingDestination : labels.delete.visible,
+              ariaLabel: deleteBusy ? undefined : labels.delete.accessible,
+              tone: 'danger',
+              disabled: deleteBusy,
+              confirm: {
+                confirmLabel: labels.confirmDelete.visible,
+                confirmAriaLabel: labels.confirmDelete.accessible,
+                cancelLabel: labels.cancelDelete.visible,
+                cancelAriaLabel: labels.cancelDelete.accessible,
+                notice: ownerNote ?? undefined,
+                onConfirm: () => onDelete(name),
+              },
+            });
+
+            const cells: Record<DestinationColumn, JSX.Element> = {
+              name: (
+                <td key="name" className="admin-table__lead destinations__name" title={name}>
+                  {name}
+                  {compact && (
+                    <span className="admin-table__owner-line">
+                      <OwnerBadge
+                        ownerKind={destination.ownerKind}
+                        ownerAppId={destination.ownerAppId}
+                      />
+                    </span>
+                  )}
+                </td>
+              ),
+              owner: (
+                <td key="owner">
+                  <OwnerBadge
+                    ownerKind={destination.ownerKind}
+                    ownerAppId={destination.ownerAppId}
+                  />
+                </td>
+              ),
+              type: <td key="type">{strings.destinationTypeLabels[destination.type]}</td>,
+              target: (
+                <td key="target" className="destinations__target admin-table__fill">
+                  {unreadable ? (
+                    <>
+                      <span className="destinations__pill destinations__pill--fail">
+                        {strings.destinationSecretsUnreadable}
+                      </span>
+                      <span className="destinations__sub">
+                        {strings.destinationSecretsUnreadableHint}
+                      </span>
+                    </>
+                  ) : (
+                    targetOf(destination)
+                  )}
+                </td>
+              ),
+              status: (
+                <td key="status">
+                  <span
+                    className={`destinations__pill destinations__pill--${destination.enabled ? 'ok' : 'fail'}`}
+                  >
+                    {destination.enabled ? strings.destinationEnabled : strings.destinationDisabled}
+                  </span>
+                  {!destination.enabled && (
+                    <span id={reasonId} className="destinations__sub">
+                      {destination.disabledReason ?? strings.destinationDisabledNoReason}
+                    </span>
+                  )}
+                  {/* The narrow layout has no room for the result under the buttons, so it
+                      reads under the row's state. */}
+                  {compact && <TestResultLine result={testResults[name]} underButtons={false} />}
+                </td>
+              ),
+            };
+
             return (
               <Fragment key={name}>
                 <tr>
-                  <td className="destinations__name">{name}</td>
-                  <td>{strings.destinationTypeLabels[destination.type]}</td>
-                  <td className="destinations__target">
-                    {unreadable ? (
-                      <>
-                        <span className="destinations__pill destinations__pill--fail">
-                          {strings.destinationSecretsUnreadable}
-                        </span>
-                        <span className="destinations__sub">
-                          {strings.destinationSecretsUnreadableHint}
-                        </span>
-                      </>
-                    ) : (
-                      targetOf(destination)
-                    )}
-                  </td>
-                  <td>
-                    <span
-                      className={`destinations__pill destinations__pill--${destination.enabled ? 'ok' : 'fail'}`}
-                    >
-                      {destination.enabled
-                        ? strings.destinationEnabled
-                        : strings.destinationDisabled}
-                    </span>
-                    {!destination.enabled && (
-                      <span id={reasonId} className="destinations__sub">
-                        {destination.disabledReason ?? strings.destinationDisabledNoReason}
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    <div className="destinations__actions">
-                      <button
-                        ref={(element) => registerControl({ key: `first:${name}`, element })}
-                        type="button"
-                        className="destinations__button"
-                        aria-disabled={testBlocked ? 'true' : undefined}
-                        aria-describedby={!destination.enabled ? reasonId : undefined}
-                        onClick={() => {
-                          if (testBlocked) {
-                            return;
-                          }
-                          onSendTest(name);
-                        }}
-                      >
-                        {testBusy ? strings.sendTestToSending : strings.sendTestTo({ name })}
-                      </button>
-                      {!unreadable && (
+                  {columns.map((column) => cells[column])}
+                  {compact ? (
+                    <td className="admin-table__actions admin-table__kebab">
+                      <RowActionsMenu
+                        rowLabel={name}
+                        items={menuItems}
+                        note={ownerInlineNote}
+                        errors={rowError === undefined ? undefined : [rowError]}
+                        focusKeys={[`first:${name}`, `edit:${name}`, `enable:${name}`]}
+                        registerControl={registerControl}
+                      />
+                    </td>
+                  ) : (
+                    <td className="admin-table__actions">
+                      <div className="destinations__actions">
                         <button
-                          ref={(element) => registerControl({ key: `edit:${name}`, element })}
+                          ref={(element) => registerControl({ key: `first:${name}`, element })}
                           type="button"
                           className="destinations__button"
-                          aria-expanded={isEditing}
-                          onClick={() => onToggleEditor(name)}
-                        >
-                          {isEditing
-                            ? strings.closeDestination({ name })
-                            : strings.editDestination({ name })}
-                        </button>
-                      )}
-                      {destination.enabled ? (
-                        <ConfirmButton
-                          triggerLabel={strings.disableDestination({ name })}
-                          confirmLabel={strings.confirmDisableDestination({ name })}
-                          dismissAriaLabel={strings.cancelActionNamed({
-                            subject: strings.disableDestination({ name }),
-                          })}
-                          className="destinations__button destinations__button--danger"
-                          busy={toggleBusy}
-                          busyLabel={strings.disablingDestination}
-                          onConfirm={() => onSetEnabled({ name, enabled: false })}
-                        />
-                      ) : (
-                        <button
-                          ref={(element) => registerControl({ key: `enable:${name}`, element })}
-                          type="button"
-                          className="destinations__button"
-                          aria-disabled={toggleBusy ? 'true' : undefined}
+                          hidden={steppedAside}
+                          aria-label={testBusy ? undefined : labels.test.accessible}
+                          aria-disabled={testBlocked ? 'true' : undefined}
+                          aria-describedby={!destination.enabled ? reasonId : undefined}
                           onClick={() => {
-                            if (toggleBusy) {
+                            if (testBlocked) {
                               return;
                             }
-                            onSetEnabled({ name, enabled: true });
+                            onSendTest(name);
                           }}
                         >
-                          {toggleBusy
-                            ? strings.enablingDestination
-                            : strings.enableDestination({ name })}
+                          {testBusy ? strings.sendTestToSending : labels.test.visible}
                         </button>
+                        {!unreadable && (
+                          <button
+                            ref={(element) => registerControl({ key: `edit:${name}`, element })}
+                            type="button"
+                            className="destinations__button"
+                            hidden={steppedAside}
+                            aria-label={labels.edit.accessible}
+                            aria-expanded={isEditing}
+                            onClick={() => onToggleEditor(name)}
+                          >
+                            {labels.edit.visible}
+                          </button>
+                        )}
+                        {destination.enabled ? (
+                          <ConfirmButton
+                            triggerLabel={labels.disable.visible}
+                            triggerAriaLabel={labels.disable.accessible}
+                            confirmLabel={labels.confirmDisable.visible}
+                            confirmAriaLabel={labels.confirmDisable.accessible}
+                            dismissAriaLabel={labels.cancelDisable.accessible}
+                            className="destinations__button destinations__button--danger"
+                            confirmNotice={ownerNote ?? undefined}
+                            busy={toggleBusy}
+                            busyLabel={strings.disablingDestination}
+                            hidden={isSteppedAside({ rowKey: name, control: 'disable' })}
+                            onConfirmingChange={(confirming) =>
+                              reportConfirming({ rowKey: name, control: 'disable', confirming })
+                            }
+                            onConfirm={() => onSetEnabled({ name, enabled: false })}
+                          />
+                        ) : (
+                          <button
+                            ref={(element) => registerControl({ key: `enable:${name}`, element })}
+                            type="button"
+                            className="destinations__button"
+                            hidden={steppedAside}
+                            aria-label={toggleBusy ? undefined : labels.enable.accessible}
+                            aria-disabled={toggleBusy ? 'true' : undefined}
+                            onClick={() => {
+                              if (toggleBusy) {
+                                return;
+                              }
+                              onSetEnabled({ name, enabled: true });
+                            }}
+                          >
+                            {toggleBusy ? strings.enablingDestination : labels.enable.visible}
+                          </button>
+                        )}
+                        <ConfirmButton
+                          triggerLabel={labels.delete.visible}
+                          triggerAriaLabel={labels.delete.accessible}
+                          confirmLabel={labels.confirmDelete.visible}
+                          confirmAriaLabel={labels.confirmDelete.accessible}
+                          dismissAriaLabel={labels.cancelDelete.accessible}
+                          className="destinations__button destinations__button--danger"
+                          confirmNotice={ownerNote ?? undefined}
+                          busy={deleteBusy}
+                          busyLabel={strings.deletingDestination}
+                          hidden={isSteppedAside({ rowKey: name, control: 'delete' })}
+                          onConfirmingChange={(confirming) =>
+                            reportConfirming({ rowKey: name, control: 'delete', confirming })
+                          }
+                          onConfirm={() => onDelete(name)}
+                        />
+                      </div>
+                      {ownerNote !== null && (
+                        <span className="destinations__sub admin-table__aux admin-table__note">
+                          {ownerInlineNote}
+                        </span>
                       )}
-                      <ConfirmButton
-                        triggerLabel={strings.deleteDestination({ name })}
-                        confirmLabel={strings.confirmDeleteDestination({ name })}
-                        dismissAriaLabel={strings.cancelActionNamed({
-                          subject: strings.deleteDestination({ name }),
-                        })}
-                        className="destinations__button destinations__button--danger"
-                        busy={isBusy({ action: 'delete', name })}
-                        busyLabel={strings.deletingDestination}
-                        onConfirm={() => onDelete(name)}
-                      />
-                    </div>
-                    <TestResultLine result={testResults[name]} />
-                    {rowError !== undefined && (
-                      <p role="alert" className="destinations__row-error">
-                        {rowError}
-                      </p>
-                    )}
-                  </td>
+                      <TestResultLine result={testResults[name]} underButtons />
+                      {rowError !== undefined && (
+                        <p role="alert" className="destinations__row-error admin-table__aux">
+                          {rowError}
+                        </p>
+                      )}
+                    </td>
+                  )}
                 </tr>
                 {isEditing && !unreadable && (
                   <tr>
-                    <td colSpan={COLUMN_COUNT}>
-                      <EditDestinationForm
-                        destination={destination}
-                        saving={isBusy({ action: 'save', name })}
-                        rotating={isBusy({ action: 'rotate', name })}
-                        onSave={(submission) => onSave({ name, ...submission })}
-                        onRotate={(overlapHours) => onRotate({ name, overlapHours })}
-                        onClose={() => onCloseEditor(name)}
-                      />
+                    <td colSpan={columnCount} className="admin-table__editor-cell">
+                      <div className="admin-table__editor">
+                        <EditDestinationForm
+                          destination={destination}
+                          saving={isBusy({ action: 'save', name })}
+                          rotating={isBusy({ action: 'rotate', name })}
+                          onSave={(submission) => onSave({ name, ...submission })}
+                          onRotate={(overlapHours) => onRotate({ name, overlapHours })}
+                          onClose={() => onCloseEditor(name)}
+                        />
+                      </div>
                     </td>
                   </tr>
                 )}
                 {reveal !== undefined && (
                   <tr>
-                    <td colSpan={COLUMN_COUNT}>
-                      <RevealBox
-                        name={name}
-                        reveal={reveal}
-                        onDismiss={() => onDismissReveal(name)}
-                      />
+                    <td colSpan={columnCount} className="admin-table__editor-cell">
+                      <div className="admin-table__editor">
+                        <RevealBox
+                          name={name}
+                          reveal={reveal}
+                          onDismiss={() => onDismissReveal(name)}
+                        />
+                      </div>
                     </td>
                   </tr>
                 )}

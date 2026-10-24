@@ -10,9 +10,20 @@ export type DestinationType = 'ntfy' | 'discord' | 'webhook';
 
 export type DeliveryState = 'pending' | 'delivered' | 'dead';
 
+/** Who owns a registry object. `unknown` is the fail-closed reading of a missing,
+ *  unrecognised or inconsistent wire owner; it is never shown as `operator`. */
+export type OwnerKind = 'operator' | 'app' | 'unknown';
+
+/** The owner fields every destination, route and check view carries. */
+export interface OwnerFields {
+  ownerKind: OwnerKind;
+  /** The owning app's id; non-null only when `ownerKind` is `app`. */
+  ownerAppId: string | null;
+}
+
 /** A delivery destination as listed by the registry. Secret values are masked
  *  by the server and are display-only. */
-export interface DestinationSummary {
+export interface DestinationSummary extends OwnerFields {
   name: string;
   type: DestinationType;
   enabled: boolean;
@@ -24,7 +35,7 @@ export interface DestinationSummary {
 }
 
 /** A routing rule mapping an app/channel pattern to destinations. */
-export interface RouteSummary {
+export interface RouteSummary extends OwnerFields {
   id: number;
   appPattern: string;
   channelPattern: string;
@@ -217,7 +228,7 @@ export interface HeartbeatDestination {
 }
 
 /** A heartbeat check as listed by the operator API. */
-export interface HeartbeatCheck {
+export interface HeartbeatCheck extends OwnerFields {
   id: number;
   appId: string;
   name: string;
@@ -256,6 +267,74 @@ export interface HeartbeatIdParam {
   id: number;
 }
 
+/**
+ * Status of an identity request. `unknown` is anything this build does not
+ * recognise (fail closed: it renders as an explicit unknown state, offers no
+ * Approve, and is never read as pending).
+ */
+export type IdentityRequestStatus = 'pending' | 'rejected' | 'unknown';
+
+/** An app's request (filed by its first deploy) for a delivery identity. */
+export interface IdentityRequest {
+  id: number;
+  appId: string;
+  githubRepository: string;
+  githubRepositoryId: number;
+  workflowPath: string;
+  gitRef: string;
+  environment: string | null;
+  githubRunId: string;
+  status: IdentityRequestStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** `unknown` is anything this build does not recognise (fail closed: shown, never read as active). */
+export type IdentityKeyState = 'active' | 'superseded' | 'revoked' | 'unknown';
+
+/** A delivery key as the operator sees it: only the hint, never the key itself. */
+export interface IdentityKey {
+  id: number;
+  appId: string;
+  keyHint: string;
+  state: IdentityKeyState;
+  createdAt: string;
+  supersededAt: string | null;
+  revokedAt: string | null;
+  revokedReason: string | null;
+  lastUsedAt: string | null;
+}
+
+/** An approved app identity: the GitHub workflow bound to an app id, with its keys. */
+export interface IdentityBinding {
+  appId: string;
+  githubRepository: string;
+  githubRepositoryId: number;
+  githubOwnerId: number;
+  workflowPath: string;
+  gitRef: string;
+  environment: string | null;
+  approvedAt: string;
+  keys: IdentityKey[];
+}
+
+export interface IdentityRequestIdParam {
+  id: number;
+}
+
+export interface IdentityKeyIdParam {
+  id: number;
+}
+
+export interface UnbindAppParam {
+  appId: string;
+}
+
+export interface UnbindAppResult {
+  appId: string;
+  deleted: boolean;
+}
+
 /** Configuration for createDeliveryApiClient. */
 export interface DeliveryApiClientConfig {
   baseUrl?: string;
@@ -288,9 +367,21 @@ export interface DeliveryApiClient {
   deleteHeartbeat(param: HeartbeatIdParam): Promise<void>;
   pauseHeartbeat(param: HeartbeatIdParam): Promise<HeartbeatCheck>;
   resumeHeartbeat(param: HeartbeatIdParam): Promise<HeartbeatCheck>;
+  listIdentityRequests(): Promise<IdentityRequest[]>;
+  approveIdentityRequest(param: IdentityRequestIdParam): Promise<IdentityBinding>;
+  rejectIdentityRequest(param: IdentityRequestIdParam): Promise<IdentityRequest>;
+  listIdentityBindings(): Promise<IdentityBinding[]>;
+  revokeIdentityKey(param: IdentityKeyIdParam): Promise<IdentityKey>;
+  unbindApp(param: UnbindAppParam): Promise<UnbindAppResult>;
 }
 
-interface DestinationWire {
+/** Owner fields as sent on the wire; optional because an older server omits them. */
+interface OwnerWire {
+  owner_kind?: string | null;
+  owner_app_id?: string | null;
+}
+
+interface DestinationWire extends OwnerWire {
   name: string;
   type: DestinationType;
   enabled: boolean;
@@ -301,7 +392,7 @@ interface DestinationWire {
   updated_at: string;
 }
 
-interface RouteWire {
+interface RouteWire extends OwnerWire {
   id: number;
   app_pattern: string;
   channel_pattern: string;
@@ -372,7 +463,7 @@ interface MessageWire {
   deliveries: SubmittedDeliveryWire[] | null;
 }
 
-interface HeartbeatWire {
+interface HeartbeatWire extends OwnerWire {
   id: number;
   app_id: string;
   name: string;
@@ -389,6 +480,44 @@ interface HeartbeatWire {
   updated_at: string;
 }
 
+interface IdentityRequestWire {
+  id: number;
+  app_id: string;
+  github_repository: string;
+  github_repository_id: number;
+  workflow_path: string;
+  git_ref: string;
+  environment: string | null;
+  github_run_id: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface IdentityKeyWire {
+  id: number;
+  app_id: string;
+  key_hint: string;
+  state: string;
+  created_at: string;
+  superseded_at: string | null;
+  revoked_at: string | null;
+  revoked_reason: string | null;
+  last_used_at: string | null;
+}
+
+interface IdentityBindingWire {
+  app_id: string;
+  github_repository: string;
+  github_repository_id: number;
+  github_owner_id: number;
+  workflow_path: string;
+  git_ref: string;
+  environment: string | null;
+  approved_at: string;
+  keys: IdentityKeyWire[] | null;
+}
+
 interface ReadinessWire {
   status?: string;
   schema_version?: number;
@@ -397,8 +526,22 @@ interface ReadinessWire {
   heartbeat_checker?: { last_tick_at?: unknown; stale?: unknown } | null;
 }
 
+/** Fail closed: only a well-formed pair reads as operator or app; everything else
+ *  (absent, unrecognised kind, app without an id, operator with an id) is `unknown`. */
+function mapOwner(wire: OwnerWire): OwnerFields {
+  const appId = typeof wire.owner_app_id === 'string' ? wire.owner_app_id : null;
+  if (wire.owner_kind === 'operator' && wire.owner_app_id == null) {
+    return { ownerKind: 'operator', ownerAppId: null };
+  }
+  if (wire.owner_kind === 'app' && appId !== null && appId !== '') {
+    return { ownerKind: 'app', ownerAppId: appId };
+  }
+  return { ownerKind: 'unknown', ownerAppId: null };
+}
+
 function mapHeartbeat(wire: HeartbeatWire): HeartbeatCheck {
   return {
+    ...mapOwner(wire),
     id: wire.id,
     appId: wire.app_id,
     name: wire.name,
@@ -420,6 +563,61 @@ function mapHeartbeat(wire: HeartbeatWire): HeartbeatCheck {
   };
 }
 
+/** Fail closed: only the two statuses this build knows read as such; anything else is `unknown`. */
+function mapIdentityRequestStatus(status: string): IdentityRequestStatus {
+  return status === 'pending' || status === 'rejected' ? status : 'unknown';
+}
+
+/** Fail closed: only the three states this build knows read as such; anything else is `unknown`. */
+function mapIdentityKeyState(state: string): IdentityKeyState {
+  return state === 'active' || state === 'superseded' || state === 'revoked' ? state : 'unknown';
+}
+
+function mapIdentityRequest(wire: IdentityRequestWire): IdentityRequest {
+  return {
+    id: wire.id,
+    appId: wire.app_id,
+    githubRepository: wire.github_repository,
+    githubRepositoryId: wire.github_repository_id,
+    workflowPath: wire.workflow_path,
+    gitRef: wire.git_ref,
+    environment: wire.environment ?? null,
+    githubRunId: wire.github_run_id,
+    status: mapIdentityRequestStatus(wire.status),
+    createdAt: wire.created_at,
+    updatedAt: wire.updated_at,
+  };
+}
+
+/** Copies only the display fields, so a key value can never ride along into the UI. */
+function mapIdentityKey(wire: IdentityKeyWire): IdentityKey {
+  return {
+    id: wire.id,
+    appId: wire.app_id,
+    keyHint: wire.key_hint,
+    state: mapIdentityKeyState(wire.state),
+    createdAt: wire.created_at,
+    supersededAt: wire.superseded_at ?? null,
+    revokedAt: wire.revoked_at ?? null,
+    revokedReason: wire.revoked_reason ?? null,
+    lastUsedAt: wire.last_used_at ?? null,
+  };
+}
+
+function mapIdentityBinding(wire: IdentityBindingWire): IdentityBinding {
+  return {
+    appId: wire.app_id,
+    githubRepository: wire.github_repository,
+    githubRepositoryId: wire.github_repository_id,
+    githubOwnerId: wire.github_owner_id,
+    workflowPath: wire.workflow_path,
+    gitRef: wire.git_ref,
+    environment: wire.environment ?? null,
+    approvedAt: wire.approved_at,
+    keys: (wire.keys ?? []).map(mapIdentityKey),
+  };
+}
+
 /** Fail closed: anything but a well-formed `stale: false` with a last tick reads as stale. */
 function mapHeartbeatChecker(wire: ReadinessWire['heartbeat_checker']): HeartbeatCheckerStatus {
   const lastTickAt = typeof wire?.last_tick_at === 'string' ? wire.last_tick_at : null;
@@ -428,6 +626,7 @@ function mapHeartbeatChecker(wire: ReadinessWire['heartbeat_checker']): Heartbea
 
 function mapDestination(wire: DestinationWire): DestinationSummary {
   return {
+    ...mapOwner(wire),
     name: wire.name,
     type: wire.type,
     enabled: wire.enabled,
@@ -441,6 +640,7 @@ function mapDestination(wire: DestinationWire): DestinationSummary {
 
 function mapRoute(wire: RouteWire): RouteSummary {
   return {
+    ...mapOwner(wire),
     id: wire.id,
     appPattern: wire.app_pattern,
     channelPattern: wire.channel_pattern,
@@ -694,7 +894,7 @@ export function createDeliveryApiClient({
 
     async sendTest({ destination }: SendTestParams): Promise<MessageSummary> {
       const wire = (await request({
-        path: `/v1/messages?wait=${SEND_TEST_WAIT_SECONDS}`,
+        path: `/v1/admin/messages?wait=${SEND_TEST_WAIT_SECONDS}`,
         method: 'POST',
         body: {
           app_id: SEND_TEST_APP_ID,
@@ -890,6 +1090,54 @@ export function createDeliveryApiClient({
         method: 'POST',
       })) as { check: HeartbeatWire };
       return mapHeartbeat(wire.check);
+    },
+
+    async listIdentityRequests(): Promise<IdentityRequest[]> {
+      const wire = (await request({
+        path: '/v1/admin/app-identity/requests',
+        method: 'GET',
+      })) as { requests: IdentityRequestWire[] | null };
+      return (wire.requests ?? []).map(mapIdentityRequest);
+    },
+
+    async approveIdentityRequest({ id }: IdentityRequestIdParam): Promise<IdentityBinding> {
+      const wire = (await request({
+        path: `/v1/admin/app-identity/requests/${id}/approve`,
+        method: 'POST',
+      })) as { binding: IdentityBindingWire };
+      return mapIdentityBinding(wire.binding);
+    },
+
+    async rejectIdentityRequest({ id }: IdentityRequestIdParam): Promise<IdentityRequest> {
+      const wire = (await request({
+        path: `/v1/admin/app-identity/requests/${id}/reject`,
+        method: 'POST',
+      })) as { request: IdentityRequestWire };
+      return mapIdentityRequest(wire.request);
+    },
+
+    async listIdentityBindings(): Promise<IdentityBinding[]> {
+      const wire = (await request({
+        path: '/v1/admin/app-identity/bindings',
+        method: 'GET',
+      })) as { bindings: IdentityBindingWire[] | null };
+      return (wire.bindings ?? []).map(mapIdentityBinding);
+    },
+
+    async revokeIdentityKey({ id }: IdentityKeyIdParam): Promise<IdentityKey> {
+      const wire = (await request({
+        path: `/v1/admin/app-identity/keys/${id}/revoke`,
+        method: 'POST',
+      })) as { key: IdentityKeyWire };
+      return mapIdentityKey(wire.key);
+    },
+
+    async unbindApp({ appId }: UnbindAppParam): Promise<UnbindAppResult> {
+      const wire = (await request({
+        path: `/v1/admin/app-identity/bindings/${encodeURIComponent(appId)}`,
+        method: 'DELETE',
+      })) as { app_id: string; deleted: boolean };
+      return { appId: wire.app_id, deleted: wire.deleted };
     },
   };
 }
