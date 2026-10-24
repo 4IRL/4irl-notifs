@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -178,6 +179,100 @@ func probeWriteError(operation string, err error) error {
 		return registry.CheckViolationError(operation, err)
 	}
 	return pgutil.WrapDBError(operation, err)
+}
+
+// ProbeClaim is one due probe handed to the prober by ClaimDueProbes. ConfigVersion is the version
+// the result must be recorded with; SealedAccessToken is nil when the check has no token.
+type ProbeClaim struct {
+	CheckID           int64
+	AppID             string
+	Name              string
+	ConfigVersion     int64
+	Config            ProbeConfig
+	SealedAccessToken []byte
+}
+
+// claimDueProbesSQL claims due probe rows in one statement: the CTE picks and locks at most $2 rows
+// (SKIP LOCKED, probe row only, never the parent) before the UPDATE advances next_probe_at, so the
+// limit cannot over-claim and a row is handed out once per interval.
+const claimDueProbesSQL = `WITH due AS MATERIALIZED (
+	SELECT p2.check_id FROM heartbeat_check_probes p2
+	JOIN heartbeat_checks c ON c.id = p2.check_id
+	WHERE p2.next_probe_at <= $1::timestamptz AND NOT c.paused
+	ORDER BY p2.next_probe_at
+	LIMIT $2::int
+	FOR UPDATE OF p2 SKIP LOCKED)
+UPDATE heartbeat_check_probes p
+SET next_probe_at = $1::timestamptz + p.interval_seconds * interval '1 second'
+FROM due, heartbeat_checks c
+WHERE p.check_id = due.check_id AND c.id = p.check_id
+RETURNING p.check_id, c.app_id, c.name, p.config_version, p.url, p.expected_statuses, p.body_match,
+	p.timeout_seconds, p.interval_seconds, p.sealed_access_headers`
+
+// ClaimDueProbes implements Store.
+func (store *PGStore) ClaimDueProbes(ctx context.Context, now time.Time, limit int) ([]ProbeClaim, error) {
+	if limit < 1 {
+		return nil, &ValidationError{Message: "invalid claim limit"}
+	}
+	rows, queryErr := store.pool.Query(ctx, claimDueProbesSQL, storeTime(now), limit)
+	if queryErr != nil {
+		return nil, pgutil.WrapDBError("claim due heartbeat probes", queryErr)
+	}
+	defer rows.Close()
+
+	claims := []ProbeClaim{}
+	for rows.Next() {
+		var claim ProbeClaim
+		if scanErr := rows.Scan(
+			&claim.CheckID, &claim.AppID, &claim.Name, &claim.ConfigVersion, &claim.Config.URL,
+			&claim.Config.ExpectedStatuses, &claim.Config.BodyMatch, &claim.Config.TimeoutSeconds,
+			&claim.Config.IntervalSeconds, &claim.SealedAccessToken); scanErr != nil {
+			return nil, pgutil.WrapDBError("claim due heartbeat probes", scanErr)
+		}
+		claims = append(claims, claim)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, pgutil.WrapDBError("claim due heartbeat probes", rowsErr)
+	}
+	return claims, nil
+}
+
+// RecordProbeResult implements Store. The check is locked by id, so concurrent results serialise.
+// A missing check, a push check, a stale config version or a result ApplyProbeResult denies (paused,
+// bad reason) returns applied=false with nothing written and a zero check.
+func (store *PGStore) RecordProbeResult(
+	ctx context.Context, checkID int64, configVersion int64, result ProbeResult, now time.Time, holdOffUntil time.Time,
+) (StoredCheck, bool, error) {
+	now = storeTime(now)
+	holdOffUntil = storeTime(holdOffUntil)
+	var recorded StoredCheck
+	applied := false
+	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		current, lockErr := lockCheckByID(ctx, tx, checkID)
+		if errors.Is(lockErr, ErrCheckNotFound) {
+			return nil
+		}
+		if lockErr != nil {
+			return lockErr
+		}
+		if current.Probe == nil || current.Probe.ConfigVersion != configVersion {
+			return nil
+		}
+		next, accepted, _ := ApplyProbeResult(current, result, now, holdOffUntil)
+		if !accepted {
+			return nil
+		}
+		reloaded, saveErr := saveCheck(ctx, tx, next, current, now)
+		if saveErr != nil {
+			return saveErr
+		}
+		recorded, applied = reloaded, true
+		return nil
+	})
+	if txErr != nil {
+		return StoredCheck{}, false, txErr
+	}
+	return recorded, applied, nil
 }
 
 // lockedNextProbeAt returns the next_probe_at read under the lock, or nil when the locked check

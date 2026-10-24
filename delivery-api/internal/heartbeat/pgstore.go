@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -160,8 +161,12 @@ func (store *PGStore) patch(
 	now = storeTime(now)
 	var patched StoredCheck
 	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if _, lockErr := lock(tx); lockErr != nil {
+		locked, lockErr := lock(tx)
+		if lockErr != nil {
 			return lockErr
+		}
+		if kindErr := ValidateCheckPatchForKind(locked, patch); kindErr != nil {
+			return kindErr
 		}
 		current, loadErr := queryCheckByID(ctx, tx, id)
 		if loadErr != nil {
@@ -171,9 +176,37 @@ func (store *PGStore) patch(
 		if validateErr := ValidateCheckUpdate(update); validateErr != nil {
 			return validateErr
 		}
-		replaced, replaceErr := replaceSchedule(ctx, tx, current.AppID, id, update, now)
+
+		// A probe check's merged config is put on the in-memory check first, so a reset schedules the
+		// next probe one NEW interval out. The reset happens only when something that matters changed.
+		next := current
+		var access sealedAccessChange
+		if current.Probe != nil && update.Probe != nil {
+			next.Probe = cloneProbe(current.Probe)
+			next.Probe.Config = *update.Probe
+			next.PeriodSeconds, next.GraceSeconds = update.PeriodSeconds, update.GraceSeconds
+			if ProbeConfigChanged(current.Probe.Config, *update.Probe, update.AccessToken) {
+				next = ApplyProbeReset(next, now)
+			}
+			sealedChange, sealErr := store.sealedAccessChangeFor(id, update.AccessToken)
+			if sealErr != nil {
+				return sealErr
+			}
+			access = sealedChange
+		}
+		replaced, replaceErr := replaceSchedule(ctx, tx, current.AppID, id, update, next.AnchorAt, now)
 		if replaceErr != nil {
 			return replaceErr
+		}
+		if next.Probe != nil {
+			if probeErr := writeProbeRow(ctx, tx, next, lockedNextProbeAt(locked), access); probeErr != nil {
+				return probeErr
+			}
+			reloaded, reloadErr := queryCheckByID(ctx, tx, id)
+			if reloadErr != nil {
+				return reloadErr
+			}
+			replaced = reloaded
 		}
 		patched = replaced
 		return nil
@@ -184,18 +217,36 @@ func (store *PGStore) patch(
 	return patched, nil
 }
 
-// replaceSchedule writes update's period, grace and destination set to the check
-// the caller already holds locked, and returns the reloaded check.
+// sealedAccessChangeFor turns the patch's token action into the probe-row write: a Replace re-seals
+// under the check id, a Clear nulls the column, anything else leaves it alone.
+func (store *PGStore) sealedAccessChangeFor(checkID int64, token AccessTokenPatch) (sealedAccessChange, error) {
+	switch token.Action {
+	case AccessTokenReplace:
+		sealed, sealErr := sealProbeAccessToken(store.sealer, checkID, token.Token)
+		if sealErr != nil {
+			return sealedAccessChange{}, fmt.Errorf("seal heartbeat probe access token: %w", sealErr)
+		}
+		return sealedAccessChange{Changed: true, Sealed: sealed}, nil
+	case AccessTokenClear:
+		return sealedAccessChange{Changed: true}, nil
+	default:
+		return sealedAccessChange{}, nil
+	}
+}
+
+// replaceSchedule writes update's period, grace and destination set, plus anchorAt, to the check
+// the caller already holds locked, and returns the reloaded check. anchorAt is the check's own
+// anchor unless a probe reset restarted it.
 func replaceSchedule(
-	ctx context.Context, tx pgx.Tx, appID string, id int64, update CheckUpdate, now time.Time,
+	ctx context.Context, tx pgx.Tx, appID string, id int64, update CheckUpdate, anchorAt time.Time, now time.Time,
 ) (StoredCheck, error) {
 	destinationIDs, resolveErr := resolveDestinationIDs(ctx, tx, update.DestinationNames, appID)
 	if resolveErr != nil {
 		return StoredCheck{}, resolveErr
 	}
 	if _, execErr := tx.Exec(ctx,
-		`UPDATE heartbeat_checks SET period_seconds = $2, grace_seconds = $3, updated_at = $4 WHERE id = $1`,
-		id, update.PeriodSeconds, update.GraceSeconds, now); execErr != nil {
+		`UPDATE heartbeat_checks SET period_seconds = $2, grace_seconds = $3, anchor_at = $4, updated_at = $5 WHERE id = $1`,
+		id, update.PeriodSeconds, update.GraceSeconds, anchorAt, now); execErr != nil {
 		return StoredCheck{}, pgutil.WrapDBError("update heartbeat check", execErr)
 	}
 	if _, execErr := tx.Exec(ctx,

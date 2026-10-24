@@ -53,6 +53,20 @@ type Store interface {
 	// It reports whether a pending alert was cleared.
 	ClearPendingAlert(ctx context.Context, id int64, alertSeq int) (bool, error)
 
+	// RecordProbeResult applies one probe result under the check's row lock. It writes
+	// nothing and returns applied=false (and a zero check) for a missing check, a push
+	// check, a configVersion that is no longer the stored one, or a result the state
+	// machine denies (a paused check, a bad reason). Any accepted result, alerting or
+	// not, is saved and returns applied=true with the reloaded check.
+	RecordProbeResult(
+		ctx context.Context, checkID int64, configVersion int64, result ProbeResult, now, holdOffUntil time.Time,
+	) (check StoredCheck, applied bool, err error)
+	// ClaimDueProbes hands out up to limit unpaused probes whose next_probe_at has
+	// arrived, earliest first (down checks included), and advances each claimed
+	// row's next_probe_at to now plus its interval in the same statement, so a row is
+	// claimed once per interval. A limit below 1 is a *ValidationError.
+	ClaimDueProbes(ctx context.Context, now time.Time, limit int) ([]ProbeClaim, error)
+
 	// The *OwnedBy methods below confine a write to the checks the app appID owns
 	// (owner_kind 'app', owner_app_id appID): the owner is part of the row lock
 	// (or of the one DELETE statement), so a check owned by anyone else, or absent,
