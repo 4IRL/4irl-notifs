@@ -244,19 +244,19 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	})
 	// The checker reads the message service as its alert sender, and its freshness tracker backs /readyz.
 	heartbeatFreshness := heartbeat.NewFreshness(time.Now)
-	proberFreshness := heartbeat.NewFreshness(time.Now)
 	heartbeatStore := heartbeat.NewPGStore(pool, sealer)
 	heartbeatService := heartbeat.NewService(heartbeat.ServiceConfig{
 		Store:    heartbeatStore,
 		Messages: messageService,
 		Logger:   logger,
 	})
+	prober := newProberWiring(heartbeatStore, heartbeatService.HoldOffUntil, guardedClient, sealer, logger)
 	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
 		Logger:           logger,
 		Readiness:        checker,
 		HeartbeatChecker: heartbeatFreshness,
-		HeartbeatProber:  proberFreshness,
+		HeartbeatProber:  prober.freshness,
 		Registry:         registryService,
 		AppRegistry:      registryService,
 		Messages:         messageService,
@@ -298,18 +298,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 				Freshness: heartbeatFreshness,
 			})
 		},
-		func(backgroundCtx context.Context) {
-			heartbeat.RunProber(backgroundCtx, heartbeat.ProberConfig{
-				Store:        heartbeatStore,
-				HoldOffUntil: heartbeatService.HoldOffUntil,
-				Client:       guardedClient,
-				Sealer:       sealer,
-				Interval:     heartbeat.DefaultProberInterval,
-				Concurrency:  heartbeat.DefaultProberConcurrency,
-				Logger:       logger,
-				Freshness:    proberFreshness,
-			})
-		},
+		prober.run,
 		// The OIDC replay ledger has its own cleanup loop: it sweeps a different table on a
 		// different (absolute expires_at) criterion than the message retention sweeper above.
 		func(backgroundCtx context.Context) {
@@ -330,6 +319,43 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	// for them before the deferred pool.Close so an in-flight attempt can still record its outcome.
 	background.stop(logger, backgroundStopTimeout)
 	return serveErr
+}
+
+// proberWiring bundles the HTTP-probe prober's own freshness tracker (it backs /readyz separately from the
+// checker's) with its configuration and background runner, so runServe wires both from one place.
+type proberWiring struct {
+	freshness *heartbeat.Freshness
+	config    heartbeat.ProberConfig
+	run       func(context.Context)
+}
+
+// newProberWiring builds the prober configuration with the production interval and concurrency and a fresh
+// freshness tracker.
+func newProberWiring(
+	store heartbeat.ProbeStore,
+	holdOffUntil func() time.Time,
+	client *http.Client,
+	sealer *seal.Sealer,
+	logger *slog.Logger,
+) proberWiring {
+	freshness := heartbeat.NewFreshness(time.Now)
+	config := heartbeat.ProberConfig{
+		Store:        store,
+		HoldOffUntil: holdOffUntil,
+		Client:       client,
+		Sealer:       sealer,
+		Interval:     heartbeat.DefaultProberInterval,
+		Concurrency:  heartbeat.DefaultProberConcurrency,
+		Logger:       logger,
+		Freshness:    freshness,
+	}
+	return proberWiring{
+		freshness: freshness,
+		config:    config,
+		run: func(backgroundCtx context.Context) {
+			heartbeat.RunProber(backgroundCtx, config)
+		},
+	}
 }
 
 // backgroundTasks tracks goroutines started by startBackground so they can be canceled and awaited together.
