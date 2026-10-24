@@ -50,9 +50,10 @@ const (
 	// 10 s a ?wait request can hold Shutdown (httpapi.MaxWait) plus the 16 s an in-flight delivery attempt can
 	// need to finish and be recorded (dispatch.MaxInFlightShutdown), so a SIGTERM never abandons either.
 	shutdownTimeout = httpapi.MaxWait + dispatch.MaxInFlightShutdown
-	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker, sweeper, releaser, heartbeat checker and OIDC replay cleanup to unwind.
+	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker, sweeper, releaser, heartbeat checker, heartbeat prober and OIDC replay cleanup to unwind.
 	backgroundStopMargin = 4 * time.Second
-	// backgroundStopTimeout bounds how long runServe waits for the worker, sweeper, releaser, heartbeat checker and OIDC replay cleanup after HTTP has drained.
+	// backgroundStopTimeout bounds how long runServe waits for the worker, sweeper, releaser, heartbeat checker, heartbeat prober (heartbeat.MaxProberShutdown, pinned by
+	// TestProberShutdownFitsBackgroundStopTimeout) and OIDC replay cleanup after HTTP has drained.
 	// Worst-case total shutdown is shutdownTimeout + backgroundStopTimeout (46 s), which the compose
 	// stop_grace_period must exceed (docker-compose.yml and docker-compose.prod.yml; pinned by
 	// TestComposeStopGracePeriodCoversShutdown).
@@ -243,16 +244,19 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	})
 	// The checker reads the message service as its alert sender, and its freshness tracker backs /readyz.
 	heartbeatFreshness := heartbeat.NewFreshness(time.Now)
+	heartbeatStore := heartbeat.NewPGStore(pool, sealer)
 	heartbeatService := heartbeat.NewService(heartbeat.ServiceConfig{
-		Store:    heartbeat.NewPGStore(pool, sealer),
+		Store:    heartbeatStore,
 		Messages: messageService,
 		Logger:   logger,
 	})
+	prober := newProberWiring(heartbeatStore, heartbeatService.HoldOffUntil, guardedClient, sealer, logger)
 	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
 		Logger:           logger,
 		Readiness:        checker,
 		HeartbeatChecker: heartbeatFreshness,
+		HeartbeatProber:  prober.freshness,
 		Registry:         registryService,
 		AppRegistry:      registryService,
 		Messages:         messageService,
@@ -294,6 +298,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 				Freshness: heartbeatFreshness,
 			})
 		},
+		prober.run,
 		// The OIDC replay ledger has its own cleanup loop: it sweeps a different table on a
 		// different (absolute expires_at) criterion than the message retention sweeper above.
 		func(backgroundCtx context.Context) {
@@ -314,6 +319,43 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	// for them before the deferred pool.Close so an in-flight attempt can still record its outcome.
 	background.stop(logger, backgroundStopTimeout)
 	return serveErr
+}
+
+// proberWiring bundles the HTTP-probe prober's own freshness tracker (it backs /readyz separately from the
+// checker's) with its configuration and background runner, so runServe wires both from one place.
+type proberWiring struct {
+	freshness *heartbeat.Freshness
+	config    heartbeat.ProberConfig
+	run       func(context.Context)
+}
+
+// newProberWiring builds the prober configuration with the production interval and concurrency and a fresh
+// freshness tracker.
+func newProberWiring(
+	store heartbeat.ProbeStore,
+	holdOffUntil func() time.Time,
+	client *http.Client,
+	sealer *seal.Sealer,
+	logger *slog.Logger,
+) proberWiring {
+	freshness := heartbeat.NewFreshness(time.Now)
+	config := heartbeat.ProberConfig{
+		Store:        store,
+		HoldOffUntil: holdOffUntil,
+		Client:       client,
+		Sealer:       sealer,
+		Interval:     heartbeat.DefaultProberInterval,
+		Concurrency:  heartbeat.DefaultProberConcurrency,
+		Logger:       logger,
+		Freshness:    freshness,
+	}
+	return proberWiring{
+		freshness: freshness,
+		config:    config,
+		run: func(backgroundCtx context.Context) {
+			heartbeat.RunProber(backgroundCtx, config)
+		},
+	}
 }
 
 // backgroundTasks tracks goroutines started by startBackground so they can be canceled and awaited together.

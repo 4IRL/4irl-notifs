@@ -166,8 +166,8 @@ func TestReadyz(testInstance *testing.T) {
 	failedAt := time.Date(2026, time.October, 10, 12, 30, 0, 0, time.UTC)
 	failure := &migrate.Failure{Version: 2, Error: `relation "x" already exists`, FailedAt: failedAt}
 	const failureJSON = `{"version":2,"error":"relation \"x\" already exists","failed_at":"2026-10-10T12:30:00Z"}`
-	// neverTickedJSON is the heartbeat_checker member when no tracker is configured.
-	const neverTickedJSON = `,"heartbeat_checker":{"last_tick_at":null,"stale":true}`
+	// neverTickedJSON is the heartbeat_checker and heartbeat_prober members when no tracker is configured.
+	const neverTickedJSON = `,"heartbeat_checker":{"last_tick_at":null,"stale":true},"heartbeat_prober":{"last_tick_at":null,"stale":true}`
 
 	testCases := []struct {
 		name       string

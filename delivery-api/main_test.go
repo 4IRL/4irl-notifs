@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
 )
 
@@ -296,6 +297,15 @@ func TestShutdownBudgetCoversWorkerAndWaitingRequests(testInstance *testing.T) {
 	}
 	if backgroundStopTimeout < dispatch.MaxInFlightShutdown {
 		testInstance.Fatalf("backgroundStopTimeout = %s, want at least %s", backgroundStopTimeout, dispatch.MaxInFlightShutdown)
+	}
+}
+
+// TestProberShutdownFitsBackgroundStopTimeout pins the prober's worst-case
+// shutdown (one probe plus its result write) inside the background stop budget.
+// The pin lives here because heartbeat must not import dispatch.
+func TestProberShutdownFitsBackgroundStopTimeout(testInstance *testing.T) {
+	if heartbeat.MaxProberShutdown > backgroundStopTimeout {
+		testInstance.Fatalf("heartbeat.MaxProberShutdown = %s, want at most backgroundStopTimeout %s", heartbeat.MaxProberShutdown, backgroundStopTimeout)
 	}
 }
 
@@ -764,5 +774,37 @@ func TestServeReturnsListenerError(testInstance *testing.T) {
 		}
 	case <-time.After(resultTimeout):
 		testInstance.Fatal("serve did not return for a closed listener")
+	}
+}
+
+func TestNewProberWiringUsesItsOwnFreshnessAndProductionDefaults(testInstance *testing.T) {
+	client := newTestClient()
+	holdOffUntil := func() time.Time { return time.Time{} }
+	wiring := newProberWiring(nil, holdOffUntil, client, nil, newTestLogger())
+	other := newProberWiring(nil, holdOffUntil, client, nil, newTestLogger())
+
+	if wiring.freshness == nil {
+		testInstance.Fatal("freshness is nil, want a prober tracker for /readyz")
+	}
+	if wiring.config.Freshness != wiring.freshness {
+		testInstance.Error("config.Freshness is not the tracker handed to HeartbeatProber")
+	}
+	if wiring.freshness == other.freshness {
+		testInstance.Error("two wirings share a tracker, want one fresh tracker per wiring (never the checker's)")
+	}
+	if wiring.config.Interval != heartbeat.DefaultProberInterval {
+		testInstance.Errorf("Interval = %v, want %v", wiring.config.Interval, heartbeat.DefaultProberInterval)
+	}
+	if wiring.config.Concurrency != heartbeat.DefaultProberConcurrency {
+		testInstance.Errorf("Concurrency = %d, want %d", wiring.config.Concurrency, heartbeat.DefaultProberConcurrency)
+	}
+	if wiring.config.Client != client {
+		testInstance.Error("config.Client is not the guarded client passed in")
+	}
+	if wiring.config.HoldOffUntil == nil {
+		testInstance.Error("config.HoldOffUntil is nil")
+	}
+	if wiring.run == nil {
+		testInstance.Fatal("run is nil, want the RunProber background entry")
 	}
 }

@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
@@ -118,6 +120,8 @@ type heartbeatStack struct {
 	messages *message.Service
 	receiver *hookReceiver
 	clock    *shiftedClock
+	pool     *pgxpool.Pool
+	sealer   *seal.Sealer
 }
 
 func startHeartbeatStack(testInstance *testing.T) *heartbeatStack {
@@ -198,6 +202,8 @@ func startHeartbeatStack(testInstance *testing.T) *heartbeatStack {
 		messages: messageService,
 		receiver: receiver,
 		clock:    clock,
+		pool:     pool,
+		sealer:   sealer,
 	}
 }
 

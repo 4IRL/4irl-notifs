@@ -32,18 +32,29 @@ function describeValue(value: unknown): string {
   return value.slice(0, MAX_ECHOED_VALUE_LENGTH);
 }
 
-function staleDetail({ lastTickAt, now }: { lastTickAt: unknown; now: number }): string {
+function staleDetail({
+  label,
+  lastTickAt,
+  now,
+}: {
+  label: string;
+  lastTickAt: unknown;
+  now: number;
+}): string {
   const lastTickMs = typeof lastTickAt === 'string' ? Date.parse(lastTickAt) : Number.NaN;
   if (Number.isNaN(lastTickMs)) {
-    return 'heartbeat checker stale (never ran)';
+    return `${label} stale (never ran)`;
   }
-  return `heartbeat checker stale (last run ${formatDuration(now - lastTickMs)} ago)`;
+  return `${label} stale (last run ${formatDuration(now - lastTickMs)} ago)`;
 }
 
 /**
- * delivery-api `/readyz`: ok only when the HTTP code is 200, `status` is `ok` and the heartbeat
- * checker is fresh. Staleness never changes the HTTP code (it would fail the compose healthcheck),
- * so the watchdog is the one that interprets it. Fails closed on any missing or malformed field.
+ * delivery-api `/readyz`: ok only when the HTTP code is 200, `status` is `ok`, the heartbeat
+ * checker is fresh and, when the body reports one, the heartbeat prober is fresh. Staleness never
+ * changes the HTTP code (it would fail the compose healthcheck), so the watchdog is the one that
+ * interprets it. Fails closed on any missing or malformed checker field; an absent
+ * `heartbeat_prober` property is tolerated (an older delivery-api), a present malformed one
+ * (including `null`) is not.
  */
 async function evaluateDeliveryApi({
   response,
@@ -70,9 +81,19 @@ async function evaluateDeliveryApi({
   if (checker === null) {
     problems.push('heartbeat checker missing');
   } else if (checker.stale === true) {
-    problems.push(staleDetail({ lastTickAt: checker.last_tick_at, now }));
+    problems.push(staleDetail({ label: 'heartbeat checker', lastTickAt: checker.last_tick_at, now }));
   } else if (checker.stale !== false) {
     problems.push('heartbeat checker state unknown');
+  }
+  if (Object.hasOwn(body, 'heartbeat_prober')) {
+    const prober = asRecord(body.heartbeat_prober);
+    if (prober === null) {
+      problems.push('heartbeat prober state unknown');
+    } else if (prober.stale === true) {
+      problems.push(staleDetail({ label: 'heartbeat prober', lastTickAt: prober.last_tick_at, now }));
+    } else if (prober.stale !== false) {
+      problems.push('heartbeat prober state unknown');
+    }
   }
   return problems.length === 0 ? OK : down(problems.join('; '));
 }
