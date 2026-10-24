@@ -20,7 +20,9 @@ env:
   # VITE_DELIVERY_LOG_ENABLED and VITE_PENDING_SENDS_ENABLED turn on the Delivery tab (status card,
   # destinations and routes; delivery log; pending sends). VITE_HEARTBEATS_ENABLED turns on the
   # Heartbeats section of that tab; it ships with the heartbeats backend, and the section must
-  # never be visible without its backend. The backend hostnames + service-token secrets
+  # never be visible without its backend. VITE_APP_IDENTITIES_ENABLED turns on the App identities
+  # section (approve app identity requests, manage keys); it likewise ships with its backend
+  # (/v1/admin/app-identity/*). The backend hostnames + service-token secrets
   # are RUNTIME Pages Function bindings (PROVISIONING_API_URL, PERSON_SERVICE_URL, DELIVERY_API_URL,
   # PROXY_ACCESS_CLIENT_ID, PROXY_ACCESS_CLIENT_SECRET), set on the Pages project — see
   # ARCHITECTURE.md ("Admin-UI same-origin proxy").
@@ -30,6 +32,7 @@ env:
   VITE_DELIVERY_LOG_ENABLED: 'true'
   VITE_PENDING_SENDS_ENABLED: 'true'
   VITE_HEARTBEATS_ENABLED: 'true'
+  VITE_APP_IDENTITIES_ENABLED: 'true'
 
 jobs:
   PagesDeploy:

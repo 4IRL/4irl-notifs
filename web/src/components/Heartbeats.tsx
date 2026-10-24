@@ -4,6 +4,7 @@ import type { JSX } from 'react';
 import type { DeliveryApiClient, HeartbeatCheck } from '../api/deliveryClient';
 import { useExclusive } from '../hooks/useExclusive';
 import { useFocusRegistry } from '../hooks/useFocusRegistry';
+import { useCompactTable } from '../hooks/useCompactTable';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { strings } from '../strings';
 import { ConfirmButton } from './ConfirmButton';
@@ -11,8 +12,15 @@ import { formatDuration, formatRelativeFuture, formatRelativePast } from './form
 import { formatMinute } from './formatUtc';
 import { HeartbeatForm } from './HeartbeatForm';
 import type { HeartbeatAddSubmission, HeartbeatEditSubmission } from './HeartbeatForm';
+import { OwnerBadge } from './OwnerBadge';
+import { ownerInlineNoteOf, ownerNoteOf } from './ownership';
+import { RowActionsMenu } from './RowActionsMenu';
+import type { RowMenuItem } from './RowActionsMenu';
 import type { DestinationsLoadState } from './RoutesSection';
 import { messageOf, withoutKey } from './rowState';
+import { useConfirmingRows } from './useConfirmingRows';
+import { revealFocusedControl } from './adminTableFocus';
+import './adminTable.css';
 import './Heartbeats.css';
 
 interface HeartbeatsProps {
@@ -35,8 +43,11 @@ const MS_PER_SECOND = 1000;
 const HEADING_KEY = 'heading';
 const ADD_KEY = 'add';
 const ADD_HINT_ID = 'heartbeats-add-hint';
-// State, Check, Last ping, Schedule, Alerts to, Actions.
-const COLUMN_COUNT = 6;
+// The editor row spans every column of the layout in use, Actions included:
+// Check, State, Owner, Last ping, Schedule, Alerts to, Actions when roomy; the narrow layout
+// drops Owner.
+const WIDE_COLUMN_COUNT = 7;
+const COMPACT_COLUMN_COUNT = 6;
 // Matches the `data-check-id` attribute rendered on each row.
 const ROW_ID_ATTRIBUTE = 'data-check-id';
 // "YYYY-MM-DD HH:MM" -> "HH:MM".
@@ -234,12 +245,128 @@ function renderLastPingCell({
   );
 }
 
+interface HeartbeatActionsMenuProps {
+  check: HeartbeatCheck;
+  isEditing: boolean;
+  formLocked: boolean;
+  toggleBusy: boolean;
+  toggleKind: ToggleKind;
+  deleteBusy: boolean;
+  ownerNote: string | null;
+  rowError: string | undefined;
+  registerControl: (params: { key: string; element: HTMLElement | null }) => void;
+  onToggleEditor: () => void;
+  onToggle: (kind: ToggleKind) => void;
+  onDelete: () => void;
+}
+
+/** A check's row actions in the narrow layout: the same actions and guards as the inline buttons. */
+function HeartbeatActionsMenu({
+  check,
+  isEditing,
+  formLocked,
+  toggleBusy,
+  toggleKind,
+  deleteBusy,
+  ownerNote,
+  rowError,
+  registerControl,
+  onToggleEditor,
+  onToggle,
+  onDelete,
+}: HeartbeatActionsMenuProps): JSX.Element {
+  const { id } = check;
+  const label = labelOf(check);
+  const items: RowMenuItem[] = [
+    {
+      id: 'edit',
+      label: isEditing ? strings.closeHeartbeatTrigger : strings.editHeartbeatTrigger,
+      ariaLabel: isEditing
+        ? strings.closeHeartbeatNamed({ check: label })
+        : strings.editHeartbeatNamed({ check: label }),
+      expanded: isEditing,
+      disabled: formLocked,
+      onSelect: onToggleEditor,
+    },
+  ];
+  if (check.paused) {
+    const resuming = toggleBusy && toggleKind === 'resume';
+    items.push({
+      id: 'resume',
+      label: resuming ? strings.resumingHeartbeat : strings.resumeHeartbeat,
+      ariaLabel: resuming
+        ? strings.resumingHeartbeatNamed({ check: label })
+        : strings.resumeHeartbeatNamed({ check: label }),
+      disabled: toggleBusy,
+      onSelect: () => onToggle('resume'),
+    });
+  } else {
+    const resumingElsewhere = toggleKind === 'resume';
+    let pauseLabel: string = strings.pauseHeartbeat;
+    let pauseAriaLabel = strings.pauseHeartbeatNamed({ check: label });
+    if (toggleBusy) {
+      pauseLabel = resumingElsewhere ? strings.resumingHeartbeat : strings.pausingHeartbeat;
+      pauseAriaLabel = resumingElsewhere
+        ? strings.resumingHeartbeatNamed({ check: label })
+        : strings.pausingHeartbeatNamed({ check: label });
+    }
+    items.push({
+      id: 'pause',
+      label: pauseLabel,
+      ariaLabel: pauseAriaLabel,
+      disabled: toggleBusy,
+      confirm: {
+        confirmLabel: strings.confirmPauseHeartbeat,
+        confirmAriaLabel: strings.confirmPauseHeartbeatNamed({ check: label }),
+        cancelLabel: strings.keepHeartbeatRunning,
+        cancelAriaLabel: strings.keepHeartbeatRunningNamed({ check: label }),
+        notice:
+          ownerNote === null
+            ? strings.pauseHeartbeatNotice
+            : `${strings.pauseHeartbeatNotice} ${ownerNote}`,
+        onConfirm: () => onToggle('pause'),
+      },
+    });
+  }
+  items.push({
+    id: 'delete',
+    label: deleteBusy ? strings.deletingHeartbeat : strings.deleteHeartbeat,
+    ariaLabel: deleteBusy
+      ? strings.deletingHeartbeatNamed({ check: label })
+      : strings.deleteHeartbeatNamed({ check: label }),
+    tone: 'danger',
+    disabled: deleteBusy,
+    confirm: {
+      confirmLabel: strings.confirmDeleteHeartbeat,
+      confirmAriaLabel: strings.confirmDeleteHeartbeatNamed({ check: label }),
+      cancelLabel: strings.cancelAction,
+      cancelAriaLabel: strings.cancelActionNamed({
+        subject: strings.deleteHeartbeatNamed({ check: label }),
+      }),
+      notice: ownerNote ?? undefined,
+      onConfirm: onDelete,
+    },
+  });
+  return (
+    <RowActionsMenu
+      rowLabel={label}
+      items={items}
+      note={ownerInlineNoteOf(check)}
+      errors={rowError === undefined ? undefined : [rowError]}
+      focusKeys={[`edit:${id}`, `pause:${id}`, `resume:${id}`, `delete:${id}`]}
+      registerControl={registerControl}
+    />
+  );
+}
+
 /**
  * The Heartbeats section of the Delivery tab. Reloads after a mutation and on the 30s tick are
  * quiet (no loading state) so open confirms and focus survive them; late is derived locally
  * while the server's state stays authoritative.
  */
 export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.Element {
+  const compact = useCompactTable();
+  const columnCount = compact ? COMPACT_COLUMN_COUNT : WIDE_COLUMN_COUNT;
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [addSubmitting, setAddSubmitting] = useState(false);
@@ -262,6 +389,7 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
   const lateReloadedRef = useRef<Set<string>>(new Set());
   const { registerControl, requestFocus } = useFocusRegistry();
   const { isBusy, exclusive } = useExclusive<string>();
+  const { isSteppedAside, reportConfirming } = useConfirmingRows();
   const trackList = useLatestRequest();
 
   const commitChecks = useCallback((next: HeartbeatCheck[]) => {
@@ -621,20 +749,29 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
         <p className="heartbeats__status">{strings.heartbeatsEmpty}</p>
       )}
       {showTable && (
-        <div className="heartbeats__scroll">
-          <table className="heartbeats__table">
+        <div
+          className="admin-table__scroll heartbeats__scroll"
+          onFocus={revealFocusedControl}
+          role="group"
+          aria-labelledby="heartbeats-heading"
+          tabIndex={0}
+        >
+          <table className="admin-table heartbeats__table">
             <thead>
               <tr>
-                <th scope="col">{strings.columnHeartbeatState}</th>
-                <th scope="col" className="heartbeats__fill">
+                <th scope="col" className="admin-table__lead">
                   {strings.columnHeartbeatCheck}
                 </th>
+                <th scope="col">{strings.columnHeartbeatState}</th>
+                {!compact && <th scope="col">{strings.columnOwner}</th>}
                 <th scope="col">{strings.columnHeartbeatLastPing}</th>
                 <th scope="col">{strings.columnHeartbeatSchedule}</th>
-                <th scope="col">{strings.columnHeartbeatAlertsTo}</th>
+                <th scope="col" className="admin-table__fill">
+                  {strings.columnHeartbeatAlertsTo}
+                </th>
                 <th
                   scope="col"
-                  className="heartbeats__actions-cell"
+                  className={`admin-table__actions heartbeats__actions-cell${compact ? ' admin-table__kebab' : ''}`}
                   aria-label={strings.columnHeartbeatActions}
                 />
               </tr>
@@ -648,15 +785,34 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                 const toggleBusy = isBusy(`toggle:${id}`);
                 const toggleKind: ToggleKind = toggling[id] ?? 'pause';
                 const isEditing = editingId === id;
+                const ownerNote = ownerNoteOf(check);
+                const ownerInlineNote = ownerInlineNoteOf(check);
+                // While one of the row's destructive confirms is open, its other buttons step
+                // aside so the pair takes their place and the Actions cell never gets wider.
+                const rowKey = String(id);
+                const steppedAside = isSteppedAside({ rowKey });
                 return (
                   <Fragment key={id}>
                     <tr data-check-id={id}>
-                      <td>{renderStateCell({ check, state, now })}</td>
-                      <td className="heartbeats__fill">
+                      <td
+                        className="admin-table__lead heartbeats__check"
+                        title={`${check.appId}${strings.heartbeatCheckSeparator}${check.name}`}
+                      >
                         <span className="heartbeats__mono">{check.appId}</span>
                         {strings.heartbeatCheckSeparator}
                         <span className="heartbeats__name">{check.name}</span>
+                        {compact && (
+                          <span className="admin-table__owner-line">
+                            <OwnerBadge ownerKind={check.ownerKind} ownerAppId={check.ownerAppId} />
+                          </span>
+                        )}
                       </td>
+                      <td>{renderStateCell({ check, state, now })}</td>
+                      {!compact && (
+                        <td>
+                          <OwnerBadge ownerKind={check.ownerKind} ownerAppId={check.ownerAppId} />
+                        </td>
+                      )}
                       <td>{renderLastPingCell({ check, state, now })}</td>
                       <td className="heartbeats__mono">
                         {strings.heartbeatEvery({
@@ -668,7 +824,7 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                           })}
                         </span>
                       </td>
-                      <td>
+                      <td className="admin-table__fill">
                         {check.destinations.map((destination) => (
                           <span key={destination.name}>
                             <span className="heartbeats__name">{destination.name}</span>
@@ -680,112 +836,157 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                           </span>
                         ))}
                       </td>
-                      <td className="heartbeats__actions-cell">
-                        <div className="heartbeats__actions">
-                          <button
-                            ref={(element) => registerControl({ key: `edit:${id}`, element })}
-                            type="button"
-                            className="heartbeats__button heartbeats__button--ghost"
-                            aria-expanded={isEditing}
-                            aria-disabled={formLocked ? 'true' : undefined}
-                            aria-label={
-                              isEditing
-                                ? strings.closeHeartbeatNamed({ check: label })
-                                : strings.editHeartbeatNamed({ check: label })
-                            }
-                            onClick={() => toggleEditor(id)}
-                          >
-                            {isEditing
-                              ? strings.closeHeartbeatTrigger
-                              : strings.editHeartbeatTrigger}
-                          </button>
-                          {check.paused ? (
+                      {compact ? (
+                        <td className="admin-table__actions admin-table__kebab">
+                          <HeartbeatActionsMenu
+                            check={check}
+                            isEditing={isEditing}
+                            formLocked={formLocked}
+                            toggleBusy={toggleBusy}
+                            toggleKind={toggleKind}
+                            deleteBusy={isBusy(`delete:${id}`)}
+                            ownerNote={ownerNote}
+                            rowError={rowError}
+                            registerControl={registerControl}
+                            onToggleEditor={() => toggleEditor(id)}
+                            onToggle={(kind) => toggle({ check, kind })}
+                            onDelete={() => handleDelete(check)}
+                          />
+                        </td>
+                      ) : (
+                        <td className="admin-table__actions heartbeats__actions-cell">
+                          <div className="heartbeats__actions">
                             <button
-                              ref={(element) => registerControl({ key: `resume:${id}`, element })}
+                              ref={(element) => registerControl({ key: `edit:${id}`, element })}
                               type="button"
-                              className="heartbeats__button"
+                              className="heartbeats__button heartbeats__button--ghost"
+                              hidden={steppedAside}
+                              aria-expanded={isEditing}
+                              aria-disabled={formLocked ? 'true' : undefined}
                               aria-label={
-                                toggleBusy && toggleKind === 'resume'
-                                  ? strings.resumingHeartbeatNamed({ check: label })
-                                  : strings.resumeHeartbeatNamed({ check: label })
+                                isEditing
+                                  ? strings.closeHeartbeatNamed({ check: label })
+                                  : strings.editHeartbeatNamed({ check: label })
                               }
-                              aria-disabled={toggleBusy ? 'true' : undefined}
-                              onClick={() => {
-                                if (toggleBusy) {
-                                  return;
-                                }
-                                toggle({ check, kind: 'resume' });
-                              }}
+                              onClick={() => toggleEditor(id)}
                             >
-                              {toggleBusy && toggleKind === 'resume'
-                                ? strings.resumingHeartbeat
-                                : strings.resumeHeartbeat}
+                              {isEditing
+                                ? strings.closeHeartbeatTrigger
+                                : strings.editHeartbeatTrigger}
                             </button>
-                          ) : (
+                            {check.paused ? (
+                              <button
+                                ref={(element) => registerControl({ key: `resume:${id}`, element })}
+                                type="button"
+                                className="heartbeats__button"
+                                hidden={steppedAside}
+                                aria-label={
+                                  toggleBusy && toggleKind === 'resume'
+                                    ? strings.resumingHeartbeatNamed({ check: label })
+                                    : strings.resumeHeartbeatNamed({ check: label })
+                                }
+                                aria-disabled={toggleBusy ? 'true' : undefined}
+                                onClick={() => {
+                                  if (toggleBusy) {
+                                    return;
+                                  }
+                                  toggle({ check, kind: 'resume' });
+                                }}
+                              >
+                                {toggleBusy && toggleKind === 'resume'
+                                  ? strings.resumingHeartbeat
+                                  : strings.resumeHeartbeat}
+                              </button>
+                            ) : (
+                              <ConfirmButton
+                                triggerLabel={strings.pauseHeartbeat}
+                                triggerAriaLabel={strings.pauseHeartbeatNamed({ check: label })}
+                                confirmLabel={strings.confirmPauseHeartbeat}
+                                confirmAriaLabel={strings.confirmPauseHeartbeatNamed({
+                                  check: label,
+                                })}
+                                dismissLabel={strings.keepHeartbeatRunning}
+                                dismissAriaLabel={strings.keepHeartbeatRunningNamed({
+                                  check: label,
+                                })}
+                                className="heartbeats__button heartbeats__button--ghost"
+                                confirmNotice={
+                                  ownerNote === null
+                                    ? strings.pauseHeartbeatNotice
+                                    : `${strings.pauseHeartbeatNotice} ${ownerNote}`
+                                }
+                                busy={toggleBusy}
+                                busyLabel={
+                                  toggleKind === 'resume'
+                                    ? strings.resumingHeartbeat
+                                    : strings.pausingHeartbeat
+                                }
+                                busyAriaLabel={
+                                  toggleKind === 'resume'
+                                    ? strings.resumingHeartbeatNamed({ check: label })
+                                    : strings.pausingHeartbeatNamed({ check: label })
+                                }
+                                hidden={isSteppedAside({ rowKey, control: 'pause' })}
+                                onConfirmingChange={(confirming) =>
+                                  reportConfirming({ rowKey, control: 'pause', confirming })
+                                }
+                                registerTrigger={(element) =>
+                                  registerControl({ key: `pause:${id}`, element })
+                                }
+                                onConfirm={() => toggle({ check, kind: 'pause' })}
+                              />
+                            )}
                             <ConfirmButton
-                              triggerLabel={strings.pauseHeartbeat}
-                              triggerAriaLabel={strings.pauseHeartbeatNamed({ check: label })}
-                              confirmLabel={strings.confirmPauseHeartbeat}
-                              confirmAriaLabel={strings.confirmPauseHeartbeatNamed({
+                              triggerLabel={strings.deleteHeartbeat}
+                              triggerAriaLabel={strings.deleteHeartbeatNamed({ check: label })}
+                              confirmLabel={strings.confirmDeleteHeartbeat}
+                              confirmAriaLabel={strings.confirmDeleteHeartbeatNamed({
                                 check: label,
                               })}
-                              dismissLabel={strings.keepHeartbeatRunning}
-                              dismissAriaLabel={strings.keepHeartbeatRunningNamed({ check: label })}
-                              className="heartbeats__button heartbeats__button--ghost"
-                              confirmNotice={strings.pauseHeartbeatNotice}
-                              busy={toggleBusy}
-                              busyLabel={
-                                toggleKind === 'resume'
-                                  ? strings.resumingHeartbeat
-                                  : strings.pausingHeartbeat
-                              }
-                              busyAriaLabel={
-                                toggleKind === 'resume'
-                                  ? strings.resumingHeartbeatNamed({ check: label })
-                                  : strings.pausingHeartbeatNamed({ check: label })
+                              dismissAriaLabel={strings.cancelActionNamed({
+                                subject: strings.deleteHeartbeatNamed({ check: label }),
+                              })}
+                              className="heartbeats__button heartbeats__button--danger"
+                              confirmNotice={ownerNote ?? undefined}
+                              busy={isBusy(`delete:${id}`)}
+                              busyLabel={strings.deletingHeartbeat}
+                              busyAriaLabel={strings.deletingHeartbeatNamed({ check: label })}
+                              hidden={isSteppedAside({ rowKey, control: 'delete' })}
+                              onConfirmingChange={(confirming) =>
+                                reportConfirming({ rowKey, control: 'delete', confirming })
                               }
                               registerTrigger={(element) =>
-                                registerControl({ key: `pause:${id}`, element })
+                                registerControl({ key: `delete:${id}`, element })
                               }
-                              onConfirm={() => toggle({ check, kind: 'pause' })}
+                              onConfirm={() => handleDelete(check)}
                             />
+                          </div>
+                          {ownerNote !== null && (
+                            <span className="heartbeats__sub admin-table__aux admin-table__note">
+                              {ownerInlineNote}
+                            </span>
                           )}
-                          <ConfirmButton
-                            triggerLabel={strings.deleteHeartbeat}
-                            triggerAriaLabel={strings.deleteHeartbeatNamed({ check: label })}
-                            confirmLabel={strings.confirmDeleteHeartbeat}
-                            confirmAriaLabel={strings.confirmDeleteHeartbeatNamed({ check: label })}
-                            dismissAriaLabel={strings.cancelActionNamed({
-                              subject: strings.deleteHeartbeatNamed({ check: label }),
-                            })}
-                            className="heartbeats__button heartbeats__button--danger"
-                            busy={isBusy(`delete:${id}`)}
-                            busyLabel={strings.deletingHeartbeat}
-                            busyAriaLabel={strings.deletingHeartbeatNamed({ check: label })}
-                            registerTrigger={(element) =>
-                              registerControl({ key: `delete:${id}`, element })
-                            }
-                            onConfirm={() => handleDelete(check)}
-                          />
                           {rowError !== undefined && (
-                            <p role="alert" className="heartbeats__row-error">
+                            <p role="alert" className="heartbeats__row-error admin-table__aux">
                               {rowError}
                             </p>
                           )}
-                        </div>
-                      </td>
+                        </td>
+                      )}
                     </tr>
                     {isEditing && (
                       <tr>
-                        <td colSpan={COLUMN_COUNT} className="heartbeats__editor-cell">
-                          <HeartbeatForm
-                            check={check}
-                            destinations={destinationsState.destinations}
-                            destinationsReady={destinationsReady}
-                            saving={isBusy(`save:${id}`)}
-                            onSubmit={(submission) => handleSave({ id, ...submission })}
-                            onClose={() => closeEditor(id)}
-                          />
+                        <td colSpan={columnCount} className="admin-table__editor-cell">
+                          <div className="admin-table__editor">
+                            <HeartbeatForm
+                              check={check}
+                              destinations={destinationsState.destinations}
+                              destinationsReady={destinationsReady}
+                              saving={isBusy(`save:${id}`)}
+                              onSubmit={(submission) => handleSave({ id, ...submission })}
+                              onClose={() => closeEditor(id)}
+                            />
+                          </div>
                         </td>
                       </tr>
                     )}

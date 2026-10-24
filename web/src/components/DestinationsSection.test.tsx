@@ -30,6 +30,8 @@ function buildDestination(
     disabledReason: null,
     config: { topic: 'family_alerts' },
     secrets: {},
+    ownerKind: 'operator',
+    ownerAppId: null,
     createdAt: '2026-10-01T00:00:00Z',
     updatedAt: '2026-10-01T00:00:00Z',
     ...overrides,
@@ -73,6 +75,12 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     deleteHeartbeat: vi.fn(),
     pauseHeartbeat: vi.fn(),
     resumeHeartbeat: vi.fn(),
+    listIdentityRequests: vi.fn().mockResolvedValue([]),
+    approveIdentityRequest: vi.fn(),
+    rejectIdentityRequest: vi.fn(),
+    listIdentityBindings: vi.fn().mockResolvedValue([]),
+    revokeIdentityKey: vi.fn(),
+    unbindApp: vi.fn(),
     ...overrides,
   };
 }
@@ -248,22 +256,24 @@ describe('enable, disable and delete', () => {
       .mockResolvedValue([buildDestination({ name: 'ops' }), buildDestination({ name: 'family' })]);
     renderSection(buildClient({ listDestinations }));
 
-    const subjects = [
-      strings.disableDestination({ name: 'ops' }),
-      strings.deleteDestination({ name: 'ops' }),
-      strings.disableDestination({ name: 'family' }),
-      strings.deleteDestination({ name: 'family' }),
-    ];
-    await screen.findByRole('button', { name: subjects[0] });
-    for (const subject of subjects) {
-      await user.click(button(subject));
-    }
+    // One confirm per row at a time (an open pair hides the row's other buttons), so two rows
+    // mid-confirm at once is the same verb in both rows, then the other verb.
+    await screen.findByRole('button', { name: strings.disableDestination({ name: 'ops' }) });
+    for (const verb of [strings.disableDestination, strings.deleteDestination]) {
+      const subjects = [verb({ name: 'ops' }), verb({ name: 'family' })];
+      for (const subject of subjects) {
+        await user.click(button(subject));
+      }
 
-    for (const subject of subjects) {
-      const dismiss = button(strings.cancelActionNamed({ subject }));
-      expect(dismiss).toHaveTextContent(strings.cancelAction);
+      for (const subject of subjects) {
+        const dismiss = button(strings.cancelActionNamed({ subject }));
+        expect(dismiss).toHaveTextContent(strings.cancelAction);
+      }
+      expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
+      for (const subject of subjects) {
+        await user.click(button(strings.cancelActionNamed({ subject })));
+      }
     }
-    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
   });
 
   it('disables with a confirm, shows the progress label and focuses Enable afterwards', async () => {
@@ -350,6 +360,142 @@ describe('enable, disable and delete', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('destination is in use');
     expect(button('Delete ops')).toBeInTheDocument();
     expect(button('Delete ops')).toHaveFocus();
+  });
+});
+
+describe('owner column', () => {
+  const managedNote = strings.ownerManagedNote({ appId: 'chores4irl' });
+  const managedInline = strings.ownerManagedInlineNote;
+
+  async function renderOwned() {
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([
+        buildDestination({ name: 'ops' }),
+        buildDestination({
+          name: 'chores4irl_hook',
+          ownerKind: 'app',
+          ownerAppId: 'chores4irl',
+        }),
+        buildDestination({ name: 'mystery', ownerKind: 'unknown', ownerAppId: null }),
+      ]),
+    });
+    renderSection(client);
+    await screen.findByText('chores4irl_hook');
+    return client;
+  }
+
+  function rowOf(name: string): HTMLElement {
+    const row = screen.getByText(name).closest('tr');
+    if (row === null) {
+      throw new Error(`row ${name} not found`);
+    }
+    return row;
+  }
+
+  it('has an Owner column header after Name', async () => {
+    await renderOwned();
+
+    const headers = screen.getAllByRole('columnheader').map((header) => header.textContent);
+    expect(headers.slice(0, 3)).toEqual([strings.columnDestName, strings.columnOwner, 'Type']);
+  });
+
+  it('shows Operator, App · <id> and Unknown with a hidden Owner prefix, never colour alone', async () => {
+    await renderOwned();
+
+    const operatorCell = within(rowOf('ops')).getByText(strings.ownerOperator).parentElement;
+    expect(operatorCell).toHaveTextContent(`${strings.ownerPrefix}${strings.ownerOperator}`);
+
+    const appBadge = within(rowOf('chores4irl_hook')).getByText(
+      strings.ownerApp({ appId: 'chores4irl' }),
+    );
+    expect(appBadge.parentElement).toHaveTextContent(
+      `${strings.ownerPrefix}${strings.ownerApp({ appId: 'chores4irl' })}`,
+    );
+
+    const unknownBadge = within(rowOf('mystery')).getByText(strings.ownerUnknown);
+    expect(unknownBadge.parentElement).toHaveTextContent(
+      `${strings.ownerPrefix}${strings.ownerUnknown}`,
+    );
+    expect(within(rowOf('mystery')).queryByText(strings.ownerOperator)).toBeNull();
+  });
+
+  it('notes app-owned and unknown rows only, not operator rows', async () => {
+    await renderOwned();
+
+    // The line under the buttons is the short form, never the long text, and has no `title`.
+    const managedLine = within(rowOf('chores4irl_hook')).getByText(managedInline);
+    expect(managedLine).not.toHaveAttribute('title');
+    expect(within(rowOf('chores4irl_hook')).queryByText(managedNote)).toBeNull();
+    expect(within(rowOf('mystery')).getByText(strings.ownerUnknownInlineNote)).toBeInTheDocument();
+    expect(within(rowOf('mystery')).queryByText(strings.ownerUnknownNote)).toBeNull();
+    expect(within(rowOf('ops')).queryByText(managedInline)).toBeNull();
+    expect(within(rowOf('ops')).queryByText(strings.ownerUnknownInlineNote)).toBeNull();
+  });
+
+  it('repeats the note as the Delete and Disable confirm notice on an app-owned row only', async () => {
+    const user = userEvent.setup();
+    await renderOwned();
+
+    await user.click(button('Delete chores4irl_hook'));
+    expect(within(rowOf('chores4irl_hook')).getAllByText(managedNote)).toHaveLength(1);
+    expect(within(rowOf('chores4irl_hook')).getAllByText(managedInline)).toHaveLength(1);
+    await user.click(
+      screen.getByRole('button', {
+        name: strings.cancelActionNamed({
+          subject: 'Delete chores4irl_hook',
+        }),
+      }),
+    );
+
+    await user.click(button('Disable chores4irl_hook'));
+    expect(within(rowOf('chores4irl_hook')).getAllByText(managedNote)).toHaveLength(1);
+    await user.click(
+      screen.getByRole('button', {
+        name: strings.cancelActionNamed({
+          subject: 'Disable chores4irl_hook',
+        }),
+      }),
+    );
+
+    // An unknown owner is never treated as safe: its confirms warn too.
+    await user.click(button('Delete mystery'));
+    expect(within(rowOf('mystery')).getAllByText(strings.ownerUnknownNote)).toHaveLength(1);
+    await user.click(button(strings.cancelActionNamed({ subject: 'Delete mystery' })));
+    await user.click(button('Disable mystery'));
+    expect(within(rowOf('mystery')).getAllByText(strings.ownerUnknownNote)).toHaveLength(1);
+    await user.click(button(strings.cancelActionNamed({ subject: 'Disable mystery' })));
+
+    // The operator's own row confirms with no notice at all.
+    await user.click(button('Delete ops'));
+    expect(button('Confirm delete ops')).toBeInTheDocument();
+    expect(rowOf('ops').querySelector('.confirm-button__notice')).toBeNull();
+  });
+
+  it('keeps an open editor row spanning the whole table', async () => {
+    const user = userEvent.setup();
+    await renderOwned();
+
+    await user.click(button('Edit chores4irl_hook'));
+
+    const table = screen.getByRole('table');
+    const headerCount = within(table).getAllByRole('columnheader').length;
+    const editorCell = screen
+      .getByLabelText(strings.destTopicLabel, { exact: false })
+      .closest('td');
+    expect(editorCell).toHaveAttribute('colspan', String(headerCount));
+    // The form sits in the pinned wrapper, so it fits the scroll wrapper and wraps normally.
+    expect(editorCell).toHaveClass('admin-table__editor-cell');
+    expect(editorCell?.querySelector('.admin-table__editor')).not.toBeNull();
+  });
+
+  it('pins the Name column in the header and in every row, never the Actions cell', async () => {
+    await renderOwned();
+
+    const headers = screen.getAllByRole('columnheader');
+    expect(headers[0]).toHaveClass('admin-table__lead');
+    expect(within(rowOf('ops')).getAllByRole('cell')[0]).toHaveClass('admin-table__lead');
+    expect(headers[headers.length - 1]).not.toHaveClass('admin-table__lead');
+    expect(screen.getByRole('table')).toHaveClass('admin-table');
   });
 });
 
@@ -927,5 +1073,112 @@ describe('overlapping refreshes', () => {
 
     await waitFor(() => expect(screen.queryByText('stale_one')).not.toBeInTheDocument());
     expect(screen.getByText('fresh_one')).toBeInTheDocument();
+  });
+});
+
+describe('an open confirm steps the row aside', () => {
+  const OPS_BUTTONS = ['Send test to ops', 'Edit ops', 'Disable ops', 'Delete ops'];
+  const FAMILY_BUTTONS = ['Send test to family', 'Edit family', 'Disable family', 'Delete family'];
+
+  async function renderRows(overrides: Partial<DeliveryApiClient> = {}) {
+    const client = buildClient({
+      listDestinations: vi
+        .fn()
+        .mockResolvedValue([
+          buildDestination({ name: 'ops' }),
+          buildDestination({ name: 'family' }),
+        ]),
+      ...overrides,
+    });
+    renderSection(client);
+    await screen.findByRole('button', { name: 'Delete ops' });
+    return client;
+  }
+
+  function expectOnlyRendered({ names, rendered }: { names: string[]; rendered: string[] }) {
+    for (const name of names) {
+      const present = screen.queryByRole('button', { name }) !== null;
+      expect(present, name).toBe(rendered.includes(name));
+    }
+  }
+
+  it.each([
+    { verb: 'Delete', stays: 'Delete ops' },
+    { verb: 'Disable', stays: 'Disable ops' },
+  ])(
+    '$verb hides the row’s other buttons, leaves other rows alone and restores them on Cancel and Escape',
+    async ({ verb, stays }) => {
+      const user = userEvent.setup();
+      await renderRows();
+
+      await user.click(button(stays));
+      const confirm = button(`Confirm ${verb.toLowerCase()} ops`);
+      expect(confirm).toHaveFocus();
+      // Only the open pair is left of the row; the other row keeps all four buttons.
+      expectOnlyRendered({ names: OPS_BUTTONS, rendered: [] });
+      expectOnlyRendered({ names: FAMILY_BUTTONS, rendered: FAMILY_BUTTONS });
+      // The hidden buttons stay mounted so the row's focus keys still resolve.
+      expect(screen.getByLabelText('Edit ops')).toHaveAttribute('hidden');
+
+      await user.click(button(strings.cancelActionNamed({ subject: stays })));
+      expectOnlyRendered({ names: OPS_BUTTONS, rendered: OPS_BUTTONS });
+      expect(button(stays)).toHaveFocus();
+
+      await user.click(button(stays));
+      expectOnlyRendered({ names: OPS_BUTTONS, rendered: [] });
+      await user.keyboard('{Escape}');
+      expectOnlyRendered({ names: OPS_BUTTONS, rendered: OPS_BUTTONS });
+      expect(button(stays)).toHaveFocus();
+    },
+  );
+
+  it('hides Enable (not Disable) on a disabled destination, and brings it back on Escape', async () => {
+    const user = userEvent.setup();
+    await renderRows({
+      listDestinations: vi
+        .fn()
+        .mockResolvedValue([
+          buildDestination({ name: 'ops', enabled: false, disabledReason: 'by operator' }),
+          buildDestination({ name: 'family' }),
+        ]),
+    });
+
+    await user.click(button('Delete ops'));
+    for (const name of ['Send test to ops', 'Edit ops', 'Enable ops']) {
+      expect(screen.queryByRole('button', { name }), name).toBeNull();
+    }
+    expect(screen.getByLabelText('Enable ops')).toHaveAttribute('hidden');
+    expect(button('Disable family')).toBeVisible();
+    await user.keyboard('{Escape}');
+
+    for (const name of ['Send test to ops', 'Edit ops', 'Enable ops', 'Delete ops']) {
+      expect(button(name)).toBeVisible();
+    }
+  });
+
+  it('confirming runs the action once and leaves the other row alone', async () => {
+    const user = userEvent.setup();
+    const client = await renderRows();
+
+    await user.click(button('Delete ops'));
+    await user.click(button('Confirm delete ops'));
+
+    expect(client.deleteDestination).toHaveBeenCalledTimes(1);
+    expect(client.deleteDestination).toHaveBeenCalledWith({ name: 'ops' });
+    expectOnlyRendered({ names: FAMILY_BUTTONS, rendered: FAMILY_BUTTONS });
+  });
+
+  it('lets two rows confirm at once, each hiding only its own buttons', async () => {
+    const user = userEvent.setup();
+    await renderRows();
+
+    await user.click(button('Delete ops'));
+    await user.click(button('Disable family'));
+
+    expectOnlyRendered({ names: OPS_BUTTONS, rendered: [] });
+    expectOnlyRendered({ names: FAMILY_BUTTONS, rendered: [] });
+    await user.click(button(strings.cancelActionNamed({ subject: 'Delete ops' })));
+    expectOnlyRendered({ names: OPS_BUTTONS, rendered: OPS_BUTTONS });
+    expectOnlyRendered({ names: FAMILY_BUTTONS, rendered: [] });
   });
 });

@@ -32,8 +32,15 @@ const pendingSendsEnabled = import.meta.env.VITE_PENDING_SENDS_ENABLED === 'true
 // Heartbeats alert through registered destinations, so its flag only counts
 // together with the Destinations flag.
 const heartbeatsEnabled = destinationsEnabled && import.meta.env.VITE_HEARTBEATS_ENABLED === 'true';
+// App identities (approve an app's GitHub deploy identity, manage its keys) is
+// independent of the registry, so its flag stands alone.
+const appIdentitiesEnabled = import.meta.env.VITE_APP_IDENTITIES_ENABLED === 'true';
 const deliveryClient =
-  destinationsEnabled || deliveryLogEnabled || pendingSendsEnabled || heartbeatsEnabled
+  destinationsEnabled ||
+  deliveryLogEnabled ||
+  pendingSendsEnabled ||
+  heartbeatsEnabled ||
+  appIdentitiesEnabled
     ? createDeliveryApiClient({})
     : undefined;
 
@@ -53,6 +60,7 @@ createRoot(rootElement).render(
       deliveryLogEnabled={deliveryLogEnabled}
       pendingSendsEnabled={pendingSendsEnabled}
       heartbeatsEnabled={heartbeatsEnabled}
+      appIdentitiesEnabled={appIdentitiesEnabled}
     />
   </StrictMode>,
 );

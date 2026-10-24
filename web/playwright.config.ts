@@ -42,6 +42,7 @@ export default defineConfig({
       VITE_DELIVERY_LOG_ENABLED: 'true',
       VITE_PENDING_SENDS_ENABLED: 'true',
       VITE_HEARTBEATS_ENABLED: 'true',
+      VITE_APP_IDENTITIES_ENABLED: 'true',
     },
   },
 });
