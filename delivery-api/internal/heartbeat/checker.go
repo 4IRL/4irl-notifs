@@ -13,13 +13,14 @@ const (
 	// first tick.
 	DefaultCheckerInterval = 30 * time.Second
 	// CheckerStaleAfter is how long after its last successful tick the checker
-	// is reported stale: three missed intervals.
+	// is reported stale: three missed intervals. The prober reuses it, where it
+	// is nine DefaultProberInterval scans.
 	CheckerStaleAfter = 90 * time.Second
 )
 
-// Freshness records when the checker last completed a tick successfully, so
-// /readyz can report whether it is still running. It is safe for concurrent
-// use.
+// Freshness records when a background loop (the checker, or the prober through
+// its own instance) last completed a pass successfully, so /readyz can report
+// whether it is still running. It is safe for concurrent use.
 type Freshness struct {
 	now      func() time.Time
 	lastTick atomic.Pointer[time.Time]
