@@ -198,7 +198,10 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 
 	checker := readiness.NewChecker(pool, migrate.NewPGStore(pool), migrate.ExpectedVersion(loaded))
 	// See ServerConfig.Registry for why it is set only here.
-	registryService := registry.NewService(registry.NewPGStore(pool), sealer, logger)
+	// The URL checker is the registration-time SSRF check for app-scoped destination writes: it resolves an
+	// app-supplied URL's host (net.DefaultResolver, 3 s timeout) and refuses any non-public address.
+	registryService := registry.NewService(registry.NewPGStore(pool), sealer, logger,
+		registry.WithURLChecker(registry.NewURLChecker(nil, logger)))
 
 	// One transport client per process: it owns the connection pool and the SSRF guard. Production passes
 	// the zero Config, so the address policy and TLS settings are the guarded defaults.
@@ -251,9 +254,11 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Readiness:        checker,
 		HeartbeatChecker: heartbeatFreshness,
 		Registry:         registryService,
+		AppRegistry:      registryService,
 		Messages:         messageService,
 		Publishers:       publisherService,
 		Heartbeats:       heartbeatService,
+		AppHeartbeats:    heartbeatService,
 		AppIdentity:      appIdentityService,
 	}).Handler()
 

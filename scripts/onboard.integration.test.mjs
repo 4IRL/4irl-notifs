@@ -326,5 +326,109 @@ describe(
       assert.equal(process.exitCode, undefined, confirmResult.stderr);
       assert.match(confirmResult.stdout, /No changes\./);
     });
+
+    it('runs from an app repo with --target app: plan, apply, no-op re-apply, verify and prune against /v1/apps only', async () => {
+      // Start from a clean slate: a leftover operator-owned onboard_it_push from an earlier failed
+      // or killed run would turn the app-owned create into a spurious 409.
+      await pruneToEmpty(dir, ntfyToken);
+      writeFullManifest(appDir, APP_REPO_MANIFEST_FILE);
+      const manifestPath = manifestPathFor(appDir, APP_REPO_MANIFEST_FILE);
+      const appArgs = (command, ...extra) => [
+        command,
+        '--manifest',
+        manifestPath,
+        '--target',
+        'app',
+        ...extra,
+      ];
+      const deps = { env: { ...envFor(ntfyToken), ONBOARD_APP_KEY: appKey } };
+
+      const lintResult = await captureOutput(() =>
+        main(['lint', '--manifest', manifestPath, '--target', 'app'], deps),
+      );
+      assert.equal(process.exitCode, undefined, lintResult.stdout);
+
+      const planResult = await captureOutput(() => main(appArgs('plan'), deps));
+      assert.equal(process.exitCode, undefined, planResult.stderr);
+      assert.match(planResult.stdout, /create/);
+
+      const applyResult = await captureOutput(() => main(appArgs('apply'), deps));
+      assert.equal(process.exitCode, undefined, applyResult.stderr);
+
+      // Everything the app's key created is app-owned, by the key's identity, not by the manifest.
+      const destinations = await adminList('destinations');
+      const created = destinations.find((entry) => entry.name === DESTINATION_NAME);
+      assert.equal(created?.owner_kind, 'app');
+      assert.equal(created?.owner_app_id, APP_ID);
+      const createdRoute = (await adminList('routes')).find(
+        (entry) => entry.channel_pattern === CHANNEL && entry.app_pattern === APP_ID,
+      );
+      assert.equal(createdRoute?.owner_kind, 'app');
+      assert.equal(createdRoute?.owner_app_id, APP_ID);
+      const createdCheck = (await adminList('heartbeats')).find(
+        (entry) => entry.name === HEARTBEAT_NAME && entry.app_id === APP_ID,
+      );
+      assert.equal(createdCheck?.owner_kind, 'app');
+      assert.equal(createdCheck?.owner_app_id, APP_ID);
+
+      process.exitCode = undefined;
+      const reapplyResult = await captureOutput(() => main(appArgs('apply'), deps));
+      assert.equal(process.exitCode, undefined, reapplyResult.stderr);
+      assert.match(reapplyResult.stdout, /No changes\./);
+
+      process.exitCode = undefined;
+      const verifyResult = await captureOutput(() => main(appArgs('verify'), deps));
+      assert.equal(process.exitCode, undefined, `${verifyResult.stdout}\n${verifyResult.stderr}`);
+      assert.match(verifyResult.stdout, new RegExp(`^${CHANNEL}: pass$`, 'm'));
+      assert.match(verifyResult.stdout, new RegExp(`^${HEARTBEAT_NAME}: pass$`, 'm'));
+
+      process.exitCode = undefined;
+      writeEmptyManifest(appDir, APP_REPO_MANIFEST_FILE);
+      const pruneResult = await captureOutput(() => main(appArgs('apply', '--prune'), deps));
+      assert.equal(process.exitCode, undefined, pruneResult.stderr);
+
+      process.exitCode = undefined;
+      const confirmResult = await captureOutput(() => main(appArgs('plan', '--prune'), deps));
+      assert.equal(process.exitCode, undefined, confirmResult.stderr);
+      assert.match(confirmResult.stdout, /No changes\./);
+      const remaining = await adminList('destinations');
+      assert.equal(
+        remaining.some((entry) => entry.name === DESTINATION_NAME),
+        false,
+      );
+    });
+
+    it("refuses another app's manifest with the app key's 403 and creates nothing", async () => {
+      const otherManifestPath = manifestPathFor(appDir, `${OTHER_APP_ID}.json`);
+      fs.writeFileSync(
+        otherManifestPath,
+        JSON.stringify({
+          app_id: OTHER_APP_ID,
+          destinations: [
+            {
+              name: `${OTHER_APP_ID}_push`,
+              type: 'ntfy',
+              config: { topic: `${OTHER_APP_ID}-push` },
+              secrets: { access_token: { env: NTFY_TOKEN_ENV_VAR } },
+            },
+          ],
+          routes: [{ channel: CHANNEL, destinations: [`${OTHER_APP_ID}_push`] }],
+        }),
+      );
+      const deps = { env: { ...envFor(ntfyToken), ONBOARD_APP_KEY: appKey } };
+
+      await assert.rejects(
+        captureOutput(() =>
+          main(['apply', '--manifest', otherManifestPath, '--target', 'app'], deps),
+        ),
+        /403 .*app_id does not match app key/,
+      );
+
+      const destinations = await adminList('destinations');
+      assert.equal(
+        destinations.some((entry) => entry.name.startsWith(`${OTHER_APP_ID}_`)),
+        false,
+      );
+    });
   },
 );
