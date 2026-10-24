@@ -203,6 +203,81 @@ describe('probe verdicts', () => {
     );
   });
 
+  describe('heartbeat prober field', () => {
+    const freshChecker = () => ({ last_tick_at: new Date(MORNING - 10_000).toISOString(), stale: false });
+    const staleChecker = () => ({ last_tick_at: new Date(MORNING - 7 * MINUTE).toISOString(), stale: true });
+
+    function deliveryWith(body: Record<string, unknown>, init?: ResponseInit): Routes {
+      return { ...healthyRoutes(MORNING), delivery: () => Response.json(body, init) };
+    }
+
+    async function healthyWith(prober: unknown): Promise<string | null | undefined> {
+      return firstDetail(
+        deliveryWith({ status: 'ok', heartbeat_checker: freshChecker(), heartbeat_prober: prober }),
+        'delivery-api',
+      );
+    }
+
+    it('passes a fresh prober', async () => {
+      const detail = await healthyWith({ last_tick_at: new Date(MORNING - 10_000).toISOString(), stale: false });
+      expect(detail ?? null).toBeNull();
+    });
+
+    it('passes when the field is explicitly absent', async () => {
+      const detail = await firstDetail(
+        deliveryWith({ status: 'ok', heartbeat_checker: freshChecker() }),
+        'delivery-api',
+      );
+      expect(detail ?? null).toBeNull();
+    });
+
+    it('names the age of a stale prober', async () => {
+      const detail = await healthyWith({ last_tick_at: new Date(MORNING - 7 * MINUTE).toISOString(), stale: true });
+      expect(detail).toBe('heartbeat prober stale (last run 7 min ago)');
+    });
+
+    it('treats a stale prober with no time as never ran', async () => {
+      expect(await healthyWith({ last_tick_at: null, stale: true })).toBe('heartbeat prober stale (never ran)');
+    });
+
+    it.each([
+      ['null', null],
+      ['an array', []],
+      ['a string', 'x'],
+      ['an empty object', {}],
+      ['a non-boolean stale', { stale: 'no' }],
+    ])('fails closed on a malformed prober (%s)', async (_name, prober) => {
+      expect(await healthyWith(prober)).toBe('heartbeat prober state unknown');
+    });
+
+    it('joins a stale checker and a stale prober', async () => {
+      const detail = await firstDetail(
+        deliveryWith({
+          status: 'ok',
+          heartbeat_checker: staleChecker(),
+          heartbeat_prober: { last_tick_at: null, stale: true },
+        }),
+        'delivery-api',
+      );
+      expect(detail).toBe('heartbeat checker stale (last run 7 min ago); heartbeat prober stale (never ran)');
+    });
+
+    it('names a stale prober on a schema_mismatch 503', async () => {
+      const detail = await firstDetail(
+        deliveryWith(
+          {
+            status: 'schema_mismatch',
+            heartbeat_checker: freshChecker(),
+            heartbeat_prober: { last_tick_at: null, stale: true },
+          },
+          { status: 503 },
+        ),
+        'delivery-api',
+      );
+      expect(detail).toBe('HTTP 503; readiness status schema_mismatch; heartbeat prober stale (never ran)');
+    });
+  });
+
   it('treats an Access login redirect on an Access target as down with access denied', async () => {
     const routes = {
       ...healthyRoutes(MORNING),

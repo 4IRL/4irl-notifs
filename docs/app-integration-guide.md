@@ -775,8 +775,8 @@ Message object (illustrative values; `status` is `pending`, `delivered`, `dead`,
 }
 ```
 
-Readiness body: `{"status":"ok","schema_version":8,"expected_schema_version":8,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false}}`.
-The HTTP status stays `200` even when `heartbeat_checker.stale` is `true`; read the field.
+Readiness body: `{"status":"ok","schema_version":8,"expected_schema_version":8,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false},"heartbeat_prober":{"last_tick_at":"<RFC3339>","stale":false}}`.
+The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_prober.stale` is `true`; read the fields.
 
 ### Operator endpoints (proxy token; used to onboard an app)
 
