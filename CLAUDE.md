@@ -23,16 +23,17 @@ Guidance for Claude Code when working in this repository.
   | Purpose | Command |
   |---|---|
   | Local stack up / down / logs | `make local-up` / `make local-down` / `make local-logs` |
+  | Dev/CI OIDC signing keys | `make dev-oidc-keys` (`node scripts/dev-oidc-keys.mjs`; writes gitignored `.local/dev-oidc/`; `make local-up` runs it first) |
   | Go tests | `make go-test` (`go test ./...` in `provisioning-api/`) |
   | Go integration tests | `make go-integration-test` (needs local stack up) |
   | Delivery Go tests | `make delivery-test` (`go test ./...` in `delivery-api/`) |
   | Delivery integration tests | `make delivery-integration-test` (needs local stack up; `go test -p 1 -tags integration ./...`) |
-  | UI/e2e tests | `make web-e2e` (`npx playwright test` in `web/`) |
+  | UI/e2e tests | `make web-e2e` (`npx playwright test` in `web/`; `E2E_ARGS=...` passes extra args) |
   | JS/unit tests | `make web-test` (`npm test` in `web/`, Vitest) |
   | Build | `make web-build` (`tsc -b` + Vite → `dist/`) |
   | Lint / format | `make go-lint` / `make go-fmt` (Go); `make web-lint` / `make web-format` (frontend); `make scripts-lint` / `make scripts-format` (`scripts/`); `make delivery-lint` / `make delivery-fmt` (delivery-api Go) |
   | Setup page (`setup-web/`) | `make setup-web-dev` (dev server) / `make setup-web-test` (Vitest) / `make setup-web-e2e` (Playwright) / `make setup-web-build` / `make setup-web-lint` / `make setup-web-format` / `make setup-web-pages-dev` (wrangler Pages parity) |
-  | Workflow YAML lint | `make workflows-lint` (actionlint, pinned; part of `make lint`) |
+  | Workflow YAML lint | `make workflows-lint` (actionlint, pinned; part of `make lint`; also lints composite actions under `.github/actions/*/action.yml` through generated wrappers in `.local/action-lint/`; needs node (wrapper generation) and Go (actionlint), no npm install) |
   | Admin UI dev server | `make dev-web` (foreground) / `make dev-web-bg` + `make dev-web-stop` (detached) |
   | End-to-end smoke test | `make notif-smoke-test` |
   | Help / all lint / all unit tests | `make help` / `make lint` / `make test` |
@@ -54,6 +55,7 @@ Guidance for Claude Code when working in this repository.
   | `watchdog/**`                                                      | `make watchdog-test`   |
   | `scripts/**`                                                       | `make scripts-test`    |
   | `apps/**`                                                          | `make onboard-lint`    |
+  | `.github/**`                                                       | `make workflows-lint`  |
   | `docs/** *.md .claude/** .gitignore`                               | na docs and config only |
   | `**`                                                               | `make test`            |
 - **GitHub project board:** n/a
@@ -86,9 +88,13 @@ Components:
   messages), the operator delivery log and replay endpoints (`/v1/admin/deliveries`) and the operator
   scheduled-message list and cancel (`/v1/admin/scheduled-messages`), heartbeat pings
   (`/v1/heartbeats`) and the operator heartbeat CRUD (`/v1/admin/heartbeats`), alongside `/healthz` and
-  `/readyz`. It runs the delivery worker (webhook, Discord and ntfy sinks, including `to.recipient`
-  delivery through each app's ntfy publisher token), the scheduled-message releaser (`RunReleaser`),
-  the heartbeat checker and the retention sweeper in-process.
+  `/readyz`. Every app-facing endpoint needs the calling app's own delivery key (`dak_...`, from the
+  GitHub OIDC exchange at `/v1/app-identity/exchange`, approved by the operator under
+  `/v1/admin/app-identity`), and an app manages only its own destinations, routes and checks under
+  `/v1/apps/{app_id}` (see `ARCHITECTURE.md` "App identity"). It runs the delivery worker (webhook,
+  Discord and ntfy sinks, including `to.recipient` delivery through each app's ntfy publisher
+  token), the scheduled-message releaser (`RunReleaser`), the heartbeat checker and the retention
+  sweeper in-process.
 - **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api and ntfy from outside
   the VPS and posts state changes to Discord.
 - **web** — React/Vite admin UI, deployed to Cloudflare Pages behind Cloudflare Access
@@ -100,7 +106,7 @@ Components:
 
 ## Environments
 
-- **local** — docker-compose stack on the developer's own machine (ntfy + provisioning-api + delivery-api with its Postgres).
+- **local** — docker-compose stack on the developer's own machine (ntfy + person-service + provisioning-api + delivery-api with its Postgres).
   Fully testable without deploying anything.
 - **production** — the same VPS `urls4irl` deploys to, as its own independent docker-compose
   stack (not merged into u4i's compose file). No separate remote staging tier.
@@ -113,15 +119,16 @@ shown for reference only.
 | Command | Description |
 |---|---|
 | `make local-up` / `make local-down` / `make local-logs` | Start / stop / follow-logs for the local stack (ntfy + person-service + provisioning-api + delivery-postgres / delivery-migrate / delivery-api) |
+| `make dev-oidc-keys` (`node scripts/dev-oidc-keys.mjs`) | Generate the throwaway OIDC signing key pair in gitignored `.local/dev-oidc/` that the local/CI delivery-api trusts in dev mode (`make local-up` runs it first; idempotent) |
 | `make go-test` (`go test ./...`) | Run Go unit tests |
 | `make go-integration-test` (`go test -tags integration ./...`) | Run Go integration tests (local stack must be up) |
 | `make go-lint` (`gofmt -l .` + `golangci-lint run`) | Check Go formatting + lint |
 | `make delivery-test` (`go test ./...` in `delivery-api/`) | Run delivery-api Go unit tests |
 | `make delivery-integration-test` (`go test -p 1 -tags integration ./...`) | Run delivery-api integration tests (local stack must be up) |
 | `make delivery-lint` / `make delivery-fmt` (`gofmt -l .` + `golangci-lint run` / `gofmt -w .`) | Check / apply delivery-api Go formatting + lint |
-| `make workflows-lint` (`actionlint`, pinned `v1.7.12`) | Lint the GitHub Actions workflow YAML |
+| `make workflows-lint` (`actionlint`, pinned `v1.7.12`) | Lint the GitHub Actions workflow YAML and the composite actions under `.github/actions/*/action.yml` (through generated wrappers in `.local/action-lint/`; needs node (wrapper generation) and Go (actionlint), no npm install) |
 | `make web-test` (`npm test`) | Run frontend unit tests (Vitest) |
-| `make web-e2e` (`npx playwright test`) | Run frontend e2e tests (Playwright) |
+| `make web-e2e` (`npx playwright test`) | Run frontend e2e tests (Playwright); `E2E_ARGS=...` passes extra args |
 | `make web-build` (`npm run build`) | Production build (`tsc -b` + Vite → `dist/`) |
 | `make web-lint` / `make web-format` (`npx eslint` / `npx prettier`) | Lint / format the frontend |
 | `make dev-web` / `make dev-web-bg` + `make dev-web-stop` | Admin UI dev server (foreground / detached) |

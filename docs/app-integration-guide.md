@@ -59,7 +59,8 @@ You do not have to build any of this yourself, and every app that joins makes th
 - **One improvement, every app.** A new sink, a stricter outbound-safety rule or a better retry policy
   is built once and every integrated app inherits it. With per-app senders, each copy has to be fixed
   separately.
-- **A flat, small cost to join.** A service token, a destination and route in the UI, and a `curl`.
+- **A flat, small cost to join.** A service token, a manifest in your repo with one deploy step, one
+  operator approval, and a `curl`.
   That cost does not grow as the platform gains capabilities; the capabilities grow underneath it.
 - **A stable contract.** Apps speak one envelope (`app_id`, `channel`, `payload`, `display`). The
   delivery internals can change without touching them.
@@ -73,23 +74,42 @@ You do not have to build any of this yourself, and every app that joins makes th
 - **A shared dependency.** Your app now depends on delivery-api being up. Idempotent retries keep
   ordinary sends safe, critical alerts keep a direct fallback, and the watchdog tells the operator when
   the platform is down.
-- **A service token to manage.** Per-app tokens are an operator-trust boundary, not isolation between
-  apps (see the note under "Sending through delivery-api").
-- **Operator steps per app.** An operator creates the token, destinations, routes and heartbeat checks.
-  The next section lists exactly what.
+- **A service token and a delivery key to manage.** The Cloudflare Access service token only gets the app
+  through the door; the app's own delivery key (`dak_...`, minted by its deploy workflow after one operator
+  approval) is what tells delivery-api which app is calling, so one app cannot act as another (see
+  "App identity: how an app proves who it is").
+- **Operator steps per app.** An operator creates the Access token and approves the app's identity once;
+  the app's own deploy creates its destinations, routes and heartbeat checks from its manifest. The
+  sections below list exactly what.
 
 ---
 
 ## Onboarding with a manifest (recommended)
 
 For apps using `POST /v1/messages` and/or heartbeats (most apps — see the table below), the recommended
-path is one reviewed JSON manifest plus `scripts/onboard.mjs` (wrapped by `make onboard`), not clicking
-through the admin UI or scripting `curl` by hand. The manifest is what you edit; the tool makes the
-server match it. **Not** a replacement for the "ntfy direct" path (Steps 1-5) or for the one-time
-operator setup in "Operator steps (once per app)" below (the Access split, service tokens, the app's
-ntfy publisher) — it only covers the destinations/routes/heartbeats part of onboarding.
+path is one reviewed JSON manifest plus `scripts/onboard.mjs`, not clicking through the admin UI or
+scripting `curl` by hand. The manifest is what you edit; the tool makes the server match it. **Not** a
+replacement for the "ntfy direct" path (Steps 1-5) or for the one-time operator setup in "Operator steps
+(once per app)" below (the Access split, service tokens, the app's ntfy publisher, approving the app's
+identity) — it only covers the destinations/routes/heartbeats part of onboarding.
 
-**Schema summary.** One file per app at `apps/<app_id>.json` (the basename must equal `app_id`):
+**Where the manifest lives and who applies it.**
+- **An app's own manifest lives in the app's own repo** and is applied by the app's own deploy with the
+  app's delivery key, through the `notifs-app` GitHub action (see "Onboarding from the app's own repo"
+  below). The app manages only its own destinations, routes and heartbeat checks, through
+  `/v1/apps/{app_id}/…`. This is the production path for every app.
+- **The `_platform` manifest** (`apps/_platform.json`, wildcard routes and shared `platform_`
+  destinations) stays in this repo and is applied by the operator with `make onboard app=_platform`
+  (operator proxy token, `/v1/admin`). The `make onboard app=<id>` operator mode also still accepts an
+  operator-authored `apps/<app_id>.json` for `plan` and `apply`, but it is no longer the route for a new app.
+- **`make onboard app=<id> cmd=verify` is dev/test-only.** Every endpoint `verify` calls needs the app's
+  delivery key, and no production mechanism supplies that key to an operator-run command (it works only
+  through the `DELIVERY_OIDC_DEV_MODE` token-exchange harness the integration tests use). Never run
+  `cmd=verify` against an app manifest in production. The only production-supported verify path for an
+  app is `--target app`, run by the app's own deploy.
+
+**Schema summary.** One JSON file per app (in the app repo it can have any file name and sit anywhere; an
+operator-authored one under `apps/` has a basename equal to `app_id`):
 - `destinations`: either an **owned** destination — `{ "name", "type": "ntfy"|"discord"|"webhook", "config"?, "secrets"?, "enabled"? }`, with `name` required to start with `<app_id>_` — that the tool creates, patches and (with `--prune`) deletes, or a **shared reference** `{ "use": "<name>" }` to a destination owned by another manifest, which the app only routes to and never modifies.
 - `routes`: `{ "channel", "destinations", "enabled"? }` — `app_pattern` is always derived as the
   manifest's own `app_id` and is never written by hand.
@@ -109,7 +129,8 @@ separate `apps/_platform.json`, not an app manifest.
   `use` reference to a destination that does not exist), then re-lists and re-plans to confirm the
   server actually converged.
 - `cmd=verify` — sends one real test message through each exact-channel route and pings every
-  heartbeat, using the app's own token, and reports pass/fail per item.
+  heartbeat, using the app's own Access token and delivery key, and reports pass/fail per item.
+  **Dev/test-only through `make onboard`** (see above); for a real app it runs as `--target app`.
 - `prune=1` (with `cmd=plan` or `cmd=apply`) — also reports, or deletes, server-side objects the app
   owns that the manifest no longer lists (heartbeats and routes before destinations, since a
   destination still referenced by either cannot be removed).
@@ -122,8 +143,12 @@ separate `apps/_platform.json`, not an app manifest.
 - `ONBOARD_URL` — the delivery-api base URL to manage. `make onboard` defaults it to the local stack
   (`DELIVERY_URL`) unless you already have it exported, so export it yourself to point at staging or
   production.
-- `ONBOARD_ACCESS_ID` / `ONBOARD_ACCESS_SECRET` — the operator proxy token, used by `plan`/`apply`.
-- `ONBOARD_APP_ACCESS_ID` / `ONBOARD_APP_ACCESS_SECRET` — the app's own token, used by `verify` only.
+- `ONBOARD_ACCESS_ID` / `ONBOARD_ACCESS_SECRET` — the operator proxy token, used by the operator mode's
+  `plan`/`apply` (`/v1/admin`).
+- `ONBOARD_APP_ACCESS_ID` / `ONBOARD_APP_ACCESS_SECRET` — the app's own Access token. Used by `verify` and
+  by `plan`/`apply` with `--target app`; required for a non-loopback `ONBOARD_URL`.
+- `ONBOARD_APP_KEY` — the app's delivery key (`dak_...`), sent as `Authorization: Bearer`. Required by `plan`,
+  `apply` and `verify` with `--target app` (not by `lint`), even on a loopback URL.
 
 **Ownership rules.** An app's manifest only ever creates, patches or (with `--prune`) deletes
 destinations named `<app_id>_*`, routes whose `app_pattern` is exactly its own `app_id`, and
@@ -140,25 +165,142 @@ ping marks the check `up` and starts its deadline. `verify` prints a warning nam
 pinged and the timestamp it goes `down` by without a real ping from the app, so confirm the app's own
 recurring job is actually wired up to ping before relying on the result.
 
+### App identity: how an app proves who it is
+
+The Cloudflare Access service token is the gate on every call, but it only says "some allowed token". It
+does not say which app is calling. delivery-api therefore gives each app its own **delivery key**
+(`dak_` plus 43 characters), and requires it as `Authorization: Bearer dak_...` on every app-facing
+endpoint: `/v1/messages` (submit, status, cancel), the heartbeat pings and everything under
+`/v1/apps/{app_id}/…`. The key's app is the caller; an `app_id` in the body, the query or the path that
+differs from it is `403 app_id does not match app key`.
+
+You never create a key by hand. The app's deploy workflow trades a GitHub-signed OIDC token for one:
+
+1. **First deploy: a request, no key.** The exchange verifies the token and records a **pending identity
+   request** (the app id you claimed, plus the GitHub-verified repository, workflow file, branch or tag, and
+   environment). The deploy fails with "identity request #N awaits operator approval in the admin UI".
+2. **Operator approval, once.** The operator approves the request in the admin UI (**App identities**).
+   That creates the binding `app_id` ← GitHub repository + workflow file + ref + environment.
+3. **Every later deploy: a fresh key.** The exchange issues a new key (shown once, never stored in plain
+   text on the server) and the app's previous key keeps working for **24 hours**, then stops. There is no
+   other expiry. Each exchange rotates the key, **including dry runs** (`apply: 'false'`), and the action
+   exchanges **before** it lints the manifest, so a deploy that then fails on the manifest has already
+   rotated the key.
+4. **The binding is exact.** A deploy whose repository, workflow file, ref or environment differs from the
+   approved binding is `403 identity does not match the approved binding` and files nothing. To change any
+   of them (a renamed workflow file, deploying from another branch, adding an `environment:`), ask the
+   operator to unbind the app, then deploy again and have the new request approved.
+
+### Onboarding from the app's own repo (the `notifs-app` action)
+
+1. **Put the manifest in your repo** (any path, for example `.notifs/manifest.json`). It follows the
+   schema above, with `app_id` set to your app id. Destination secrets are `{ "env": "NAME" }` references,
+   never literals; set those environment variables in the deploy job's `env`. `_platform` manifests are not
+   accepted here (`--target app takes an app manifest`). A manifest can be checked offline with
+   `node scripts/onboard.mjs lint --manifest <path> --target app` from a checkout of this repo (the action
+   does it for you); it is a single-file schema check and does not see other apps' manifests, because the
+   server enforces cross-app collision safety (name and topic prefixes, ownership).
+2. **Store the Access token** the operator gave you as two repository secrets (for example
+   `NOTIFS_ACCESS_CLIENT_ID` and `NOTIFS_ACCESS_CLIENT_SECRET`).
+3. **Add the action to the deploy workflow.** The job needs `permissions: id-token: write` (GitHub's OIDC
+   token) and `contents: read` for the checkout. Pin both actions to a full commit SHA:
+
+   ```yaml
+   permissions:
+     contents: read
+     id-token: write # lets the job request the OIDC token the exchange needs
+
+   jobs:
+     deploy:
+       runs-on: ubuntu-latest
+       environment: production # optional; when set it is part of the approved identity
+       steps:
+         - uses: actions/checkout@<full commit SHA>
+         - id: notifs
+           uses: 4IRL/4irl-notifs/.github/actions/notifs-app@<full commit SHA of 4irl-notifs>
+           with:
+             app_id: myapp
+             delivery_url: https://notifs-delivery.4irl.app
+             access_client_id: ${{ secrets.NOTIFS_ACCESS_CLIENT_ID }}
+             access_client_secret: ${{ secrets.NOTIFS_ACCESS_CLIENT_SECRET }}
+             manifest: .notifs/manifest.json
+             # apply: 'false'                 # dry run: print the plan only (still mints a key)
+             # audience: <the operator's value> # only if DELIVERY_OIDC_AUDIENCE was changed from its default
+   ```
+
+   Inputs: `app_id`, `delivery_url`, `access_client_id`, `access_client_secret` (all required);
+   `manifest` (optional; without it only the exchange runs); `apply` (default `'true'`);
+   `audience` (default `notifs-delivery`, which must equal the server's `DELIVERY_OIDC_AUDIENCE`, so
+   pass it only if the operator changed that value). `app_id` must equal the `app_id` in the manifest.
+   The action requests the OIDC token, exchanges it,
+   masks the key in the logs, lints the manifest, then runs `apply` (or `plan` for any `apply` value other
+   than `'true'`) with the new key. The output `steps.notifs.outputs.key` is the new key, already masked. If the 4irl-notifs
+   repository is private, its Actions settings must allow your repository to use the action.
+4. **First deploy: expect the failure.** The run fails with the pending-request message. Tell the operator;
+   once they approve it, re-run the job (a re-run fetches a new OIDC token). The key is issued and the
+   manifest is applied.
+5. **Store the key on the app host** with the same `_FILE` pattern this repo uses for its own secrets: the
+   deploy writes `steps.notifs.outputs.key` to a file that only the app can read (for example a Docker
+   Compose secret), the app reads it from a `…_KEY_FILE` environment variable, and it is never put in the
+   repository, an image or a log. Every deploy replaces the file. Because the previous key works for 24 h,
+   a rolling deploy needs no coordination, but a long-running process that cached the key must reload it
+   (or re-read the file after a `401`) within that window. A deploy that exchanged a key and then failed
+   before updating the file leaves the host holding a key that stops working 24 h later: re-run the deploy
+   before then.
+6. **Send the bearer header on every call:**
+
+   ```bash
+   curl -fsS -X POST "https://notifs-delivery.4irl.app/v1/messages?wait=10" \
+     -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" \
+     -H "Authorization: Bearer $(cat "$NOTIFS_KEY_FILE")" \
+     -H "Content-Type: application/json" \
+     -d '{"app_id":"myapp","channel":"alerts","idempotency_key":"onboarding-test-1","payload":{},"display":{"title":"myapp is connected","body":"First message"}}'
+   ```
+
+To run the same flow by hand (or to verify), the CLI commands are `node scripts/onboard.mjs <plan|apply|verify>
+--manifest <path> --target app` and `lint --manifest <path> --target app`. `plan`, `apply` and `verify` need
+`ONBOARD_URL`, `ONBOARD_APP_ACCESS_ID`, `ONBOARD_APP_ACCESS_SECRET` and `ONBOARD_APP_KEY` set; `lint` needs
+no environment. The action runs `lint`, then
+`apply` or `plan`; it does not run `verify`. `--prune` is allowed in this mode (the server already
+limits it to the app's own rows).
+
+### What an app may and may not manage
+
+- **Ownership.** Everything an app creates through `/v1/apps/{app_id}/…` is owned by that app, and the
+  operator's rows and other apps' rows are invisible to it (`404`, the same as an absent one). The owner
+  is set by the server from the key, never read from the body.
+- **Usable destinations.** An app's route or heartbeat check can use its own destinations and the
+  operator-owned ones, never another app's (`400 unknown destination`).
+- **Name rules.** A destination name starts with `<app_id>_`; an ntfy `config.topic` starts with
+  `<app_id>-`; an app route's `app_pattern` is always the app's own id.
+- **Public URLs only, at registration.** A webhook or Discord URL is resolved when the app registers it;
+  a host that resolves to a private address is `400`. The delivery-time check still runs too.
+- **Collisions are global.** The prefix rule does not tell app `app` from app `app_a`, and uniqueness keys
+  are not per owner: a name, a route (`app_pattern` + `channel_pattern`) or a check (`app_id` + `name`)
+  already held by anyone, the operator included, is `409` for the app. The operator resolves it by
+  deleting the squatting or conflicting row (see "Operator runbook: app identities"). It is an availability
+  collision, never a way to deliver to or read another app's data.
+
 ---
 
 ## Onboarding a new app: the whole path
 
 Prefer **"Onboarding with a manifest (recommended)"** above when the app only needs `POST /v1/messages`
-and/or heartbeats — it covers the destinations/routes/heartbeats part of the "operator sets up" column
-below with one file and one command instead of the admin UI or hand-written `curl`. The steps below,
-including the raw `curl` calls in "Copy-paste onboarding recipe", remain the fallback (and are still
-required for the Access/token/ntfy-publisher steps a manifest does not cover).
+and/or heartbeats — the app's own deploy then creates its destinations, routes and heartbeat checks from a
+manifest in its repo, so the destinations/routes/heartbeats part of the "operator sets up" column below
+moves to the app. The steps below, including the raw `curl` calls in "Copy-paste onboarding recipe", remain
+the fallback (and are still required for the Access/token/identity/ntfy-publisher steps a manifest does
+not cover).
 
 Pick what the app needs, then follow the matching rows. Most apps want the first two.
 
 | The app wants to…                                         | Use                      | The operator sets up                                                                 | Details                          |
 | --------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------ | -------------------------------- |
 | Push notifications straight to users' devices             | ntfy direct (Steps 1-5)  | A service token authorized on `notifs-api`                                           | "Integration in 5 steps"         |
-| Send alerts and notifications with retries, a log, fan-out | `POST /v1/messages`      | A service token on the whole-host `notifs-delivery` app, plus destinations and routes | "Sending through delivery-api"   |
+| Send alerts and notifications with retries, a log, fan-out | `POST /v1/messages`      | A service token on the whole-host `notifs-delivery` app and the approval of the app's identity; destinations and routes come from the app's manifest (or the operator) | "Sending through delivery-api"   |
 | Notify one person by email                                | `to.recipient`           | The above, plus the app's ntfy publisher (users are provisioned as in Step 2)        | "Recipients"                     |
 | Send something later, or cancel / replace it              | `deliver_at`             | Nothing extra                                                                        | "Deferred send"                  |
-| Know when a recurring job stops running or fails          | Heartbeats               | One check per job, created in the Heartbeats section                                 | "Heartbeats"                     |
+| Know when a recurring job stops running or fails          | Heartbeats               | One check per job, declared in the app's manifest (or created by the operator)       | "Heartbeats"                     |
 
 Migrating an app that already has its own senders? Follow **Migrating an existing app from its own
 senders** below alongside these steps.
@@ -172,27 +314,38 @@ senders** below alongside these steps.
 2. **Create the app's service token(s).** `<app> → notifs-delivery`, added to the whole-host policy only
    (never the `/v1/admin` one), and `<app> → notifs-api` if the app provisions ntfy users. Hand over the
    Client ID and Client Secret; they are shown once.
-3. **Create the destinations and routes.** In the Delivery tab, add the destinations the app's messages
-   should reach (ntfy, Discord or webhook) and the routes that send the app's traffic to them. Use the
+3. **Approve the app's identity.** After the app's first deploy fails with "identity request #N awaits
+   operator approval", open the Delivery tab, **App identities**, check that the requested repository,
+   workflow file, ref and environment are the ones you expect, and approve. Full procedure, including
+   reject, revoke and unbind: "Operator runbook: app identities".
+4. **Destinations and routes.** Normally the app creates its own from its manifest. To make them yourself
+   instead (operator-owned, usable by every app), add the destinations the app's messages should reach
+   (ntfy, Discord or webhook) and the routes that send the app's traffic to them in the Delivery tab. Use the
    destination's send-test to confirm each one. Without a matching route or destination a send with no
    `to` fails with `422 no destination matched`.
-4. **If the app sends to people (`to.recipient`):** mint the app's ntfy publisher (see "Operator runbook:
+5. **If the app sends to people (`to.recipient`):** mint the app's ntfy publisher (see "Operator runbook:
    ntfy publisher for an app").
-5. **If the app has recurring jobs:** create one heartbeat check per job with the app's `app_id`, a
-   `name`, a period, a grace (at least 1 hour for daily jobs) and its destinations.
-6. **Verify the token boundary.** The app token gets `403` on `/v1/admin/destinations` and `202` on
-   `POST /v1/messages`.
+6. **If the app has recurring jobs:** its manifest declares one heartbeat check per job (or create them
+   yourself with the app's `app_id`, a `name`, a period, a grace of at least 1 hour for daily jobs, and
+   its destinations).
+7. **Verify the boundary.** The app's Access token gets `403` (from Access) on `/v1/admin/destinations`,
+   and `401 app key required` on `POST /v1/messages` without the key; with the app's key the same call is
+   `202`. Never run `make onboard cmd=verify` for an app manifest in production: it needs a key no
+   operator command can supply there.
 
 ### App steps (once per app)
 
 1. **Store the credentials as secrets** (`CF-Access-Client-Id`, `CF-Access-Client-Secret`), never in the
-   repo.
+   repo. Then add the manifest and the `notifs-app` deploy step, deploy, and get the operator's approval
+   (see "Onboarding from the app's own repo"); the deploy gives you the delivery key (`dak_...`), which you
+   store on the app host as a file secret read through a `_FILE` variable.
 2. **Send a first message and read the result.** `?wait=10` holds the response until each delivery has
    had a first attempt, so you can see `deliveries[].state` is `delivered`:
 
    ```bash
    curl -fsS -m 15 -X POST "https://notifs-delivery.4irl.app/v1/messages?wait=10" \
      -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" \
+     -H "Authorization: Bearer $NOTIFS_KEY" \
      -H "Content-Type: application/json" \
      -d '{"app_id":"myapp","channel":"alerts","idempotency_key":"onboarding-test-1","payload":{},"display":{"title":"myapp is connected","body":"First message through delivery-api"}}'
    ```
@@ -222,8 +375,9 @@ Suggested naming (not enforced beyond the regexes in this guide): short purpose 
 
 - **Planned maintenance:** pause the app's heartbeat checks (alerts stop, pings are still recorded) and
   resume them afterwards; the deadline restarts from the resume.
-- **Removing an app:** delete its heartbeat checks first (a destination that a check uses cannot be
-  deleted), then remove its token from the Access policies, call `POST /v1/deprovision-app`, and delete
+- **Removing an app:** unbind it in the admin UI (**App identities**, which stops every one of its keys
+  at once; the objects it owned stay until you delete them), delete its heartbeat checks first (a
+  destination that a check uses cannot be deleted), then remove its token from the Access policies, call `POST /v1/deprovision-app`, and delete
   its stored ntfy publisher (`DELETE /v1/admin/apps/<app>/ntfy-publisher`) so recipient submits fail
   closed.
 
@@ -269,7 +423,7 @@ Suggested contract:
   `idempotency_key`.
 - A mode per lane (suggested names): `direct` (the old path), `both` (old path plus the service, with the
   route pointed at a test channel), and `service`.
-- Never log the token; log the status and `message_id`.
+- Never log the Access token or the delivery key; log the status and `message_id`.
 
 Python (standard library only):
 
@@ -282,6 +436,18 @@ import urllib.request
 NOTIFS_URL = os.environ.get("NOTIFS_URL", "https://notifs-delivery.4irl.app")
 NOTIFS_ID = os.environ.get("NOTIFS_ID", "")
 NOTIFS_SECRET = os.environ.get("NOTIFS_SECRET", "")
+
+
+def _notifs_key() -> str:
+    """The app's delivery key (dak_...), read from the file the deploy wrote (the _FILE
+    pattern) on every call, so a key replaced by a later deploy is picked up without a
+    restart. A missing or unreadable file gives a blank key, which the service answers
+    with a clean 401 (ok False) instead of an exception."""
+    try:
+        with open(os.environ["NOTIFS_KEY_FILE"], encoding="utf-8") as key_file:
+            return key_file.read().strip()
+    except (KeyError, OSError):
+        return ""
 
 
 def notify(
@@ -326,6 +492,7 @@ def notify(
             "Content-Type": "application/json",
             "CF-Access-Client-Id": NOTIFS_ID,
             "CF-Access-Client-Secret": NOTIFS_SECRET,
+            "Authorization": f"Bearer {_notifs_key()}",
         },
     )
     try:
@@ -350,7 +517,11 @@ def heartbeat(*, app_id: str, name: str, failed: bool = False) -> bool:
     request = urllib.request.Request(
         f"{NOTIFS_URL}/v1/heartbeats/{app_id}/{name}{suffix}",
         method="POST",
-        headers={"CF-Access-Client-Id": NOTIFS_ID, "CF-Access-Client-Secret": NOTIFS_SECRET},
+        headers={
+            "CF-Access-Client-Id": NOTIFS_ID,
+            "CF-Access-Client-Secret": NOTIFS_SECRET,
+            "Authorization": f"Bearer {_notifs_key()}",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=10):
@@ -364,6 +535,11 @@ Shell (needs `curl` and `jq`; `jq` does the JSON escaping, which plain `printf` 
 ```bash
 NOTIFS_URL="${NOTIFS_URL:-https://notifs-delivery.4irl.app}"
 
+# The app's delivery key (dak_...), read from the file the deploy wrote on every call, so a key
+# replaced by a later deploy is picked up. A missing or unreadable file prints nothing (a blank
+# key, which the service answers with 401) instead of aborting the caller.
+notifs_key() { cat "${NOTIFS_KEY_FILE:-/nonexistent}" 2>/dev/null || true; }
+
 # notifs_notify <app_id> <channel> <idempotency_key> <title> [body]
 # Prints the service's JSON response; exit 0 only when the service accepted the message (202).
 notifs_notify() {
@@ -372,6 +548,7 @@ notifs_notify() {
     '{app_id:$app, channel:$channel, idempotency_key:$key, payload:{}, display:{title:$title, body:$body}}')
   curl -sS -m 15 -X POST "$NOTIFS_URL/v1/messages?wait=10" \
     -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" \
+    -H "Authorization: Bearer $(notifs_key)" \
     -H "Content-Type: application/json" -d "$envelope" \
     -o /tmp/notifs_response.$$ -w '%{http_code}' | grep -q '^202$'
   local accepted=$?
@@ -385,11 +562,13 @@ notifs_heartbeat() {
   local suffix=""
   [ "${3:-}" = "fail" ] && suffix="/fail"
   curl -fsS -m 10 --retry 3 -X POST "$NOTIFS_URL/v1/heartbeats/$1/$2$suffix" \
-    -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" > /dev/null
+    -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" \
+    -H "Authorization: Bearer $(notifs_key)" > /dev/null
 }
 ```
 
-Both were run against a local stack: an accepted message, the same key resubmitted (same `message_id`), a
+Both were run against a local stack (before delivery keys were required; the only change since is the
+`Authorization: Bearer` header and reading the key file on every call): an accepted message, the same key resubmitted (same `message_id`), a
 send with no route (`422`), a malformed envelope (`400`), an unreachable service (a clean failure, no
 exception), and the heartbeat success, `/fail` and unknown-check cases. A workflow container that can only
 run a restricted `curl` needs its allowlist to admit the delivery-api host and the two Access headers.
@@ -398,7 +577,9 @@ run a restricted `curl` needs its allowlist to admit the delivery-api host and t
 
 0. **Operator setup** (see "Onboarding a new app"). Create destinations from the app's existing webhook
    URLs, but point the **first routes at a test channel**, so nothing reaches the real channel until you
-   choose. Start on the app's staging environment with its own token.
+   choose. Start on the app's staging environment with its own token (an `app_id` has exactly one approved
+   workflow identity, so a staging deploy that runs from another workflow, ref or environment needs its
+   own `app_id`).
 1. **Heartbeats first.** They are purely additive: nothing is removed, and silent stalls of the app's jobs
    start alerting.
 2. **Shadow one lane.** Run it in `both` mode with the route on the test channel, and compare messages
@@ -430,7 +611,8 @@ Rolling back any step is setting that lane's mode back to `direct`.
 - **Egress.** The app's container must be allowed to reach `notifs-delivery.4irl.app`; allowlisting
   wrappers such as a restricted `curl` need updating.
 - **Leaving both paths forever** doubles the failure modes. Set a date to retire the old one.
-- **Per-app tokens are an operator-trust boundary,** not isolation between apps.
+- **The delivery key rotates on every deploy.** The previous key works for 24 h, so reload the key (or
+  re-read its file after a `401 invalid app key`) in long-running processes.
 
 ---
 
@@ -441,19 +623,31 @@ from the handlers and validators; the sections it points to hold the edge cases.
 
 **Base URL:** `https://notifs-delivery.4irl.app`
 
-**Auth, on every request:** headers `CF-Access-Client-Id: <id>` and `CF-Access-Client-Secret: <secret>`.
-An app token reaches `/v1/messages*`, `/v1/heartbeats/*`, `/readyz` and `/healthz`. `/v1/admin/*` needs the
-operator proxy token: an app token gets a Cloudflare Access `403` before the API sees the request.
+**Auth, on every request:** headers `CF-Access-Client-Id: <id>` and `CF-Access-Client-Secret: <secret>`
+(the network gate). An app's Access token reaches `/v1/messages*`, `/v1/heartbeats/*`, `/v1/apps/*`,
+`/v1/app-identity/exchange`, `/readyz` and `/healthz`. `/v1/admin/*` needs the operator proxy token: an app
+token gets a Cloudflare Access `403` before the API sees the request.
+
+**App identity, on every app-facing call:** also send `Authorization: Bearer dak_...` (the app's delivery
+key, see "App identity: how an app proves who it is") on `/v1/messages*`, `/v1/heartbeats/*` and
+`/v1/apps/*`. Not needed on `/readyz`, `/healthz` or the exchange. The key's app is the caller: a missing or
+malformed header is `401 app key required` (with `WWW-Authenticate: Bearer`), an unknown, revoked, unbound
+or past-grace key is `401 invalid app key`, a present `app_id` (body, `?app_id=` or path) that differs from
+the key's app is `403 app_id does not match app key`, and a failing identity store is `503 identity
+unavailable` (it fails closed). Absent or empty `app_id` falls through to the endpoint's own validation.
 
 **Format:** bodies are JSON (`Content-Type: application/json`); the heartbeat pings take no body. Errors
 are `{"error":"<message>"}` with the HTTP status. Timestamps are RFC3339 UTC. `POST /v1/messages` rejects
 unknown fields with `400 {"error":"invalid JSON body"}`. Destination secrets are masked on every read; the
 only time a secret is returned is the new `signing_secret` from `rotate-secret`, once.
 
-### App-facing endpoints (app token)
+### App-facing endpoints (Access token plus delivery key)
+
+Every row except the exchange and `/readyz` also returns the key errors above (`401`, `403`, `503 identity unavailable`).
 
 | Method and path                                              | Request                       | Success                                                  | Errors                                                                          |
 | ------------------------------------------------------------ | ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `POST /v1/app-identity/exchange` (Access token only, no key) | `{"app_id","token":"<GitHub OIDC JWT>"}` | `202 {"status":"pending","request_id"}` (awaits operator approval) or `200 {"status":"issued","app_id","key","key_id"}` (the plaintext key, once) | 400 malformed body or `app_id`, 401 `invalid identity token`, 403 `identity does not match the approved binding`, 429 `too many pending identity requests`, 503 `identity unavailable`. The `notifs-app` action calls this for you. |
 | `POST /v1/messages` (optional `?wait=0..10`)                 | envelope JSON (see Envelope)  | `202 {"message":{…},"duplicate":bool,"replaced":bool}`   | 400 validation, 409 `destination disabled`, 413, 422 `no destination matched` / `app has no ntfy publisher`, 429, 503 `messages unavailable` |
 | `GET /v1/messages/{id}?app_id=<app>`                         | none                          | `200 {"message":{…}}`                                    | 400 `app_id is required`, 404 `message not found`                               |
 | `GET /v1/messages?app_id=<app>&idempotency_key=<key>`        | none                          | `200 {"message":{…}}`                                    | 400, 404                                                                        |
@@ -461,6 +655,92 @@ only time a secret is returned is the new `signing_secret` from `rotate-secret`,
 | `POST /v1/heartbeats/{app_id}/{name}`                        | none                          | `200 {"app_id","name","state"}`                          | 400, 404 `check not found`, 503 `heartbeats unavailable`                        |
 | `POST /v1/heartbeats/{app_id}/{name}/fail`                   | none                          | `200 {"app_id","name","state"}` (state `down`)           | same                                                                            |
 | `GET /readyz`                                                | none                          | `200` readiness body (below)                             | `503 {"status":"unavailable"}` (database unreachable) or `503` with `"status":"schema_mismatch"` |
+
+**App-managed destinations (app key).** An app manages its own destinations under
+`/v1/apps/{app_id}/destinations`, with `Authorization: Bearer dak_...` whose app is the `{app_id}` in the path
+(another app's id is `403 app_id does not match app key`). The bodies, masking and rotate response are the
+admin ones; the owner is the calling app and is never sent in the body (an `owner_*` or `app_id` field is
+`400 invalid JSON body`).
+
+| Method and path                                                         | Request body                                            | Success                                         | Errors                                                                 |
+| ----------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------- |
+| `POST /v1/apps/{app_id}/destinations`                                   | `{"name","type","enabled"?,"config":{…},"secrets":{…}}` | `201 {"destination":{…}}`                       | 400 validation, 409 `destination already exists`, 401 `app key required`/`invalid app key`, 403 `app_id does not match app key`, 503 `registry unavailable`/`identity unavailable`/`destination url check unavailable` |
+| `GET /v1/apps/{app_id}/destinations`                                    | none                                                    | `200 {"destinations":[…]}` (only the app's own) | 401 `app key required`/`invalid app key`, 403 `app_id does not match app key`, 503 `registry unavailable`/`identity unavailable` |
+| `GET`, `PATCH`, `DELETE /v1/apps/{app_id}/destinations/{name}`          | `PATCH`: `{"enabled"?,"config"?,"secrets"?}` per key    | `200` (`DELETE`: `{"name","deleted"}`)          | `PATCH` 400 validation; 404 `destination does not exist`; `DELETE` also 409 `destination is in use`; 401 `app key required`/`invalid app key`, 403 `app_id does not match app key`, 503 `registry unavailable`/`identity unavailable` (`PATCH` also `destination url check unavailable`) |
+| `POST /v1/apps/{app_id}/destinations/{name}/rotate-secret`              | `{"overlap_hours":1..168}` (webhook only)               | `200` destination plus the new `signing_secret` | 400, 404, 422, 401 `app key required`/`invalid app key`, 403 `app_id does not match app key`, 503 `registry unavailable`/`identity unavailable`/`destination url check unavailable` |
+
+- A destination the app does not own (the operator's or another app's) is `404`, the same bytes as a name
+  that does not exist, on every method. `DELETE` of an absent or foreign name is therefore `404`, not the
+  idempotent `200` of the admin API.
+- `name` must start with `<app_id>_` (`400 name must start with <app_id>_`) and an ntfy `config.topic` with
+  `<app_id>-` (`400 config.topic must start with <app_id>-`). Each app uses its own destinations and the
+  operator's; another app's destination is never usable.
+- **Prefix overlap and name collisions.** The prefix rule does not tell an app id from another app id that
+  extends it: app `app` may create `app_a_hook`, a name inside the `<app_id>_` space of app `app_a`. The row
+  stays owned by `app` and is never usable by `app_a`, but `app_a`'s own create of that name answers `409
+  destination already exists` until the operator deletes the squatting destination through the admin API. A
+  `409 destination already exists` on create also tells the caller that the name is occupied by anyone (the
+  operator, another app, or itself); a `GET` of a name it does not own stays `404`.
+- **Saved URLs are checked when you register them.** The `webhook` `secrets.url` and the `discord`
+  `secrets.webhook_url` are resolved on create, on a PATCH that changes the URL, and again on every
+  `rotate-secret`; every address must be public, else `400 secrets.url must resolve to public addresses`
+  (a host that does not resolve is `400 secrets.url host could not be resolved`). Use a public HTTPS URL
+  whose DNS answers from the public internet. The check does not replace the one made on every delivery
+  attempt, which still refuses a host that later resolves to a private address.
+- **`rotate-secret` re-resolves the stored URL.** A transient DNS failure of the app's own host therefore
+  answers `400 secrets.url host could not be resolved` until DNS recovers; retry the rotation later.
+
+**App-managed routes (app key).** An app manages its own routes under `/v1/apps/{app_id}/routes`, with the same
+`Authorization: Bearer dak_...` rules as the destinations above. The bodies and the `route` object are the
+admin ones; the owner is the calling app and is never sent (an `owner_*` or `app_id` field is `400 invalid
+JSON body`).
+
+| Method and path                                      | Request body                                                 | Success                                      | Errors                                                                 |
+| ---------------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------- | ---------------------------------------------------------------------- |
+| `POST /v1/apps/{app_id}/routes`                      | `{"app_pattern"?,"channel_pattern","destinations":[…],"enabled"?}` | `201 {"route":{…}}`                    | 400 validation, 400 `app_pattern must be the app's own id`, 400 `unknown destination`, 409 `route already exists`, 401/403 (key), 503 `registry unavailable`/`identity unavailable` |
+| `GET /v1/apps/{app_id}/routes`                       | none                                                         | `200 {"routes":[…]}` (only the app's own)    | 401/403 (key), 503                                                     |
+| `GET`, `PATCH`, `DELETE /v1/apps/{app_id}/routes/{id}` | `PATCH`: any of `app_pattern`, `channel_pattern`, `destinations`, `enabled` | `200` (`DELETE`: `{"id","deleted"}`) | 400 invalid id; `PATCH` 400 as for `POST`, 409; 404 `route does not exist`; 401/403 (key), 503 |
+
+- A route's `app_pattern` is always your own app id. Omit it on `POST` (it defaults to the app id) or send your
+  own id; a wildcard (`*`), a glob or another app's id is `400 app_pattern must be the app's own id`, on `PATCH`
+  too. A route you create therefore matches only your own messages.
+- A route may link your own destinations and the operator's. Another app's destination is `400 unknown
+  destination` (the same answer as a name that does not exist).
+- A route you do not own (the operator's, a wildcard route, another app's) is `404 route does not exist`, the
+  same bytes as an id that does not exist, on every method. `DELETE` of an absent or foreign id is therefore
+  `404`, not the idempotent `200` of the admin API.
+- A `409 route already exists` means the pair (your app id, `channel_pattern`) is taken by any route, yours or
+  an operator route for your app id; a `GET` of an id you do not own stays `404`.
+- The `route` objects you receive carry `"owner_kind":"app"` and `"owner_app_id":"<app_id>"`.
+- Other errors: `400 invalid route id` (an `{id}` that is not a positive decimal integer), `400 request violates
+  a data constraint` (a database CHECK the validators did not catch, mapped defensively) and `413 request body
+  too large`.
+
+**App-managed heartbeat checks (app key).** An app manages its own checks under `/v1/apps/{app_id}/heartbeats`,
+with the same key rules. The bodies and the `check` object are the admin ones. A check you create is
+registered under your own app id, so you ping it at `POST /v1/heartbeats/{app_id}/{name}` with the same key.
+
+| Method and path                                              | Request body                                                       | Success                                      | Errors                                                                 |
+| ------------------------------------------------------------ | ------------------------------------------------------------------ | -------------------------------------------- | ---------------------------------------------------------------------- |
+| `POST /v1/apps/{app_id}/heartbeats`                          | `{"app_id"?,"name","period_seconds","grace_seconds","destinations":[…]}` | `201 {"check":{…}}`                    | 400 validation, 400 `app_id must be the app's own id`, 400 `unknown destination`, 409 `check already exists`, 401/403 (key), 503 `heartbeats unavailable`/`identity unavailable` |
+| `GET /v1/apps/{app_id}/heartbeats`                           | none                                                               | `200 {"checks":[…]}` (only the app's own)    | 401/403 (key), 503                                                     |
+| `GET`, `PATCH`, `DELETE /v1/apps/{app_id}/heartbeats/{id}`   | `PATCH`: any of `period_seconds`, `grace_seconds`, `destinations`  | `200` (`DELETE`: `{"id","deleted"}`)         | 400 invalid id; `PATCH` 400 validation / `app_id and name are immutable`; 404 `check not found`; 401/403 (key), 503 |
+| `POST /v1/apps/{app_id}/heartbeats/{id}/pause` and `/resume` | none                                                               | `200 {"check":{…}}`                          | 400 invalid id, 404 `check not found`, 401/403 (key), 503              |
+
+- A body `app_id` may be omitted, empty, `null` or your own id, on `POST` and `PATCH` alike; any other value is
+  `400 app_id must be the app's own id`. A check's `name` cannot be changed. An `owner_kind` or `owner_app_id`
+  field in a check body is `400 invalid JSON body`.
+- The `check` objects you receive carry `"owner_kind":"app"` and `"owner_app_id":"<app_id>"`.
+- Other errors: `400 invalid check id` (an `{id}` that is not a positive decimal integer), `400 request violates
+  a data constraint` (a database CHECK the validators did not catch, mapped defensively) and `413 request body
+  too large`.
+- A check may alert your own destinations and the operator's. Another app's destination is `400 unknown
+  destination`.
+- A check you do not own (the operator's, even one registered under your `app_id`, or another app's) is `404
+  check not found`, the same bytes as an id that does not exist, on every method including `pause`, `resume`
+  and an empty `PATCH`. `DELETE` of an absent or foreign id is `404`, not the idempotent `200` of the admin API.
+- A `409 check already exists` means the pair (your app id, `name`) is taken by any check, yours or an operator
+  check registered under your app id; a `GET` of an id you do not own stays `404`.
 
 Message object (illustrative values; `status` is `pending`, `delivered`, `dead`, `partial`, `scheduled` or
 `cancelled`; a delivery `state` is `pending`, `delivered`, `dead`, `scheduled` or `cancelled`):
@@ -495,7 +775,7 @@ Message object (illustrative values; `status` is `pending`, `delivered`, `dead`,
 }
 ```
 
-Readiness body: `{"status":"ok","schema_version":6,"expected_schema_version":6,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false}}`.
+Readiness body: `{"status":"ok","schema_version":8,"expected_schema_version":8,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false}}`.
 The HTTP status stays `200` even when `heartbeat_checker.stale` is `true`; read the field.
 
 ### Operator endpoints (proxy token; used to onboard an app)
@@ -507,13 +787,20 @@ The HTTP status stays `200` even when `heartbeat_checker.stale` is `true`; read 
 | `GET`, `PATCH`, `DELETE /v1/admin/destinations/{name}` | `PATCH`: `{"enabled"?,"config"?,"secrets"?}` merged per key                                | `200` (`DELETE`: `{"name","deleted"}`)           | 404 `destination does not exist`; `DELETE` also 409 `destination is in use` (a route or a heartbeat check uses it) |
 | `POST /v1/admin/destinations/{name}/rotate-secret`   | `{"overlap_hours":1..168}` (webhook destinations only)                                        | `200` destination plus the new `signing_secret`  | 400, 404, 422 `destination type does not support rotation`                   |
 | `POST /v1/admin/routes`                              | `{"app_pattern","channel_pattern","destinations":["<name>",…],"enabled"?}`                    | `201 {"route":{…}}`                              | 400 validation or `unknown destination`, 409 `route already exists`          |
-| `GET /v1/admin/routes`; `GET`, `PATCH`, `DELETE /v1/admin/routes/{id}` | `PATCH`: any of the four fields; `destinations` replaces the whole set       | `200` (`DELETE`: `{"id","deleted"}`)             | 404 `route does not exist`                                                   |
+| `GET /v1/admin/routes`; `GET`, `PATCH`, `DELETE /v1/admin/routes/{id}` | `PATCH`: any of the four fields; `destinations` replaces the whole set       | `200` (`DELETE`: `{"id","deleted"}`)             | 404 `route does not exist`; `PATCH` of an app-owned route's `app_pattern` away from its owner is 400 `request violates a data constraint` |
 | `POST /v1/admin/heartbeats`                          | `{"app_id","name","period_seconds","grace_seconds","destinations":["<name>",…]}`              | `201 {"check":{…}}`                              | 400 validation or `unknown destination`, 409 `check already exists`          |
 | `GET /v1/admin/heartbeats`                           | none                                                                                          | `200 {"checks":[…]}`                             |                                                                              |
 | `GET`, `PATCH`, `DELETE /v1/admin/heartbeats/{id}`   | `PATCH`: any of `period_seconds`, `grace_seconds`, `destinations`                             | `200 {"check":{…}}` (`DELETE`: `{"id","deleted"}`, idempotent) | 400 `app_id and name are immutable`, 404 `check not found`         |
 | `POST /v1/admin/heartbeats/{id}/pause` and `/resume` | none                                                                                          | `200 {"check":{…}}` (idempotent)                 | 404                                                                          |
 | `POST /v1/admin/apps/{app_id}/ntfy-publisher`        | none                                                                                          | `200 {"publisher":{"app_id","publisher_user_id","topic_pattern","created_at","updated_at"}}` (never the token) | 502 mint failed, 503 not configured |
 | `GET`, `DELETE /v1/admin/apps/{app_id}/ntfy-publisher` | none                                                                                        | `200` as above / `204` (idempotent)              | 404 `GET` when none is stored                                                |
+| `POST /v1/admin/messages`                            | the `POST /v1/messages` envelope, any `app_id` (optional `?wait=0..10`)                       | `202`, same as `POST /v1/messages`               | as `POST /v1/messages`, no key needed (admin send-test uses it)              |
+| `GET /v1/admin/app-identity/requests`                | none                                                                                          | `200 {"requests":[…]}` (pending first, then rejected from the last 30 days) |                                                  |
+| `POST /v1/admin/app-identity/requests/{id}/approve`  | none                                                                                          | `201 {"binding":{…}}` (the request is deleted)   | 400 `invalid request id`, 404 `request does not exist`, 409 `request is not pending` / `app already bound` / `workflow identity already bound` |
+| `POST /v1/admin/app-identity/requests/{id}/reject`   | none                                                                                          | `200 {"request":{…,"status":"rejected"}}` (idempotent) | 400, 404                                                              |
+| `GET /v1/admin/app-identity/bindings`                | none                                                                                          | `200 {"bindings":[{app_id, github_repository, …, "keys":[{id, key_hint, state, …}]}]}`; `state` is `active`, `superseded` or `revoked` |  |
+| `POST /v1/admin/app-identity/keys/{id}/revoke`       | none                                                                                          | `200 {"key":{…}}` (idempotent)                   | 400 `invalid key id`, 404 `key does not exist`                               |
+| `DELETE /v1/admin/app-identity/bindings/{app_id}`    | none                                                                                          | `200 {"app_id","deleted":bool}` (idempotent; every key stops, owned objects stay) | 400 `invalid app_id`                      |
 
 **Destination `config` and `secrets` by `type`** (an unknown key is `400 unknown field <section>.<key>`):
 
@@ -540,8 +827,9 @@ with `state` one of `new`, `up`, `late`, `down` and `last_ping_kind` `success` o
 Prefer **"Onboarding with a manifest (recommended)"** above (`make onboard`) for steps 1-3; the raw
 `curl` calls below are the fallback for a one-off change or for debugging what the tool would send.
 
-Variables: `OP_ID` / `OP_SECRET` (operator proxy token), `NOTIFS_ID` / `NOTIFS_SECRET` (the app's token),
-`B=https://notifs-delivery.4irl.app`. Names below are examples.
+Variables: `OP_ID` / `OP_SECRET` (operator proxy token), `NOTIFS_ID` / `NOTIFS_SECRET` (the app's Access
+token), `NOTIFS_KEY` (the app's delivery key `dak_...`, obtained as described in "Onboarding from the
+app's own repo"), `B=https://notifs-delivery.4irl.app`. Names below are examples.
 
 ```bash
 # 1-3 (operator): a destination, a route to it, and a heartbeat check
@@ -553,11 +841,11 @@ curl -fsS -X POST "$B/v1/admin/heartbeats" -H "CF-Access-Client-Id: $OP_ID" -H "
   -d '{"app_id":"myapp","name":"nightly_backup","period_seconds":86400,"grace_seconds":3600,"destinations":["ops_discord"]}'
 
 # 4 (app): send a message and read the delivery result
-curl -fsS -X POST "$B/v1/messages?wait=10" -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" -H "Content-Type: application/json" \
+curl -fsS -X POST "$B/v1/messages?wait=10" -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" -H "Authorization: Bearer $NOTIFS_KEY" -H "Content-Type: application/json" \
   -d '{"app_id":"myapp","channel":"alerts","idempotency_key":"onboarding-test-1","payload":{},"display":{"title":"myapp is connected","body":"First message"}}'
 
 # 5 (app): ping the heartbeat when the job succeeds (append /fail when it fails)
-curl -fsS -m 10 --retry 3 -X POST "$B/v1/heartbeats/myapp/nightly_backup" -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET"
+curl -fsS -m 10 --retry 3 -X POST "$B/v1/heartbeats/myapp/nightly_backup" -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" -H "Authorization: Bearer $NOTIFS_KEY"
 ```
 
 Success for step 4 is `202` with every `deliveries[].state` equal to `delivered`; for step 5 it is `200`
@@ -575,8 +863,12 @@ with `"state":"up"`.
   `last_status_code` say why (for example `terminal_status` with `403`: the destination rejected the
   request). Fix the destination, then ask the operator to replay the delivery; re-posting the same
   `idempotency_key` returns the stored message and does not resend.
-- **A `403` or a redirect to a Cloudflare login page** comes from Access, not the API: the token is
-  missing, wrong, or not authorized on that path.
+- **A `403` without a JSON `error` body, or a redirect to a Cloudflare login page,** comes from Access,
+  not the API: the token is missing, wrong, or not authorized on that path.
+- **A `401` with `app key required` or `invalid app key`** is the delivery key: the header is missing or
+  malformed, or the key is unknown, revoked, unbound or more than 24 h past being superseded. Re-read the
+  key the latest deploy stored; do not retry unchanged. **A `403 app_id does not match app key`** means the
+  request names another app than the key's.
 
 ---
 
@@ -821,14 +1113,15 @@ apply to that path.
 delivery-api is reachable at `https://notifs-delivery.4irl.app`, behind Cloudflare Access. Send the same
 `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers as for `notifs-api`, using a service token the
 operator has authorized on the `notifs-delivery` Access application (see the operator runbook below). Your
-app token reaches `/v1/messages`, `/v1/heartbeats/*` (see Heartbeats below), `/readyz` and `/healthz`;
-`/v1/admin/*` returns 403 to it.
+app token reaches `/v1/messages`, `/v1/heartbeats/*` (see Heartbeats below), `/v1/apps/*`, `/readyz` and
+`/healthz`; `/v1/admin/*` returns 403 to it.
 
-`app_id` is caller-asserted, so per-app tokens are an operator-trust boundary, not isolation between
-apps: a token holder can submit as, read the status of, cancel (`DELETE /v1/messages`) or replace
-(re-post with the same idempotency key) any app's scheduled messages. A token holder can also ping or
-fail any app's heartbeat check (`POST /v1/heartbeats/<app_id>/<name>[/fail]`), which can mask an outage
-or raise a false alert.
+Every `/v1/messages` call, and every heartbeat ping, must also carry your app's delivery key as
+`Authorization: Bearer dak_...` (see "App identity: how an app proves who it is"). The key, not the
+`app_id` you write, says who the caller is: you can submit as, read, cancel or replace only your own app's
+messages, and ping or fail only your own app's checks. A request whose `app_id` (body, `?app_id=` or path)
+names another app is `403 app_id does not match app key`; without a valid key it is `401`. The Access
+token alone is no longer enough.
 
 ### Envelope contract
 
@@ -953,12 +1246,14 @@ due, instead of sending at once.
 | Status | Body `error`                                                                 | Meaning                                                    |
 | ------ | ---------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | 400    | a validation message above, `invalid JSON body`, `invalid wait`, `unknown destination` | Fix the request                                  |
+| 401    | `app key required`, `invalid app key`                                        | Missing or malformed `Authorization: Bearer dak_...`, or an unknown, revoked, unbound or past-grace key |
+| 403    | `app_id does not match app key`                                              | The `app_id` names another app than the key's              |
 | 409    | `destination disabled`                                                       | `to.destination` is disabled                               |
 | 413    | `request body too large`                                                     | Body over 256 KiB                                          |
 | 422    | `no destination matched`, `app has no ntfy publisher`, `destination type not yet supported` | No route/destination/publisher can take it |
 | 429    | `too many scheduled messages`                                                | The app already holds the maximum scheduled messages (see Deferred send) |
 | 429    | `scheduled message capacity reached`                                         | All apps together hold the maximum scheduled messages (see Deferred send) |
-| 503    | `messages unavailable`                                                       | delivery-api is up but cannot accept messages              |
+| 503    | `messages unavailable`, `identity unavailable`                               | delivery-api is up but cannot accept messages, or cannot check the key (fails closed) |
 | 500    | `internal error`                                                             | Retry later; the cause is logged server-side               |
 
 Through Cloudflare Access an unauthorized token gets a Cloudflare `403`/redirect before reaching the API.
@@ -1029,18 +1324,22 @@ down and sends **one** down alert, then **one** recovery alert when the next pin
 through the normal message pipeline to the check's own destinations (1 to 20 of them, set when the
 operator creates the check), as `channel: "heartbeat"` messages.
 
-**The operator creates the check first** (Heartbeats section of the Delivery tab, or
-`POST /v1/admin/heartbeats` with the proxy token), giving it your `app_id`, a `name`, a `period_seconds`,
-a `grace_seconds` and its destinations. A ping for a check that does not exist is a `404`; pings never
+**The check is created first**, by your manifest (`heartbeats`, applied by your deploy through
+`/v1/apps/{app_id}/heartbeats`) or by the operator (Heartbeats section of the Delivery tab, or
+`POST /v1/admin/heartbeats` with the proxy token), with your `app_id`, a `name`, a `period_seconds`, a
+`grace_seconds` and its destinations. A ping for a check that does not exist is a `404`; pings never
 create one.
 
 **Ping (success).** `POST https://notifs-delivery.4irl.app/v1/heartbeats/<app_id>/<name>`, with your app's
 `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers (the same service token as `POST /v1/messages`;
-pings sit outside `/v1/admin`). The body is ignored, so a bare `POST` works:
+pings sit outside `/v1/admin`) and your delivery key as `Authorization: Bearer dak_...`, whose app must be
+the `<app_id>` in the path (another app's id is `403 app_id does not match app key`). The body is ignored,
+so a bare `POST` works:
 
 ```bash
 curl -fsS -m 10 --retry 3 -X POST \
   -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" \
+  -H "Authorization: Bearer $NOTIFS_KEY" \
   https://notifs-delivery.4irl.app/v1/heartbeats/myapp/nightly_backup
 ```
 
@@ -1050,14 +1349,16 @@ the check down at once (reason `fail`) instead of waiting out the deadline:
 ```bash
 curl -fsS -m 10 --retry 3 -X POST \
   -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" \
+  -H "Authorization: Bearer $NOTIFS_KEY" \
   https://notifs-delivery.4irl.app/v1/heartbeats/myapp/nightly_backup/fail
 ```
 
 Both return `200` with the check's state after the ping:
 `{"app_id":"myapp","name":"nightly_backup","state":"up"}`: `up` after a success ping, `down` after a fail
 ping (a ping on a paused check is still recorded and answers `200`). Other answers: `400` for a
-malformed `app_id` or `name` (`name` matches `^[a-z0-9][a-z0-9_]{0,62}$`), `404` `check not found`,
-`503` `heartbeats unavailable`.
+malformed `app_id` or `name` (`name` matches `^[a-z0-9][a-z0-9_]{0,62}$`), `401` `app key required` or
+`invalid app key`, `403` `app_id does not match app key`, `404` `check not found`, `503` `heartbeats
+unavailable` or `identity unavailable`.
 
 Wire it to a job so a success ping is sent only when the job succeeds, and a fail ping when it fails:
 
@@ -1068,7 +1369,7 @@ Wire it to a job so a success ping is sent only when the job succeeds, and a fai
 # backup-and-ping.sh
 BASE=https://notifs-delivery.4irl.app/v1/heartbeats/myapp/nightly_backup
 if /opt/myapp/backup.sh; then SUFFIX=""; else SUFFIX="/fail"; fi
-curl -fsS -m 10 --retry 3 -X POST -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" "$BASE$SUFFIX"
+curl -fsS -m 10 --retry 3 -X POST -H "CF-Access-Client-Id: $NOTIFS_ID" -H "CF-Access-Client-Secret: $NOTIFS_SECRET" -H "Authorization: Bearer $(cat "$NOTIFS_KEY_FILE")" "$BASE$SUFFIX"
 ```
 
 If the job cannot run at all (the host is down, cron stopped), no ping arrives and the check goes down when
@@ -1085,7 +1386,10 @@ OnFailure=ping-fail@nightly_backup.service
 # ping-ok@.service (ping-fail@.service is the same with /fail appended to the URL); %i is the check name
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/curl -fsS -m 10 --retry 3 -X POST -H "CF-Access-Client-Id: ..." -H "CF-Access-Client-Secret: ..." https://notifs-delivery.4irl.app/v1/heartbeats/myapp/%i
+# The delivery key changes on every deploy, so read it from the file the deploy writes, not from the unit.
+# systemd treats $ specially in ExecStart, so the shell's $( is written $$(. The key file must be
+# readable by the user the unit runs as.
+ExecStart=/bin/sh -c 'exec /usr/bin/curl -fsS -m 10 --retry 3 -X POST -H "CF-Access-Client-Id: ..." -H "CF-Access-Client-Secret: ..." -H "Authorization: Bearer $$(cat /etc/myapp/notifs-key)" https://notifs-delivery.4irl.app/v1/heartbeats/myapp/%i'
 ```
 
 **State model.** A check is `new` until its first ping, then `up`. It goes `down` when `now` passes
@@ -1145,7 +1449,79 @@ One-time setup, in this order, so the hostname is never reachable without an Acc
 
 Per app: create a service token named e.g. `<app> → notifs-delivery`, add it to the whole-host
 `notifs-delivery` policy **only** (never the `/v1/admin` one), and give the app the id and secret. Confirm an
-app token gets 403 on `/v1/admin/destinations` and 202 on `POST /v1/messages`.
+app token gets 403 on `/v1/admin/destinations`, and that `POST /v1/messages` is `401 app key required`
+without a delivery key and `202` with the app's key (the next runbook issues it).
+
+### Operator runbook: app identities
+
+An app proves which app it is with a delivery key its deploy workflow obtains after one approval from you
+(model: "App identity: how an app proves who it is"). All of this happens in the Delivery tab of the admin
+UI, **App identities** section (the same actions exist as `/v1/admin/app-identity/*`; there is no CLI).
+Never run `make onboard app=<id> cmd=verify` for an app manifest in production: it needs a delivery key that
+no operator command can supply there, and it is dev/test-only.
+
+**Approve a new app (once per app).**
+1. Authorize the app's Access token on the whole-host `notifs-delivery` app (never `/v1/admin`; runbook
+   above) and give the app the id and secret.
+2. After the app's first deploy fails with "identity request #N awaits operator approval", open
+   **Requests**. Read the row: the `app_id` is whatever the caller claimed, but the repository, workflow
+   file, ref and environment under **Requested by (GitHub)** are verified by GitHub's signature. Approve only
+   if they are the repository, workflow, branch and environment you expect for that app.
+3. **Approve.** The app now appears under **Approved apps**; its next exchange (re-run the deploy job) gets
+   a key. `409 app already bound` or `workflow identity already bound` means the app id or that workflow
+   identity is already taken (unbind the other binding first if that is intended).
+
+**Reject a request.** **Reject** (then confirm) for a repository or workflow you do not recognise. The
+deploy keeps failing; the rejected request stays listed for 30 days, and a deploy with the same claims
+files a new pending request, so also remove the app's Access token if you want it to stop for good.
+
+**The 429 pending-request cap.** At most **20** requests may be pending in total, across all apps, and a
+21st exchange is `429 too many pending identity requests` (the app's deploy fails with that text). There is
+no per-repository or per-app cap and none is planned: any GitHub repository can mint a token for the
+default audience, so a repository that holds an authorized Access token (or a leaked one) can fill the
+queue. Clear it by rejecting the stale or unwanted requests in **Requests**; rejected requests do not count.
+Requests nobody decides also expire on their own: the periodic cleanup deletes a pending request that has
+gone `DELIVERY_PENDING_IDENTITY_REQUEST_DAYS` (7 by default, integer 1-365) without a refresh, which
+frees its slot. A legitimate app whose request was dropped by the cap or expired simply re-deploys.
+
+**Revoke a key.** Under **Approved apps**, **Revoke** on a key (idempotent). That key stops working at once
+(`401 invalid app key`). It does not unbind the app: its next deploy mints a new key. If a key leaked,
+revoke both the active key and any superseded one that is still within its 24 h grace, then redeploy; if
+the workflow itself is compromised, unbind the app instead.
+
+**Unbind an app.** **Unbind** (idempotent) deletes the binding and every key with it, in one statement, so
+all of the app's keys stop at once. The destinations, routes and checks it owned are kept (still owned by
+that `app_id`, and not manageable through the app API until the app is bound again); delete them through
+the admin UI if the app is going away. The app's next deploy files a fresh pending request. This is also
+how to change an approved identity (renamed workflow file, a new branch or environment): unbind, deploy,
+approve the new request. Unbind does not touch the Access token; remove that too to cut an app off.
+
+**Name and key collisions.** Because the `<app_id>_` prefix rule does not tell `app` from `app_a`, app
+`app` can create a destination named `app_a_hook` and leave `app_a` with `409 destination already exists`
+(an availability collision only: the row is owned by `app`, and `app_a` can never use it). The same `409`
+appears when an app's route (`app_pattern` + `channel_pattern`) or check (`app_id` + `name`) is already
+held by an operator row. To remediate, delete the squatting row through the admin API or UI (a destination
+a route or check uses cannot be deleted until those are removed first), and have the app re-apply; or have
+the app pick another name.
+
+**Behaviour to know.**
+- **JWKS cache.** delivery-api fetches GitHub's signing keys on the first exchange and keeps them in memory.
+  An unknown `kid` triggers one refetch, at most once a minute (a failed fetch also counts), so GitHub
+  rotating its keys needs no restart. While GitHub's keys cannot be fetched, exchanges are `503 identity
+  unavailable` (log line `oidc jwks fetch failed`); keys already issued keep working because key checks
+  use only Postgres.
+- **Audience.** The server's `DELIVERY_OIDC_AUDIENCE` defaults to `notifs-delivery`. If you change it, roll
+  the matching `audience` input out to every app's workflow at the same time, or every exchange is `401`.
+- **Dev-mode bypass.** `DELIVERY_OIDC_DEV_MODE` and `DELIVERY_OIDC_JWKS_FILE` exist only so the local and
+  CI stacks can sign their own test tokens (`make dev-oidc-keys`). With them set, GitHub's keys are not
+  trusted and whoever holds the dev private key can mint any app identity. **Never set either in production**:
+  `docker-compose.prod.yml` sets only `DELIVERY_OIDC_AUDIENCE`, delivery-api refuses to start if the file is
+  set without the flag, and a Go test fails if the prod compose file mentions either variable. A dev-mode
+  instance logs `oidc verifier uses a static dev JWKS file` at startup.
+- **Key rotation on every exchange**, dry runs included (`apply: 'false'`); the action exchanges before it
+  lints the manifest. Every superseded key stays valid for 24 h from the moment it was superseded, so
+  several deploys or dry runs in a day leave several valid keys at once (each shows as **Superseded**);
+  the newest is the **Active** one the app host should be holding.
 
 ---
 
@@ -1400,8 +1776,11 @@ Notes:
 
 - [ ] Operator confirmed the `/v1/admin` Access split, then issued a token authorized on the whole-host
       `notifs-delivery` app only.
-- [ ] Destinations and routes exist for the app, and a destination send-test arrived.
-- [ ] Backend stores the `notifs-delivery` Client ID and Secret as secrets.
+- [ ] The app's repo has its manifest and the `notifs-app` deploy step (`permissions: id-token: write`,
+      pinned to a full SHA), and the operator approved the app's identity request.
+- [ ] Destinations and routes exist for the app (from its manifest), and a destination send-test arrived.
+- [ ] Backend stores the `notifs-delivery` Client ID and Secret as secrets, and the delivery key (`dak_...`)
+      as a file secret that every deploy replaces; every call sends `Authorization: Bearer`.
 - [ ] First `POST /v1/messages?wait=10` returned `202` with every `deliveries[].state` `delivered`.
 - [ ] `idempotency_key` is stable per event; critical alerts have the direct fallback.
 - [ ] (Recipients) The app's ntfy publisher is minted and users are provisioned.

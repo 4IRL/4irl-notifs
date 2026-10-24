@@ -12,13 +12,13 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel) and the operator `/v1/admin/scheduled-messages` list and cancel. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`), a retention sweeper and the heartbeat checker (30 s tick). Has no auth of its own; reachable only behind the path-scoped Access apps below. |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`), a retention sweeper and the heartbeat checker (30 s tick). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*`, `/people`, `/apps` and `/delivery/*` proxy Functions. |
 | **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor on Cloudflare's network, independent of the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`), provisioning-api `/healthz` and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes plus a daily summary (16:00 UTC) to a dedicated Discord webhook. A failed probe is retried once after 30 s and only the retry's verdict can alert, so a transient failure (a stray 520, or the few seconds a production deploy takes to recreate the containers) stays quiet; each attempt (`watchdog: probe id=… attempt=… ok=… http=… duration_ms=…`) and each run (`watchdog: run state=… up=… down=… transitions=… discord=… kv_write=…`) is logged and kept by Workers Logs. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
 | **setup page**       | React/Vite → Cloudflare Pages (static)          | `notifs-setup.4irl.app`  | Public ntfy setup walkthrough linked from every app. No API calls, no Access. See "Setup page". |
 
-Two live environments: **local** (docker-compose: ntfy + provisioning-api + delivery-api + Postgres) and
+Two live environments: **local** (docker-compose: ntfy + person-service + provisioning-api + delivery-api + Postgres) and
 **production** (the VPS + Cloudflare). ntfy + provisioning-api + delivery-api (with its Postgres) run on
 the VPS; person-service + admin UI are Cloudflare-native.
 
@@ -30,15 +30,14 @@ the VPS; person-service + admin UI are Cloudflare-native.
   healthcheck probes `/readyz` and a stalled checker must not mark the container unhealthy; the watchdog
   and the admin status card interpret the field instead.
 - `POST /v1/heartbeats/{app_id}/{name}` and `POST /v1/heartbeats/{app_id}/{name}/fail` — the app-facing
-  pings (outside `/v1/admin`, so an app token may call them). `200 {"app_id","name","state"}`; `404` for an
-  unknown check. `/v1/admin/heartbeats` (`POST`, `GET`) and `/v1/admin/heartbeats/{id}` (`GET`, `PATCH`,
+  pings (outside `/v1/admin`, so an app's Access token reaches them). They need an app key
+  (`Authorization: Bearer dak_...`) whose app is the `{app_id}` in the path (another app's id is `403
+  app_id does not match app key`). `200 {"app_id","name","state"}`; `404` for an unknown check. `/v1/admin/heartbeats` (`POST`, `GET`) and `/v1/admin/heartbeats/{id}` (`GET`, `PATCH`,
   `DELETE`) plus `POST /v1/admin/heartbeats/{id}/pause` and `/resume` — the operator check CRUD (Heartbeats
   section of the Delivery tab). A check holds 1-20 destinations (a destination a check uses cannot be
   deleted); a `down` or `recovered` alert is one message per destination through the normal pipeline.
-  The ping routes do not bind `app_id` to the caller's identity: authentication is the Cloudflare Access
-  whole-host policy shared by all app service tokens (the same model as `/v1/messages`), so any
-  authorized app token can ping or fail any app's check. Accepted for trusted first-party apps; per-check
-  ping secrets or per-app Access path policies are the future options.
+  The ping routes bind `app_id` to the caller's key (the same model as `/v1/messages`), so one app can
+  no longer ping or fail another app's check.
   Contract and client examples are in `docs/app-integration-guide.md` ("Heartbeats").
 - `/v1/admin/destinations` (`POST`, `GET`) and `/v1/admin/destinations/{name}` (`GET`, `PATCH`, `DELETE`) —
   the destination registry. Destination secrets are sealed with AES-256-GCM before they are stored and
@@ -52,8 +51,66 @@ the VPS; person-service + admin UI are Cloudflare-native.
   `signing_secret` beside the masked destination. `invalid overlap_hours` → 400, ntfy/discord → 422,
   unknown name → 404. A second rotation during an open overlap invalidates the first rotation's secret
   immediately.
+- `/v1/apps/{app_id}/destinations` (`POST`, `GET`), `/v1/apps/{app_id}/destinations/{name}` (`GET`, `PATCH`,
+  `DELETE`) and `POST /v1/apps/{app_id}/destinations/{name}/rotate-secret` — app-scoped destination CRUD with
+  the same bodies, secret masking and sealing as the admin routes. It needs an app key (`Authorization:
+  Bearer dak_...`) whose app is the `{app_id}` in the path (another app's id is `403`). Everything an app
+  creates is `owner_kind='app'`, `owner_app_id=<app_id>`, set by the service from the key and never read from
+  the body; a list returns only the app's own rows. A destination the app does not own (the operator's or
+  another app's) is `404 destination does not exist`, byte-identical to an absent one on GET, PATCH, DELETE
+  and rotate (so `DELETE` here is not idempotent: absent is 404). A `name` must start with `<app_id>_` and an
+  ntfy `config.topic` with `<app_id>-`, else `400`. The prefix rule does not tell `app` from `app_a`: app
+  `app` may create `app_a_hook`. That is only a name collision (the row is owned by `app`, never usable by
+  `app_a`, and `app_a` gets `409` creating that name until the operator deletes the squatting destination
+  through the admin API), not a cross-app delivery path. A `409 destination already exists` on create also
+  tells the caller that the name is occupied (by anyone), while a `GET` of a name it does not own stays `404`.
+  **Registration-time SSRF check.** An app-supplied URL (`webhook` `secrets.url`, `discord`
+  `secrets.webhook_url`) is validated and then resolved on create, on a PATCH that changes the URL, and on
+  every `rotate-secret` (which re-checks the stored URL): the host is resolved (3 s timeout) and every
+  address must pass `transport.IsPublicAddr`, else `400 secrets.url must resolve to public addresses` (or an
+  unresolvable host: `... host could not be resolved`). The lookup runs before any transaction or row lock.
+  It adds to, and never replaces, the dial-time guard in the delivery transport, which still refuses a
+  non-public address on every attempt (a DNS name can change after registration). Operator writes under
+  `/v1/admin` are never resolved at save time. If no checker is configured, an app-scoped write that carries
+  a URL answers `503 destination url check unavailable` (fail closed).
 - `/v1/admin/routes` (`POST`, `GET`) and `/v1/admin/routes/{id}` (`GET`, `PATCH`, `DELETE`) — the routes
   that map to destinations.
+- `/v1/apps/{app_id}/routes` (`POST`, `GET`) and `/v1/apps/{app_id}/routes/{id}` (`GET`, `PATCH`, `DELETE`) —
+  app-scoped route CRUD with the admin bodies, behind the same app key gate as the app destinations (the key's
+  app must be the `{app_id}` in the path, else `403`). Every route an app creates is `owner_kind='app'`,
+  `owner_app_id=<app_id>` and `app_pattern=<app_id>`, set by the service from the key and never read from the
+  body (an `owner_*` or `app_id` body field is `400 invalid JSON body`). A body `app_pattern` may be omitted
+  (it defaults to the app id) or equal the app id on `POST`; on `PATCH` it may only repeat the app id; a
+  wildcard, a glob or another app's id is `400 app_pattern must be the app's own id`, so an app route can
+  never match another app's messages. A route may link only destinations the app can use (operator-owned, or
+  its own): another app's destination is `400 unknown destination`, the same answer as an absent one. A
+  list returns only the app's own routes; a route the app does not own (the operator's, a wildcard route,
+  another app's) is `404 route does not exist`, byte-identical to an absent one on `GET`, `PATCH` and
+  `DELETE` (so `DELETE` here is not idempotent: absent is 404). The owner is checked on the row the store
+  locked (`PATCH`) or inside the one `DELETE` statement, never in a separate read. A `409 route already
+  exists` on `POST` or `PATCH` tells the caller that the pair (its app id, channel pattern) is taken by any
+  route, including an operator route for that app id (the uniqueness key is global, not per owner); a `GET`
+  of an id it does not own stays `404`. An ownership refusal on a read is logged at warn (app id and route
+  id), the response stays identical to an absent one. The `route` objects an app receives carry
+  `"owner_kind":"app"` and `"owner_app_id":"<app_id>"`. Other errors: `400 invalid route id`,
+  `400 request violates a data constraint` (a database CHECK the validators did not catch, mapped
+  defensively) and `413 request body too large`.
+- `/v1/apps/{app_id}/heartbeats` (`POST`, `GET`), `/v1/apps/{app_id}/heartbeats/{id}` (`GET`, `PATCH`, `DELETE`)
+  and `POST /v1/apps/{app_id}/heartbeats/{id}/pause` and `/resume` — app-scoped heartbeat check CRUD with the
+  admin bodies, behind the same app key gate. Every check an app creates is `owner_kind='app'`,
+  `owner_app_id=<app_id>` and registered under `app_id=<app_id>` (so its ping path is
+  `/v1/heartbeats/<app_id>/<name>`). A body `app_id` may be omitted, empty, `null` or the app's own id, on
+  `POST` and `PATCH` alike, else `400 app_id must be the app's own id`; an `owner_kind` or `owner_app_id`
+  body field is `400 invalid JSON body`; `name` stays immutable (`400 app_id and name are immutable` when
+  sent on `PATCH`). The `check` objects an app receives carry `"owner_kind":"app"` and
+  `"owner_app_id":"<app_id>"`. Other errors: `400 invalid check id`, `400 request violates a data
+  constraint` (a database CHECK the validators did not catch, mapped defensively) and `413 request body too
+  large`. A check may alert only destinations the app can use (its own and the
+  operator's), else `400 unknown destination`. A list returns only the app's own checks; a check the app does
+  not own (the operator's under the same `app_id`, or another app's) is `404 check not found`, byte-identical
+  to an absent one on every method, `PATCH` with an empty body included. The owner travels in the row lock of
+  `PATCH`, `pause` and `resume` and in the `DELETE` statement. The checker and its alert flush are unchanged:
+  an alert skips a destination the check's app may not use, as before.
 - `/v1/admin/apps/{app_id}/ntfy-publisher` (`POST`, `GET`, `DELETE`) — the per-app ntfy publisher token
   that `to.recipient` delivery publishes with. `POST` mints one through provisioning-api
   (`DELIVERY_PROVISIONING_URL`; unset answers 503) and stores it sealed, `GET` returns the record (never
@@ -61,7 +118,11 @@ the VPS; person-service + admin UI are Cloudflare-native.
   closed until a re-mint. It does not revoke the token in ntfy.
 
 - `POST /v1/messages` (submit, optional `?wait=N`), `GET /v1/messages/{id}?app_id=` and
-  `GET /v1/messages?app_id=&idempotency_key=` — the app envelope API. A future `deliver_at` holds the
+  `GET /v1/messages?app_id=&idempotency_key=` — the app envelope API. Every route here (and the two
+  `DELETE` forms below) needs an app key: the key's app is the caller, and an asserted `app_id` (body or
+  `?app_id=`) that is present and differs is `403 app_id does not match app key`, so one app can no longer
+  submit as, read, cancel or replace another app's messages. `POST /v1/admin/messages` takes the same body
+  and `wait` with the operator proxy token and any `app_id` (admin send-test uses it). A future `deliver_at` holds the
   message (status `scheduled`) until a release poller (1s interval, batches of 100) moves it into the
   queue; the app cancels or replaces it until then with `DELETE /v1/messages/{id}?app_id=` and
   `DELETE /v1/messages?app_id=&idempotency_key=` (idempotent 200; replace is a re-post of the same
@@ -87,25 +148,121 @@ the VPS; person-service + admin UI are Cloudflare-native.
   `deliver_at`, so a long-scheduled message keeps its full retention after release; a cancelled message
   ages from `cancelled_at` instead.
 
-**Exposure and authentication.** delivery-api has no authentication of its own and stays bound to
-`127.0.0.1:8300`; Cloudflare Access is its only boundary. It is published through the shared Tunnel as
-`notifs-delivery.4irl.app` (public hostname → `http://localhost:8300`) behind one **Service Auth Access
-application** for the whole hostname, whose policy allows the admin proxy token only. App tokens are not
-authorized yet, so apps cannot reach `/v1/messages` until the operator adds them.
+**Exposure and authentication.** delivery-api stays bound to `127.0.0.1:8300` and has two layers.
+Cloudflare Access is the network gate: it only says "some allowed service token", never which app. It is
+published through the shared Tunnel as `notifs-delivery.4irl.app` (public hostname → `http://localhost:8300`)
+behind one **Service Auth Access application** for the whole hostname, whose policy allows the admin proxy
+token only until the operator adds app tokens. The second layer is delivery-api's own per-app identity (see
+"App identity" below): every app-facing endpoint needs `Authorization: Bearer dak_...`, and `/v1/admin/*`
+stays operator-only through the Access `/v1/admin` split. The exchange endpoint `/v1/app-identity/exchange`
+and the health checks need only the Access gate.
 
 **Before the first app is onboarded, or the `notifs-watchdog` token is authorized** (the watchdog is a
 non-proxy token on this host too), split the hostname into two path-scoped Access apps, most specific
 path first: `notifs-delivery.4irl.app/v1/admin` (proxy token only, so an app token gets 403 on the
 `ntfy-publisher` mint, which makes provisioning-api create an ntfy publisher user and token for any
 `app_id`, and on rotate-secret) and the whole hostname (the proxy token plus the per-app tokens, for
-`/v1/messages`, `/readyz` and `/healthz`). Never add an app token to a policy that covers `/v1/admin`.
+`/v1/messages`, `/v1/heartbeats`, `/v1/apps/*`, `/v1/app-identity/exchange`, `/readyz` and `/healthz`). Never add an app token to a policy that covers `/v1/admin`.
 
-`app_id` on `/v1/messages` is still caller-asserted: any holder of an authorized token can submit as, or
-read the status of, any app (and can cancel or replace any app's scheduled messages through
-`DELETE /v1/messages` and replace-by-repost), so per-app tokens are an operator-trust boundary, not
-isolation between apps. Never publish the hostname before its Access app exists. Operator runbook: create the Access app
-and add the proxy token, add the Tunnel public hostname, then set the Pages `DELIVERY_API_URL` binding and
-add `/delivery` to the `notifs-admin` Bypass app.
+An app's Access token alone no longer lets it act as another app: `/v1/messages`, the heartbeat pings and
+`/v1/apps/{app_id}/…` resolve the caller from its delivery key, never from a caller-written `app_id`. An
+app that was onboarded before this model must obtain a key (its next deploy through the `notifs-app`
+action, then one operator approval) before any of those calls work. Never publish the hostname before its
+Access app exists. Operator runbook: create the Access app and add the proxy token, add the Tunnel public
+hostname, then set the Pages `DELIVERY_API_URL` binding and add `/delivery` to the `notifs-admin` Bypass
+app. The per-app identity runbook (approve, revoke, unbind) is in `docs/app-integration-guide.md`
+("Operator runbook: app identities").
+
+### App identity
+
+An app proves which app it is with a delivery key it gets from its own GitHub Actions deploy, independent
+of its Access token.
+
+1. The app's deploy workflow requests a GitHub OIDC token (audience `DELIVERY_OIDC_AUDIENCE`, default
+   `notifs-delivery`) and posts `{"app_id","token"}` to `POST /v1/app-identity/exchange` (behind the Access
+   whole-host gate). delivery-api verifies the token (below) and reads `repository_id`, `repository_owner_id`,
+   `workflow_ref`, `ref`, `environment` and `run_id` from it.
+2. No binding for that `app_id`: it files a **pending request** (a repeat with the same claims refreshes the
+   one row) and answers `202 {"status":"pending","request_id"}`. At most 20 requests may be pending in
+   total; past that a new one is `429 too many pending identity requests`. A pending request nobody
+   decides is deleted by the periodic cleanup once it has gone `DELIVERY_PENDING_IDENTITY_REQUEST_DAYS`
+   (default 7, integer 1-365; an invalid value fails startup) without a refresh, so stale requests cannot
+   hold the cap forever; the app's next deploy simply files a fresh one.
+3. The operator approves or rejects it in the admin UI (**App identities**) or through
+   `/v1/admin/app-identity/requests/{id}/approve|reject`. Approval creates the **binding**
+   `app_id` ← (repository id, owner id, workflow path, ref, environment) and deletes the request
+   together with every other pending request for that app id or workflow identity (they can never
+   be approved now, and would otherwise hold pending-cap slots);
+   a rejected request stays in the list for 30 days (the periodic cleanup, which also sweeps the
+   OIDC replay ledger and the stale pending requests above, then deletes it), and a later exchange with the same claims files a fresh
+   pending request.
+4. With a binding, an exchange whose claims all match issues a **new key** (`200 {"status":"issued","app_id","key","key_id"}`,
+   the plaintext only here, once), marks the app's other live keys superseded in the same transaction, and
+   the superseded key keeps working for 24 h. Claims that differ from the binding in any of the five fields
+   are `403 identity does not match the approved binding` and file nothing, so an `app_id` cannot be taken
+   over through the queue. A binding is only changed by unbinding and approving again.
+5. `POST /v1/app-identity/exchange` also answers `400` (malformed body or `app_id`), `401 invalid identity
+   token` (any token failure: signature, issuer, audience, expiry, replayed `jti`; the reason is logged, not
+   returned), `413 request body too large` (the body is capped at 32 KiB) and `503 identity unavailable`
+   (the GitHub signing keys could not be fetched, or identity is not configured). A store failure is
+   `500 internal error`, with `app identity service error` in the log. Every exchange is one log line (app, repository, workflow, ref, environment, run, outcome,
+   duration), never the token or the key.
+
+**Keys.** `dak_` plus 43 base64url characters from 32 random bytes; only the SHA-256 is stored, plus a
+`dak_` + 4-character hint for display. A key is valid while it is not revoked and is either the newest or
+less than 24 h past being superseded. There is no time-based expiry. `requireAppKey` answers `401 app key
+required` (missing or malformed header, with `WWW-Authenticate: Bearer`), `401 invalid app key` (unknown,
+revoked, past grace or unbound), `403 app_id does not match app key` (a present, different `app_id`) and
+`503 identity unavailable` (store error; fail closed). It runs on `/v1/messages`, the heartbeat pings and
+`/v1/apps/{app_id}/…`, never on `/healthz`, `/readyz`, the exchange or `/v1/admin/*`. The Bearer `dak_`
+key requirement on `/v1/messages*` and the heartbeat pings is enforced unconditionally on deploy: there
+is no flag or transition window, and no app is live on the old Access-token-only path. `last_used_at` is
+written at most once a minute per key. Failures log the reason and the key hint, never the key.
+
+**Operator identity API** (under `/v1/admin`, proxy token only): `GET /v1/admin/app-identity/requests`
+(pending first, then rejected from the last 30 days), `POST …/requests/{id}/approve` (`201`; `404` unknown,
+`409 request is not pending` for an already rejected one, `409 app already bound`, `409 workflow identity
+already bound` when another app holds the same workflow identity, `409 app id overlaps an approved app
+id` when the id is an underscore-extension of a bound id or the reverse, such as `urls_beta` next to
+`urls`, because destination names only need the prefix `<app_id>_` and the two apps' name spaces would
+overlap), `POST …/requests/{id}/reject` (`200`,
+idempotent on a rejected request), `GET …/bindings` (each with its keys and a derived state `active`,
+`superseded` or `revoked`; a key past its 24 h grace reads `revoked` with reason `superseded`),
+`POST …/keys/{id}/revoke` (`200`, idempotent) and `DELETE …/bindings/{app_id}` (`200 {"app_id","deleted"}`,
+idempotent).
+
+**Unbind.** Deleting the binding removes its keys through `app_keys.app_id … ON DELETE CASCADE` in the same
+statement, so every key stops resolving at once. Because the keys are deleted, not updated, the
+`revoked_reason = 'unbound'` value that migration 0008's `CHECK` still allows is never written (a dead
+value, kept so the migration stays untouched). Objects the app owns are kept (owner stays that `app_id`,
+unmanageable through the app API until it is bound again; the operator can still edit or delete them
+through `/v1/admin`).
+
+**Tables** (migration `0008_app_identity.sql`; ownership columns are `0007_ownership.sql`):
+`app_bindings` (one row per `app_id`, unique on the workflow identity so one workflow cannot be bound to two
+apps), `app_registration_requests` (`pending` or `rejected`; a partial unique index on the claims of the
+pending rows), `app_keys` (hash, hint, `superseded_at`, `revoked_at`, `revoked_reason`, `last_used_at`) and
+`oidc_replay` (one row per accepted token `jti` until its expiry plus the 60 s leeway, swept every 15
+minutes by its own loop). `destinations`, `routes` and `heartbeat_checks` carry `owner_kind`
+(`operator` or `app`) and `owner_app_id`; an app-owned row can only be used by messages from that app
+(enforced at write time and again in `Resolve`), operator-owned destinations are usable by every app.
+
+**GitHub OIDC verification.** Issuer fixed to `https://token.actions.githubusercontent.com`, RS256 only,
+`aud` must equal `DELIVERY_OIDC_AUDIENCE`, `exp`/`nbf`/`iat` with 60 s leeway, and a `jti` never seen before.
+The signing keys come from the issuer's `/.well-known/jwks` (5 s fetch timeout), fetched on the first
+exchange and then cached in memory for the life of the process. A token whose `kid` is not in the cache triggers a refetch, at most once per minute
+(a failed fetch counts, so an unreachable GitHub is not hammered); a token with an unknown `kid` inside that
+minute is `401`, and while the keys cannot be fetched at all an exchange is `503 identity unavailable`.
+Rotating GitHub's keys therefore needs no restart.
+
+**Dev-mode OIDC bypass.** The local and CI stacks cannot get real GitHub tokens, so
+`DELIVERY_OIDC_JWKS_FILE` points the verifier at a static JWKS file (generated by `make dev-oidc-keys` into
+the gitignored `.local/dev-oidc/`), and it is honoured only when `DELIVERY_OIDC_DEV_MODE=1` is also set;
+the file without the flag fails startup, and an invalid flag value (anything but empty, `0` or `1`) fails
+startup. In that mode GitHub's keys are **not** trusted and anyone holding the dev private key can mint
+any identity, so **never set `DELIVERY_OIDC_DEV_MODE` or `DELIVERY_OIDC_JWKS_FILE` in production**. The
+prod compose file sets only `DELIVERY_OIDC_AUDIENCE` (default `notifs-delivery`), and a test asserts it
+sets neither dev variable. Startup logs a warning (`oidc verifier uses a static dev JWKS file: GitHub's signing keys are NOT trusted`) when a static file is loaded.
 
 ## System diagram
 
@@ -136,7 +293,7 @@ graph TD
   API -->|ntfy CLI| NTFY
   API -->|dual-write, service token| WORKER
   APPS -->|service token| TUN
-  APPS -->|per-app service token, POST /v1/messages| TUN
+  APPS -->|"per-app service token + dak_ key, /v1/messages, /v1/heartbeats, /v1/apps/*"| TUN
   APPS -->|publish/subscribe, ntfy token| NTFY
   WD -->|probes: notifs-watchdog token, ntfy anonymous| TUN
   WD -->|state change + daily summary| DISCORD["Discord webhook"]
@@ -243,8 +400,9 @@ sequenceDiagram
   `/v1/admin/destinations`; the query string is kept). delivery-api has no auth of its own, so the
   Function is stricter than the other proxies, in this order: **allowlist → cross-site guard → `proxyTo`**
   (JWT auth runs inside `proxyTo`):
-  - Allowlist (anything else is `404 {"error":"not found"}` with no upstream call): `GET /delivery/readyz`,
-    `POST /delivery/v1/messages`, and any method on `/delivery/v1/admin/<at least one segment>`. The match
+  - Allowlist (anything else is `404 {"error":"not found"}` with no upstream call): `GET /delivery/readyz`
+    and any method on `/delivery/v1/admin/<at least one segment>` (send-test posts to
+    `/delivery/v1/admin/messages`; the app-facing `/v1/messages` needs an app key and is never proxied). The match
     is on the normalized path on a segment boundary; `%2f`, `%5c` and `//` are refused.
   - Cross-site guard on every non-GET (HEAD and OPTIONS included): needs `Sec-Fetch-Site: same-origin` or
     an `X-Requested-With` header, else `403 {"error":"cross-site request refused"}`; a request with a body
@@ -252,7 +410,9 @@ sequenceDiagram
     before auth, so an unauthenticated cross-site write is 403, not 401.
   - The Delivery tab is gated by `VITE_DESTINATIONS_ENABLED=true` (status card, Destinations, Routes) and
     `VITE_PENDING_SENDS_ENABLED=true` (Pending sends) and `VITE_DELIVERY_LOG_ENABLED=true` (Delivery Log)
-    and `VITE_HEARTBEATS_ENABLED=true` (Heartbeats; requires `VITE_DESTINATIONS_ENABLED`).
+    and `VITE_HEARTBEATS_ENABLED=true` (Heartbeats; requires `VITE_DESTINATIONS_ENABLED`)
+    and `VITE_APP_IDENTITIES_ENABLED=true` (App identities: approve or reject an app's identity request,
+    revoke a key, unbind an app; independent of the other flags, shown only with its backend).
     The Pending sends section lists scheduled messages (soonest first) and cancels one through
     `DELETE /delivery/v1/admin/scheduled-messages/{id}`, a non-GET that the existing `/delivery` Access
     Bypass and the Pages Function allowlist already cover.
@@ -271,7 +431,7 @@ sequenceDiagram
 | `DISABLE_ACCESS_AUTH`        | plaintext | **local dev only** (`true` disables JWT check). Never set in prod. |
 
 Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABLED=true`,
-`VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`, `VITE_PENDING_SENDS_ENABLED=true`, `VITE_HEARTBEATS_ENABLED=true`.
+`VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`, `VITE_PENDING_SENDS_ENABLED=true`, `VITE_HEARTBEATS_ENABLED=true`, `VITE_APP_IDENTITIES_ENABLED=true`.
 
 ---
 
@@ -573,11 +733,15 @@ graph TD
   deploy therefore skips the VPS deploy (fail closed, intended). If the Worker lags behind the API (for
   example the Worker deploy failed and the API was deployed some other way), provision leaves the password
   out, reset returns `429`, and **set-password returns `500`** until the Worker and migration `0003` are
-  live. The admin UI deploys with or before the API (it runs in parallel with `deploy-prod`, so it is live
-  at about the same time); an older UI against the new API would drop the returned `password`, so deploy
-  it first when deploying by hand. Migration `0003` is additive, so an older Worker or API keeps working
-  against it; rolling back the API alone is safe, while rolling back the Worker removes the new routes and
-  degrades the API as above.
+  live. `deploy-admin-ui` has no `needs` while `deploy-prod` waits for `build-prod` and
+  `deploy-person-service`, so the admin UI can go live ahead of the API by the image build plus Worker
+  deploy time, and stays ahead if the Worker deploy fails. During that window the new UI talks to the old
+  API: the operator send-test returns 404 (`/delivery/v1/admin/messages`), the App identities section
+  shows a load error, and the Owner column reads unknown, until the API is up. An older UI against the new
+  API would drop the returned `password`, so deploy the UI first when deploying by hand (the UI-ahead window
+  above is the accepted side of that ordering). Migration `0003` is additive, so an older Worker or API
+  keeps working against it; rolling back the API alone is safe, while rolling back the Worker removes the
+  new routes and degrades the API as above.
 - **VPS deploy** (`prod-deploy.yml`): SSH via `cloudflared access ssh` (own SSH key + deploy service
   token), SCPs compose + ntfy config, `docker compose up -d`. Dual-write creds delivered as Docker
   Compose secrets (`PERSON_SERVICE_ACCESS_CLIENT_*`), never a plaintext `.env`.
@@ -635,7 +799,9 @@ the operator's shell; never commit one (the KV namespace id needs the repo owner
    and a "recovered" post after restoring it.
 
 The Heartbeats admin section ships with its backend: `VITE_HEARTBEATS_ENABLED=true` is set in
-`pages-deploy.yml` in the same change as the backend. The watchdog goes live separately, once this runbook is done.
+`pages-deploy.yml` in the same change as the backend. The same holds for **App identities**:
+`VITE_APP_IDENTITIES_ENABLED=true` is set in `pages-deploy.yml`, so the section is live in production with
+the backend that serves `/v1/admin/app-identity/*` (until the VPS deploy finishes it shows a load error). The watchdog goes live separately, once this runbook is done.
 
 ## Debugging quick reference
 
@@ -653,6 +819,16 @@ The Heartbeats admin section ships with its backend: `VITE_HEARTBEATS_ENABLED=tr
 | Watchdog reports delivery-api (or another target) down | Read the Discord detail: `access denied (HTTP 403/3xx)` = `notifs-watchdog` token missing from that Access app or expired; `timeout`, `request failed` or `HTTP 5xx` (e.g. 502/530) = VPS, Tunnel or the service is down (the watchdog runs on Cloudflare's network, independent of the VPS, so this is a real outage); `readiness status …` = a `/readyz` problem. An alert means two probes 30 s apart both failed (a deploy that keeps a container down longer than that also alerts, and recovers on the next run). To see what each attempt returned (status, duration, detail) and whether the retry cleared a failure, read the Worker's logs (Cloudflare dashboard > Workers & Pages > `notifs-watchdog` > Logs, or `npx wrangler tail notifs-watchdog`) and search `watchdog: probe`. Nothing posts at all = the Worker is not running: `npx wrangler tail notifs-watchdog`, then check the cron trigger and the three secrets. |
 | Rotate secret → 404 right after a deploy              | The Pages UI deploys in parallel with the backend; an old `delivery-api` binary has no `rotate-secret` route. Wait for the `deploy-prod` job, then retry (not "destination does not exist"). |
 | "Stalled" status card or Heartbeats load error right after the first heartbeats deploy | The Pages UI deployed before the VPS: the old `delivery-api` binary has no `/v1/admin/heartbeats` routes or `heartbeat_checker` field, and migration 0006 may not be applied yet. Wait for the `deploy-prod` job to finish, then refresh. |
+| App call `401 {"error":"app key required"}`           | No `Authorization: Bearer dak_...` header, or the value is not a well-formed key (wrong scheme, wrong length). The Cloudflare Access headers alone are not enough on `/v1/messages`, the heartbeat pings and `/v1/apps/*`. |
+| App call `401 {"error":"invalid app key"}`            | The key is well-formed but unknown, revoked, unbound, or a superseded key more than 24 h after the app's next deploy issued a newer one (deploys that never ran, or a stale secret on the app host). `GET /v1/admin/app-identity/bindings` shows each key's state (for an unbound app the keys are gone and the app has no row; re-run the deploy to file a new request); the delivery-api log line `app key rejected` has the reason and the key hint (never the key). Fix: redeploy through the `notifs-app` action to mint a key and store it. |
+| App call `403 {"error":"app_id does not match app key"}` | The body, `?app_id=` or path names a different app than the key's. This one carries the JSON `error` body from delivery-api; a `403` without it comes from Cloudflare Access (the Access token is wrong or not authorized on that path). |
+| App call `503 {"error":"identity unavailable"}`       | The key lookup failed (Postgres) or the app identity service is not configured. It fails closed; check `docker compose logs delivery-api` for `app key lookup failed`. |
+| Exchange `202 {"status":"pending"}` / deploy fails "awaits operator approval" | Expected on the first deploy (or after an unbind): no binding yet. Approve the request in the admin UI **App identities** section; the next deploy then gets a key. |
+| Exchange `403 identity does not match the approved binding` | The app is bound, but the token's repository, workflow file, ref or environment differs from the approved binding (a renamed workflow, a deploy from another branch, a new `environment:`). Nothing is filed. Fix the workflow, or unbind the app and approve the new request. |
+| Exchange `401 invalid identity token`                 | The token failed a check: wrong audience (the action's `audience` input differs from `DELIVERY_OIDC_AUDIENCE`), expired, a replayed `jti` (the same token exchanged twice), a bad signature or issuer, or an unknown signing key inside the one-minute refetch window. The exact reason is in the delivery-api log, not the response. |
+| Exchange `429 too many pending identity requests`     | 20 requests are already pending (any GitHub repo that can mint a token for the audience can file one). Reject the stale ones in the admin UI (undecided ones also expire after `DELIVERY_PENDING_IDENTITY_REQUEST_DAYS`, 7 by default); the app's next deploy retries. |
+| Exchange `503 identity unavailable`                   | GitHub's signing keys could not be fetched (the log has `oidc jwks fetch failed`; retries are limited to one fetch a minute). A Postgres failure during an exchange is instead `500 internal error` (log `app identity service error`). |
+| delivery-api exits at start with `DELIVERY_OIDC_JWKS_FILE requires DELIVERY_OIDC_DEV_MODE=1` or `invalid DELIVERY_OIDC_DEV_MODE: must be empty, 0 or 1` | The dev-only JWKS file variable is set without the dev flag, or the dev flag has an invalid value. Production must set neither: remove both. |
 | Admin API `500` "no such table: app"                  | person-service Worker deployed without applying D1 migration 0002 — run `wrangler d1 migrations apply person-service --remote` (CI does this automatically before deploy).                           |
 | Direct browser visit to a backend → 403               | Expected post-lockdown (service-token-only). Rollback = re-add `U4I Dev Policy`.                                                                                                                     |
 | Setup page asks for a login                           | An Access application (or a wildcard `*.4irl.app` Access app) is covering `notifs-setup.4irl.app`; the page is meant to be public. Remove or exclude the hostname from that app.                       |
