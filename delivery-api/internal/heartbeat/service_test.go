@@ -51,6 +51,8 @@ type fakeStore struct {
 	cleared     []clearCall
 	pingCalls   []pingCall
 	createCalls []time.Time
+	// pingErr is returned by RecordPing when set.
+	pingErr error
 
 	lifecycleErr   error
 	lifecycleCalls []lifecycleCall
@@ -101,7 +103,7 @@ func (store *fakeStore) RecordPing(_ context.Context, appID string, name string,
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	store.pingCalls = append(store.pingCalls, pingCall{appID: appID, name: name, kind: kind, now: now})
-	return StoredCheck{AppID: appID, Name: name}, nil
+	return StoredCheck{AppID: appID, Name: name}, store.pingErr
 }
 
 func (store *fakeStore) Create(_ context.Context, check NewCheck, now time.Time) (StoredCheck, error) {
