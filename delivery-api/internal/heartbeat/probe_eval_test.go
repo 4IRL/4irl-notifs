@@ -102,8 +102,6 @@ func assertProbeResult(testInstance *testing.T, got ProbeResult, wantReason stri
 	}
 }
 
-func statusPointer(code int) *int { return &code }
-
 func TestRunProbeStatusAndBodyMatching(testInstance *testing.T) {
 	var redirectTargetHits atomic.Int64
 	server := newProbeServer(testInstance, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -137,25 +135,25 @@ func TestRunProbeStatusAndBodyMatching(testInstance *testing.T) {
 		wantStatus *int
 		wantDetail string
 	}{
-		{name: "listed 200", path: "/ok", statuses: []int{200}, wantStatus: statusPointer(200)},
-		{name: "listed 301 is not followed", path: "/redirect", statuses: []int{301}, wantStatus: statusPointer(301)},
+		{name: "listed 200", path: "/ok", statuses: []int{200}, wantStatus: intPointer(200)},
+		{name: "listed 301 is not followed", path: "/redirect", statuses: []int{301}, wantStatus: intPointer(301)},
 		{
 			name: "unlisted 503", path: "/down", statuses: []int{200},
-			wantReason: ReasonHTTPStatus, wantStatus: statusPointer(503), wantDetail: "HTTP 503",
+			wantReason: ReasonHTTPStatus, wantStatus: intPointer(503), wantDetail: "HTTP 503",
 		},
-		{name: "needle present", path: "/ok", statuses: []int{200}, bodyMatch: stringPointer("world"), wantStatus: statusPointer(200)},
+		{name: "needle present", path: "/ok", statuses: []int{200}, bodyMatch: stringPointer("world"), wantStatus: intPointer(200)},
 		{
 			name: "needle absent", path: "/ok", statuses: []int{200}, bodyMatch: stringPointer("nope"),
-			wantReason: ReasonBodyMismatch, wantStatus: statusPointer(200), wantDetail: detailBodyMismatch,
+			wantReason: ReasonBodyMismatch, wantStatus: intPointer(200), wantDetail: detailBodyMismatch,
 		},
-		{name: "needle ending at 64 KiB", path: "/edge", statuses: []int{200}, bodyMatch: stringPointer("needle"), wantStatus: statusPointer(200)},
+		{name: "needle ending at 64 KiB", path: "/edge", statuses: []int{200}, bodyMatch: stringPointer("needle"), wantStatus: intPointer(200)},
 		{
 			name: "needle ending one past 64 KiB", path: "/past", statuses: []int{200}, bodyMatch: stringPointer("needle"),
-			wantReason: ReasonBodyMismatch, wantStatus: statusPointer(200), wantDetail: detailBodyMismatch,
+			wantReason: ReasonBodyMismatch, wantStatus: intPointer(200), wantDetail: detailBodyMismatch,
 		},
 		{
 			name: "status mismatch wins over body match", path: "/down", statuses: []int{200}, bodyMatch: stringPointer("x"),
-			wantReason: ReasonHTTPStatus, wantStatus: statusPointer(503), wantDetail: "HTTP 503",
+			wantReason: ReasonHTTPStatus, wantStatus: intPointer(503), wantDetail: "HTTP 503",
 		},
 	}
 	for _, testCase := range testCases {
@@ -191,7 +189,7 @@ func TestRunProbeDoesNotReadPastTheBodyLimit(testInstance *testing.T) {
 
 	claim := probeEvalClaim(server.URL, []int{200}, stringPointer("needle"), 5)
 	got := runProbe(context.Background(), client, nil, claim)
-	assertProbeResult(testInstance, got, "", statusPointer(200), "")
+	assertProbeResult(testInstance, got, "", intPointer(200), "")
 
 	select {
 	case <-handlerDone:
@@ -225,7 +223,7 @@ func TestRunProbeTimeouts(testInstance *testing.T) {
 		stalling := &http.Client{Transport: stalledBodyTransport{}}
 		claim := probeEvalClaim("https://stalled.invalid/", []int{200}, stringPointer("x"), 1)
 		got := runProbe(context.Background(), stalling, nil, claim)
-		assertProbeResult(testInstance, got, ReasonTimeout, statusPointer(200), "timed out after 1s", "stalled.invalid")
+		assertProbeResult(testInstance, got, ReasonTimeout, intPointer(200), "timed out after 1s", "stalled.invalid")
 	})
 }
 
@@ -271,7 +269,7 @@ func TestRunProbeAppliesTheConfiguredTimeoutAsTheRequestDeadline(testInstance *t
 
 	started := time.Now()
 	got := runProbe(context.Background(), client, nil, probeEvalClaim(server.URL, []int{200}, nil, MaxProbeTimeoutSeconds))
-	assertProbeResult(testInstance, got, "", statusPointer(200), "")
+	assertProbeResult(testInstance, got, "", intPointer(200), "")
 
 	deadline := recorder.deadline.Load()
 	if deadline == nil {
@@ -349,7 +347,7 @@ func TestRunProbeReportsABodyReadFailureAsNetwork(testInstance *testing.T) {
 
 	claim := probeEvalClaim(server.URL, []int{200}, stringPointer("never"), 5)
 	got := runProbe(context.Background(), client, nil, claim)
-	assertProbeResult(testInstance, got, ReasonNetwork, statusPointer(200), detailBodyRead, server.URL)
+	assertProbeResult(testInstance, got, ReasonNetwork, intPointer(200), detailBodyRead, server.URL)
 }
 
 func TestRunProbeRequestShape(testInstance *testing.T) {
@@ -366,7 +364,7 @@ func TestRunProbeRequestShape(testInstance *testing.T) {
 
 	testInstance.Run("user agent and no access headers without a token", func(testInstance *testing.T) {
 		got := runProbe(context.Background(), client, nil, probeEvalClaim(server.URL, []int{200}, nil, 5))
-		assertProbeResult(testInstance, got, "", statusPointer(200), "")
+		assertProbeResult(testInstance, got, "", intPointer(200), "")
 		if gotAgent.Load() != "4irl-delivery-probe/1" {
 			testInstance.Fatalf("User-Agent = %v, want 4irl-delivery-probe/1", gotAgent.Load())
 		}
@@ -378,7 +376,7 @@ func TestRunProbeRequestShape(testInstance *testing.T) {
 		parent, cancel := context.WithCancel(context.Background())
 		cancel()
 		got := runProbe(parent, client, nil, probeEvalClaim(server.URL, []int{200}, stringPointer("hello"), 5))
-		assertProbeResult(testInstance, got, "", statusPointer(200), "")
+		assertProbeResult(testInstance, got, "", intPointer(200), "")
 	})
 }
 
@@ -457,6 +455,8 @@ func TestRunProbeAccessToken(testInstance *testing.T) {
 		{"unsealable blob", sealer, []byte("not a sealed blob at all, just bytes"), detailCredentialOpen},
 		{"empty client id", sealer, mustSeal(probeEvalCheckID, AccessToken{ClientID: "", ClientSecret: "secret-value"}), detailCredentialOpen},
 		{"credential with a space", sealer, mustSeal(probeEvalCheckID, AccessToken{ClientID: "id", ClientSecret: "secret value"}), detailCredentialShape},
+		{"empty client secret", sealer, mustSeal(probeEvalCheckID, AccessToken{ClientID: "id", ClientSecret: ""}), detailCredentialOpen},
+		{"client id with a newline", sealer, mustSeal(probeEvalCheckID, AccessToken{ClientID: "id\nx", ClientSecret: "secret-value"}), detailCredentialShape},
 		{"credential too long", sealer, mustSeal(probeEvalCheckID, AccessToken{ClientID: strings.Repeat("a", MaxAccessCredentialBytes+1), ClientSecret: "s"}), detailCredentialShape},
 	}
 	for _, testCase := range testCases {
@@ -476,7 +476,7 @@ func TestRunProbeAccessToken(testInstance *testing.T) {
 		claim := probeEvalClaim(server.URL, []int{200}, nil, 5)
 		claim.SealedAccessToken = mustSeal(probeEvalCheckID, AccessToken{ClientID: "abc.access", ClientSecret: "s3cret-value"})
 		got := runProbe(context.Background(), client, sealer, claim)
-		assertProbeResult(testInstance, got, "", statusPointer(200), "")
+		assertProbeResult(testInstance, got, "", intPointer(200), "")
 		if gotID.Load() != "abc.access" || gotSecret.Load() != "s3cret-value" {
 			testInstance.Fatalf("headers = %v / %v, want the stored values", gotID.Load(), gotSecret.Load())
 		}

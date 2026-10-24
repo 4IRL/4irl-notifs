@@ -100,25 +100,25 @@ func (prober *Prober) Scan(ctx context.Context) (scanErr error) {
 		}
 	}()
 
+	var claims []ProbeClaim
 	free := prober.config.Concurrency - int(prober.inFlight.Load())
 	if free > 0 {
-		claims, claimErr := prober.config.Store.ClaimDueProbes(ctx, prober.config.Now(), free)
+		claimed, claimErr := prober.config.Store.ClaimDueProbes(ctx, prober.config.Now(), free)
 		if claimErr != nil {
 			if !errors.Is(claimErr, context.Canceled) {
 				logger.Error("heartbeat probe scan failed", "error", claimErr)
 			}
 			return claimErr
 		}
-		// Recorded before the detached probes start, so it precedes any of their results.
-		prober.config.Freshness.Record(prober.config.Now())
-		for _, claim := range claims {
-			prober.inFlight.Add(1)
-			prober.probes.Add(1)
-			go prober.runClaim(ctx, claim)
-		}
-		return nil
+		claims = claimed
 	}
+	// Recorded before the detached probes start, so it precedes any of their results.
 	prober.config.Freshness.Record(prober.config.Now())
+	for _, claim := range claims {
+		prober.inFlight.Add(1)
+		prober.probes.Add(1)
+		go prober.runClaim(ctx, claim)
+	}
 	return nil
 }
 

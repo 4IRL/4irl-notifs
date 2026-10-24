@@ -93,7 +93,8 @@ Components:
   `/v1/admin/app-identity`), and an app manages only its own destinations, routes and checks under
   `/v1/apps/{app_id}` (see `ARCHITECTURE.md` "App identity"). It runs the delivery worker (webhook,
   Discord and ntfy sinks, including `to.recipient` delivery through each app's ntfy publisher
-  token), the scheduled-message releaser (`RunReleaser`), the heartbeat checker and the retention
+  token), the scheduled-message releaser (`RunReleaser`), the heartbeat checker, the heartbeat prober (website probe loop, 10 s scan,
+  bounded concurrency) and the retention
   sweeper in-process.
 - **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api and ntfy from outside
   the VPS and posts state changes to Discord.

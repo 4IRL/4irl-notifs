@@ -236,6 +236,10 @@ func TestProberScanPassesClaimClockAndHoldOffAtWriteTime(testInstance *testing.T
 	if fixture.store.limits()[0] != 2 {
 		testInstance.Fatalf("claim limit = %d, want 2", fixture.store.limits()[0])
 	}
+	logs := fixture.logs.String()
+	if !strings.Contains(logs, "heartbeat probe finished") || !strings.Contains(logs, "status=200") || !strings.Contains(logs, "applied=true") {
+		testInstance.Fatalf("success log missing status=200 or applied=true: %s", logs)
+	}
 }
 
 func TestProberConcurrencyBoundAndClaimLimit(testInstance *testing.T) {
@@ -776,11 +780,15 @@ func TestProberLogsNeverCarryTheTargetOrCredentials(testInstance *testing.T) {
 		fixture.config.Sealer = sealer
 		prober := fixture.prober(testInstance)
 
+		logLengthBefore := len(logs.String())
 		_ = prober.Scan(context.Background())
 		prober.Wait()
 		records := store.recorded()
 		if len(records) != 1 || records[0].result.Reason == nil || *records[0].result.Reason != testCase.reason {
 			testInstance.Fatalf("%s: records = %+v", testCase.reason, records)
+		}
+		if testCase.reason == ReasonTLS && strings.Contains(logs.String()[logLengthBefore:], "status=") {
+			testInstance.Fatalf("a TLS failure has no status but the log has one: %s", logs.String()[logLengthBefore:])
 		}
 		if !strings.Contains(logs.String(), "reason="+testCase.reason) {
 			testInstance.Fatalf("%s: reason missing from the log: %s", testCase.reason, logs.String())
