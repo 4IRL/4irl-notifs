@@ -31,6 +31,13 @@ func probeCheck(state string, failures int) StoredCheck {
 	return check
 }
 
+// downWithoutReason is a down probe check whose stored DownReason is nil.
+func downWithoutReason(failures int) StoredCheck {
+	check := probeCheck(StateDown, failures)
+	check.DownReason = nil
+	return check
+}
+
 func failResult(reason string, detail string) ProbeResult {
 	return ProbeResult{Reason: stringPointer(reason), Detail: detail}
 }
@@ -63,6 +70,8 @@ func TestApplyProbeResultTable(t *testing.T) {
 		{"down failure same reason keeps both", probeCheck(StateDown, 5), failResult(ReasonHTTPStatus, "new"), noHoldOff, true, "", StateDown, 6, ReasonHTTPStatus, "old detail"},
 		{"hold-off defers down", probeCheck(StateUp, ProbeFailureThreshold-1), failResult(ReasonTimeout, "x"), now.Add(time.Hour), true, "", StateUp, ProbeFailureThreshold, "", ""},
 		{"hold-off boundary transitions", probeCheck(StateUp, ProbeFailureThreshold-1), failResult(ReasonTimeout, "x"), now, true, AlertDown, StateDown, ProbeFailureThreshold, ReasonTimeout, "x"},
+		{"down nil reason failure keeps nil reason", downWithoutReason(5), failResult(ReasonTimeout, "new"), noHoldOff, true, "", StateDown, 6, "", "old detail"},
+		{"down success inside hold-off still recovers", probeCheck(StateDown, 5), ProbeResult{}, now.Add(time.Hour), true, AlertRecovered, StateUp, 0, "", ""},
 		{"hold-off success resets without transition", probeCheck(StateUp, ProbeFailureThreshold), ProbeResult{}, now.Add(time.Hour), true, "", StateUp, 0, "", ""},
 	}
 	for _, testCase := range cases {
@@ -180,8 +189,8 @@ func TestApplyProbeResultEmptyDetailStoredAsNil(t *testing.T) {
 		t.Fatalf("detail pointers = %v / %v, want nil", after.Probe.LastResult.Detail, after.Probe.DownDetail)
 	}
 	after, _, _ = ApplyProbeResult(probeCheck(StateUp, ProbeFailureThreshold-1), failResult(ReasonTimeout, "  \n "), baseTime.Add(time.Minute), time.Time{})
-	if after.Probe.LastResult.Detail != nil && *after.Probe.LastResult.Detail == "" {
-		t.Fatal("LastResult.Detail is a pointer to an empty string")
+	if after.Probe.LastResult.Detail != nil || after.Probe.DownDetail != nil {
+		t.Fatalf("blank detail pointers = %v / %v, want nil", after.Probe.LastResult.Detail, after.Probe.DownDetail)
 	}
 	after, _, _ = ApplyProbeResult(probeCheck(StateUp, ProbeFailureThreshold-1), failResult(ReasonTimeout, "boom"), baseTime.Add(time.Minute), time.Time{})
 	if derefString(after.Probe.LastResult.Detail) != "boom" || derefString(after.Probe.DownDetail) != "boom" {
@@ -206,6 +215,7 @@ func TestApplyProbeResultDenies(t *testing.T) {
 		result ProbeResult
 	}{
 		{"paused", paused, failResult(ReasonTimeout, "")},
+		{"paused success", paused, ProbeResult{}},
 		{"push check", newTestCheck(StateUp), failResult(ReasonTimeout, "")},
 		{"unknown state", probeCheck("bogus", 0), failResult(ReasonTimeout, "")},
 		{"missed reason", probeCheck(StateUp, 0), failResult(ReasonMissed, "")},
@@ -353,27 +363,77 @@ func TestAdvanceTickProbeFreshAnchorStaysUp(t *testing.T) {
 	}
 }
 
+// richProbeCheck is probeCheck with every pointer and slice field of the probe state populated,
+// so copy-on-write tests would notice a transition writing through any of them.
+func richProbeCheck(state string, failures int) StoredCheck {
+	check := probeCheck(state, failures)
+	check.Probe.Config.ExpectedStatuses = []int{200, 204}
+	check.Probe.Config.BodyMatch = stringPointer("ok")
+	check.Probe.SealedAccessToken = []byte{1, 2, 3}
+	check.Probe.LastResult = &ProbeResultRecord{
+		At:     baseTime,
+		Status: intPointer(503),
+		Reason: stringPointer(ReasonHTTPStatus),
+		Detail: stringPointer("bad gateway"),
+	}
+	check.Probe.DownDetail = stringPointer("stale detail")
+	return check
+}
+
+func TestCloneProbeSharesNothing(t *testing.T) {
+	original := richProbeCheck(StateDown, 3).Probe
+	want := *cloneProbe(original)
+	clone := cloneProbe(original)
+	if clone == original {
+		t.Fatal("clone is the same pointer")
+	}
+	clone.Config.ExpectedStatuses[0] = 500
+	*clone.Config.BodyMatch = "changed"
+	clone.SealedAccessToken[0] = 9
+	*clone.LastResult.Status = 500
+	*clone.LastResult.Reason = "changed"
+	*clone.LastResult.Detail = "changed"
+	clone.LastResult.At = baseTime.Add(time.Hour)
+	*clone.DownDetail = "changed"
+	clone.ConsecutiveFailures = 99
+	if !reflect.DeepEqual(*original, want) {
+		t.Fatalf("mutating the clone changed the original: %+v", *original)
+	}
+}
+
+func TestCloneProbePreservesNilSlices(t *testing.T) {
+	clone := cloneProbe(&ProbeState{})
+	if clone.Config.ExpectedStatuses != nil || clone.SealedAccessToken != nil || clone.LastResult != nil {
+		t.Fatalf("nil fields became non-nil: %+v", clone)
+	}
+}
+
 func TestProbeTransitionsAreCopyOnWrite(t *testing.T) {
-	downByTick := probeCheck(StateUp, 1)
 	resultNow := baseTime.Add(time.Minute)
+	pausedCheck := richProbeCheck(StateUp, 2)
+	pausedCheck.Paused = true
 	cases := []struct {
 		name  string
 		check StoredCheck
 		apply func(StoredCheck) StoredCheck
 	}{
-		{"pause", probeCheck(StateUp, 0), ApplyPause},
-		{"resume", func() StoredCheck { c := probeCheck(StateUp, 2); c.Paused = true; return c }(), func(c StoredCheck) StoredCheck { return ApplyResume(c, resultNow) }},
-		{"reset", probeCheck(StateUp, 2), func(c StoredCheck) StoredCheck { return ApplyProbeReset(c, resultNow) }},
-		{"tick", downByTick, func(c StoredCheck) StoredCheck {
-			next, _ := AdvanceTick(c, Deadline(c).Add(time.Second))
+		{"pause", richProbeCheck(StateUp, 0), ApplyPause},
+		{"resume", pausedCheck, func(check StoredCheck) StoredCheck { return ApplyResume(check, resultNow) }},
+		{"reset", richProbeCheck(StateUp, 2), func(check StoredCheck) StoredCheck { return ApplyProbeReset(check, resultNow) }},
+		{"tick", richProbeCheck(StateUp, 1), func(check StoredCheck) StoredCheck {
+			next, _ := AdvanceTick(check, Deadline(check).Add(time.Second))
 			return next
 		}},
-		{"result failure", probeCheck(StateUp, 1), func(c StoredCheck) StoredCheck {
-			next, _, _ := ApplyProbeResult(c, failResult(ReasonTimeout, "x"), resultNow, time.Time{})
+		{"result failure", richProbeCheck(StateUp, 1), func(check StoredCheck) StoredCheck {
+			next, _, _ := ApplyProbeResult(check, failResult(ReasonTimeout, "x"), resultNow, time.Time{})
 			return next
 		}},
-		{"result recovery", probeCheck(StateDown, 4), func(c StoredCheck) StoredCheck {
-			next, _, _ := ApplyProbeResult(c, ProbeResult{}, resultNow, time.Time{})
+		{"result going down", richProbeCheck(StateUp, ProbeFailureThreshold-1), func(check StoredCheck) StoredCheck {
+			next, _, _ := ApplyProbeResult(check, failResult(ReasonTimeout, "x"), resultNow, time.Time{})
+			return next
+		}},
+		{"result recovery", richProbeCheck(StateDown, 4), func(check StoredCheck) StoredCheck {
+			next, _, _ := ApplyProbeResult(check, ProbeResult{}, resultNow, time.Time{})
 			return next
 		}},
 	}

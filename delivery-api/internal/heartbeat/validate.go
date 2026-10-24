@@ -281,6 +281,7 @@ func SanitizeProbeDetail(detail string) string {
 		}
 		return char
 	}, redacted)
+	redacted = strings.TrimSpace(redacted)
 	if len(redacted) <= MaxProbeDetailBytes {
 		return redacted
 	}

@@ -131,46 +131,50 @@ func TestHeartbeatProbeConstraints(testInstance *testing.T) {
 		wantState string
 	}{
 		{label: "minimal row accepted", row: validProbeRow()},
-		{label: "url at 2048 bytes accepted", row: override(func(r *probeRow) { r.url = longURL })},
-		{label: "url over 2048 bytes rejected", row: override(func(r *probeRow) { r.url = longURL + "a" }), wantState: sqlStateCheckViolation},
-		{label: "http url rejected", row: override(func(r *probeRow) { r.url = "http://example.com/" }), wantState: sqlStateCheckViolation},
-		{label: "upper-case scheme rejected", row: override(func(r *probeRow) { r.url = "HTTPS://example.com/" }), wantState: sqlStateCheckViolation},
-		{label: "ten statuses accepted", row: override(func(r *probeRow) { r.expectedStatuses = tenStatuses })},
-		{label: "status bounds 100 and 599 accepted", row: override(func(r *probeRow) { r.expectedStatuses = statusList(100, 599) })},
-		{label: "eleven statuses rejected", row: override(func(r *probeRow) { r.expectedStatuses = statusList(oneEleven...) }), wantState: sqlStateCheckViolation},
-		{label: "zero statuses rejected", row: override(func(r *probeRow) { r.expectedStatuses = statusList() }), wantState: sqlStateCheckViolation},
-		{label: "status 99 rejected", row: override(func(r *probeRow) { r.expectedStatuses = statusList(99) }), wantState: sqlStateCheckViolation},
-		{label: "status 600 rejected", row: override(func(r *probeRow) { r.expectedStatuses = statusList(200, 600) }), wantState: sqlStateCheckViolation},
-		{label: "NULL status element rejected", row: override(func(r *probeRow) { r.expectedStatuses = []*int32{nil, int32Pointer(200)} }), wantState: sqlStateCheckViolation},
-		{label: "body match of one byte accepted", row: override(func(r *probeRow) { r.bodyMatch = strPtr("a") })},
-		{label: "body match of 256 bytes accepted", row: override(func(r *probeRow) { r.bodyMatch = strPtr(strings.Repeat("a", 256)) })},
-		{label: "empty body match rejected", row: override(func(r *probeRow) { r.bodyMatch = strPtr("") }), wantState: sqlStateCheckViolation},
-		{label: "body match over 256 bytes rejected", row: override(func(r *probeRow) { r.bodyMatch = strPtr(strings.Repeat("a", 257)) }), wantState: sqlStateCheckViolation},
-		{label: "timeout 1 accepted", row: override(func(r *probeRow) { r.timeoutSeconds = 1 })},
-		{label: "timeout 8 accepted", row: override(func(r *probeRow) { r.timeoutSeconds = 8 })},
-		{label: "timeout 0 rejected", row: override(func(r *probeRow) { r.timeoutSeconds = 0 }), wantState: sqlStateCheckViolation},
-		{label: "timeout 9 rejected", row: override(func(r *probeRow) { r.timeoutSeconds = 9 }), wantState: sqlStateCheckViolation},
-		{label: "interval 86400 accepted", row: override(func(r *probeRow) { r.intervalSeconds = 86400 })},
-		{label: "interval 59 rejected", row: override(func(r *probeRow) { r.intervalSeconds = 59 }), wantState: sqlStateCheckViolation},
-		{label: "interval 86401 rejected", row: override(func(r *probeRow) { r.intervalSeconds = 86401 }), wantState: sqlStateCheckViolation},
-		{label: "timeout equal to a small interval rejected", row: override(func(r *probeRow) { r.timeoutSeconds = 8; r.intervalSeconds = 8 }), wantState: sqlStateCheckViolation},
-		{label: "zero failures accepted", row: override(func(r *probeRow) { r.failures = 0 })},
-		{label: "negative failures rejected", row: override(func(r *probeRow) { r.failures = -1 }), wantState: sqlStateCheckViolation},
-		{label: "full last result accepted", row: override(func(r *probeRow) {
-			r.lastResultAt, r.lastResultStatus, r.lastResultReason, r.lastResultDetail = &someTime, intPointer(503), strPtr("http_status"), strPtr("bad gateway")
+		{label: "url at 2048 bytes accepted", row: override(func(row *probeRow) { row.url = longURL })},
+		{label: "url over 2048 bytes rejected", row: override(func(row *probeRow) { row.url = longURL + "a" }), wantState: sqlStateCheckViolation},
+		{label: "http url rejected", row: override(func(row *probeRow) { row.url = "http://example.com/" }), wantState: sqlStateCheckViolation},
+		{label: "upper-case scheme rejected", row: override(func(row *probeRow) { row.url = "HTTPS://example.com/" }), wantState: sqlStateCheckViolation},
+		{label: "ten statuses accepted", row: override(func(row *probeRow) { row.expectedStatuses = tenStatuses })},
+		{label: "status bounds 100 and 599 accepted", row: override(func(row *probeRow) { row.expectedStatuses = statusList(100, 599) })},
+		{label: "eleven statuses rejected", row: override(func(row *probeRow) { row.expectedStatuses = statusList(oneEleven...) }), wantState: sqlStateCheckViolation},
+		{label: "zero statuses rejected", row: override(func(row *probeRow) { row.expectedStatuses = statusList() }), wantState: sqlStateCheckViolation},
+		{label: "status 99 rejected", row: override(func(row *probeRow) { row.expectedStatuses = statusList(99) }), wantState: sqlStateCheckViolation},
+		{label: "status 600 rejected", row: override(func(row *probeRow) { row.expectedStatuses = statusList(200, 600) }), wantState: sqlStateCheckViolation},
+		{label: "NULL status element rejected", row: override(func(row *probeRow) { row.expectedStatuses = []*int32{nil, int32Ptr(200)} }), wantState: sqlStateCheckViolation},
+		{label: "body match of one byte accepted", row: override(func(row *probeRow) { row.bodyMatch = strPtr("a") })},
+		{label: "body match of 256 bytes accepted", row: override(func(row *probeRow) { row.bodyMatch = strPtr(strings.Repeat("a", 256)) })},
+		{label: "empty body match rejected", row: override(func(row *probeRow) { row.bodyMatch = strPtr("") }), wantState: sqlStateCheckViolation},
+		{label: "body match over 256 bytes rejected", row: override(func(row *probeRow) { row.bodyMatch = strPtr(strings.Repeat("a", 257)) }), wantState: sqlStateCheckViolation},
+		{label: "timeout 1 accepted", row: override(func(row *probeRow) { row.timeoutSeconds = 1 })},
+		{label: "timeout 8 accepted", row: override(func(row *probeRow) { row.timeoutSeconds = 8 })},
+		{label: "timeout 0 rejected", row: override(func(row *probeRow) { row.timeoutSeconds = 0 }), wantState: sqlStateCheckViolation},
+		{label: "timeout 9 rejected", row: override(func(row *probeRow) { row.timeoutSeconds = 9 }), wantState: sqlStateCheckViolation},
+		{label: "interval 86400 accepted", row: override(func(row *probeRow) { row.intervalSeconds = 86400 })},
+		{label: "interval 59 rejected", row: override(func(row *probeRow) { row.intervalSeconds = 59 }), wantState: sqlStateCheckViolation},
+		{label: "interval 86401 rejected", row: override(func(row *probeRow) { row.intervalSeconds = 86401 }), wantState: sqlStateCheckViolation},
+		{label: "timeout 8 with interval 8 rejected by the interval range check", row: override(func(row *probeRow) { row.timeoutSeconds = 8; row.intervalSeconds = 8 }), wantState: sqlStateCheckViolation},
+		{label: "zero failures accepted", row: override(func(row *probeRow) { row.failures = 0 })},
+		{label: "negative failures rejected", row: override(func(row *probeRow) { row.failures = -1 }), wantState: sqlStateCheckViolation},
+		{label: "full last result accepted", row: override(func(row *probeRow) {
+			row.lastResultAt, row.lastResultStatus, row.lastResultReason, row.lastResultDetail = &someTime, intPtr(503), strPtr("http_status"), strPtr("bad gateway")
 		})},
-		{label: "last result with only a time accepted", row: override(func(r *probeRow) { r.lastResultAt = &someTime })},
-		{label: "last result status 99 rejected", row: override(func(r *probeRow) { r.lastResultAt, r.lastResultStatus = &someTime, intPointer(99) }), wantState: sqlStateCheckViolation},
-		{label: "last result status 600 rejected", row: override(func(r *probeRow) { r.lastResultAt, r.lastResultStatus = &someTime, intPointer(600) }), wantState: sqlStateCheckViolation},
-		{label: "last result reason missed rejected", row: override(func(r *probeRow) { r.lastResultAt, r.lastResultReason = &someTime, strPtr("missed") }), wantState: sqlStateCheckViolation},
-		{label: "last result reason fail rejected", row: override(func(r *probeRow) { r.lastResultAt, r.lastResultReason = &someTime, strPtr("fail") }), wantState: sqlStateCheckViolation},
-		{label: "last result detail of 256 bytes accepted", row: override(func(r *probeRow) { r.lastResultAt, r.lastResultDetail = &someTime, strPtr(strings.Repeat("a", 256)) })},
-		{label: "last result detail over 256 bytes rejected", row: override(func(r *probeRow) { r.lastResultAt, r.lastResultDetail = &someTime, strPtr(strings.Repeat("a", 257)) }), wantState: sqlStateCheckViolation},
-		{label: "status without a result time rejected", row: override(func(r *probeRow) { r.lastResultStatus = intPointer(200) }), wantState: sqlStateCheckViolation},
-		{label: "reason without a result time rejected", row: override(func(r *probeRow) { r.lastResultReason = strPtr("timeout") }), wantState: sqlStateCheckViolation},
-		{label: "detail without a result time rejected", row: override(func(r *probeRow) { r.lastResultDetail = strPtr("x") }), wantState: sqlStateCheckViolation},
-		{label: "down detail of 256 bytes accepted", row: override(func(r *probeRow) { r.downDetail = strPtr(strings.Repeat("a", 256)) })},
-		{label: "down detail over 256 bytes rejected", row: override(func(r *probeRow) { r.downDetail = strPtr(strings.Repeat("a", 257)) }), wantState: sqlStateCheckViolation},
+		{label: "last result with only a time accepted", row: override(func(row *probeRow) { row.lastResultAt = &someTime })},
+		{label: "last result status 99 rejected", row: override(func(row *probeRow) { row.lastResultAt, row.lastResultStatus = &someTime, intPtr(99) }), wantState: sqlStateCheckViolation},
+		{label: "last result status 600 rejected", row: override(func(row *probeRow) { row.lastResultAt, row.lastResultStatus = &someTime, intPtr(600) }), wantState: sqlStateCheckViolation},
+		{label: "last result reason missed rejected", row: override(func(row *probeRow) { row.lastResultAt, row.lastResultReason = &someTime, strPtr("missed") }), wantState: sqlStateCheckViolation},
+		{label: "last result reason fail rejected", row: override(func(row *probeRow) { row.lastResultAt, row.lastResultReason = &someTime, strPtr("fail") }), wantState: sqlStateCheckViolation},
+		{label: "last result detail of 256 bytes accepted", row: override(func(row *probeRow) {
+			row.lastResultAt, row.lastResultDetail = &someTime, strPtr(strings.Repeat("a", 256))
+		})},
+		{label: "last result detail over 256 bytes rejected", row: override(func(row *probeRow) {
+			row.lastResultAt, row.lastResultDetail = &someTime, strPtr(strings.Repeat("a", 257))
+		}), wantState: sqlStateCheckViolation},
+		{label: "status without a result time rejected", row: override(func(row *probeRow) { row.lastResultStatus = intPtr(200) }), wantState: sqlStateCheckViolation},
+		{label: "reason without a result time rejected", row: override(func(row *probeRow) { row.lastResultReason = strPtr("timeout") }), wantState: sqlStateCheckViolation},
+		{label: "detail without a result time rejected", row: override(func(row *probeRow) { row.lastResultDetail = strPtr("x") }), wantState: sqlStateCheckViolation},
+		{label: "down detail of 256 bytes accepted", row: override(func(row *probeRow) { row.downDetail = strPtr(strings.Repeat("a", 256)) })},
+		{label: "down detail over 256 bytes rejected", row: override(func(row *probeRow) { row.downDetail = strPtr(strings.Repeat("a", 257)) }), wantState: sqlStateCheckViolation},
 	}
 	for index, testCase := range testCases {
 		testInstance.Run(testCase.label, func(subTest *testing.T) {
@@ -278,6 +282,6 @@ WHERE table_schema = current_schema() AND table_name = 'heartbeat_check_probes' 
 	})
 }
 
-func int32Pointer(value int32) *int32 { return &value }
+func int32Ptr(value int32) *int32 { return &value }
 
-func intPointer(value int) *int { return &value }
+func intPtr(value int) *int { return &value }

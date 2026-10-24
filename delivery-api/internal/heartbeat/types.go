@@ -90,12 +90,7 @@ func IsProbeResultReason(reason string) bool {
 
 // IsKnownDownReason reports whether reason is any recognised down reason.
 func IsKnownDownReason(reason string) bool {
-	for _, known := range KnownDownReasons() {
-		if reason == known {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(KnownDownReasons(), reason)
 }
 
 // Check kinds. A check is a probe check exactly when it has probe state.

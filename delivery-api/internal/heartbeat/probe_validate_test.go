@@ -62,31 +62,33 @@ func TestValidateProbeConfigBounds(t *testing.T) {
 		want   string
 	}{
 		{"valid", func(*ProbeConfig) {}, ""},
-		{"statuses empty", func(c *ProbeConfig) { c.ExpectedStatuses = nil }, "invalid probe.expected_statuses"},
-		{"statuses 10 ok", func(c *ProbeConfig) { c.ExpectedStatuses = []int{200, 201, 202, 203, 204, 205, 206, 207, 208, 226} }, ""},
-		{"statuses 11", func(c *ProbeConfig) {
-			c.ExpectedStatuses = []int{200, 201, 202, 203, 204, 205, 206, 207, 208, 226, 300}
+		{"statuses empty", func(config *ProbeConfig) { config.ExpectedStatuses = nil }, "invalid probe.expected_statuses"},
+		{"statuses 10 ok", func(config *ProbeConfig) {
+			config.ExpectedStatuses = []int{200, 201, 202, 203, 204, 205, 206, 207, 208, 226}
+		}, ""},
+		{"statuses 11", func(config *ProbeConfig) {
+			config.ExpectedStatuses = []int{200, 201, 202, 203, 204, 205, 206, 207, 208, 226, 300}
 		}, "invalid probe.expected_statuses"},
-		{"statuses duplicate", func(c *ProbeConfig) { c.ExpectedStatuses = []int{200, 200} }, "invalid probe.expected_statuses"},
-		{"statuses 99", func(c *ProbeConfig) { c.ExpectedStatuses = []int{99} }, "invalid probe.expected_statuses"},
-		{"statuses 100", func(c *ProbeConfig) { c.ExpectedStatuses = []int{100} }, ""},
-		{"statuses 599", func(c *ProbeConfig) { c.ExpectedStatuses = []int{599} }, ""},
-		{"statuses 600", func(c *ProbeConfig) { c.ExpectedStatuses = []int{600} }, "invalid probe.expected_statuses"},
-		{"body nil ok", func(c *ProbeConfig) { c.BodyMatch = nil }, ""},
-		{"body empty", func(c *ProbeConfig) { c.BodyMatch = bodyOf("") }, "invalid probe.body_match"},
-		{"body 256", func(c *ProbeConfig) { c.BodyMatch = bodyOf(strings.Repeat("a", 256)) }, ""},
-		{"body 257", func(c *ProbeConfig) { c.BodyMatch = bodyOf(strings.Repeat("a", 257)) }, "invalid probe.body_match"},
-		{"body invalid utf8", func(c *ProbeConfig) { c.BodyMatch = bodyOf("a\xffb") }, "invalid probe.body_match"},
-		{"body NUL", func(c *ProbeConfig) { c.BodyMatch = bodyOf("a\x00b") }, "invalid probe.body_match"},
-		{"interval 59", func(c *ProbeConfig) { c.IntervalSeconds = 59 }, "invalid probe.interval_seconds"},
-		{"interval 60", func(c *ProbeConfig) { c.IntervalSeconds = 60; c.TimeoutSeconds = 8 }, ""},
-		{"interval 86400", func(c *ProbeConfig) { c.IntervalSeconds = 86400 }, ""},
-		{"interval 86401", func(c *ProbeConfig) { c.IntervalSeconds = 86401 }, "invalid probe.interval_seconds"},
-		{"timeout 0", func(c *ProbeConfig) { c.TimeoutSeconds = 0 }, "invalid probe.timeout_seconds"},
-		{"timeout 1", func(c *ProbeConfig) { c.TimeoutSeconds = 1 }, ""},
-		{"timeout 8", func(c *ProbeConfig) { c.TimeoutSeconds = 8 }, ""},
-		{"timeout 9", func(c *ProbeConfig) { c.TimeoutSeconds = 9 }, "invalid probe.timeout_seconds"},
-		{"timeout equals interval", func(c *ProbeConfig) { c.IntervalSeconds = 60; c.TimeoutSeconds = 60 }, "invalid probe.timeout_seconds"},
+		{"statuses duplicate", func(config *ProbeConfig) { config.ExpectedStatuses = []int{200, 200} }, "invalid probe.expected_statuses"},
+		{"statuses 99", func(config *ProbeConfig) { config.ExpectedStatuses = []int{99} }, "invalid probe.expected_statuses"},
+		{"statuses 100", func(config *ProbeConfig) { config.ExpectedStatuses = []int{100} }, ""},
+		{"statuses 599", func(config *ProbeConfig) { config.ExpectedStatuses = []int{599} }, ""},
+		{"statuses 600", func(config *ProbeConfig) { config.ExpectedStatuses = []int{600} }, "invalid probe.expected_statuses"},
+		{"body nil ok", func(config *ProbeConfig) { config.BodyMatch = nil }, ""},
+		{"body empty", func(config *ProbeConfig) { config.BodyMatch = bodyOf("") }, "invalid probe.body_match"},
+		{"body 256", func(config *ProbeConfig) { config.BodyMatch = bodyOf(strings.Repeat("a", 256)) }, ""},
+		{"body 257", func(config *ProbeConfig) { config.BodyMatch = bodyOf(strings.Repeat("a", 257)) }, "invalid probe.body_match"},
+		{"body invalid utf8", func(config *ProbeConfig) { config.BodyMatch = bodyOf("a\xffb") }, "invalid probe.body_match"},
+		{"body NUL", func(config *ProbeConfig) { config.BodyMatch = bodyOf("a\x00b") }, "invalid probe.body_match"},
+		{"interval 59", func(config *ProbeConfig) { config.IntervalSeconds = 59 }, "invalid probe.interval_seconds"},
+		{"interval 60", func(config *ProbeConfig) { config.IntervalSeconds = 60; config.TimeoutSeconds = 8 }, ""},
+		{"interval 86400", func(config *ProbeConfig) { config.IntervalSeconds = 86400 }, ""},
+		{"interval 86401", func(config *ProbeConfig) { config.IntervalSeconds = 86401 }, "invalid probe.interval_seconds"},
+		{"timeout 0", func(config *ProbeConfig) { config.TimeoutSeconds = 0 }, "invalid probe.timeout_seconds"},
+		{"timeout 1", func(config *ProbeConfig) { config.TimeoutSeconds = 1 }, ""},
+		{"timeout 8", func(config *ProbeConfig) { config.TimeoutSeconds = 8 }, ""},
+		{"timeout 9", func(config *ProbeConfig) { config.TimeoutSeconds = 9 }, "invalid probe.timeout_seconds"},
+		{"timeout equals interval", func(config *ProbeConfig) { config.IntervalSeconds = 60; config.TimeoutSeconds = 60 }, "invalid probe.timeout_seconds"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -156,30 +158,38 @@ func TestValidateNewCheckProbe(t *testing.T) {
 		want   string
 	}{
 		{"valid probe", func(*NewCheck) {}, ""},
-		{"valid probe with token", func(c *NewCheck) { c.AccessToken = &token }, ""},
-		{"explicit operator owner", func(c *NewCheck) { c.OwnerKind = registry.OwnerOperator }, ""},
-		{"period supplied", func(c *NewCheck) { c.PeriodSeconds = 300 }, "period_seconds and grace_seconds are derived for probe checks"},
-		{"grace supplied", func(c *NewCheck) { c.GraceSeconds = 1200 }, "period_seconds and grace_seconds are derived for probe checks"},
-		{"bad config", func(c *NewCheck) { bad := validProbeConfigForTest(); bad.URL = "http://x.example"; c.Probe = &bad }, "invalid probe.url"},
-		{"bad token", func(c *NewCheck) { c.AccessToken = &AccessToken{ClientID: "id"} }, "invalid probe.access_token"},
-		{"bad destinations", func(c *NewCheck) { c.DestinationNames = nil }, "invalid destinations"},
-		{"app owner with probe", func(c *NewCheck) { c.OwnerKind = registry.OwnerApp; c.OwnerAppID = &appOwner }, "probe config is not allowed on an app-owned check"},
-		{"unknown owner kind", func(c *NewCheck) { c.OwnerKind = "mystery" }, "probe config is not allowed on an app-owned check"},
-		{"app owner with token only", func(c *NewCheck) { c.Probe = nil; c.AccessToken = &token; c.OwnerKind = registry.OwnerApp }, "probe config is not allowed on an app-owned check"},
-		{"push with token", func(c *NewCheck) {
-			c.Probe = nil
-			c.PeriodSeconds, c.GraceSeconds = 60, 60
-			c.AccessToken = &token
+		{"valid probe with token", func(check *NewCheck) { check.AccessToken = &token }, ""},
+		{"explicit operator owner", func(check *NewCheck) { check.OwnerKind = registry.OwnerOperator }, ""},
+		{"period supplied", func(check *NewCheck) { check.PeriodSeconds = 300 }, "period_seconds and grace_seconds are derived for probe checks"},
+		{"grace supplied", func(check *NewCheck) { check.GraceSeconds = 1200 }, "period_seconds and grace_seconds are derived for probe checks"},
+		{"bad config", func(check *NewCheck) {
+			bad := validProbeConfigForTest()
+			bad.URL = "http://x.example"
+			check.Probe = &bad
+		}, "invalid probe.url"},
+		{"bad token", func(check *NewCheck) { check.AccessToken = &AccessToken{ClientID: "id"} }, "invalid probe.access_token"},
+		{"bad destinations", func(check *NewCheck) { check.DestinationNames = nil }, "invalid destinations"},
+		{"app owner with probe", func(check *NewCheck) { check.OwnerKind = registry.OwnerApp; check.OwnerAppID = &appOwner }, "probe config is not allowed on an app-owned check"},
+		{"unknown owner kind", func(check *NewCheck) { check.OwnerKind = "mystery" }, "probe config is not allowed on an app-owned check"},
+		{"app owner with token only", func(check *NewCheck) {
+			check.Probe = nil
+			check.AccessToken = &token
+			check.OwnerKind = registry.OwnerApp
+		}, "probe config is not allowed on an app-owned check"},
+		{"push with token", func(check *NewCheck) {
+			check.Probe = nil
+			check.PeriodSeconds, check.GraceSeconds = 60, 60
+			check.AccessToken = &token
 		}, "invalid probe.access_token"},
-		{"push ok", func(c *NewCheck) {
-			c.Probe = nil
-			c.PeriodSeconds, c.GraceSeconds = 60, 60
+		{"push ok", func(check *NewCheck) {
+			check.Probe = nil
+			check.PeriodSeconds, check.GraceSeconds = 60, 60
 		}, ""},
-		{"push app owner ok", func(c *NewCheck) {
-			c.Probe = nil
-			c.PeriodSeconds, c.GraceSeconds = 60, 60
-			c.OwnerKind = registry.OwnerApp
-			c.OwnerAppID = &appOwner
+		{"push app owner ok", func(check *NewCheck) {
+			check.Probe = nil
+			check.PeriodSeconds, check.GraceSeconds = 60, 60
+			check.OwnerKind = registry.OwnerApp
+			check.OwnerAppID = &appOwner
 		}, ""},
 	}
 	for _, testCase := range cases {
@@ -260,6 +270,13 @@ func TestSanitizeProbeDetail(t *testing.T) {
 		{"no url unchanged", "connection refused", "connection refused"},
 		{"control chars", "a\x00b\nc\td", "a b c d"},
 		{"empty", "", ""},
+		{"blank collapses to empty", "  \n\t ", ""},
+		{"surrounding whitespace trimmed", " boom \n", "boom"},
+		{"two urls", "a https://one.example/x?q=1 b http://two.example:81/y#f", "a https://one.example b http://two.example:81"},
+		{"bare scheme", "http://", "http://"},
+		{"ipv6 literal with port", "dial https://[::1]:8080/x failed", "dial https://[::1]:8080 failed"},
+		{"url before closing quote", `Get 'https://host.example/p?x=1' failed`, `Get 'https://host.example' failed`},
+		{"url before closing angle bracket", "see <https://host.example/p> now", "see <https://host.example> now"},
 		{"invalid utf8 replaced", "a\xffb", "a�b"},
 	}
 	for _, testCase := range cases {

@@ -1,6 +1,9 @@
 package heartbeat
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // The state machine is a set of pure functions over a StoredCheck and `now`.
 // Each returns an updated copy and never touches the input (pointer fields are
@@ -252,15 +255,9 @@ func storableProbeStatus(status *int) *int {
 // cloneProbe returns a copy of state that shares no mutable fields with it.
 func cloneProbe(state *ProbeState) *ProbeState {
 	clone := *state
-	clone.Config.ExpectedStatuses = append([]int(nil), state.Config.ExpectedStatuses...)
-	if state.Config.ExpectedStatuses == nil {
-		clone.Config.ExpectedStatuses = nil
-	}
+	clone.Config.ExpectedStatuses = slices.Clone(state.Config.ExpectedStatuses)
 	clone.Config.BodyMatch = copyStringPointer(state.Config.BodyMatch)
-	clone.SealedAccessToken = append([]byte(nil), state.SealedAccessToken...)
-	if state.SealedAccessToken == nil {
-		clone.SealedAccessToken = nil
-	}
+	clone.SealedAccessToken = slices.Clone(state.SealedAccessToken)
 	if state.LastResult != nil {
 		last := *state.LastResult
 		last.Status = copyIntPointer(state.LastResult.Status)
