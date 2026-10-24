@@ -188,7 +188,7 @@ func startHeartbeatStack(testInstance *testing.T) *heartbeatStack {
 	})
 
 	clock := &shiftedClock{}
-	store := heartbeat.NewPGStore(pool)
+	store := heartbeat.NewPGStore(pool, sealer)
 	return &heartbeatStack{
 		ctx: ctx,
 		service: heartbeat.NewService(heartbeat.ServiceConfig{

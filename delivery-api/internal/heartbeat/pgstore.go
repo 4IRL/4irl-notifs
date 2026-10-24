@@ -10,6 +10,7 @@ import (
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/pgutil"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
 )
 
 const (
@@ -24,14 +25,20 @@ const (
 	// the three arrays line up. Names sort bytewise (COLLATE "C") so ordering
 	// never depends on the database's locale: names are [a-z0-9_] slugs, and
 	// glibc locales ignore underscores when comparing.
+	//
+	// The probe row is a 1:1 LEFT JOIN (all NULL for a push check); its columns are functionally
+	// dependent on p.check_id, so grouping by it lets them be selected ungrouped. This read is unlocked
+	// (Get/List/reload); locked reads never join the probe row (see lockCheck).
 	checkSelect = `SELECT ` + checkColumns + `,
 	COALESCE(array_agg(d.name ORDER BY d.name COLLATE "C") FILTER (WHERE d.id IS NOT NULL), '{}'::text[]),
 	COALESCE(array_agg(d.type ORDER BY d.name COLLATE "C") FILTER (WHERE d.id IS NOT NULL), '{}'::text[]),
-	COALESCE(array_agg(d.enabled ORDER BY d.name COLLATE "C") FILTER (WHERE d.id IS NOT NULL), '{}'::boolean[])
+	COALESCE(array_agg(d.enabled ORDER BY d.name COLLATE "C") FILTER (WHERE d.id IS NOT NULL), '{}'::boolean[]),
+	` + probeColumns + `
 FROM heartbeat_checks c
 LEFT JOIN heartbeat_check_destinations cd ON cd.check_id = c.id
-LEFT JOIN destinations d ON d.id = cd.destination_id`
-	checkGroup = ` GROUP BY c.id`
+LEFT JOIN destinations d ON d.id = cd.destination_id
+LEFT JOIN heartbeat_check_probes p ON p.check_id = c.id`
+	checkGroup = ` GROUP BY c.id, p.check_id`
 
 	orderByName = ` ORDER BY c.app_id COLLATE "C", c.name COLLATE "C"`
 	orderByID   = ` ORDER BY c.id`
@@ -45,15 +52,17 @@ AND c.anchor_at + (c.period_seconds + c.grace_seconds) * interval '1 second' < $
 // PGStore is the Postgres-backed Store. It is covered by the integration tests,
 // not unit tests.
 type PGStore struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	sealer *seal.Sealer
 }
 
 // Compile-time check that PGStore satisfies Store.
 var _ Store = (*PGStore)(nil)
 
-// NewPGStore returns a PGStore over pool.
-func NewPGStore(pool *pgxpool.Pool) *PGStore {
-	return &PGStore{pool: pool}
+// NewPGStore returns a PGStore over pool. sealer seals a probe check's Access credentials; it may be
+// nil for push-only use, in which case sealing a token fails closed.
+func NewPGStore(pool *pgxpool.Pool, sealer *seal.Sealer) *PGStore {
+	return &PGStore{pool: pool, sealer: sealer}
 }
 
 // Create implements Store.
@@ -64,6 +73,14 @@ func (store *PGStore) Create(ctx context.Context, check NewCheck, now time.Time)
 		destinationIDs, resolveErr := resolveDestinationIDs(ctx, tx, check.DestinationNames, check.AppID)
 		if resolveErr != nil {
 			return resolveErr
+		}
+
+		if check.Probe == nil && check.AccessToken != nil {
+			return &ValidationError{Message: "probe config is not allowed on a push check"}
+		}
+		if check.Probe != nil {
+			// A probe check's schedule is derived from its interval, whatever the caller passed.
+			check.PeriodSeconds, check.GraceSeconds = DerivedSchedule(check.Probe.IntervalSeconds)
 		}
 
 		var checkID int64
@@ -84,6 +101,11 @@ VALUES ($1, $2, $3, $4, $5, $5, $5, $6, $7) RETURNING id`,
 		}
 		if linkErr := linkDestinations(ctx, tx, checkID, destinationIDs); linkErr != nil {
 			return linkErr
+		}
+		if check.Probe != nil {
+			if probeErr := insertProbeRow(ctx, tx, store.sealer, checkID, check, now); probeErr != nil {
+				return probeErr
+			}
 		}
 
 		loaded, loadErr := queryCheckByID(ctx, tx, checkID)
@@ -261,8 +283,11 @@ func (store *PGStore) RecordPing(
 		if lockErr != nil {
 			return lockErr
 		}
+		if current.Probe != nil {
+			return ErrProbeCheckPing
+		}
 		next, _ := ApplyPing(current, kind, now)
-		reloaded, saveErr := saveCheck(ctx, tx, next, now)
+		reloaded, saveErr := saveCheck(ctx, tx, next, current, now)
 		if saveErr != nil {
 			return saveErr
 		}
@@ -293,7 +318,7 @@ func (store *PGStore) AdvanceDue(ctx context.Context, now time.Time) ([]StoredCh
 			if !changed {
 				continue
 			}
-			if _, saveErr := saveCheck(ctx, tx, next, now); saveErr != nil {
+			if _, saveErr := saveCheck(ctx, tx, next, current, now); saveErr != nil {
 				return saveErr
 			}
 			changedIDs = append(changedIDs, next.ID)
@@ -341,7 +366,7 @@ func (store *PGStore) mutate(
 		if lockErr != nil {
 			return lockErr
 		}
-		reloaded, saveErr := saveCheck(ctx, tx, mutate(current), now)
+		reloaded, saveErr := saveCheck(ctx, tx, mutate(current), current, now)
 		if saveErr != nil {
 			return saveErr
 		}
@@ -355,8 +380,10 @@ func (store *PGStore) mutate(
 }
 
 // saveCheck writes the state-machine fields of check (the schedule and the
-// destination set are untouched) and returns the reloaded check.
-func saveCheck(ctx context.Context, tx pgx.Tx, check StoredCheck, now time.Time) (StoredCheck, error) {
+// destination set are untouched) and returns the reloaded check. locked is the
+// check as read under the lock: for a probe check it is the baseline the probe
+// row's next_probe_at is compared against.
+func saveCheck(ctx context.Context, tx pgx.Tx, check StoredCheck, locked StoredCheck, now time.Time) (StoredCheck, error) {
 	if _, execErr := tx.Exec(ctx,
 		`UPDATE heartbeat_checks
 SET state = $2, paused = $3, anchor_at = $4, last_ping_at = $5, last_ping_kind = $6,
@@ -365,6 +392,11 @@ WHERE id = $1`,
 		check.ID, check.State, check.Paused, check.AnchorAt, check.LastPingAt, check.LastPingKind,
 		check.DownSince, check.DownReason, check.AlertSeq, check.PendingAlert, now); execErr != nil {
 		return StoredCheck{}, pgutil.WrapDBError("save heartbeat check", execErr)
+	}
+	if check.Probe != nil {
+		if probeErr := writeProbeRow(ctx, tx, check, lockedNextProbeAt(locked), sealedAccessChange{}); probeErr != nil {
+			return StoredCheck{}, probeErr
+		}
 	}
 	return queryCheckByID(ctx, tx, check.ID)
 }
@@ -394,6 +426,15 @@ func lockCheck(ctx context.Context, tx pgx.Tx, where string, args ...any) (Store
 		}
 		return StoredCheck{}, pgutil.WrapDBError("lock heartbeat check", scanErr)
 	}
+	normalizeTimes(&check)
+	// The probe row is read in a second statement, after the parent lock was granted, so a writer
+	// that waited sees the committed probe state rather than a pre-wait join snapshot. Lock order is
+	// always parent then probe row.
+	probes, probeErr := lockProbeRows(ctx, tx, []int64{check.ID})
+	if probeErr != nil {
+		return StoredCheck{}, probeErr
+	}
+	check.Probe = probes[check.ID]
 	return check, nil
 }
 
@@ -414,10 +455,25 @@ func lockChecks(ctx context.Context, tx pgx.Tx, where string, args ...any) ([]St
 		if scanErr := rows.Scan(checkScanTargets(&check)...); scanErr != nil {
 			return nil, pgutil.WrapDBError("lock heartbeat checks", scanErr)
 		}
+		normalizeTimes(&check)
 		checks = append(checks, check)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		return nil, pgutil.WrapDBError("lock heartbeat checks", rowsErr)
+	}
+	rows.Close()
+
+	// Probe rows are locked in a second statement, after every parent lock (see lockCheck).
+	checkIDs := make([]int64, 0, len(checks))
+	for _, check := range checks {
+		checkIDs = append(checkIDs, check.ID)
+	}
+	probes, probeErr := lockProbeRows(ctx, tx, checkIDs)
+	if probeErr != nil {
+		return nil, probeErr
+	}
+	for index := range checks {
+		checks[index].Probe = probes[checks[index].ID]
 	}
 	return checks, nil
 }
@@ -541,11 +597,14 @@ func scanCheck(row pgutil.RowScanner) (StoredCheck, error) {
 	var check StoredCheck
 	var names, types []string
 	var enabled []bool
+	var probe probeRow
 	targets := append(checkScanTargets(&check), &names, &types, &enabled)
+	targets = append(targets, probe.targets()...)
 	if scanErr := row.Scan(targets...); scanErr != nil {
 		return StoredCheck{}, scanErr
 	}
 	normalizeTimes(&check)
+	check.Probe = probe.state()
 	check.Destinations = make([]DestinationRef, 0, len(names))
 	for index, name := range names {
 		check.Destinations = append(check.Destinations, DestinationRef{
