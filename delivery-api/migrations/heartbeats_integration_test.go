@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/pgtest"
 	"github.com/4IRL/4irl-notifs/delivery-api/migrations"
@@ -57,7 +58,7 @@ func TestHeartbeatCheckConstraints(testInstance *testing.T) {
 	pending := "down"
 	someTime := "2026-10-18T12:00:00Z"
 
-	testCases := []struct {
+	type constraintCase struct {
 		label            string
 		appID, checkName string
 		period, grace    int
@@ -68,7 +69,8 @@ func TestHeartbeatCheckConstraints(testInstance *testing.T) {
 		downReason       *string
 		pendingAlert     *string
 		wantState        string
-	}{
+	}
+	testCases := []constraintCase{
 		{label: "minimal new check accepted", appID: "billing", checkName: "ok_new", period: 60, grace: 60, state: "new"},
 		{label: "maximum bounds accepted", appID: "billing", checkName: "ok_max", period: 2_678_400, grace: 604_800, state: "new"},
 		{label: "up with a success ping accepted", appID: "billing", checkName: "ok_up", period: 60, grace: 60, state: "up", lastPingAt: &someTime, lastPingKind: &pingKind},
@@ -88,6 +90,12 @@ func TestHeartbeatCheckConstraints(testInstance *testing.T) {
 		{label: "down without since rejected", appID: "billing", checkName: "down_no_since", period: 60, grace: 60, state: "down", downReason: &downReason, wantState: sqlStateCheckViolation},
 		{label: "duplicate app and name rejected", appID: "billing", checkName: "ok_new", period: 60, grace: 60, state: "new", wantState: sqlStateUniqueViolation},
 		{label: "same name under another app accepted", appID: "other", checkName: "ok_new", period: 60, grace: 60, state: "new"},
+	}
+	for _, reason := range heartbeat.KnownDownReasons() {
+		testCases = append(testCases, constraintCase{
+			label: "down with reason " + reason + " accepted", appID: "billing", checkName: "ok_down_" + reason,
+			period: 60, grace: 60, state: "down", downSince: &someTime, downReason: strPtr(reason),
+		})
 	}
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.label, func(subTest *testing.T) {
