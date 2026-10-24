@@ -97,6 +97,10 @@ type ServerConfig struct {
 	// nil, /readyz reports the checker as never ticked and stale (fail closed).
 	// Callers must leave this an untyped nil when no tracker exists.
 	HeartbeatChecker CheckerFreshness
+	// HeartbeatProber backs the heartbeat_prober field of GET /readyz. When nil,
+	// /readyz reports the prober as never ticked and stale (fail closed). Callers
+	// must leave this an untyped nil when no tracker exists.
+	HeartbeatProber CheckerFreshness
 	// Registry backs the /v1/admin endpoints. When nil, every admin route
 	// answers 503 (fail closed). Callers must leave this an untyped nil when no
 	// service exists: a typed-nil pointer stored here is a non-nil interface
@@ -138,6 +142,7 @@ type Server struct {
 	logger      *slog.Logger
 	readiness   ReadinessChecker
 	checker     CheckerFreshness
+	prober      CheckerFreshness
 	registry    Registry
 	appRegistry AppRegistry
 	// appHeartbeats backs the app-scoped heartbeat check endpoints.
@@ -157,9 +162,11 @@ type readinessResponseBody struct {
 	ExpectedSchemaVersion int                   `json:"expected_schema_version"`
 	LastMigrationFailure  *migrationFailureBody `json:"last_migration_failure"`
 	HeartbeatChecker      heartbeatCheckerBody  `json:"heartbeat_checker"`
+	HeartbeatProber       heartbeatCheckerBody  `json:"heartbeat_prober"`
 }
 
-// heartbeatCheckerBody is the JSON form of the heartbeat checker's freshness.
+// heartbeatCheckerBody is the JSON form of the heartbeat checker's or prober's
+// freshness (both loops share the shape).
 // Staleness never changes the /readyz status or HTTP code: the compose
 // healthcheck probes /readyz, and an unhealthy container is not the right
 // reaction to a stalled checker. The watchdog interprets this field instead.
@@ -193,6 +200,7 @@ func NewServer(config ServerConfig) *Server {
 		logger:        logger,
 		readiness:     config.Readiness,
 		checker:       config.HeartbeatChecker,
+		prober:        config.HeartbeatProber,
 		registry:      config.Registry,
 		appRegistry:   config.AppRegistry,
 		appHeartbeats: config.AppHeartbeats,
@@ -321,7 +329,8 @@ func (server *Server) handleHealthz(responseWriter http.ResponseWriter, request 
 // never leaked; a schema version that differs from the binary's embedded
 // expectation (in either direction) is 503 "schema_mismatch"; otherwise 200.
 // A recorded newer-migration failure is reported in either non-error case. Both
-// bodies carry heartbeat_checker, which never changes the status or HTTP code.
+// bodies carry heartbeat_checker and heartbeat_prober, which never change the
+// status or HTTP code.
 func (server *Server) handleReadyz(responseWriter http.ResponseWriter, request *http.Request) {
 	if server.readiness == nil {
 		writeJSON(responseWriter, http.StatusServiceUnavailable, unavailableResponseBody{Status: statusUnavailable})
@@ -347,6 +356,7 @@ func (server *Server) handleReadyz(responseWriter http.ResponseWriter, request *
 		SchemaVersion:         readiness.SchemaVersion,
 		ExpectedSchemaVersion: readiness.ExpectedSchemaVersion,
 		HeartbeatChecker:      server.checkerStatus(),
+		HeartbeatProber:       server.proberStatus(),
 	}
 	if failure := readiness.LastMigrationFailure; failure != nil {
 		body.LastMigrationFailure = &migrationFailureBody{
@@ -365,6 +375,18 @@ func (server *Server) checkerStatus() heartbeatCheckerBody {
 		return heartbeatCheckerBody{Stale: true}
 	}
 	lastTickAt, stale := server.checker.Status()
+	body := heartbeatCheckerBody{Stale: stale}
+	body.LastTickAt = formatUTC(lastTickAt)
+	return body
+}
+
+// proberStatus reports the prober's freshness; with no tracker it reports a
+// prober that never ticked and is stale.
+func (server *Server) proberStatus() heartbeatCheckerBody {
+	if server.prober == nil {
+		return heartbeatCheckerBody{Stale: true}
+	}
+	lastTickAt, stale := server.prober.Status()
 	body := heartbeatCheckerBody{Stale: stale}
 	body.LastTickAt = formatUTC(lastTickAt)
 	return body

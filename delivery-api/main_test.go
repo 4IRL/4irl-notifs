@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
 )
 
@@ -296,6 +297,15 @@ func TestShutdownBudgetCoversWorkerAndWaitingRequests(testInstance *testing.T) {
 	}
 	if backgroundStopTimeout < dispatch.MaxInFlightShutdown {
 		testInstance.Fatalf("backgroundStopTimeout = %s, want at least %s", backgroundStopTimeout, dispatch.MaxInFlightShutdown)
+	}
+}
+
+// TestProberShutdownFitsBackgroundStopTimeout pins the prober's worst-case
+// shutdown (one probe plus its result write) inside the background stop budget.
+// The pin lives here because heartbeat must not import dispatch.
+func TestProberShutdownFitsBackgroundStopTimeout(testInstance *testing.T) {
+	if heartbeat.MaxProberShutdown > backgroundStopTimeout {
+		testInstance.Fatalf("heartbeat.MaxProberShutdown = %s, want at most backgroundStopTimeout %s", heartbeat.MaxProberShutdown, backgroundStopTimeout)
 	}
 }
 

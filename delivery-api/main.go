@@ -50,9 +50,10 @@ const (
 	// 10 s a ?wait request can hold Shutdown (httpapi.MaxWait) plus the 16 s an in-flight delivery attempt can
 	// need to finish and be recorded (dispatch.MaxInFlightShutdown), so a SIGTERM never abandons either.
 	shutdownTimeout = httpapi.MaxWait + dispatch.MaxInFlightShutdown
-	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker, sweeper, releaser, heartbeat checker and OIDC replay cleanup to unwind.
+	// backgroundStopMargin is slack on top of dispatch.MaxInFlightShutdown for the worker, sweeper, releaser, heartbeat checker, heartbeat prober and OIDC replay cleanup to unwind.
 	backgroundStopMargin = 4 * time.Second
-	// backgroundStopTimeout bounds how long runServe waits for the worker, sweeper, releaser, heartbeat checker and OIDC replay cleanup after HTTP has drained.
+	// backgroundStopTimeout bounds how long runServe waits for the worker, sweeper, releaser, heartbeat checker, heartbeat prober (heartbeat.MaxProberShutdown, pinned by
+	// TestProberShutdownFitsBackgroundStopTimeout) and OIDC replay cleanup after HTTP has drained.
 	// Worst-case total shutdown is shutdownTimeout + backgroundStopTimeout (46 s), which the compose
 	// stop_grace_period must exceed (docker-compose.yml and docker-compose.prod.yml; pinned by
 	// TestComposeStopGracePeriodCoversShutdown).
@@ -243,8 +244,10 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	})
 	// The checker reads the message service as its alert sender, and its freshness tracker backs /readyz.
 	heartbeatFreshness := heartbeat.NewFreshness(time.Now)
+	proberFreshness := heartbeat.NewFreshness(time.Now)
+	heartbeatStore := heartbeat.NewPGStore(pool, sealer)
 	heartbeatService := heartbeat.NewService(heartbeat.ServiceConfig{
-		Store:    heartbeat.NewPGStore(pool, sealer),
+		Store:    heartbeatStore,
 		Messages: messageService,
 		Logger:   logger,
 	})
@@ -253,6 +256,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Logger:           logger,
 		Readiness:        checker,
 		HeartbeatChecker: heartbeatFreshness,
+		HeartbeatProber:  proberFreshness,
 		Registry:         registryService,
 		AppRegistry:      registryService,
 		Messages:         messageService,
@@ -292,6 +296,18 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 				Interval:  heartbeat.DefaultCheckerInterval,
 				Logger:    logger,
 				Freshness: heartbeatFreshness,
+			})
+		},
+		func(backgroundCtx context.Context) {
+			heartbeat.RunProber(backgroundCtx, heartbeat.ProberConfig{
+				Store:        heartbeatStore,
+				HoldOffUntil: heartbeatService.HoldOffUntil,
+				Client:       guardedClient,
+				Sealer:       sealer,
+				Interval:     heartbeat.DefaultProberInterval,
+				Concurrency:  heartbeat.DefaultProberConcurrency,
+				Logger:       logger,
+				Freshness:    proberFreshness,
 			})
 		},
 		// The OIDC replay ledger has its own cleanup loop: it sweeps a different table on a
