@@ -138,6 +138,12 @@ func (server *Server) handleAppUpdateCheck(responseWriter http.ResponseWriter, r
 		writeError(responseWriter, http.StatusBadRequest, errMsgCheckAppIDNotOwn)
 		return
 	}
+	// Fail closed: any probe key, including null or a malformed shape, is refused
+	// before it is decoded or reaches the service.
+	if len(body.Probe) > 0 {
+		writeError(responseWriter, http.StatusBadRequest, heartbeat.MessageProbeOnAppOwned)
+		return
+	}
 
 	patched, err := server.appHeartbeats.PatchForApp(request.Context(), appID, id, heartbeat.CheckPatch{
 		PeriodSeconds:    body.PeriodSeconds,

@@ -150,6 +150,10 @@ func (fake *fakeHeartbeats) Patch(_ context.Context, id int64, patch heartbeat.C
 		// Like the service: an empty patch is a plain read.
 		return fake.getResult, nil
 	}
+	if kindErr := heartbeat.ValidateCheckPatchForKind(fake.getResult, patch); kindErr != nil {
+		// Like PGStore.patch, the kind guard runs under the lock, before the merge.
+		return heartbeat.StoredCheck{}, kindErr
+	}
 	if validateErr := heartbeat.ValidateCheckUpdate(heartbeat.ApplyPatch(fake.getResult, patch)); validateErr != nil {
 		return heartbeat.StoredCheck{}, validateErr
 	}
@@ -271,6 +275,11 @@ func allHeartbeatRoutes() []heartbeatRoute {
 		{name: "delete", method: http.MethodDelete, path: "/v1/admin/heartbeats/7"},
 		{name: "pause", method: http.MethodPost, path: "/v1/admin/heartbeats/7/pause"},
 		{name: "resume", method: http.MethodPost, path: "/v1/admin/heartbeats/7/resume"},
+		{name: "probe create", method: http.MethodPost, path: "/v1/admin/heartbeats", body: probeCreateBody(validProbeJSON, "")},
+		{
+			name: "probe patch", method: http.MethodPatch, path: "/v1/admin/heartbeats/9",
+			body: `{"probe":{"interval_seconds":120,"access_token":{"client_id":"id","client_secret":"secret"}}}`,
+		},
 	}
 }
 
@@ -738,10 +747,13 @@ func TestCreateBodySizeLimit(testInstance *testing.T) {
 }
 
 func TestPatchPassesOnlyTheNamedFieldsToTheService(testInstance *testing.T) {
+	probeToken := heartbeat.AccessToken{ClientID: "id-1", ClientSecret: "secret-1"}
 	testCases := []struct {
 		name string
 		body string
 		want heartbeat.CheckPatch
+		// stored is the check the fake holds; the zero value means sampleCheck().
+		stored heartbeat.StoredCheck
 	}{
 		{name: "period only", body: `{"period_seconds":120}`, want: heartbeat.CheckPatch{PeriodSeconds: intPointer(120)}},
 		{name: "grace only", body: `{"grace_seconds":3600}`, want: heartbeat.CheckPatch{GraceSeconds: intPointer(3600)}},
@@ -754,10 +766,60 @@ func TestPatchPassesOnlyTheNamedFieldsToTheService(testInstance *testing.T) {
 			name: "null fields are left alone", body: `{"period_seconds":null,"grace_seconds":120,"destinations":null}`,
 			want: heartbeat.CheckPatch{GraceSeconds: intPointer(120)},
 		},
+		{
+			name: "probe interval only", body: `{"probe":{"interval_seconds":120}}`, stored: sampleProbeCheck(),
+			want: heartbeat.CheckPatch{Probe: &heartbeat.ProbePatch{IntervalSeconds: intPointer(120)}},
+		},
+		{
+			name: "probe every field", stored: sampleProbeCheck(),
+			body: `{"probe":{"url":"https://example.com/x","expected_statuses":[200],"body_match":"ok","timeout_seconds":3,"interval_seconds":600}}`,
+			want: heartbeat.CheckPatch{Probe: &heartbeat.ProbePatch{
+				URL: stringPointer("https://example.com/x"), ExpectedStatuses: []int{200}, BodyMatch: stringPointer("ok"),
+				TimeoutSeconds: intPointer(3), IntervalSeconds: intPointer(600),
+			}},
+		},
+		{
+			name: "probe body_match null clears", body: `{"probe":{"body_match":null}}`, stored: sampleProbeCheck(),
+			want: heartbeat.CheckPatch{Probe: &heartbeat.ProbePatch{ClearBodyMatch: true}},
+		},
+		{
+			name: "probe body_match set", body: `{"probe":{"body_match":"ok"}}`, stored: sampleProbeCheck(),
+			want: heartbeat.CheckPatch{Probe: &heartbeat.ProbePatch{BodyMatch: stringPointer("ok")}},
+		},
+		{
+			name: "probe url null is unchanged", body: `{"probe":{"url":null}}`, stored: sampleProbeCheck(),
+			want: heartbeat.CheckPatch{Probe: &heartbeat.ProbePatch{}},
+		},
+		{
+			name: "probe access_token null clears", body: `{"probe":{"access_token":null}}`, stored: sampleProbeCheck(),
+			want: heartbeat.CheckPatch{
+				Probe: &heartbeat.ProbePatch{}, AccessToken: heartbeat.AccessTokenPatch{Action: heartbeat.AccessTokenClear},
+			},
+		},
+		{
+			name: "probe access_token object replaces", stored: sampleProbeCheck(),
+			body: `{"probe":{"access_token":{"client_id":"id-1","client_secret":"secret-1"}}}`,
+			want: heartbeat.CheckPatch{
+				Probe:       &heartbeat.ProbePatch{},
+				AccessToken: heartbeat.AccessTokenPatch{Action: heartbeat.AccessTokenReplace, Token: probeToken},
+			},
+		},
+		{
+			name: "probe empty object is a non-nil empty patch", body: `{"probe":{}}`, stored: sampleProbeCheck(),
+			want: heartbeat.CheckPatch{Probe: &heartbeat.ProbePatch{}},
+		},
+		{
+			name: "probe null period leaves the schedule alone", body: `{"period_seconds":null,"probe":{"interval_seconds":90}}`, stored: sampleProbeCheck(),
+			want: heartbeat.CheckPatch{Probe: &heartbeat.ProbePatch{IntervalSeconds: intPointer(90)}},
+		},
 	}
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
-			fake := &fakeHeartbeats{getResult: sampleCheck(), patchResult: sampleCheck()}
+			stored := testCase.stored
+			if stored.ID == 0 {
+				stored = sampleCheck()
+			}
+			fake := &fakeHeartbeats{getResult: stored, patchResult: stored}
 
 			recorder := serveHeartbeats(fake, nil, http.MethodPatch, "/v1/admin/heartbeats/7", testCase.body)
 
@@ -812,11 +874,63 @@ func TestPatchRejectsImmutableFields(testInstance *testing.T) {
 }
 
 func TestPatchRejectsEachInvalidFieldByName(testInstance *testing.T) {
+	probeStored := sampleProbeCheck()
+	longValue := strings.Repeat("a", 257)
+	tokenBody := func(token string) string { return `{"probe":{"access_token":` + token + `}}` }
 	testCases := []struct {
 		name     string
 		body     string
 		wantBody string
+		// stored is the check the fake holds; the zero value means sampleCheck().
+		stored heartbeat.StoredCheck
+		// fake, when set, replaces the default fake built around stored.
+		fake *fakeHeartbeats
+		// handlerRejects is true when the handler answers before the service.
+		handlerRejects bool
 	}{
+		{name: "probe null", body: `{"probe":null}`, wantBody: `{"error":"check kind is immutable"}`, stored: probeStored, handlerRejects: true},
+		{name: "probe null on a push check", body: `{"probe":null}`, wantBody: `{"error":"check kind is immutable"}`, handlerRejects: true},
+		{
+			name: "probe null on an unknown check", body: `{"probe":null}`, wantBody: `{"error":"check kind is immutable"}`,
+			fake: failingHeartbeats(heartbeat.ErrCheckNotFound), handlerRejects: true,
+		},
+		{name: "half token", body: tokenBody(`{"client_id":"id"}`), wantBody: `{"error":"invalid probe.access_token"}`, stored: probeStored},
+		{name: "empty token object", body: tokenBody(`{}`), wantBody: `{"error":"invalid probe.access_token"}`, stored: probeStored},
+		{name: "empty client_id", body: tokenBody(`{"client_id":"","client_secret":"s"}`), wantBody: `{"error":"invalid probe.access_token"}`, stored: probeStored},
+		{name: "CR in client_id", body: tokenBody(`{"client_id":"a\rb","client_secret":"s"}`), wantBody: `{"error":"invalid probe.access_token"}`, stored: probeStored},
+		{name: "LF in client_secret", body: tokenBody(`{"client_id":"id","client_secret":"a\nb"}`), wantBody: `{"error":"invalid probe.access_token"}`, stored: probeStored},
+		{name: "257 byte client_id", body: tokenBody(`{"client_id":"` + longValue + `","client_secret":"s"}`), wantBody: `{"error":"invalid probe.access_token"}`, stored: probeStored},
+		{name: "257 byte client_secret", body: tokenBody(`{"client_id":"id","client_secret":"` + longValue + `"}`), wantBody: `{"error":"invalid probe.access_token"}`, stored: probeStored},
+		{name: "unknown probe key", body: `{"probe":{"failure_threshold":3}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "unknown access_token key", body: tokenBody(`{"client_id":"id","client_secret":"s","extra":1}`), wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "probe empty statuses", body: `{"probe":{"expected_statuses":[]}}`, wantBody: `{"error":"invalid probe.expected_statuses"}`, stored: probeStored},
+		{name: "probe status 99", body: `{"probe":{"expected_statuses":[99]}}`, wantBody: `{"error":"invalid probe.expected_statuses"}`, stored: probeStored},
+		{name: "probe status 600", body: `{"probe":{"expected_statuses":[600]}}`, wantBody: `{"error":"invalid probe.expected_statuses"}`, stored: probeStored},
+		{name: "probe timeout 0", body: `{"probe":{"timeout_seconds":0}}`, wantBody: `{"error":"invalid probe.timeout_seconds"}`, stored: probeStored},
+		{name: "probe timeout 9", body: `{"probe":{"timeout_seconds":9}}`, wantBody: `{"error":"invalid probe.timeout_seconds"}`, stored: probeStored},
+		{name: "probe interval 59", body: `{"probe":{"interval_seconds":59}}`, wantBody: `{"error":"invalid probe.interval_seconds"}`, stored: probeStored},
+		{name: "probe interval 0", body: `{"probe":{"interval_seconds":0}}`, wantBody: `{"error":"invalid probe.interval_seconds"}`, stored: probeStored},
+		{name: "probe http url", body: `{"probe":{"url":"http://"}}`, wantBody: `{"error":"invalid probe.url"}`, stored: probeStored},
+		{name: "probe ip literal url", body: `{"probe":{"url":"https://127.0.0.1/"}}`, wantBody: `{"error":"invalid probe.url"}`, stored: probeStored},
+		{name: "probe body_match too long", body: `{"probe":{"body_match":"` + longValue + `"}}`, wantBody: `{"error":"invalid probe.body_match"}`, stored: probeStored},
+		{name: "probe a string", body: `{"probe":"yes"}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "probe a bool", body: `{"probe":true}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "probe a number", body: `{"probe":5}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "probe an array", body: `{"probe":[]}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "url a number", body: `{"probe":{"url":5}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "statuses a string", body: `{"probe":{"expected_statuses":"200"}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "timeout a string", body: `{"probe":{"timeout_seconds":"5"}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "timeout a fraction", body: `{"probe":{"timeout_seconds":5.5}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "interval a fraction", body: `{"probe":{"interval_seconds":300.5}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "body_match a number", body: `{"probe":{"body_match":5}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "access_token a string", body: tokenBody(`"tok"`), wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "access_token an array", body: tokenBody(`[]`), wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "client_id a number", body: tokenBody(`{"client_id":1,"client_secret":"s"}`), wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "trailing data", body: `{"probe":{}} {}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "probe object on a push check", body: `{"probe":{"interval_seconds":120}}`, wantBody: `{"error":"probe config is not allowed on a push check"}`},
+		{name: "probe token only on a push check", body: tokenBody(`null`), wantBody: `{"error":"probe config is not allowed on a push check"}`},
+		{name: "period on a probe check", body: `{"period_seconds":120}`, wantBody: errBodyDerivedSchedule, stored: probeStored},
+		{name: "grace on a probe check", body: `{"grace_seconds":120}`, wantBody: errBodyDerivedSchedule, stored: probeStored},
 		{name: "period too small", body: `{"period_seconds":59}`, wantBody: `{"error":"invalid period_seconds"}`},
 		{name: "period too large", body: `{"period_seconds":2678401}`, wantBody: `{"error":"invalid period_seconds"}`},
 		{name: "grace too small", body: `{"grace_seconds":0}`, wantBody: `{"error":"invalid grace_seconds"}`},
@@ -828,9 +942,21 @@ func TestPatchRejectsEachInvalidFieldByName(testInstance *testing.T) {
 	}
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
-			recorder := serveHeartbeats(allResults(sampleCheck()), nil, http.MethodPatch, "/v1/admin/heartbeats/7", testCase.body)
+			fake := testCase.fake
+			if fake == nil {
+				stored := testCase.stored
+				if stored.ID == 0 {
+					stored = sampleCheck()
+				}
+				fake = allResults(stored)
+			}
+
+			recorder := serveHeartbeats(fake, nil, http.MethodPatch, "/v1/admin/heartbeats/7", testCase.body)
 
 			assertResponse(subTest, recorder, http.StatusBadRequest, testCase.wantBody+"\n")
+			if testCase.handlerRejects && fake.totalCalls() != 0 {
+				subTest.Fatalf("the service was called for a body the handler refuses: %+v", fake.patchCalls)
+			}
 		})
 	}
 }

@@ -529,6 +529,21 @@ func TestAppCheckEndpointsRejectBadInputBeforeTheService(testInstance *testing.T
 			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
 		},
 		{
+			name: "patch probe object", method: http.MethodPatch, path: appCheckPath,
+			body:       `{"probe":{"interval_seconds":120}}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "patch probe null", method: http.MethodPatch, path: appCheckPath,
+			body:       `{"probe":null}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "patch probe malformed", method: http.MethodPatch, path: appCheckPath,
+			body:       `{"probe":"yes"}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
 			name: "string period", method: http.MethodPost, path: appChecksPath,
 			body:       `{"name":"n","period_seconds":"60","grace_seconds":60,"destinations":["d"]}`,
 			wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSON,
