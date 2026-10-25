@@ -101,12 +101,38 @@ type checkView struct {
 	LastPingAt    *string                `json:"last_ping_at"`
 	LastPingKind  *string                `json:"last_ping_kind"`
 	DownSince     *string                `json:"down_since"`
+	DownReason    *string                `json:"down_reason"`
 	DeadlineAt    string                 `json:"deadline_at"`
 	Destinations  []checkDestinationView `json:"destinations"`
 	OwnerKind     string                 `json:"owner_kind"`
 	OwnerAppID    *string                `json:"owner_app_id"`
 	CreatedAt     string                 `json:"created_at"`
 	UpdatedAt     string                 `json:"updated_at"`
+	// Probe is set only for probe checks; push checks omit the key.
+	Probe *checkProbeView `json:"probe,omitempty"`
+}
+
+// checkProbeView is the probe block of a probe check's view. It never carries
+// the sealed token, credentials, result detail, config version or next-probe
+// time.
+type checkProbeView struct {
+	URL                 string                    `json:"url"`
+	ExpectedStatuses    []int                     `json:"expected_statuses"`
+	BodyMatch           *string                   `json:"body_match"`
+	TimeoutSeconds      int                       `json:"timeout_seconds"`
+	IntervalSeconds     int                       `json:"interval_seconds"`
+	ConsecutiveFailures int                       `json:"consecutive_failures"`
+	FailureThreshold    int                       `json:"failure_threshold"`
+	HasAccessToken      bool                      `json:"has_access_token"`
+	LastResult          *checkProbeLastResultView `json:"last_result"`
+}
+
+// checkProbeLastResultView is the last accepted probe result; a null reason is
+// a success and a null status is a transport failure.
+type checkProbeLastResultView struct {
+	At     string  `json:"at"`
+	Status *int    `json:"status"`
+	Reason *string `json:"reason"`
 }
 
 // checkResponseBody wraps one check view.
@@ -314,6 +340,11 @@ func newCheckView(check heartbeat.StoredCheck, now time.Time) checkView {
 			Enabled: destination.Enabled,
 		})
 	}
+	// A stale reason is never shown on a non-down check (fail closed).
+	var downReason *string
+	if check.State == heartbeat.StateDown {
+		downReason = check.DownReason
+	}
 	return checkView{
 		ID:            check.ID,
 		AppID:         check.AppID,
@@ -325,12 +356,40 @@ func newCheckView(check heartbeat.StoredCheck, now time.Time) checkView {
 		LastPingAt:    formatUTC(check.LastPingAt),
 		LastPingKind:  check.LastPingKind,
 		DownSince:     formatUTC(heartbeat.ActiveDownSince(check)),
+		DownReason:    downReason,
 		DeadlineAt:    heartbeat.Deadline(check).UTC().Format(time.RFC3339),
 		Destinations:  destinations,
 		OwnerKind:     check.OwnerKind,
 		OwnerAppID:    check.OwnerAppID,
 		CreatedAt:     check.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:     check.UpdatedAt.UTC().Format(time.RFC3339),
+		Probe:         newCheckProbeView(check.Probe),
+	}
+}
+
+// newCheckProbeView converts probe state into its view, or nil for a push check.
+func newCheckProbeView(probe *heartbeat.ProbeState) *checkProbeView {
+	if probe == nil {
+		return nil
+	}
+	var lastResult *checkProbeLastResultView
+	if probe.LastResult != nil {
+		lastResult = &checkProbeLastResultView{
+			At:     probe.LastResult.At.UTC().Format(time.RFC3339),
+			Status: probe.LastResult.Status,
+			Reason: probe.LastResult.Reason,
+		}
+	}
+	return &checkProbeView{
+		URL:                 probe.Config.URL,
+		ExpectedStatuses:    append([]int{}, probe.Config.ExpectedStatuses...),
+		BodyMatch:           probe.Config.BodyMatch,
+		TimeoutSeconds:      probe.Config.TimeoutSeconds,
+		IntervalSeconds:     probe.Config.IntervalSeconds,
+		ConsecutiveFailures: probe.ConsecutiveFailures,
+		FailureThreshold:    heartbeat.ProbeFailureThreshold,
+		HasAccessToken:      probe.HasAccessToken,
+		LastResult:          lastResult,
 	}
 }
 

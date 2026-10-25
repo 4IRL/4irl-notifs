@@ -819,7 +819,7 @@ route view is `{"id","app_pattern","channel_pattern","destinations","enabled","c
 
 **Heartbeat bounds:** `app_id` and `name` match `^[a-z0-9][a-z0-9_]{0,62}$`; `period_seconds` 60 to
 2678400; `grace_seconds` 60 to 604800; 1-20 distinct, existing `destinations`. A check view is
-`{"id","app_id","name","period_seconds","grace_seconds","paused","state","last_ping_at","last_ping_kind","down_since","deadline_at","destinations":[{"name","type","enabled"}],"created_at","updated_at"}`
+`{"id","app_id","name","period_seconds","grace_seconds","paused","state","last_ping_at","last_ping_kind","down_since","down_reason","deadline_at","destinations":[{"name","type","enabled"}],"created_at","updated_at"}`
 with `state` one of `new`, `up`, `late`, `down` and `last_ping_kind` `success` or `fail`.
 
 ### Copy-paste onboarding recipe

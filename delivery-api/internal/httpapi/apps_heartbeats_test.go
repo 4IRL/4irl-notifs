@@ -119,7 +119,7 @@ func sampleAppCheck() heartbeat.StoredCheck {
 }
 
 const sampleAppCheckJSON = `{"id":7,"app_id":"urls4irl","name":"nightly_backup","period_seconds":86400,"grace_seconds":7200,` +
-	`"paused":false,"state":"up","last_ping_at":"2026-10-16T12:00:00Z","last_ping_kind":"success","down_since":null,` +
+	`"paused":false,"state":"up","last_ping_at":"2026-10-16T12:00:00Z","last_ping_kind":"success","down_since":null,"down_reason":null,` +
 	`"deadline_at":"2026-10-17T14:00:00Z","destinations":[{"name":"ops_discord","type":"discord","enabled":true}],` +
 	`"owner_kind":"app","owner_app_id":"urls4irl","created_at":"2026-10-14T12:00:00Z","updated_at":"2026-10-16T12:00:00Z"}`
 

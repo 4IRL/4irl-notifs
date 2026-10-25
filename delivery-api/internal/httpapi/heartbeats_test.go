@@ -24,9 +24,59 @@ const validCreateCheckBody = `{"app_id":"urls4irl","name":"nightly_backup","peri
 
 // sampleCheckJSON is sampleCheck as seen at sampleNow (up, not late, never down).
 const sampleCheckJSON = `{"id":7,"app_id":"urls4irl","name":"nightly_backup","period_seconds":86400,"grace_seconds":7200,` +
-	`"paused":false,"state":"up","last_ping_at":"2026-10-16T12:00:00Z","last_ping_kind":"success","down_since":null,` +
+	`"paused":false,"state":"up","last_ping_at":"2026-10-16T12:00:00Z","last_ping_kind":"success","down_since":null,"down_reason":null,` +
 	`"deadline_at":"2026-10-17T14:00:00Z","destinations":[{"name":"ops_discord","type":"discord","enabled":true}],` +
 	`"owner_kind":"operator","owner_app_id":null,"created_at":"2026-10-14T12:00:00Z","updated_at":"2026-10-16T12:00:00Z"}`
+
+// sampleProbeCheckJSON is sampleProbeCheck at sampleNow: a probe check with one
+// failure so far, its last result a 503, and a stored access token.
+const sampleProbeCheckJSON = `{"id":9,"app_id":"_probe","name":"site_home","period_seconds":300,"grace_seconds":1200,` +
+	`"paused":false,"state":"up","last_ping_at":null,"last_ping_kind":null,"down_since":null,"down_reason":null,` +
+	`"deadline_at":"2026-10-16T12:25:00Z","destinations":[{"name":"ops_discord","type":"discord","enabled":true}],` +
+	`"owner_kind":"operator","owner_app_id":null,"created_at":"2026-10-14T12:00:00Z","updated_at":"2026-10-16T12:00:00Z",` +
+	`"probe":{"url":"https://host.example/path?q=1","expected_statuses":[200,204],"body_match":"ok","timeout_seconds":5,` +
+	`"interval_seconds":300,"consecutive_failures":1,"failure_threshold":3,"has_access_token":true,` +
+	`"last_result":{"at":"2026-10-16T12:00:00Z","status":503,"reason":"http_status"}}}`
+
+const (
+	probeDetailSentinel      = "DETAIL-SENTINEL-xyz"
+	probeDownDetailSentinel  = "DOWNDETAIL-SENTINEL-xyz"
+	probeSealedTokenSentinel = "SEALED-SENTINEL-xyz"
+)
+
+// sampleProbeCheck is an up probe check with a failing last result, derived
+// period/grace and sentinels in every field the view must never expose.
+func sampleProbeCheck() heartbeat.StoredCheck {
+	check := sampleCheck()
+	check.ID = 9
+	check.AppID = "_probe"
+	check.Name = "site_home"
+	check.PeriodSeconds, check.GraceSeconds = heartbeat.DerivedSchedule(300)
+	check.LastPingAt = nil
+	check.LastPingKind = nil
+	check.Probe = &heartbeat.ProbeState{
+		Config: heartbeat.ProbeConfig{
+			URL:              "https://host.example/path?q=1",
+			ExpectedStatuses: []int{200, 204},
+			BodyMatch:        stringPointer("ok"),
+			TimeoutSeconds:   5,
+			IntervalSeconds:  300,
+		},
+		HasAccessToken:      true,
+		SealedAccessToken:   []byte(probeSealedTokenSentinel),
+		ConsecutiveFailures: 1,
+		NextProbeAt:         adminTimestamp.Add(time.Hour),
+		ConfigVersion:       41,
+		LastResult: &heartbeat.ProbeResultRecord{
+			At:     adminTimestamp,
+			Status: intPointer(503),
+			Reason: stringPointer(heartbeat.ReasonHTTPStatus),
+			Detail: stringPointer(probeDetailSentinel),
+		},
+		DownDetail: stringPointer(probeDownDetailSentinel),
+	}
+	return check
+}
 
 // sampleNow is the fixed clock every heartbeat test runs on: a minute after the
 // sample check's last ping.
@@ -424,7 +474,7 @@ func TestCheckViewStates(testInstance *testing.T) {
 				check.DownReason = stringPointer(heartbeat.ReasonFail)
 				check.LastPingKind = stringPointer(heartbeat.PingFail)
 			},
-			wantState: `"state":"down"`, wantDownSince: `"down_since":"2026-10-16T11:01:00Z"`, wantPaused: `"paused":false`,
+			wantState: `"state":"down"`, wantDownSince: `"down_since":"2026-10-16T11:01:00Z","down_reason":"fail"`, wantPaused: `"paused":false`,
 			wantLastPing: `"last_ping_at":"2026-10-16T12:00:00Z"`, wantLastKind: `"last_ping_kind":"fail"`, wantDeadlineAt: `"deadline_at":"2026-10-17T14:00:00Z"`,
 		},
 		{
@@ -459,6 +509,137 @@ func TestCheckViewStates(testInstance *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestProbeCheckViewMatchesTheContract(testInstance *testing.T) {
+	recorder := serveHeartbeats(&fakeHeartbeats{getResult: sampleProbeCheck()}, nil, http.MethodGet, "/v1/admin/heartbeats/9", "")
+
+	assertResponse(testInstance, recorder, http.StatusOK, `{"check":`+sampleProbeCheckJSON+`}`+"\n")
+}
+
+func TestProbeCheckViewVariants(testInstance *testing.T) {
+	testCases := []struct {
+		name   string
+		mutate func(check *heartbeat.StoredCheck)
+		want   []string
+	}{
+		{
+			name:   "never probed",
+			mutate: func(check *heartbeat.StoredCheck) { check.Probe.LastResult = nil; check.Probe.ConsecutiveFailures = 0 },
+			want:   []string{`"consecutive_failures":0`, `"last_result":null`, `"down_reason":null`},
+		},
+		{
+			name: "success result",
+			mutate: func(check *heartbeat.StoredCheck) {
+				check.Probe.LastResult.Status = intPointer(200)
+				check.Probe.LastResult.Reason = nil
+			},
+			want: []string{`"last_result":{"at":"2026-10-16T12:00:00Z","status":200,"reason":null}`},
+		},
+		{
+			name: "transport failure",
+			mutate: func(check *heartbeat.StoredCheck) {
+				check.Probe.LastResult.Status = nil
+				check.Probe.LastResult.Reason = stringPointer(heartbeat.ReasonTimeout)
+			},
+			want: []string{`"last_result":{"at":"2026-10-16T12:00:00Z","status":null,"reason":"timeout"}`},
+		},
+		{
+			name:   "http_status with a null status",
+			mutate: func(check *heartbeat.StoredCheck) { check.Probe.LastResult.Status = nil },
+			want:   []string{`"last_result":{"at":"2026-10-16T12:00:00Z","status":null,"reason":"http_status"}`},
+		},
+		{
+			name: "down probe check",
+			mutate: func(check *heartbeat.StoredCheck) {
+				check.State = heartbeat.StateDown
+				check.DownSince = timePointer(sampleNow.Add(-time.Minute))
+				check.DownReason = stringPointer(heartbeat.ReasonHTTPStatus)
+			},
+			want: []string{`"state":"down"`, `"down_reason":"http_status"`, `"status":503`},
+		},
+		{
+			name: "non-down check with a stale reason renders null",
+			mutate: func(check *heartbeat.StoredCheck) {
+				check.DownReason = stringPointer(heartbeat.ReasonHTTPStatus)
+			},
+			want: []string{`"state":"up"`, `"down_reason":null`},
+		},
+		{
+			name: "down probe check whose result was cleared",
+			mutate: func(check *heartbeat.StoredCheck) {
+				check.State = heartbeat.StateDown
+				check.DownSince = timePointer(sampleNow.Add(-time.Minute))
+				check.DownReason = stringPointer(heartbeat.ReasonHTTPStatus)
+				check.Probe.LastResult = nil
+			},
+			want: []string{`"state":"down"`, `"down_reason":"http_status"`, `"last_result":null`},
+		},
+		{
+			name: "no access token and no body match",
+			mutate: func(check *heartbeat.StoredCheck) {
+				check.Probe.HasAccessToken = false
+				check.Probe.Config.BodyMatch = nil
+			},
+			want: []string{`"body_match":null`, `"has_access_token":false`},
+		},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			check := sampleProbeCheck()
+			testCase.mutate(&check)
+
+			recorder := serveHeartbeats(&fakeHeartbeats{getResult: check}, nil, http.MethodGet, "/v1/admin/heartbeats/9", "")
+
+			body := recorder.Body.String()
+			for _, want := range testCase.want {
+				if !strings.Contains(body, want) {
+					subTest.Fatalf("body = %s, want it to contain %s", body, want)
+				}
+			}
+		})
+	}
+}
+
+func TestProbeCheckIsNeverLate(testInstance *testing.T) {
+	check := sampleProbeCheck()
+	// Far past anchor + period and the derived deadline (anchor + interval*(N+2)).
+	check.AnchorAt = sampleNow.Add(-3 * time.Hour)
+	fake := &fakeHeartbeats{getResult: check, listResult: []heartbeat.StoredCheck{check}}
+
+	for _, path := range []string{"/v1/admin/heartbeats/9", "/v1/admin/heartbeats"} {
+		recorder := serveHeartbeats(fake, nil, http.MethodGet, path, "")
+
+		body := recorder.Body.String()
+		if !strings.Contains(body, `"state":"up"`) || strings.Contains(body, `"late"`) {
+			testInstance.Fatalf("%s body = %s, want state up and never late", path, body)
+		}
+	}
+}
+
+func TestProbeCheckViewNeverLeaksInternals(testInstance *testing.T) {
+	check := sampleProbeCheck()
+	fake := &fakeHeartbeats{getResult: check, listResult: []heartbeat.StoredCheck{check}}
+
+	for _, path := range []string{"/v1/admin/heartbeats/9", "/v1/admin/heartbeats"} {
+		body := serveHeartbeats(fake, nil, http.MethodGet, path, "").Body.String()
+		for _, secret := range []string{
+			probeDetailSentinel, probeDownDetailSentinel, probeSealedTokenSentinel,
+			"config_version", "next_probe_at", "detail", "sealed",
+		} {
+			if strings.Contains(body, secret) {
+				testInstance.Fatalf("%s body = %s, must not contain %q", path, body, secret)
+			}
+		}
+	}
+}
+
+func TestPushCheckViewHasNoProbeKey(testInstance *testing.T) {
+	body := serveHeartbeats(&fakeHeartbeats{getResult: sampleCheck()}, nil, http.MethodGet, "/v1/admin/heartbeats/7", "").Body.String()
+
+	if strings.Contains(body, `"probe"`) {
+		testInstance.Fatalf("push body = %s, must not contain a probe key", body)
 	}
 }
 
