@@ -15,9 +15,16 @@ import (
 // Validation messages shared by the probe validators.
 const (
 	messageInvalidAccessToken = "invalid probe.access_token"
-	messageDerivedSchedule    = "period_seconds and grace_seconds are derived for probe checks"
 	messageProbeOnPush        = "probe config is not allowed on a push check"
-	messageProbeOnAppOwned    = "probe config is not allowed on an app-owned check"
+)
+
+const (
+	// MessageDerivedSchedule is the 400 message for a probe check that is given a
+	// period_seconds or grace_seconds: both are derived from the probe interval.
+	MessageDerivedSchedule = "period_seconds and grace_seconds are derived for probe checks"
+	// MessageProbeOnAppOwned is the 400 message for probe config on an app-owned
+	// check: only the operator may create or change a probe check.
+	MessageProbeOnAppOwned = "probe config is not allowed on an app-owned check"
 )
 
 // namePattern matches a check name: lowercase letters, digits and underscores,
@@ -114,7 +121,7 @@ func ValidateNewCheck(check NewCheck) error {
 	if check.Probe != nil || check.AccessToken != nil {
 		// Fail closed: only an empty or operator owner may carry probe config.
 		if check.OwnerKind != "" && check.OwnerKind != registry.OwnerOperator {
-			return &ValidationError{Message: messageProbeOnAppOwned}
+			return &ValidationError{Message: MessageProbeOnAppOwned}
 		}
 	}
 	if check.Probe == nil {
@@ -123,8 +130,10 @@ func ValidateNewCheck(check NewCheck) error {
 		}
 		return ValidateSchedule(check.PeriodSeconds, check.GraceSeconds, check.DestinationNames)
 	}
-	if check.PeriodSeconds != 0 || check.GraceSeconds != 0 {
-		return &ValidationError{Message: messageDerivedSchedule}
+	// The non-zero test stays as a fail-closed backstop for a caller that does not
+	// set ScheduleSupplied.
+	if check.ScheduleSupplied || check.PeriodSeconds != 0 || check.GraceSeconds != 0 {
+		return &ValidationError{Message: MessageDerivedSchedule}
 	}
 	if err := ValidateProbeConfig(*check.Probe); err != nil {
 		return err
@@ -165,7 +174,7 @@ func ValidateCheckUpdate(update CheckUpdate) error {
 func ValidateCheckPatchForKind(current StoredCheck, patch CheckPatch) error {
 	if current.Kind() == KindProbe {
 		if patch.PeriodSeconds != nil || patch.GraceSeconds != nil {
-			return &ValidationError{Message: messageDerivedSchedule}
+			return &ValidationError{Message: MessageDerivedSchedule}
 		}
 		return nil
 	}

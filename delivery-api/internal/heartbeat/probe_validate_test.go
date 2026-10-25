@@ -162,6 +162,23 @@ func TestValidateNewCheckProbe(t *testing.T) {
 		{"explicit operator owner", func(check *NewCheck) { check.OwnerKind = registry.OwnerOperator }, ""},
 		{"period supplied", func(check *NewCheck) { check.PeriodSeconds = 300 }, "period_seconds and grace_seconds are derived for probe checks"},
 		{"grace supplied", func(check *NewCheck) { check.GraceSeconds = 1200 }, "period_seconds and grace_seconds are derived for probe checks"},
+		{"schedule key supplied with zero values", func(check *NewCheck) { check.ScheduleSupplied = true }, MessageDerivedSchedule},
+		{"schedule supplied before bad config", func(check *NewCheck) {
+			check.ScheduleSupplied = true
+			bad := validProbeConfigForTest()
+			bad.URL = "http://x.example"
+			check.Probe = &bad
+		}, MessageDerivedSchedule},
+		{"bad app_id before schedule supplied", func(check *NewCheck) { check.AppID, check.ScheduleSupplied = "Bad", true }, "invalid app_id"},
+		{"bad name before schedule supplied", func(check *NewCheck) { check.Name, check.ScheduleSupplied = "Bad-Name", true }, "invalid name"},
+		{"app owner before schedule supplied", func(check *NewCheck) {
+			check.OwnerKind, check.OwnerAppID, check.ScheduleSupplied = registry.OwnerApp, &appOwner, true
+		}, MessageProbeOnAppOwned},
+		{"push ignores ScheduleSupplied", func(check *NewCheck) {
+			check.Probe = nil
+			check.PeriodSeconds, check.GraceSeconds = 60, 60
+			check.ScheduleSupplied = true
+		}, ""},
 		{"bad config", func(check *NewCheck) {
 			bad := validProbeConfigForTest()
 			bad.URL = "http://x.example"

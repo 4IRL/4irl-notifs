@@ -666,6 +666,7 @@ func TestCreatePassesTheDecodedCheckToTheService(testInstance *testing.T) {
 		AppID: "urls4irl", Name: "nightly_backup", PeriodSeconds: 86400, GraceSeconds: 7200,
 		DestinationNames: []string{"ops_discord", "ops_ntfy"},
 		OwnerKind:        registry.OwnerOperator,
+		ScheduleSupplied: true,
 	}}
 	if !reflect.DeepEqual(fake.createCalls, want) {
 		testInstance.Fatalf("create calls = %+v, want %+v", fake.createCalls, want)

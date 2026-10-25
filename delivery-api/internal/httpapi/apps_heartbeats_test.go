@@ -513,6 +513,31 @@ func TestAppCheckEndpointsRejectBadInputBeforeTheService(testInstance *testing.T
 			body:       `{"destinations":["` + strings.Repeat("a", maxAdminBodyBytes) + `"]}`,
 			wantStatus: http.StatusRequestEntityTooLarge, wantBody: errBodyTooLarge,
 		},
+		{
+			name: "probe object", method: http.MethodPost, path: appChecksPath,
+			body:       `{"name":"site","destinations":["ops_discord"],"probe":{"url":"https://example.com","expected_statuses":[200],"timeout_seconds":5,"interval_seconds":300}}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "probe null", method: http.MethodPost, path: appChecksPath,
+			body:       `{"name":"site","period_seconds":60,"grace_seconds":60,"destinations":["ops_discord"],"probe":null}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "probe malformed", method: http.MethodPost, path: appChecksPath,
+			body:       `{"name":"site","probe":"yes"}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "string period", method: http.MethodPost, path: appChecksPath,
+			body:       `{"name":"n","period_seconds":"60","grace_seconds":60,"destinations":["d"]}`,
+			wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSON,
+		},
+		{
+			name: "fractional grace", method: http.MethodPost, path: appChecksPath,
+			body:       `{"name":"n","period_seconds":60,"grace_seconds":60.5,"destinations":["d"]}`,
+			wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSON,
+		},
 		{name: "zero id", method: http.MethodGet, path: appChecksPath + "/0", wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidCheck},
 		{name: "signed id", method: http.MethodDelete, path: appChecksPath + "/+7", wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidCheck},
 		{name: "leading zero id", method: http.MethodPost, path: appChecksPath + "/07/pause", wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidCheck},

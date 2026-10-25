@@ -56,6 +56,18 @@ func (server *Server) handleAppCreateCheck(responseWriter http.ResponseWriter, r
 	if !decodeJSON(responseWriter, request, &body, maxAdminBodyBytes) {
 		return
 	}
+	// Fail closed: any probe key, including null or a malformed shape, is refused
+	// before it is decoded or reaches the service.
+	if len(body.Probe) > 0 {
+		writeError(responseWriter, http.StatusBadRequest, heartbeat.MessageProbeOnAppOwned)
+		return
+	}
+	periodSeconds, periodOK := parseScheduleField(body.PeriodSeconds)
+	graceSeconds, graceOK := parseScheduleField(body.GraceSeconds)
+	if !periodOK || !graceOK {
+		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidJSONBody)
+		return
+	}
 	if body.AppID != "" && body.AppID != appID {
 		writeError(responseWriter, http.StatusBadRequest, errMsgCheckAppIDNotOwn)
 		return
@@ -63,8 +75,8 @@ func (server *Server) handleAppCreateCheck(responseWriter http.ResponseWriter, r
 
 	check, err := server.appHeartbeats.CreateForApp(request.Context(), appID, heartbeat.AppCheckInput{
 		Name:             body.Name,
-		PeriodSeconds:    body.PeriodSeconds,
-		GraceSeconds:     body.GraceSeconds,
+		PeriodSeconds:    periodSeconds,
+		GraceSeconds:     graceSeconds,
 		DestinationNames: body.Destinations,
 	})
 	if err != nil {

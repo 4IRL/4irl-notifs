@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -53,12 +55,88 @@ type Heartbeats interface {
 }
 
 // createCheckRequestBody is the POST /v1/admin/heartbeats body.
+//
+// PeriodSeconds, GraceSeconds and Probe are raw so that the handlers can tell an
+// absent key from an explicit 0 or null: a probe check's schedule is derived, so
+// supplying either key is a 400. The raw values are decoded by parseScheduleField
+// and decodeCreateProbe, never left to the generic decoder, which would not apply
+// DisallowUnknownFields inside them.
 type createCheckRequestBody struct {
-	AppID         string   `json:"app_id"`
-	Name          string   `json:"name"`
-	PeriodSeconds int      `json:"period_seconds"`
-	GraceSeconds  int      `json:"grace_seconds"`
-	Destinations  []string `json:"destinations"`
+	AppID         string          `json:"app_id"`
+	Name          string          `json:"name"`
+	PeriodSeconds json.RawMessage `json:"period_seconds"`
+	GraceSeconds  json.RawMessage `json:"grace_seconds"`
+	Destinations  []string        `json:"destinations"`
+	Probe         json.RawMessage `json:"probe"`
+}
+
+// createProbeBody is the nested `probe` object of the create body.
+type createProbeBody struct {
+	URL              string                 `json:"url"`
+	ExpectedStatuses []int                  `json:"expected_statuses"`
+	BodyMatch        *string                `json:"body_match"`
+	TimeoutSeconds   int                    `json:"timeout_seconds"`
+	IntervalSeconds  int                    `json:"interval_seconds"`
+	AccessToken      *createAccessTokenBody `json:"access_token"`
+}
+
+// createAccessTokenBody is the nested `probe.access_token` object.
+type createAccessTokenBody struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
+
+// jsonNull is the raw form of a JSON null.
+const jsonNull = "null"
+
+// parseScheduleField reads a raw period_seconds or grace_seconds: absent and null
+// are 0 (the service then answers the existing invalid-field 400 for a push
+// check), a whole number is itself, and anything else (string, fraction, bool,
+// object) reports false.
+func parseScheduleField(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 {
+		return 0, true
+	}
+	var value *int
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return 0, false
+	}
+	if value == nil {
+		return 0, true
+	}
+	return *value, true
+}
+
+// decodeCreateProbe strictly decodes the raw create `probe` value. An absent or
+// null probe is a push check (nil, nil, true). A scalar, an array, an unknown key
+// at any depth or a wrong-typed value reports false.
+func decodeCreateProbe(raw json.RawMessage) (*heartbeat.ProbeConfig, *heartbeat.AccessToken, bool) {
+	if len(raw) == 0 || string(raw) == jsonNull {
+		return nil, nil, true
+	}
+	var body createProbeBody
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		return nil, nil, false
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, nil, false
+	}
+	config := &heartbeat.ProbeConfig{
+		URL:              body.URL,
+		ExpectedStatuses: body.ExpectedStatuses,
+		BodyMatch:        body.BodyMatch,
+		TimeoutSeconds:   body.TimeoutSeconds,
+		IntervalSeconds:  body.IntervalSeconds,
+	}
+	if body.AccessToken == nil {
+		return config, nil, true
+	}
+	return config, &heartbeat.AccessToken{
+		ClientID:     body.AccessToken.ClientID,
+		ClientSecret: body.AccessToken.ClientSecret,
+	}, true
 }
 
 // patchCheckRequestBody is the PATCH /v1/admin/heartbeats/{id} body. Any subset
@@ -217,13 +295,26 @@ func (server *Server) handleCreateCheck(responseWriter http.ResponseWriter, requ
 		return
 	}
 
+	periodSeconds, periodOK := parseScheduleField(body.PeriodSeconds)
+	graceSeconds, graceOK := parseScheduleField(body.GraceSeconds)
+	probeConfig, accessToken, probeOK := decodeCreateProbe(body.Probe)
+	if !periodOK || !graceOK || !probeOK {
+		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidJSONBody)
+		return
+	}
+
+	// The handler does not judge schedule presence on a probe create: it records it
+	// and ValidateNewCheck answers, so app_id and name errors keep their precedence.
 	check, err := server.heartbeats.Create(request.Context(), heartbeat.NewCheck{
 		AppID:            body.AppID,
 		Name:             body.Name,
-		PeriodSeconds:    body.PeriodSeconds,
-		GraceSeconds:     body.GraceSeconds,
+		PeriodSeconds:    periodSeconds,
+		GraceSeconds:     graceSeconds,
 		DestinationNames: body.Destinations,
 		OwnerKind:        registry.OwnerOperator,
+		Probe:            probeConfig,
+		AccessToken:      accessToken,
+		ScheduleSupplied: len(body.PeriodSeconds) > 0 || len(body.GraceSeconds) > 0,
 	})
 	if err != nil {
 		server.writeHeartbeatError(responseWriter, request, err)
