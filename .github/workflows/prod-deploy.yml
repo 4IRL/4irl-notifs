@@ -41,6 +41,12 @@ on:
       # Back it up offline: losing it orphans every stored destination secret.
       DELIVERY_MASTER_KEY:
         required: true
+      # Required: exactly 64 lowercase hex (`openssl rand -hex 32`), validated on the runner first.
+      # The one internal credential provisioning-api and delivery-api share. Both read it at startup
+      # only and `up -d` does not recreate a service when just this file's contents change, so
+      # rotating it also needs a manual `up -d --force-recreate provisioning-api delivery-api`.
+      PROVISIONING_INTERNAL_CREDENTIAL:
+        required: true
 
 jobs:
   ProdDeploy:
@@ -63,6 +69,20 @@ jobs:
         run: |
           if ! [[ "${DELIVERY_MASTER_KEY}" =~ ^[0-9a-f]{64}$ ]]; then
             echo "DELIVERY_MASTER_KEY secret must be exactly 64 lowercase hex characters (openssl rand -hex 32); nothing was copied or changed on the VPS"
+            exit 1
+          fi
+
+      - name: Validate PROVISIONING_INTERNAL_CREDENTIAL secret
+        env:
+          PROVISIONING_INTERNAL_CREDENTIAL: ${{ secrets.PROVISIONING_INTERNAL_CREDENTIAL }}
+        run: |
+          if ! [[ "${PROVISIONING_INTERNAL_CREDENTIAL}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "PROVISIONING_INTERNAL_CREDENTIAL secret must be exactly 64 lowercase hex characters (openssl rand -hex 32); nothing was copied or changed on the VPS"
+            exit 1
+          fi
+          # The public local-dev value (docker-compose.yml) must never become the production credential.
+          if [[ "${PROVISIONING_INTERNAL_CREDENTIAL}" == "fedcba98765432100123456789abcdeffedcba98765432100123456789abcdef" ]]; then
+            echo "PROVISIONING_INTERNAL_CREDENTIAL secret is the public local-dev value; generate a fresh one with openssl rand -hex 32; nothing was copied or changed on the VPS"
             exit 1
           fi
 
@@ -122,9 +142,9 @@ jobs:
       # not written to disk). Non-secret hostnames (NTFY_BASE_URL, PERSON_SERVICE_URL) stay
       # baked into the compose file's defaults.
       #
-      # The delivery DB password and master key are the exceptions: they live in
+      # The delivery DB password, master key and internal credential are the exceptions: they live in
       # ./secrets-persistent/ and are never deleted, because delivery-api (and, for the password,
-      # delivery-migrate) read them on every start. The file is
+      # delivery-migrate; for the credential, provisioning-api too) read them on every start. The file is
       # 0644, not 0600: the deploy user (uid 1001) owns it but those containers run as uid 1000
       # and must read the bind mount; the 0700 directory is the real access boundary.
       #
@@ -142,6 +162,7 @@ jobs:
           cd /home/4irl-notifs;
           DELIVERY_DB_PASSWORD_VALUE="${{ secrets.DELIVERY_DB_PASSWORD }}";
           DELIVERY_MASTER_KEY_VALUE="${{ secrets.DELIVERY_MASTER_KEY }}";
+          PROVISIONING_INTERNAL_CREDENTIAL_VALUE="${{ secrets.PROVISIONING_INTERNAL_CREDENTIAL }}";
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
 
           mkdir -p ./secrets/;
@@ -157,6 +178,9 @@ jobs:
           printf "%s" "${DELIVERY_MASTER_KEY_VALUE}" > ./secrets-persistent/DELIVERY_MASTER_KEY;
           chmod 644 ./secrets-persistent/DELIVERY_MASTER_KEY;
           [ -s ./secrets-persistent/DELIVERY_MASTER_KEY ] || { echo "DELIVERY_MASTER_KEY file is empty after write; aborting"; exit 1; };
+          printf "%s" "${PROVISIONING_INTERNAL_CREDENTIAL_VALUE}" > ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL;
+          chmod 644 ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL;
+          [ -s ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL ] || { echo "PROVISIONING_INTERNAL_CREDENTIAL file is empty after write; aborting"; exit 1; };
 
           docker compose -f docker-compose.prod.yml pull;
           export NTFY_UPSTREAM_ACCESS_TOKEN="${{ secrets.NTFY_UPSTREAM_ACCESS_TOKEN }}";

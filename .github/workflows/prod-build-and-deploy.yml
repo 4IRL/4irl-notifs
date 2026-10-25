@@ -44,6 +44,9 @@ jobs:
       # delivery-api master key for secrets at rest (required: delivery-api refuses to start
       # without it; the deploy aborts before touching the running stack if it is missing).
       DELIVERY_MASTER_KEY: ${{ secrets.DELIVERY_MASTER_KEY }}
+      # Internal credential shared by provisioning-api and delivery-api (required; the deploy
+      # aborts before touching the VPS if it is missing or not 64 lowercase hex).
+      PROVISIONING_INTERNAL_CREDENTIAL: ${{ secrets.PROVISIONING_INTERNAL_CREDENTIAL }}
 
   # Admin UI (Cloudflare Pages) is independent of the Docker image + VPS stack, so it runs in
   # parallel with build-prod/deploy-prod (no `needs`), gated by the same merged-to-main guard.

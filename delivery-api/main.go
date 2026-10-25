@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -40,6 +42,11 @@ const (
 	ntfyURLEnv = "DELIVERY_NTFY_URL"
 	// provisioningURLEnv names the env var holding the internal provisioning-api origin (e.g. http://provisioning-api:8080).
 	provisioningURLEnv = "DELIVERY_PROVISIONING_URL"
+	// internalProvisioningHost is the only host provisioningURLEnv may name: the compose service name of provisioning-api.
+	internalProvisioningHost = "provisioning-api"
+	// provisioningCredentialEnv names the secret holding the internal credential provisioning-api requires
+	// (resolved through secretenv, so DELIVERY_PROVISIONING_CREDENTIAL_FILE works in production).
+	provisioningCredentialEnv = "DELIVERY_PROVISIONING_CREDENTIAL"
 
 	defaultListenAddress = ":8080"
 	readHeaderTimeout    = 10 * time.Second
@@ -66,6 +73,51 @@ func envOrDefault(key string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// buildMinter returns the publisher minter, or nil when minting is unavailable. It needs both the
+// provisioning-api origin and the internal credential: with either missing it returns a nil interface (not a
+// typed-nil *provisionclient.Client), which makes publisher.Service.Mint answer ErrMintUnavailable, and logs one
+// WARN naming the missing variable. A set URL whose host is not the compose service name of
+// provisioning-api (internalProvisioningHost) is a startup error, so the credential is never sent to
+// another origin. The credential value is never logged.
+func buildMinter(provisioningURL string, resolveSecret func(string) (string, error), logger *slog.Logger) (publisher.Minter, error) {
+	if provisioningURL == "" {
+		logger.Warn("publisher minting disabled: " + provisioningURLEnv + " unset")
+		return nil, nil
+	}
+	if hostErr := checkInternalProvisioningURL(provisioningURL); hostErr != nil {
+		return nil, hostErr
+	}
+	rawCredential, resolveErr := resolveSecret(provisioningCredentialEnv)
+	if resolveErr != nil {
+		// The resolver error names the variable and the file path, never the secret value.
+		logger.Warn("publisher minting disabled: "+provisioningCredentialEnv+" unreadable", "error", resolveErr)
+		return nil, nil
+	}
+	// A plain env var is not trimmed by secretenv; a stray space or newline would make every mint fail
+	// with a header or 401 error that gives no hint of the cause.
+	credential := strings.TrimSpace(rawCredential)
+	if credential == "" {
+		logger.Warn("publisher minting disabled: " + provisioningCredentialEnv + " unset or empty")
+		return nil, nil
+	}
+	return provisionclient.New(provisionclient.Config{BaseURL: provisioningURL, Credential: credential}), nil
+}
+
+// checkInternalProvisioningURL accepts only an http(s) URL, without userinfo, whose host is the compose
+// service name of provisioning-api. Plain http is allowed because the origin is on the compose network.
+// The URL text is not echoed in the error, since a misconfigured value could carry userinfo.
+func checkInternalProvisioningURL(rawURL string) error {
+	parsed, parseErr := url.Parse(rawURL)
+	if parseErr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return fmt.Errorf("%s must be an http(s) origin without credentials", provisioningURLEnv)
+	}
+	if parsed.Hostname() != internalProvisioningHost {
+		return fmt.Errorf("%s host must be %q so the internal credential is never sent to another origin",
+			provisioningURLEnv, internalProvisioningHost)
+	}
+	return nil
 }
 
 // buildSinks returns the delivery sinks and the destination types message
@@ -209,14 +261,9 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	guardedClient := transport.New(transport.Config{})
 	messageStore := message.NewPGStore(pool)
 	sinks, supportedTypes := buildSinks(guardedClient, envOrDefault(ntfyURLEnv, ""), logger)
-	// The minter is passed only when a provisioning-api origin is configured: a nil interface (not a typed-nil
-	// *provisionclient.Client) makes publisher.Service.Mint answer ErrMintUnavailable.
-	var minter publisher.Minter
-	provisionClient := provisionclient.New(provisionclient.Config{BaseURL: envOrDefault(provisioningURLEnv, "")})
-	if provisionClient.Configured() {
-		minter = provisionClient
-	} else {
-		logger.Warn("publisher minting disabled: " + provisioningURLEnv + " unset")
+	minter, minterErr := buildMinter(envOrDefault(provisioningURLEnv, ""), secretenv.Resolve, logger)
+	if minterErr != nil {
+		return minterErr
 	}
 	publisherService := publisher.NewService(publisher.NewPGStore(pool), minter, sealer)
 	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil

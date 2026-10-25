@@ -94,6 +94,15 @@ services:
       # Local person-service Worker (local/CI only; prod points at the Cloudflare-hosted Worker
       # in docker-compose.prod.yml). No Access client id/secret: the client omits empty headers.
       - PERSON_SERVICE_URL=http://person-service:8787
+      # Internal credential shared only with delivery-api (sent as X-Notifs-Internal-Credential).
+      # LOCKSTEP: keep equal to delivery-api's DELIVERY_PROVISIONING_CREDENTIAL below; prod uses the
+      # persistent file secret in docker-compose.prod.yml.
+      - PROVISIONING_INTERNAL_CREDENTIAL=fedcba98765432100123456789abcdeffedcba98765432100123456789abcdef # dev-only credential; prod uses a persistent file secret
+      # Local keeps the credential check log-only (harnesses move to the one door in a later step) and
+      # runs the per-app grant check for real so the integration suite exercises it. LOCKSTEP: prod
+      # (docker-compose.prod.yml) runs both log-only during the 7-day audit window.
+      - PROVISIONING_INTERNAL_CREDENTIAL_MODE=log-only
+      - PROVISIONING_APP_GRANT_MODE=enforce
     volumes:
       - ntfy-auth:/var/lib/ntfy
     healthcheck:
@@ -174,6 +183,10 @@ services:
       # (POST /v1/admin/apps/{app_id}/ntfy-publisher). Unset disables minting. LOCKSTEP: keep in sync
       # with docker-compose.prod.yml.
       - DELIVERY_PROVISIONING_URL=http://provisioning-api:8080
+      # Internal credential delivery-api sends to provisioning-api. LOCKSTEP: keep equal to
+      # provisioning-api's PROVISIONING_INTERNAL_CREDENTIAL above; prod uses the same persistent file
+      # secret for both (docker-compose.prod.yml).
+      - DELIVERY_PROVISIONING_CREDENTIAL=fedcba98765432100123456789abcdeffedcba98765432100123456789abcdef # dev-only credential; prod uses a persistent file secret
       # Per-app cap on scheduled (deliver_at) messages; a new scheduled submit over it is a 429. The
       # default must equal the code default (message.DefaultMaxScheduledPerApp). LOCKSTEP: keep in
       # sync with docker-compose.prod.yml.
