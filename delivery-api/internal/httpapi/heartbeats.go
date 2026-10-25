@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -19,6 +21,7 @@ const (
 	errMsgCheckExists            = "check already exists"
 	errMsgCheckIdentityImmutable = "app_id and name are immutable"
 	errMsgProbeCheckPing         = "check is a probe check"
+	errMsgCheckKindImmutable     = "check kind is immutable"
 )
 
 // Path value names of the heartbeat routes. The check id of the admin routes
@@ -53,24 +56,168 @@ type Heartbeats interface {
 }
 
 // createCheckRequestBody is the POST /v1/admin/heartbeats body.
+//
+// PeriodSeconds, GraceSeconds and Probe are raw so that the handlers can tell an
+// absent key from an explicit 0 or null: a probe check's schedule is derived, so
+// supplying either key is a 400. The raw values are decoded by parseScheduleField
+// and decodeCreateProbe, never left to the generic decoder, which would not apply
+// DisallowUnknownFields inside them.
 type createCheckRequestBody struct {
-	AppID         string   `json:"app_id"`
-	Name          string   `json:"name"`
-	PeriodSeconds int      `json:"period_seconds"`
-	GraceSeconds  int      `json:"grace_seconds"`
-	Destinations  []string `json:"destinations"`
+	AppID         string          `json:"app_id"`
+	Name          string          `json:"name"`
+	PeriodSeconds json.RawMessage `json:"period_seconds"`
+	GraceSeconds  json.RawMessage `json:"grace_seconds"`
+	Destinations  []string        `json:"destinations"`
+	Probe         json.RawMessage `json:"probe"`
+}
+
+// createProbeBody is the nested `probe` object of the create body.
+type createProbeBody struct {
+	URL              string                 `json:"url"`
+	ExpectedStatuses []int                  `json:"expected_statuses"`
+	BodyMatch        *string                `json:"body_match"`
+	TimeoutSeconds   int                    `json:"timeout_seconds"`
+	IntervalSeconds  int                    `json:"interval_seconds"`
+	AccessToken      *createAccessTokenBody `json:"access_token"`
+}
+
+// createAccessTokenBody is the nested `probe.access_token` object.
+type createAccessTokenBody struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
+
+// jsonNull is the raw form of a JSON null.
+const jsonNull = "null"
+
+// parseScheduleField reads a raw period_seconds or grace_seconds: absent and null
+// are 0 (the service then answers the existing invalid-field 400 for a push
+// check), a whole number is itself, and anything else (string, fraction, bool,
+// object) reports false.
+func parseScheduleField(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 {
+		return 0, true
+	}
+	var value *int
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return 0, false
+	}
+	if value == nil {
+		return 0, true
+	}
+	return *value, true
+}
+
+// decodeCreateProbe strictly decodes the raw create `probe` value. An absent or
+// null probe is a push check (nil, nil, true). A scalar, an array, an unknown key
+// at any depth or a wrong-typed value reports false.
+func decodeCreateProbe(raw json.RawMessage) (*heartbeat.ProbeConfig, *heartbeat.AccessToken, bool) {
+	if len(raw) == 0 || string(raw) == jsonNull {
+		return nil, nil, true
+	}
+	var body createProbeBody
+	if !decodeStrictRaw(raw, &body) {
+		return nil, nil, false
+	}
+	config := &heartbeat.ProbeConfig{
+		URL:              body.URL,
+		ExpectedStatuses: body.ExpectedStatuses,
+		BodyMatch:        body.BodyMatch,
+		TimeoutSeconds:   body.TimeoutSeconds,
+		IntervalSeconds:  body.IntervalSeconds,
+	}
+	if body.AccessToken == nil {
+		return config, nil, true
+	}
+	return config, &heartbeat.AccessToken{
+		ClientID:     body.AccessToken.ClientID,
+		ClientSecret: body.AccessToken.ClientSecret,
+	}, true
+}
+
+// decodeStrictRaw decodes raw into target, rejecting unknown fields at every
+// depth and any data after the value. DisallowUnknownFields does not reach into a
+// json.RawMessage, so nested raw values are decoded here.
+func decodeStrictRaw(raw json.RawMessage, target any) bool {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return false
+	}
+	_, err := decoder.Token()
+	return errors.Is(err, io.EOF)
 }
 
 // patchCheckRequestBody is the PATCH /v1/admin/heartbeats/{id} body. Any subset
 // of the schedule fields may be sent. AppID and Name are accepted by the decoder
 // only so that sending either (even as null) is the dedicated immutability 400
-// rather than an unknown-field 400.
+// rather than an unknown-field 400. Probe is raw so that an absent key, null (a
+// kind change, refused) and an object can be told apart; the object is decoded by
+// decodePatchProbe.
 type patchCheckRequestBody struct {
 	AppID         json.RawMessage `json:"app_id"`
 	Name          json.RawMessage `json:"name"`
 	PeriodSeconds *int            `json:"period_seconds"`
 	GraceSeconds  *int            `json:"grace_seconds"`
 	Destinations  []string        `json:"destinations"`
+	Probe         json.RawMessage `json:"probe"`
+}
+
+// patchProbeBody is the nested `probe` object of the PATCH body. A nil URL,
+// statuses, timeout or interval keeps the stored value. BodyMatch and AccessToken
+// are raw: absent keeps, null clears, a value sets.
+type patchProbeBody struct {
+	URL              *string         `json:"url"`
+	ExpectedStatuses []int           `json:"expected_statuses"`
+	BodyMatch        json.RawMessage `json:"body_match"`
+	TimeoutSeconds   *int            `json:"timeout_seconds"`
+	IntervalSeconds  *int            `json:"interval_seconds"`
+	AccessToken      json.RawMessage `json:"access_token"`
+}
+
+// decodePatchProbe strictly decodes the raw PATCH `probe` object (the caller has
+// already refused absent and null) into the domain probe patch plus the token
+// patch lifted out of it. A scalar, an array, an unknown key at any depth or a
+// wrong-typed value reports false.
+func decodePatchProbe(raw json.RawMessage) (*heartbeat.ProbePatch, heartbeat.AccessTokenPatch, bool) {
+	var body patchProbeBody
+	if !decodeStrictRaw(raw, &body) {
+		return nil, heartbeat.AccessTokenPatch{}, false
+	}
+	patch := &heartbeat.ProbePatch{
+		URL:              body.URL,
+		ExpectedStatuses: body.ExpectedStatuses,
+		TimeoutSeconds:   body.TimeoutSeconds,
+		IntervalSeconds:  body.IntervalSeconds,
+	}
+	switch {
+	case len(body.BodyMatch) == 0:
+	case string(body.BodyMatch) == jsonNull:
+		patch.ClearBodyMatch = true
+	default:
+		var bodyMatch string
+		if !decodeStrictRaw(body.BodyMatch, &bodyMatch) {
+			return nil, heartbeat.AccessTokenPatch{}, false
+		}
+		patch.BodyMatch = &bodyMatch
+	}
+
+	var tokenPatch heartbeat.AccessTokenPatch
+	switch {
+	case len(body.AccessToken) == 0:
+	case string(body.AccessToken) == jsonNull:
+		tokenPatch.Action = heartbeat.AccessTokenClear
+	default:
+		var token createAccessTokenBody
+		if !decodeStrictRaw(body.AccessToken, &token) {
+			return nil, heartbeat.AccessTokenPatch{}, false
+		}
+		tokenPatch = heartbeat.AccessTokenPatch{
+			Action: heartbeat.AccessTokenReplace,
+			Token:  heartbeat.AccessToken{ClientID: token.ClientID, ClientSecret: token.ClientSecret},
+		}
+	}
+	return patch, tokenPatch, true
 }
 
 // pingResponseBody is the 200 body of a ping: the check's derived state after it.
@@ -101,12 +248,38 @@ type checkView struct {
 	LastPingAt    *string                `json:"last_ping_at"`
 	LastPingKind  *string                `json:"last_ping_kind"`
 	DownSince     *string                `json:"down_since"`
+	DownReason    *string                `json:"down_reason"`
 	DeadlineAt    string                 `json:"deadline_at"`
 	Destinations  []checkDestinationView `json:"destinations"`
 	OwnerKind     string                 `json:"owner_kind"`
 	OwnerAppID    *string                `json:"owner_app_id"`
 	CreatedAt     string                 `json:"created_at"`
 	UpdatedAt     string                 `json:"updated_at"`
+	// Probe is set only for probe checks; push checks omit the key.
+	Probe *checkProbeView `json:"probe,omitempty"`
+}
+
+// checkProbeView is the probe block of a probe check's view. It never carries
+// the sealed token, credentials, result detail, config version or next-probe
+// time.
+type checkProbeView struct {
+	URL                 string                    `json:"url"`
+	ExpectedStatuses    []int                     `json:"expected_statuses"`
+	BodyMatch           *string                   `json:"body_match"`
+	TimeoutSeconds      int                       `json:"timeout_seconds"`
+	IntervalSeconds     int                       `json:"interval_seconds"`
+	ConsecutiveFailures int                       `json:"consecutive_failures"`
+	FailureThreshold    int                       `json:"failure_threshold"`
+	HasAccessToken      bool                      `json:"has_access_token"`
+	LastResult          *checkProbeLastResultView `json:"last_result"`
+}
+
+// checkProbeLastResultView is the last accepted probe result; a null reason is
+// a success and a null status is a transport failure.
+type checkProbeLastResultView struct {
+	At     string  `json:"at"`
+	Status *int    `json:"status"`
+	Reason *string `json:"reason"`
 }
 
 // checkResponseBody wraps one check view.
@@ -191,13 +364,26 @@ func (server *Server) handleCreateCheck(responseWriter http.ResponseWriter, requ
 		return
 	}
 
+	periodSeconds, periodOK := parseScheduleField(body.PeriodSeconds)
+	graceSeconds, graceOK := parseScheduleField(body.GraceSeconds)
+	probeConfig, accessToken, probeOK := decodeCreateProbe(body.Probe)
+	if !periodOK || !graceOK || !probeOK {
+		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidJSONBody)
+		return
+	}
+
+	// The handler does not judge schedule presence on a probe create: it records it
+	// and ValidateNewCheck answers, so app_id and name errors keep their precedence.
 	check, err := server.heartbeats.Create(request.Context(), heartbeat.NewCheck{
 		AppID:            body.AppID,
 		Name:             body.Name,
-		PeriodSeconds:    body.PeriodSeconds,
-		GraceSeconds:     body.GraceSeconds,
+		PeriodSeconds:    periodSeconds,
+		GraceSeconds:     graceSeconds,
 		DestinationNames: body.Destinations,
 		OwnerKind:        registry.OwnerOperator,
+		Probe:            probeConfig,
+		AccessToken:      accessToken,
+		ScheduleSupplied: len(body.PeriodSeconds) > 0 || len(body.GraceSeconds) > 0,
 	})
 	if err != nil {
 		server.writeHeartbeatError(responseWriter, request, err)
@@ -235,6 +421,23 @@ func (server *Server) handleUpdateCheck(responseWriter http.ResponseWriter, requ
 		return
 	}
 
+	// A probe is never removed or added by a PATCH, whatever the stored kind: the
+	// answer needs no lookup, so it precedes the service (an unknown id is 400 too).
+	if string(body.Probe) == jsonNull {
+		writeError(responseWriter, http.StatusBadRequest, errMsgCheckKindImmutable)
+		return
+	}
+	var probePatch *heartbeat.ProbePatch
+	var tokenPatch heartbeat.AccessTokenPatch
+	if len(body.Probe) > 0 {
+		var probeOK bool
+		probePatch, tokenPatch, probeOK = decodePatchProbe(body.Probe)
+		if !probeOK {
+			writeError(responseWriter, http.StatusBadRequest, errMsgInvalidJSONBody)
+			return
+		}
+	}
+
 	// The merge of omitted fields happens inside the service, under the check's row
 	// lock: merging here would read the check unlocked and let a concurrent PATCH
 	// of other fields be reverted.
@@ -242,6 +445,8 @@ func (server *Server) handleUpdateCheck(responseWriter http.ResponseWriter, requ
 		PeriodSeconds:    body.PeriodSeconds,
 		GraceSeconds:     body.GraceSeconds,
 		DestinationNames: body.Destinations,
+		Probe:            probePatch,
+		AccessToken:      tokenPatch,
 	})
 	server.writeCheckOutcome(responseWriter, request, patched, err)
 }
@@ -314,6 +519,11 @@ func newCheckView(check heartbeat.StoredCheck, now time.Time) checkView {
 			Enabled: destination.Enabled,
 		})
 	}
+	// A stale reason is never shown on a non-down check (fail closed).
+	var downReason *string
+	if check.State == heartbeat.StateDown {
+		downReason = check.DownReason
+	}
 	return checkView{
 		ID:            check.ID,
 		AppID:         check.AppID,
@@ -325,12 +535,40 @@ func newCheckView(check heartbeat.StoredCheck, now time.Time) checkView {
 		LastPingAt:    formatUTC(check.LastPingAt),
 		LastPingKind:  check.LastPingKind,
 		DownSince:     formatUTC(heartbeat.ActiveDownSince(check)),
+		DownReason:    downReason,
 		DeadlineAt:    heartbeat.Deadline(check).UTC().Format(time.RFC3339),
 		Destinations:  destinations,
 		OwnerKind:     check.OwnerKind,
 		OwnerAppID:    check.OwnerAppID,
 		CreatedAt:     check.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:     check.UpdatedAt.UTC().Format(time.RFC3339),
+		Probe:         newCheckProbeView(check.Probe),
+	}
+}
+
+// newCheckProbeView converts probe state into its view, or nil for a push check.
+func newCheckProbeView(probe *heartbeat.ProbeState) *checkProbeView {
+	if probe == nil {
+		return nil
+	}
+	var lastResult *checkProbeLastResultView
+	if probe.LastResult != nil {
+		lastResult = &checkProbeLastResultView{
+			At:     probe.LastResult.At.UTC().Format(time.RFC3339),
+			Status: probe.LastResult.Status,
+			Reason: probe.LastResult.Reason,
+		}
+	}
+	return &checkProbeView{
+		URL:                 probe.Config.URL,
+		ExpectedStatuses:    append([]int{}, probe.Config.ExpectedStatuses...),
+		BodyMatch:           probe.Config.BodyMatch,
+		TimeoutSeconds:      probe.Config.TimeoutSeconds,
+		IntervalSeconds:     probe.Config.IntervalSeconds,
+		ConsecutiveFailures: probe.ConsecutiveFailures,
+		FailureThreshold:    heartbeat.ProbeFailureThreshold,
+		HasAccessToken:      probe.HasAccessToken,
+		LastResult:          lastResult,
 	}
 }
 

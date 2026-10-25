@@ -248,6 +248,9 @@ type ProbeResult struct {
 
 // NewCheck is the input to create a check. An empty OwnerKind is stored as
 // registry.OwnerOperator. Probe and AccessToken make it a probe check.
+// ScheduleSupplied is true when the request body carried a period_seconds or
+// grace_seconds key (any value, including 0 or null); a probe check rejects it
+// because its schedule is derived. It is ignored for a push check.
 type NewCheck struct {
 	AppID            string
 	Name             string
@@ -258,6 +261,7 @@ type NewCheck struct {
 	OwnerAppID       *string
 	Probe            *ProbeConfig
 	AccessToken      *AccessToken
+	ScheduleSupplied bool
 }
 
 // CheckUpdate is the input to change a check's schedule and destinations; the

@@ -119,7 +119,7 @@ func sampleAppCheck() heartbeat.StoredCheck {
 }
 
 const sampleAppCheckJSON = `{"id":7,"app_id":"urls4irl","name":"nightly_backup","period_seconds":86400,"grace_seconds":7200,` +
-	`"paused":false,"state":"up","last_ping_at":"2026-10-16T12:00:00Z","last_ping_kind":"success","down_since":null,` +
+	`"paused":false,"state":"up","last_ping_at":"2026-10-16T12:00:00Z","last_ping_kind":"success","down_since":null,"down_reason":null,` +
 	`"deadline_at":"2026-10-17T14:00:00Z","destinations":[{"name":"ops_discord","type":"discord","enabled":true}],` +
 	`"owner_kind":"app","owner_app_id":"urls4irl","created_at":"2026-10-14T12:00:00Z","updated_at":"2026-10-16T12:00:00Z"}`
 
@@ -512,6 +512,46 @@ func TestAppCheckEndpointsRejectBadInputBeforeTheService(testInstance *testing.T
 			name: "oversized patch", method: http.MethodPatch, path: appCheckPath,
 			body:       `{"destinations":["` + strings.Repeat("a", maxAdminBodyBytes) + `"]}`,
 			wantStatus: http.StatusRequestEntityTooLarge, wantBody: errBodyTooLarge,
+		},
+		{
+			name: "probe object", method: http.MethodPost, path: appChecksPath,
+			body:       `{"name":"site","destinations":["ops_discord"],"probe":{"url":"https://example.com","expected_statuses":[200],"timeout_seconds":5,"interval_seconds":300}}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "probe null", method: http.MethodPost, path: appChecksPath,
+			body:       `{"name":"site","period_seconds":60,"grace_seconds":60,"destinations":["ops_discord"],"probe":null}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "probe malformed", method: http.MethodPost, path: appChecksPath,
+			body:       `{"name":"site","probe":"yes"}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "patch probe object", method: http.MethodPatch, path: appCheckPath,
+			body:       `{"probe":{"interval_seconds":120}}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "patch probe null", method: http.MethodPatch, path: appCheckPath,
+			body:       `{"probe":null}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "patch probe malformed", method: http.MethodPatch, path: appCheckPath,
+			body:       `{"probe":"yes"}`,
+			wantStatus: http.StatusBadRequest, wantBody: `{"error":"probe config is not allowed on an app-owned check"}` + "\n",
+		},
+		{
+			name: "string period", method: http.MethodPost, path: appChecksPath,
+			body:       `{"name":"n","period_seconds":"60","grace_seconds":60,"destinations":["d"]}`,
+			wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSON,
+		},
+		{
+			name: "fractional grace", method: http.MethodPost, path: appChecksPath,
+			body:       `{"name":"n","period_seconds":60,"grace_seconds":60.5,"destinations":["d"]}`,
+			wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSON,
 		},
 		{name: "zero id", method: http.MethodGet, path: appChecksPath + "/0", wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidCheck},
 		{name: "signed id", method: http.MethodDelete, path: appChecksPath + "/+7", wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidCheck},
