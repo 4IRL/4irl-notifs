@@ -17,7 +17,6 @@ const (
 	createChecksPath = "/v1/admin/heartbeats"
 
 	errBodyDerivedSchedule = `{"error":"period_seconds and grace_seconds are derived for probe checks"}`
-	errBodyInvalidJSONRaw  = `{"error":"invalid JSON body"}`
 )
 
 // probeCreateBody builds a probe create body with the given probe object JSON and
@@ -109,30 +108,30 @@ func TestProbeCreateRejectsEachInvalidRuleByName(testInstance *testing.T) {
 
 		{name: "probe empty object", body: probeCreateBody(`{}`, ""), wantBody: `{"error":"invalid probe.url"}`},
 
-		{name: "unknown probe.failure_threshold", body: probeCreateBody(strings.Replace(validProbeJSON, "{", `{"failure_threshold":3,`, 1), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "unknown probe.has_access_token", body: probeCreateBody(strings.Replace(validProbeJSON, "{", `{"has_access_token":true,`, 1), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "unknown probe.consecutive_failures", body: probeCreateBody(strings.Replace(validProbeJSON, "{", `{"consecutive_failures":1,`, 1), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "unknown probe.last_result", body: probeCreateBody(strings.Replace(validProbeJSON, "{", `{"last_result":null,`, 1), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "unknown access_token key", body: probeCreateBody(probeJSONWithToken(`{"client_id":"id","client_secret":"s","extra":1}`), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "unknown top-level key", body: probeCreateBody(validProbeJSON, `,"bogus":1`), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
+		{name: "unknown probe.failure_threshold", body: probeCreateBody(strings.Replace(validProbeJSON, "{", `{"failure_threshold":3,`, 1), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "unknown probe.has_access_token", body: probeCreateBody(strings.Replace(validProbeJSON, "{", `{"has_access_token":true,`, 1), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "unknown probe.consecutive_failures", body: probeCreateBody(strings.Replace(validProbeJSON, "{", `{"consecutive_failures":1,`, 1), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "unknown probe.last_result", body: probeCreateBody(strings.Replace(validProbeJSON, "{", `{"last_result":null,`, 1), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "unknown access_token key", body: probeCreateBody(probeJSONWithToken(`{"client_id":"id","client_secret":"s","extra":1}`), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "unknown top-level key", body: probeCreateBody(validProbeJSON, `,"bogus":1`), wantBody: errBodyInvalidJSON, handlerRejects: true},
 
-		{name: "probe string", body: probeCreateBody(`"yes"`, ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "probe number", body: probeCreateBody(`5`, ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "probe bool", body: probeCreateBody(`true`, ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "probe array", body: probeCreateBody(`[]`, ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "url a number", body: probeCreateBody(probeJSONWithURL(`5`), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "statuses a string", body: probeCreateBody(probeJSONWith(`"https://example.com"`, `"200"`, "", "5", "300", ""), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "statuses hold a string", body: probeCreateBody(probeJSONWith(`"https://example.com"`, `["200"]`, "", "5", "300", ""), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "timeout a string", body: probeCreateBody(probeJSONWith(`"https://example.com"`, "[200]", "", `"5"`, "300", ""), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "timeout a fraction", body: probeCreateBody(probeJSONWith(`"https://example.com"`, "[200]", "", "5.5", "300", ""), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "interval a fraction", body: probeCreateBody(probeJSONWith(`"https://example.com"`, "[200]", "", "5", "300.5", ""), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "body_match a number", body: probeCreateBody(probeJSONWith(`"https://example.com"`, "[200]", "5", "5", "300", ""), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "access_token a string", body: probeCreateBody(probeJSONWithToken(`"tok"`), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "access_token an array", body: probeCreateBody(probeJSONWithToken(`[]`), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "client_id a number", body: probeCreateBody(probeJSONWithToken(`{"client_id":1,"client_secret":"s"}`), ""), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "trailing data", body: probeCreateBody(validProbeJSON, "") + `{}`, wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "period a string", body: probeCreateBody(validProbeJSON, `,"period_seconds":"300"`), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
-		{name: "grace a fraction", body: probeCreateBody(validProbeJSON, `,"grace_seconds":1200.5`), wantBody: errBodyInvalidJSONRaw, handlerRejects: true},
+		{name: "probe string", body: probeCreateBody(`"yes"`, ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "probe number", body: probeCreateBody(`5`, ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "probe bool", body: probeCreateBody(`true`, ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "probe array", body: probeCreateBody(`[]`, ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "url a number", body: probeCreateBody(probeJSONWithURL(`5`), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "statuses a string", body: probeCreateBody(probeJSONWith(`"https://example.com"`, `"200"`, "", "5", "300", ""), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "statuses hold a string", body: probeCreateBody(probeJSONWith(`"https://example.com"`, `["200"]`, "", "5", "300", ""), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "timeout a string", body: probeCreateBody(probeJSONWith(`"https://example.com"`, "[200]", "", `"5"`, "300", ""), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "timeout a fraction", body: probeCreateBody(probeJSONWith(`"https://example.com"`, "[200]", "", "5.5", "300", ""), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "interval a fraction", body: probeCreateBody(probeJSONWith(`"https://example.com"`, "[200]", "", "5", "300.5", ""), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "body_match a number", body: probeCreateBody(probeJSONWith(`"https://example.com"`, "[200]", "5", "5", "300", ""), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "access_token a string", body: probeCreateBody(probeJSONWithToken(`"tok"`), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "access_token an array", body: probeCreateBody(probeJSONWithToken(`[]`), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "client_id a number", body: probeCreateBody(probeJSONWithToken(`{"client_id":1,"client_secret":"s"}`), ""), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "trailing data", body: probeCreateBody(validProbeJSON, "") + `{}`, wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "period a string", body: probeCreateBody(validProbeJSON, `,"period_seconds":"300"`), wantBody: errBodyInvalidJSON, handlerRejects: true},
+		{name: "grace a fraction", body: probeCreateBody(validProbeJSON, `,"grace_seconds":1200.5`), wantBody: errBodyInvalidJSON, handlerRejects: true},
 	}
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
@@ -140,7 +139,7 @@ func TestProbeCreateRejectsEachInvalidRuleByName(testInstance *testing.T) {
 
 			recorder := serveHeartbeats(fake, nil, http.MethodPost, createChecksPath, testCase.body)
 
-			assertResponse(subTest, recorder, http.StatusBadRequest, testCase.wantBody+"\n")
+			assertResponse(subTest, recorder, http.StatusBadRequest, strings.TrimSuffix(testCase.wantBody, "\n")+"\n")
 			if testCase.handlerRejects && fake.totalCalls() != 0 {
 				subTest.Fatalf("the service was called for a body the handler refuses: %+v", fake.createCalls)
 			}
@@ -157,10 +156,10 @@ func TestPushCreateScheduleFieldTypesAndPresence(testInstance *testing.T) {
 		wantBody   string
 		wantCalls  int
 	}{
-		{name: "string period", body: `{"app_id":"a","name":"n","period_seconds":"60","grace_seconds":60` + tail, wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSONRaw, wantCalls: 0},
-		{name: "fraction period", body: `{"app_id":"a","name":"n","period_seconds":60.5,"grace_seconds":60` + tail, wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSONRaw, wantCalls: 0},
-		{name: "string grace", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":"60"` + tail, wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSONRaw, wantCalls: 0},
-		{name: "fraction grace", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":60.5` + tail, wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSONRaw, wantCalls: 0},
+		{name: "string period", body: `{"app_id":"a","name":"n","period_seconds":"60","grace_seconds":60` + tail, wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSON, wantCalls: 0},
+		{name: "fraction period", body: `{"app_id":"a","name":"n","period_seconds":60.5,"grace_seconds":60` + tail, wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSON, wantCalls: 0},
+		{name: "string grace", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":"60"` + tail, wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSON, wantCalls: 0},
+		{name: "fraction grace", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":60.5` + tail, wantStatus: http.StatusBadRequest, wantBody: errBodyInvalidJSON, wantCalls: 0},
 		{name: "absent period", body: `{"app_id":"a","name":"n","grace_seconds":60` + tail, wantStatus: http.StatusBadRequest, wantBody: `{"error":"invalid period_seconds"}`, wantCalls: 1},
 		{name: "null period", body: `{"app_id":"a","name":"n","period_seconds":null,"grace_seconds":60` + tail, wantStatus: http.StatusBadRequest, wantBody: `{"error":"invalid period_seconds"}`, wantCalls: 1},
 		{name: "absent grace", body: `{"app_id":"a","name":"n","period_seconds":60` + tail, wantStatus: http.StatusBadRequest, wantBody: `{"error":"invalid grace_seconds"}`, wantCalls: 1},
@@ -174,7 +173,7 @@ func TestPushCreateScheduleFieldTypesAndPresence(testInstance *testing.T) {
 
 			recorder := serveHeartbeats(fake, nil, http.MethodPost, createChecksPath, testCase.body)
 
-			assertResponse(subTest, recorder, testCase.wantStatus, testCase.wantBody+"\n")
+			assertResponse(subTest, recorder, testCase.wantStatus, strings.TrimSuffix(testCase.wantBody, "\n")+"\n")
 			if fake.totalCalls() != testCase.wantCalls {
 				subTest.Fatalf("service calls = %d, want %d", fake.totalCalls(), testCase.wantCalls)
 			}

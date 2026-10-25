@@ -901,8 +901,8 @@ func TestPatchRejectsEachInvalidFieldByName(testInstance *testing.T) {
 		{name: "LF in client_secret", body: tokenBody(`{"client_id":"id","client_secret":"a\nb"}`), wantBody: `{"error":"invalid probe.access_token"}`, stored: probeStored},
 		{name: "257 byte client_id", body: tokenBody(`{"client_id":"` + longValue + `","client_secret":"s"}`), wantBody: `{"error":"invalid probe.access_token"}`, stored: probeStored},
 		{name: "257 byte client_secret", body: tokenBody(`{"client_id":"id","client_secret":"` + longValue + `"}`), wantBody: `{"error":"invalid probe.access_token"}`, stored: probeStored},
-		{name: "unknown probe key", body: `{"probe":{"failure_threshold":3}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "unknown access_token key", body: tokenBody(`{"client_id":"id","client_secret":"s","extra":1}`), wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "unknown probe key", body: `{"probe":{"failure_threshold":3}}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "unknown access_token key", body: tokenBody(`{"client_id":"id","client_secret":"s","extra":1}`), wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
 		{name: "probe empty statuses", body: `{"probe":{"expected_statuses":[]}}`, wantBody: `{"error":"invalid probe.expected_statuses"}`, stored: probeStored},
 		{name: "probe status 99", body: `{"probe":{"expected_statuses":[99]}}`, wantBody: `{"error":"invalid probe.expected_statuses"}`, stored: probeStored},
 		{name: "probe status 600", body: `{"probe":{"expected_statuses":[600]}}`, wantBody: `{"error":"invalid probe.expected_statuses"}`, stored: probeStored},
@@ -913,20 +913,20 @@ func TestPatchRejectsEachInvalidFieldByName(testInstance *testing.T) {
 		{name: "probe http url", body: `{"probe":{"url":"http://"}}`, wantBody: `{"error":"invalid probe.url"}`, stored: probeStored},
 		{name: "probe ip literal url", body: `{"probe":{"url":"https://127.0.0.1/"}}`, wantBody: `{"error":"invalid probe.url"}`, stored: probeStored},
 		{name: "probe body_match too long", body: `{"probe":{"body_match":"` + longValue + `"}}`, wantBody: `{"error":"invalid probe.body_match"}`, stored: probeStored},
-		{name: "probe a string", body: `{"probe":"yes"}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "probe a bool", body: `{"probe":true}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "probe a number", body: `{"probe":5}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "probe an array", body: `{"probe":[]}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "url a number", body: `{"probe":{"url":5}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "statuses a string", body: `{"probe":{"expected_statuses":"200"}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "timeout a string", body: `{"probe":{"timeout_seconds":"5"}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "timeout a fraction", body: `{"probe":{"timeout_seconds":5.5}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "interval a fraction", body: `{"probe":{"interval_seconds":300.5}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "body_match a number", body: `{"probe":{"body_match":5}}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "access_token a string", body: tokenBody(`"tok"`), wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "access_token an array", body: tokenBody(`[]`), wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "client_id a number", body: tokenBody(`{"client_id":1,"client_secret":"s"}`), wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
-		{name: "trailing data", body: `{"probe":{}} {}`, wantBody: errBodyInvalidJSONRaw, stored: probeStored, handlerRejects: true},
+		{name: "probe a string", body: `{"probe":"yes"}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "probe a bool", body: `{"probe":true}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "probe a number", body: `{"probe":5}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "probe an array", body: `{"probe":[]}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "url a number", body: `{"probe":{"url":5}}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "statuses a string", body: `{"probe":{"expected_statuses":"200"}}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "timeout a string", body: `{"probe":{"timeout_seconds":"5"}}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "timeout a fraction", body: `{"probe":{"timeout_seconds":5.5}}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "interval a fraction", body: `{"probe":{"interval_seconds":300.5}}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "body_match a number", body: `{"probe":{"body_match":5}}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "access_token a string", body: tokenBody(`"tok"`), wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "access_token an array", body: tokenBody(`[]`), wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "client_id a number", body: tokenBody(`{"client_id":1,"client_secret":"s"}`), wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
+		{name: "trailing data", body: `{"probe":{}} {}`, wantBody: errBodyInvalidJSON, stored: probeStored, handlerRejects: true},
 		{name: "probe object on a push check", body: `{"probe":{"interval_seconds":120}}`, wantBody: `{"error":"probe config is not allowed on a push check"}`},
 		{name: "probe token only on a push check", body: tokenBody(`null`), wantBody: `{"error":"probe config is not allowed on a push check"}`},
 		{name: "period on a probe check", body: `{"period_seconds":120}`, wantBody: errBodyDerivedSchedule, stored: probeStored},
@@ -953,7 +953,7 @@ func TestPatchRejectsEachInvalidFieldByName(testInstance *testing.T) {
 
 			recorder := serveHeartbeats(fake, nil, http.MethodPatch, "/v1/admin/heartbeats/7", testCase.body)
 
-			assertResponse(subTest, recorder, http.StatusBadRequest, testCase.wantBody+"\n")
+			assertResponse(subTest, recorder, http.StatusBadRequest, strings.TrimSuffix(testCase.wantBody, "\n")+"\n")
 			if testCase.handlerRejects && fake.totalCalls() != 0 {
 				subTest.Fatalf("the service was called for a body the handler refuses: %+v", fake.patchCalls)
 			}
