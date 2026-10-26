@@ -32,6 +32,11 @@ func TestArgBuilders(t *testing.T) {
 			expected: []string{"user", "list"},
 		},
 		{
+			name:     "user access lookup for one user",
+			got:      UserAccessArgs("u_x"),
+			expected: []string{"access", "u_x"},
+		},
+		{
 			name:     "access grant read-only scoped topic pattern",
 			got:      AccessGrantArgs("u_76gzqgp4byjl6dje", "urls4irl-76gzqgp4byjl6dje-*", PermissionReadOnly),
 			expected: []string{"access", "u_76gzqgp4byjl6dje", "urls4irl-76gzqgp4byjl6dje-*", "ro"},

@@ -14,9 +14,9 @@ import (
 
 func postProvision(testInstance *testing.T, fakeService *fakeProvisioningService) *httptest.ResponseRecorder {
 	testInstance.Helper()
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","email":%q}`, aliceEmail))
-	request := httptest.NewRequest(http.MethodPost, "/v1/provision", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/provision", requestBody)
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, request)
 	return recorder
@@ -71,11 +71,11 @@ func TestSetPasswordAndDeleteStoreFailuresMapTo500(testInstance *testing.T) {
 
 	testInstance.Run("set-password", func(testInstance *testing.T) {
 		fakeService := &fakeProvisioningService{setPasswordErr: provisioning.ErrPersonStoreUnavailable}
-		server := NewServer(ServerConfig{Service: fakeService})
+		server := newTestServer(ServerConfig{Service: fakeService})
 		requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":"sekrit-pw"}`, aliceEmail))
 		recorder := httptest.NewRecorder()
 
-		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/set-password", requestBody))
+		server.Handler().ServeHTTP(recorder, newAuthedRequest(http.MethodPost, "/v1/set-password", requestBody))
 
 		if recorder.Code != http.StatusInternalServerError || recorder.Body.String() != wantBody {
 			testInstance.Fatalf("status = %d body = %q, want 500 %q", recorder.Code, recorder.Body.String(), wantBody)
@@ -84,10 +84,10 @@ func TestSetPasswordAndDeleteStoreFailuresMapTo500(testInstance *testing.T) {
 
 	testInstance.Run("delete user", func(testInstance *testing.T) {
 		fakeService := &fakeProvisioningService{deleteUserErr: errors.New("person-service: status 502")}
-		server := NewServer(ServerConfig{Service: fakeService})
+		server := newTestServer(ServerConfig{Service: fakeService})
 		recorder := httptest.NewRecorder()
 
-		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/v1/users/"+aliceNtfyUser, nil))
+		server.Handler().ServeHTTP(recorder, newAuthedRequest(http.MethodDelete, "/v1/users/"+aliceNtfyUser, nil))
 
 		if recorder.Code != http.StatusInternalServerError || recorder.Body.String() != wantBody {
 			testInstance.Fatalf("status = %d body = %q, want 500 %q", recorder.Code, recorder.Body.String(), wantBody)

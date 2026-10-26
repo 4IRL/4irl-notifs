@@ -176,7 +176,30 @@ func (client *Client) ListUsers(ctx context.Context) ([]User, error) {
 	if runErr != nil {
 		return nil, runErr
 	}
+	return parseUserBlocks(stdout), nil
+}
 
+// GetUser returns one user's grants via a single `ntfy access <user>` call (no
+// full-user scan). An unknown user, empty output, or output holding no block
+// for userID is ErrNotFound, never an empty-grant success; a user with no
+// grants returns an empty TopicPatterns and a nil error.
+func (client *Client) GetUser(ctx context.Context, userID string) (User, error) {
+	stdout, runErr := client.run(ctx, UserAccessArgs(userID), nil)
+	if runErr != nil {
+		return User{}, runErr
+	}
+	for _, user := range parseUserBlocks(stdout) {
+		if user.Name == userID {
+			return user, nil
+		}
+	}
+	return User{}, fmt.Errorf("ntfy access: %w: no user block for %q in output", ErrNotFound, userID)
+}
+
+// parseUserBlocks parses `ntfy user list` / `ntfy access <user>` output into
+// users with their granted topic patterns, skipping ntfy's synthetic anonymous
+// ("*") entry.
+func parseUserBlocks(stdout string) []User {
 	var users []User
 	var currentUser *User
 	for _, line := range strings.Split(stdout, "\n") {
@@ -202,7 +225,7 @@ func (client *Client) ListUsers(ctx context.Context) ([]User, error) {
 	if currentUser != nil {
 		users = append(users, *currentUser)
 	}
-	return users, nil
+	return users
 }
 
 // Token is one entry from `ntfy token list`: the token value plus the label
