@@ -11,6 +11,16 @@ import { ConfirmButton } from './ConfirmButton';
 import { formatDuration, formatRelativeFuture, formatRelativePast } from './formatRelative';
 import { formatMinute } from './formatUtc';
 import { HeartbeatForm } from './HeartbeatForm';
+import {
+  TICK_MS,
+  lateKeyOf,
+  liveStateOf,
+  needsReload,
+  rowStateOf,
+  turnedLateLocally,
+  wasLabel,
+} from './heartbeatRowState';
+import type { RowState } from './heartbeatRowState';
 import type { HeartbeatAddSubmission, HeartbeatEditSubmission } from './HeartbeatForm';
 import { OwnerBadge } from './OwnerBadge';
 import { ownerInlineNoteOf, ownerNoteOf } from './ownership';
@@ -33,13 +43,8 @@ interface HeartbeatsProps {
   destinationsState: DestinationsLoadState;
 }
 
-/** What a row shows; `late` is derived client-side and never stored or alerted on. */
-type RowState = 'up' | 'late' | 'down' | 'paused' | 'waiting';
-
 type ToggleKind = 'pause' | 'resume';
 
-const TICK_MS = 30_000;
-const MS_PER_SECOND = 1000;
 const HEADING_KEY = 'heading';
 const ADD_KEY = 'add';
 const ADD_HINT_ID = 'heartbeats-add-hint';
@@ -57,76 +62,9 @@ function labelOf(check: HeartbeatCheck): string {
   return `${check.appId}/${check.name}`;
 }
 
-function isPastDeadline({ check, now }: { check: HeartbeatCheck; now: number }): boolean {
-  return now > Date.parse(check.deadlineAt);
-}
-
-/** The state a check would show if it were not paused. */
-function liveStateOf({ check, now }: { check: HeartbeatCheck; now: number }): RowState {
-  switch (check.state) {
-    case 'new':
-      return 'waiting';
-    case 'up':
-    case 'late': {
-      // The late boundary is anchor + period = deadline - grace. The server's
-      // own `late` is never hidden, so a skewed browser clock cannot mask it.
-      const lateAfter = Date.parse(check.deadlineAt) - check.graceSeconds * MS_PER_SECOND;
-      return check.state === 'late' || now > lateAfter ? 'late' : 'up';
-    }
-    default:
-      // `down`, and fail closed on any state this build does not know.
-      return 'down';
-  }
-}
-
-function rowStateOf({ check, now }: { check: HeartbeatCheck; now: number }): RowState {
-  return check.paused ? 'paused' : liveStateOf({ check, now });
-}
-
-/**
- * True when the server reports `up` but the local clock says the check has
- * crossed its late boundary: the server will by now report it `late`, so one
- * reload brings the list back in line. A server-reported `late` never counts
- * (the server already knows), and a paused check is never late.
- */
-function turnedLateLocally({ check, now }: { check: HeartbeatCheck; now: number }): boolean {
-  return !check.paused && check.state === 'up' && liveStateOf({ check, now }) === 'late';
-}
-
-/** Identifies one lateness episode: a ping moves `deadline_at`, so it starts a new one. */
-function lateKeyOf(check: HeartbeatCheck): string {
-  return `${check.id}:${check.deadlineAt}`;
-}
-
-/**
- * True when the server may have moved a live check on since the last load: it
- * is Down (it recovers on the server without the list knowing) or past its
- * deadline (about to go, or just gone, Down). The caller's own Late-once rule
- * and the in-flight and visibility guards bound how often this reloads.
- */
-function needsReload({ check, now }: { check: HeartbeatCheck; now: number }): boolean {
-  if (check.paused) {
-    return false;
-  }
-  return liveStateOf({ check, now }) === 'down' || isPastDeadline({ check, now });
-}
-
 /** True when the section is unmounted, inside a `hidden` tab panel, or the browser tab is hidden. */
 function isSectionHidden(section: HTMLElement | null): boolean {
   return section === null || document.hidden || section.closest('[hidden]') !== null;
-}
-
-function wasLabel(state: RowState): string {
-  switch (state) {
-    case 'up':
-      return strings.heartbeatWasUp;
-    case 'late':
-      return strings.heartbeatWasLate;
-    case 'waiting':
-      return strings.heartbeatWasWaiting;
-    default:
-      return strings.heartbeatWasDown;
-  }
 }
 
 /** The id of the row containing `element`, or null. */
