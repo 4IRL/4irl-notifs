@@ -4,8 +4,9 @@
 // It talks to a fixed, operator-configured internal origin (for example
 // http://provisioning-api:8080 on the compose network), so it deliberately uses
 // a bare http.Client rather than the https-only, SSRF-guarded transport the
-// outbound sinks share. When no origin is configured Configured reports false
-// and MintPublisher fails closed without dialing.
+// outbound sinks share. Every request carries the internal credential header
+// provisioning-api checks. When no origin or no credential is configured
+// Configured reports false and MintPublisher fails closed without dialing.
 package provisionclient
 
 import (
@@ -23,7 +24,18 @@ import (
 
 const (
 	// defaultTimeout is the HTTP client timeout used when Config.Timeout is unset.
-	defaultTimeout = 5 * time.Second
+	//
+	// Rule: max(15s, 3 x the worst observed provisioning call), rounded up to a whole second. Measured
+	// against the local stack on 2026-10-24: 20 sequential POST /v1/provision (min 126ms, mean 141ms,
+	// max 163ms), 20 sequential POST /v1/provision-app (min 93ms, mean 100ms, max 116ms) and 5 concurrent
+	// POST /v1/provision, which queue behind the ntfy CLI mutex (min 542ms, mean 622ms, max 663ms). The worst
+	// observed call was 663ms, so 3 x worst = 2s and the 15s floor wins. Raise it only with a new
+	// measurement; there is no automatic retry, so a timeout surfaces to the caller as a failed mint.
+	defaultTimeout = 15 * time.Second
+
+	// credentialHeader carries the internal credential provisioning-api checks. Its value is a secret
+	// and is never logged, echoed or put in an error.
+	credentialHeader = "X-Notifs-Internal-Credential"
 
 	provisionAppPath = "/v1/provision-app"
 
@@ -39,13 +51,16 @@ var tokenPattern = regexp.MustCompile(`^tk_[a-z0-9]{29}$`)
 // ErrNotConfigured means no provisioning-api origin is configured.
 var ErrNotConfigured = errors.New("provisioning-api origin is not configured")
 
-// Config configures a Client. An empty BaseURL means no provisioning-api origin
-// is configured; Configured reports false and MintPublisher fails closed.
+// Config configures a Client. An empty BaseURL or an empty Credential means the
+// client is not usable; Configured reports false and MintPublisher fails closed.
 type Config struct {
 	// BaseURL is the provisioning-api origin, for example
 	// "http://provisioning-api:8080". A trailing slash is tolerated.
 	BaseURL string
-	// Timeout bounds each request. Optional; defaults to 5 seconds.
+	// Credential is the internal shared credential sent as X-Notifs-Internal-Credential on every
+	// request. It is a secret: never logged, echoed or put in an error.
+	Credential string
+	// Timeout bounds each request. Optional; defaults to 15 seconds.
 	Timeout time.Duration
 }
 
@@ -61,6 +76,7 @@ type PublisherGrant struct {
 // Client mints publisher tokens through provisioning-api.
 type Client struct {
 	baseURL    string
+	credential string
 	httpClient *http.Client
 }
 
@@ -71,7 +87,8 @@ func New(config Config) *Client {
 		timeout = defaultTimeout
 	}
 	return &Client{
-		baseURL: strings.TrimSuffix(config.BaseURL, "/"),
+		baseURL:    strings.TrimSuffix(config.BaseURL, "/"),
+		credential: config.Credential,
 		httpClient: &http.Client{
 			Timeout: timeout,
 			// A redirect is never followed: a 307/308 would re-POST the app_id body to
@@ -82,9 +99,24 @@ func New(config Config) *Client {
 	}
 }
 
-// Configured reports whether a provisioning-api origin is configured.
+// Configured reports whether both a provisioning-api origin and the internal
+// credential are configured. A client with either missing never dials.
 func (client *Client) Configured() bool {
-	return client.baseURL != ""
+	return client.baseURL != "" && client.credential != ""
+}
+
+// newJSONRequest is the single request-building path: every call the client
+// makes goes through it, so the credential and Content-Type headers are set in
+// one place and later methods inherit them.
+func (client *Client) newJSONRequest(ctx context.Context, path string, body []byte) (*http.Request, error) {
+	request, requestErr := http.NewRequestWithContext(
+		ctx, http.MethodPost, client.baseURL+path, bytes.NewReader(body))
+	if requestErr != nil {
+		return nil, requestErr
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(credentialHeader, client.credential)
+	return request, nil
 }
 
 // provisionAppRequest is the JSON body for provision-app.
@@ -114,12 +146,10 @@ func (client *Client) MintPublisher(ctx context.Context, appID string) (Publishe
 	if marshalErr != nil {
 		return PublisherGrant{}, fmt.Errorf("provision-app: encode request: %w", marshalErr)
 	}
-	request, requestErr := http.NewRequestWithContext(
-		ctx, http.MethodPost, client.baseURL+provisionAppPath, bytes.NewReader(body))
+	request, requestErr := client.newJSONRequest(ctx, provisionAppPath, body)
 	if requestErr != nil {
 		return PublisherGrant{}, fmt.Errorf("provision-app: build request: %w", requestErr)
 	}
-	request.Header.Set("Content-Type", "application/json")
 
 	response, doErr := client.httpClient.Do(request)
 	if doErr != nil {

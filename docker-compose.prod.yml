@@ -101,9 +101,19 @@ services:
       # internal publish never egresses through the tunnel. LOCKSTEP: keep this
       # env in sync with docker-compose.yml.
       - NTFY_PUBLISH_URL=http://ntfy:80
+      # Internal credential shared only with delivery-api (sent as X-Notifs-Internal-Credential),
+      # read from the persistent file secret. LOCKSTEP: delivery-api reads the same secret as
+      # DELIVERY_PROVISIONING_CREDENTIAL_FILE.
+      - PROVISIONING_INTERNAL_CREDENTIAL_FILE=/run/secrets/PROVISIONING_INTERNAL_CREDENTIAL
+      # Both checks are log-only for the 7-day audit window; a follow-up PR flips them to enforce
+      # after the window closes with zero would-reject hits. LOCKSTEP: docker-compose.yml runs the
+      # credential check log-only and the grant check enforce.
+      - PROVISIONING_INTERNAL_CREDENTIAL_MODE=log-only
+      - PROVISIONING_APP_GRANT_MODE=log-only
     secrets:
       - PERSON_SERVICE_ACCESS_CLIENT_ID
       - PERSON_SERVICE_ACCESS_CLIENT_SECRET
+      - PROVISIONING_INTERNAL_CREDENTIAL
     volumes:
       - ntfy-auth:/var/lib/ntfy
     healthcheck:
@@ -185,6 +195,9 @@ services:
       # (POST /v1/admin/apps/{app_id}/ntfy-publisher). Unset disables minting. LOCKSTEP: keep in sync
       # with docker-compose.yml.
       - DELIVERY_PROVISIONING_URL=http://provisioning-api:8080
+      # Internal credential delivery-api sends to provisioning-api, read from the same persistent file
+      # secret provisioning-api uses. LOCKSTEP: keep in sync with docker-compose.yml.
+      - DELIVERY_PROVISIONING_CREDENTIAL_FILE=/run/secrets/PROVISIONING_INTERNAL_CREDENTIAL
       # Per-app cap on scheduled (deliver_at) messages; a new scheduled submit over it is a 429. The
       # default must equal the code default (message.DefaultMaxScheduledPerApp). LOCKSTEP: keep in
       # sync with docker-compose.yml.
@@ -200,6 +213,7 @@ services:
     secrets:
       - DELIVERY_DB_PASSWORD
       - DELIVERY_MASTER_KEY
+      - PROVISIONING_INTERNAL_CREDENTIAL
     depends_on:
       provisioning-api:
         condition: service_healthy
@@ -226,7 +240,7 @@ volumes:
 # before `docker compose up` and `rm -rf ./secrets/` immediately after, so no
 # plaintext secret persists on the host (the same pattern urls4irl uses).
 #
-# DELIVERY_DB_PASSWORD and DELIVERY_MASTER_KEY are the exceptions: they persist in ./secrets-persistent/ (never deleted);
+# DELIVERY_DB_PASSWORD, DELIVERY_MASTER_KEY and PROVISIONING_INTERNAL_CREDENTIAL are the exceptions: they persist in ./secrets-persistent/ (never deleted);
 # see prod-deploy.yml for why, including the 0644 file mode.
 secrets:
   PERSON_SERVICE_ACCESS_CLIENT_ID:
@@ -240,3 +254,7 @@ secrets:
   # decrypt the stored destination secrets, and losing it orphans all of them.
   DELIVERY_MASTER_KEY:
     file: ./secrets-persistent/DELIVERY_MASTER_KEY
+  # Persistent: needed on every restart by both services (provisioning-api checks it, delivery-api
+  # sends it), so it cannot be a deleted-after-up ./secrets/ file.
+  PROVISIONING_INTERNAL_CREDENTIAL:
+    file: ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL
