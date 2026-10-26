@@ -243,24 +243,77 @@ export interface HeartbeatCheck extends OwnerFields {
   /** anchor + period + grace; rendered even for paused and down checks. */
   deadlineAt: string;
   destinations: HeartbeatDestination[];
+  /** Why the check is down; non-null only while down. An unknown value is kept raw. */
+  downReason: string | null;
+  /** Website probe settings; null for a push check (kind is derived from this). */
+  probe: HeartbeatProbe | null;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface CreateHeartbeatParams {
-  appId: string;
-  name: string;
-  periodSeconds: number;
-  graceSeconds: number;
-  destinations: string[];
+export interface HeartbeatProbeResult {
+  at: string;
+  status: number | null;
+  reason: string | null;
 }
 
-/** An omitted field is left unchanged server-side; app_id and name are immutable and never sent. */
+export interface HeartbeatProbe {
+  url: string;
+  expectedStatuses: number[];
+  bodyMatch: string | null;
+  timeoutSeconds: number;
+  intervalSeconds: number;
+  consecutiveFailures: number;
+  /** Null when the server sent anything but a positive integer: show no progress. */
+  failureThreshold: number | null;
+  hasAccessToken: boolean;
+  lastResult: HeartbeatProbeResult | null;
+}
+
+export const isProbeCheck = (check: HeartbeatCheck): boolean => check.probe !== null;
+
+export interface ProbeConfigInput {
+  url: string;
+  expectedStatuses: number[];
+  bodyMatch: string | null;
+  timeoutSeconds: number;
+  intervalSeconds: number;
+}
+
+export interface AccessTokenInput {
+  clientId: string;
+  clientSecret: string;
+}
+
+export type CreateHeartbeatParams =
+  | {
+      kind: 'push';
+      appId: string;
+      name: string;
+      destinations: string[];
+      periodSeconds: number;
+      graceSeconds: number;
+    }
+  | {
+      kind: 'probe';
+      appId: string;
+      name: string;
+      destinations: string[];
+      probe: ProbeConfigInput;
+      accessToken?: AccessTokenInput;
+    };
+
+/**
+ * An omitted field is left unchanged server-side; app_id and name are immutable and never sent.
+ * `accessToken`: undefined omits the key, null clears the stored credentials, an object replaces them.
+ */
 export interface UpdateHeartbeatParams {
   id: number;
   periodSeconds?: number;
   graceSeconds?: number;
   destinations?: string[];
+  probe?: Partial<ProbeConfigInput>;
+  accessToken?: AccessTokenInput | null;
 }
 
 export interface HeartbeatIdParam {
@@ -476,8 +529,22 @@ interface HeartbeatWire extends OwnerWire {
   down_since: string | null;
   deadline_at: string;
   destinations: HeartbeatDestination[] | null;
+  down_reason?: string | null;
+  probe?: HeartbeatProbeWire | null;
   created_at: string;
   updated_at: string;
+}
+
+interface HeartbeatProbeWire {
+  url: string;
+  expected_statuses: number[] | null;
+  body_match?: string | null;
+  timeout_seconds: number;
+  interval_seconds: number;
+  consecutive_failures: number;
+  failure_threshold?: unknown;
+  has_access_token?: unknown;
+  last_result?: { at: string; status?: unknown; reason?: unknown } | null;
 }
 
 interface IdentityRequestWire {
@@ -539,6 +606,33 @@ function mapOwner(wire: OwnerWire): OwnerFields {
   return { ownerKind: 'unknown', ownerAppId: null };
 }
 
+/** Fail closed: odd wire values read as "unknown" (null/false), never as a usable number or flag. */
+function mapHeartbeatProbe(wire: HeartbeatProbeWire): HeartbeatProbe {
+  const threshold = wire.failure_threshold;
+  const lastResult = wire.last_result ?? null;
+  return {
+    url: wire.url,
+    expectedStatuses: wire.expected_statuses ?? [],
+    bodyMatch: wire.body_match ?? null,
+    timeoutSeconds: wire.timeout_seconds,
+    intervalSeconds: wire.interval_seconds,
+    consecutiveFailures: wire.consecutive_failures,
+    failureThreshold:
+      typeof threshold === 'number' && Number.isInteger(threshold) && threshold > 0
+        ? threshold
+        : null,
+    hasAccessToken: wire.has_access_token === true,
+    lastResult:
+      lastResult === null
+        ? null
+        : {
+            at: lastResult.at,
+            status: typeof lastResult.status === 'number' ? lastResult.status : null,
+            reason: typeof lastResult.reason === 'string' ? lastResult.reason : null,
+          },
+  };
+}
+
 function mapHeartbeat(wire: HeartbeatWire): HeartbeatCheck {
   return {
     ...mapOwner(wire),
@@ -558,6 +652,8 @@ function mapHeartbeat(wire: HeartbeatWire): HeartbeatCheck {
       type,
       enabled,
     })),
+    downReason: wire.down_reason ?? null,
+    probe: wire.probe == null ? null : mapHeartbeatProbe(wire.probe),
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
   };
@@ -1027,23 +1123,43 @@ export function createDeliveryApiClient({
       return (wire.checks ?? []).map(mapHeartbeat);
     },
 
-    async createHeartbeat({
-      appId,
-      name,
-      periodSeconds,
-      graceSeconds,
-      destinations,
-    }: CreateHeartbeatParams): Promise<HeartbeatCheck> {
+    async createHeartbeat(params: CreateHeartbeatParams): Promise<HeartbeatCheck> {
+      let body: Record<string, unknown>;
+      if (params.kind === 'push') {
+        body = {
+          app_id: params.appId,
+          name: params.name,
+          period_seconds: params.periodSeconds,
+          grace_seconds: params.graceSeconds,
+          destinations: params.destinations,
+        };
+      } else {
+        const probeBody: Record<string, unknown> = {
+          url: params.probe.url,
+          expected_statuses: params.probe.expectedStatuses,
+          timeout_seconds: params.probe.timeoutSeconds,
+          interval_seconds: params.probe.intervalSeconds,
+        };
+        if (params.probe.bodyMatch !== null) {
+          probeBody.body_match = params.probe.bodyMatch;
+        }
+        if (params.accessToken !== undefined) {
+          probeBody.access_token = {
+            client_id: params.accessToken.clientId,
+            client_secret: params.accessToken.clientSecret,
+          };
+        }
+        body = {
+          app_id: params.appId,
+          name: params.name,
+          destinations: params.destinations,
+          probe: probeBody,
+        };
+      }
       const wire = (await request({
         path: '/v1/admin/heartbeats',
         method: 'POST',
-        body: {
-          app_id: appId,
-          name,
-          period_seconds: periodSeconds,
-          grace_seconds: graceSeconds,
-          destinations,
-        },
+        body,
       })) as { check: HeartbeatWire };
       return mapHeartbeat(wire.check);
     },
@@ -1053,8 +1169,35 @@ export function createDeliveryApiClient({
       periodSeconds,
       graceSeconds,
       destinations,
+      probe,
+      accessToken,
     }: UpdateHeartbeatParams): Promise<HeartbeatCheck> {
       const body: Record<string, unknown> = {};
+      const probeBody: Record<string, unknown> = {};
+      if (probe?.url !== undefined) {
+        probeBody.url = probe.url;
+      }
+      if (probe?.expectedStatuses !== undefined) {
+        probeBody.expected_statuses = probe.expectedStatuses;
+      }
+      if (probe?.bodyMatch !== undefined) {
+        probeBody.body_match = probe.bodyMatch;
+      }
+      if (probe?.timeoutSeconds !== undefined) {
+        probeBody.timeout_seconds = probe.timeoutSeconds;
+      }
+      if (probe?.intervalSeconds !== undefined) {
+        probeBody.interval_seconds = probe.intervalSeconds;
+      }
+      if (accessToken !== undefined) {
+        probeBody.access_token =
+          accessToken === null
+            ? null
+            : { client_id: accessToken.clientId, client_secret: accessToken.clientSecret };
+      }
+      if (Object.keys(probeBody).length > 0) {
+        body.probe = probeBody;
+      }
       if (periodSeconds !== undefined) {
         body.period_seconds = periodSeconds;
       }

@@ -275,6 +275,7 @@ export function HeartbeatForm({
     let pending: Promise<void>;
     if (check === undefined) {
       pending = onSubmit({
+        kind: 'push',
         appId: appId.trim(),
         name: name.trim(),
         periodSeconds,

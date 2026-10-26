@@ -40,6 +40,8 @@ function buildCheck(overrides: Partial<HeartbeatCheck> & { id: number }): Heartb
     destinations: [{ name: 'ops_discord', type: 'discord', enabled: true }],
     ownerKind: 'operator',
     ownerAppId: null,
+    downReason: null,
+    probe: null,
     createdAt: '2026-10-17T10:00:00Z',
     updatedAt: '2026-10-18T08:01:00Z',
     ...overrides,
@@ -1418,6 +1420,7 @@ describe('Heartbeats add check', () => {
 
     await waitFor(() =>
       expect(createHeartbeat).toHaveBeenCalledWith({
+        kind: 'push',
         appId: 'minecrafting',
         name: 'daily_report',
         periodSeconds: 86_400,
@@ -1459,6 +1462,7 @@ describe('Heartbeats add check', () => {
 
     await waitFor(() =>
       expect(createHeartbeat).toHaveBeenCalledWith({
+        kind: 'push',
         appId: 'urls4irl',
         name: 'nightly',
         periodSeconds: 172_800,
