@@ -81,7 +81,12 @@ Components:
   `provision(app_id, email)` (returns a generated subscriber password once) / `reset-password(app_id, email)` /
   `deprovision(app_id, email-or-ntfy-user-id)` (identity is
   email-keyed; the ntfy user derives from the email). Callable by the admin UI and by
-  individual consuming apps, each authenticated via its own Cloudflare Access Service Token.
+  individual consuming apps, each authenticated via its own Cloudflare Access Service Token. It also
+  has two in-app checks, each with an `enforce` / `log-only` mode switch (unset means `enforce`; prod runs
+  both `log-only`): an internal credential (`PROVISIONING_INTERNAL_CREDENTIAL`, header
+  `X-Notifs-Internal-Credential`, shared only with delivery-api as `DELIVERY_PROVISIONING_CREDENTIAL`;
+  `PROVISIONING_INTERNAL_CREDENTIAL_MODE`) and a per-app grant check on reset-password, set-password and
+  deprovision (`PROVISIONING_APP_GRANT_MODE`). See `ARCHITECTURE.md` "In-app checks".
 - **delivery-api** — generic delivery service (Go + Postgres, with a one-shot `delivery-migrate`
   container); serves the operator registry (destinations and routes) under `/v1/admin`, the
   app message envelope API (`/v1/messages`, including `DELETE /v1/messages` cancel of scheduled

@@ -1071,6 +1071,85 @@ func TestSetPasswordChangesNtfyPassword(t *testing.T) {
 	}
 }
 
+// requireUserDoesNotExist fails unless a response is the 404 {"error":"user does not exist"} the
+// per-app grant check answers for a person who is not in the calling app.
+func requireUserDoesNotExist(t *testing.T, status int, body []byte, label string) {
+	t.Helper()
+	if status != http.StatusNotFound {
+		t.Fatalf("%s status = %d, expected 404; body = %s", label, status, body)
+	}
+	if !strings.Contains(string(body), "user does not exist") {
+		t.Fatalf("%s 404 body = %s, expected it to contain %q", label, body, "user does not exist")
+	}
+}
+
+// TestCrossAppCallsAreNotFoundAndChangeNothing proves the per-app grant check against the real
+// ntfy CLI output (the local stack runs PROVISIONING_APP_GRANT_MODE=enforce): a person provisioned
+// into app A is a stranger to app B, so set-password, reset-password and deprovision through B
+// answer 404 and change nothing, while the same calls through A still work.
+func TestCrossAppCallsAreNotFoundAndChangeNothing(t *testing.T) {
+	waitForHealth(t)
+	const email = "itest-crossapp@example.com"
+	const ownApp = "itestcrossappa"
+	const strangerApp = "itestcrossappb"
+	const firstPassword = "cross-app-first-password"
+	const hijackPassword = "cross-app-hijack-password"
+	const secondPassword = "cross-app-second-password"
+	personHash := personhash.Hash(email)
+	ntfyUserID := personhash.NtfyUser(email)
+	t.Cleanup(func() { deleteUser(t, ntfyUserID) })
+	ownTopic := ownApp + "-" + personHash + "-test"
+
+	provisioned, _ := provisionFull(t, ownApp, email)
+
+	// Own app: set-password succeeds and the new password authenticates.
+	status, body := postJSON(t, "/v1/set-password", map[string]string{"app_id": ownApp, "email": email, "password": firstPassword})
+	if status != http.StatusOK {
+		t.Fatalf("set-password via own app status = %d, body = %s", status, body)
+	}
+	requireBasicAuth(t, ownTopic, ntfyUserID, firstPassword, http.StatusOK, "password set via own app")
+
+	// Stranger app: set-password is 404 and the password does not change.
+	status, body = postJSON(t, "/v1/set-password", map[string]string{"app_id": strangerApp, "email": email, "password": hijackPassword})
+	requireUserDoesNotExist(t, status, body, "set-password via stranger app")
+	requireBasicAuth(t, ownTopic, ntfyUserID, firstPassword, http.StatusOK, "password after stranger set-password")
+	requireRejected(t, ownTopic, ntfyUserID, hijackPassword, "stranger-chosen password")
+
+	// Stranger app: reset-password is 404 and the password does not change.
+	status, _, body = resetPassword(t, strangerApp, email)
+	requireUserDoesNotExist(t, status, body, "reset-password via stranger app")
+	requireBasicAuth(t, ownTopic, ntfyUserID, firstPassword, http.StatusOK, "password after stranger reset-password")
+
+	// Own app: reset-password succeeds right after the stranger attempt.
+	status, _, body = resetPassword(t, ownApp, email)
+	if status != http.StatusOK {
+		t.Fatalf("reset-password via own app status = %d, body = %s", status, body)
+	}
+	var ownReset resetPasswordResponse
+	if unmarshalErr := json.Unmarshal(body, &ownReset); unmarshalErr != nil {
+		t.Fatalf("unmarshaling own-app reset response: %v", unmarshalErr)
+	}
+	requireBasicAuth(t, ownTopic, ntfyUserID, ownReset.Password, http.StatusOK, "password reset via own app")
+	requireRejected(t, ownTopic, ntfyUserID, firstPassword, "password superseded by own-app reset")
+
+	// Stranger app: deprovision is 404 and the person's own-app grant survives.
+	status, body = postJSON(t, "/v1/deprovision", map[string]string{"app_id": strangerApp, "email": email})
+	requireUserDoesNotExist(t, status, body, "deprovision via stranger app")
+	if !userIsListed(t, ntfyUserID) {
+		t.Fatal("user was removed by a stranger-app deprovision; expected it untouched")
+	}
+	if own := readStatus(t, ownTopic, provisioned.Token); own != http.StatusOK {
+		t.Fatalf("own-app token read status = %d after stranger deprovision, expected 200 (grant must survive)", own)
+	}
+
+	// Own app still works afterwards.
+	status, body = postJSON(t, "/v1/set-password", map[string]string{"app_id": ownApp, "email": email, "password": secondPassword})
+	if status != http.StatusOK {
+		t.Fatalf("set-password via own app after stranger calls status = %d, body = %s", status, body)
+	}
+	requireBasicAuth(t, ownTopic, ntfyUserID, secondPassword, http.StatusOK, "password set via own app after stranger calls")
+}
+
 // postJSONFull is postJSON that also returns the response headers.
 func postJSONFull(t *testing.T, path string, payload map[string]string) (int, http.Header, []byte) {
 	t.Helper()

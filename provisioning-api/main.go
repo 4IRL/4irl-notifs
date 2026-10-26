@@ -90,6 +90,15 @@ func main() {
 	publisher := ntfypublish.NewClient(ntfypublish.Config{BaseURL: ntfyPublishURL})
 	logger.Info("ntfy publisher", "configured", publisher.Configured(), "url", ntfyPublishURL)
 
+	// PROVISIONING_APP_GRANT_MODE: unset or empty means enforce (fail closed);
+	// "log-only" is an explicit rollout setting; anything else stops startup.
+	appGrantMode, appGrantModeErr := resolveGrantMode(os.Getenv(appGrantModeEnv))
+	if appGrantModeErr != nil {
+		logger.Error("invalid app grant configuration", "error", appGrantModeErr)
+		os.Exit(1)
+	}
+	logger.Info("app grant mode", "mode", appGrantMode.String())
+
 	// PROVISIONING_INTERNAL_CREDENTIAL(_FILE) + PROVISIONING_INTERNAL_CREDENTIAL_MODE:
 	// an invalid mode, or enforce with no credential, stops startup before
 	// listening. The credential value is never logged.
@@ -109,6 +118,7 @@ func main() {
 		PersonClient:               personClient,
 		Publisher:                  publisher,
 		Logger:                     logger,
+		AppGrantMode:               appGrantMode,
 	})
 	server := httpapi.NewServer(httpapi.ServerConfig{
 		Service:            service,

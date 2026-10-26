@@ -666,21 +666,21 @@ func TestProvisionFailedReleaseIsLoggedAtErrorLevel(t *testing.T) {
 }
 
 func TestSetPasswordRecordsStampBeforeChangingPassword(t *testing.T) {
-	ntfyClient := &fakeNtfyClient{}
+	ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("tasktracker")}
 	service, personClient := newSetPasswordService(ntfyClient)
 	personClient.recordTo = &ntfyClient.invocations
 
 	if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err != nil {
 		t.Fatalf("SetPassword returned unexpected error: %v", err)
 	}
-	expected := fmt.Sprintf("ClaimPassword(%s,alice@example.com,update_only) | ChangePassword(%s,pw=sekrit-pw)", aliceHash, aliceNtfyUser)
+	expected := fmt.Sprintf("GetUser(%s) | ClaimPassword(%s,alice@example.com,update_only) | ChangePassword(%s,pw=sekrit-pw)", aliceNtfyUser, aliceHash, aliceNtfyUser)
 	if got := strings.Join(ntfyClient.invocations, " | "); got != expected {
 		t.Fatalf("invocations = %s, expected %s", got, expected)
 	}
 }
 
 func TestSetPasswordRestoresPriorStampWhenChangePasswordFails(t *testing.T) {
-	ntfyClient := &fakeNtfyClient{changePasswordErr: errors.New("change failed")}
+	ntfyClient := &fakeNtfyClient{changePasswordErr: errors.New("change failed"), listUsers: aliceGrantedIn("tasktracker")}
 	service, personClient := newSetPasswordService(ntfyClient)
 
 	if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err == nil {
@@ -692,7 +692,7 @@ func TestSetPasswordRestoresPriorStampWhenChangePasswordFails(t *testing.T) {
 }
 
 func TestSetPasswordReleaseDoesNotUndoANewerStamp(t *testing.T) {
-	ntfyClient := &fakeNtfyClient{}
+	ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("tasktracker")}
 	service, personClient := newSetPasswordService(ntfyClient)
 	ntfyClient.changePasswordHook = func() error {
 		if _, err := personClient.ClaimPassword(context.Background(), aliceHash, aliceEmail, personsvc.ClaimAlways); err != nil {
@@ -711,45 +711,39 @@ func TestSetPasswordReleaseDoesNotUndoANewerStamp(t *testing.T) {
 
 func TestSetPasswordWithoutRecordableStampSkipsChangePasswordAndErrors(t *testing.T) {
 	t.Run("claim failure", func(t *testing.T) {
-		ntfyClient := &fakeNtfyClient{}
+		ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("tasktracker")}
 		service, personClient := newSetPasswordService(ntfyClient)
 		personClient.claimErr = errors.New("claim boom")
 
 		if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err == nil {
 			t.Fatal("expected an error")
 		}
-		if len(ntfyClient.invocations) != 0 {
-			t.Fatalf("ChangePassword must not run, got: %v", ntfyClient.invocations)
-		}
+		requireOnlyGrantLookup(t, ntfyClient.invocations)
 	})
 	t.Run("unconfigured client", func(t *testing.T) {
-		ntfyClient := &fakeNtfyClient{}
+		ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("tasktracker")}
 		service := newLoggedService(ntfyClient, &fakePersonClient{configuredValue: false}, nil)
 
 		_, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"})
 		if !errors.Is(err, ErrPersonStoreUnavailable) {
 			t.Fatalf("err = %v, expected ErrPersonStoreUnavailable", err)
 		}
-		if len(ntfyClient.invocations) != 0 {
-			t.Fatalf("ChangePassword must not run, got: %v", ntfyClient.invocations)
-		}
+		requireOnlyGrantLookup(t, ntfyClient.invocations)
 	})
 	t.Run("nil client", func(t *testing.T) {
-		ntfyClient := &fakeNtfyClient{}
+		ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("tasktracker")}
 		service := newTestService(ntfyClient)
 
 		if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err == nil {
 			t.Fatal("expected an error")
 		}
-		if len(ntfyClient.invocations) != 0 {
-			t.Fatalf("ChangePassword must not run, got: %v", ntfyClient.invocations)
-		}
+		requireOnlyGrantLookup(t, ntfyClient.invocations)
 	})
 }
 
 func TestSetPasswordForUserWithoutRowRecordsAfterwardsAndUnknownUserCreatesNoRow(t *testing.T) {
 	t.Run("row-less existing user", func(t *testing.T) {
-		ntfyClient := &fakeNtfyClient{}
+		ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("tasktracker")}
 		personClient := newStatefulPersonClient()
 		personClient.recordTo = &ntfyClient.invocations
 		service := newLoggedService(ntfyClient, personClient, nil)
@@ -757,7 +751,7 @@ func TestSetPasswordForUserWithoutRowRecordsAfterwardsAndUnknownUserCreatesNoRow
 		if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err != nil {
 			t.Fatalf("SetPassword returned unexpected error: %v", err)
 		}
-		expected := fmt.Sprintf("ClaimPassword(%s,alice@example.com,update_only) | ChangePassword(%s,pw=sekrit-pw) | ClaimPassword(%s,alice@example.com,always)", aliceHash, aliceNtfyUser, aliceHash)
+		expected := fmt.Sprintf("GetUser(%s) | ClaimPassword(%s,alice@example.com,update_only) | ChangePassword(%s,pw=sekrit-pw) | ClaimPassword(%s,alice@example.com,always)", aliceNtfyUser, aliceHash, aliceNtfyUser, aliceHash)
 		if got := strings.Join(ntfyClient.invocations, " | "); got != expected {
 			t.Fatalf("invocations = %s, expected %s", got, expected)
 		}
@@ -782,7 +776,7 @@ func TestSetPasswordForUserWithoutRowRecordsAfterwardsAndUnknownUserCreatesNoRow
 		logger, buffer := newJSONLogger()
 		personClient := newStatefulPersonClient()
 		personClient.claimErrByMode = map[personsvc.ClaimMode]error{personsvc.ClaimAlways: errors.New("always boom")}
-		service := newLoggedService(&fakeNtfyClient{}, personClient, logger)
+		service := newLoggedService(&fakeNtfyClient{listUsers: aliceGrantedIn("tasktracker")}, personClient, logger)
 
 		if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err != nil {
 			t.Fatalf("the applied change must still succeed, got: %v", err)
@@ -913,7 +907,7 @@ func TestDeleteUserForPersonIdHoldsPersonLock(t *testing.T) {
 
 func TestDeprovisionLastAppTeardownStaysBestEffortWhenPersonDeleteFails(t *testing.T) {
 	logger, buffer := newJSONLogger()
-	ntfyClient := &fakeNtfyClient{listUsers: []ntfycli.User{{Name: aliceNtfyUser, TopicPatterns: nil}}}
+	ntfyClient := &fakeNtfyClient{listUsersFunc: grantedThenEmptied("urls4irl", aliceNtfyUser)}
 	personClient := newStatefulPersonClient()
 	personClient.deletePersonErr = errors.New("person delete failed")
 	service := newLoggedService(ntfyClient, personClient, logger)
@@ -1004,7 +998,7 @@ func TestDeprovisionLastAppTeardownWaitsForProvisionOfSamePerson(t *testing.T) {
 	release := make(chan struct{})
 	var gateOnce sync.Once
 	var teardownDeleted atomic.Bool
-	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new", statefulUsers: true, listUsers: []ntfycli.User{{Name: aliceNtfyUser}}}
+	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new", statefulUsers: true, listUsersFunc: grantedThenEmptied("urls4irl", aliceNtfyUser)}
 	ntfyClient.addUserHook = func() {
 		gateOnce.Do(func() {
 			close(entered)
@@ -1041,22 +1035,8 @@ func TestDeprovisionAppWithLastAppTeardownsDoesNotDeadlock(t *testing.T) {
 		hashThree = "qrstuvwxyzabcdef"
 	)
 	subscribers := []string{aliceNtfyUser, "u_" + hashTwo, "u_" + hashThree}
-	var listCalls atomic.Int32
 	ntfyClient := &fakeNtfyClient{}
-	ntfyClient.listUsersFunc = func() []ntfycli.User {
-		users := []ntfycli.User{}
-		callNumber := listCalls.Add(1)
-		for _, subscriber := range subscribers {
-			patterns := []string{"myapp-" + strings.TrimPrefix(subscriber, "u_") + "-*"}
-			if callNumber > 1 {
-				// Every per-subscriber Deprovision then finds the user left with
-				// no grants: the last-app teardown.
-				patterns = nil
-			}
-			users = append(users, ntfycli.User{Name: subscriber, TopicPatterns: patterns})
-		}
-		return users
-	}
+	ntfyClient.listUsersFunc = grantedThenEmptied("myapp", subscribers...)
 	personClient := newStatefulPersonClient()
 	service := newLoggedService(ntfyClient, personClient, nil)
 
@@ -1075,7 +1055,7 @@ func TestNoFlowLogsAPasswordOrEmail(t *testing.T) {
 	logger, buffer := newJSONLogger()
 
 	// Provision: success, claim error, release failure, self-heal.
-	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new", statefulUsers: true}
+	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new", statefulUsers: true, listUsers: aliceGrantedIn("x")}
 	personClient := newStatefulPersonClient()
 	service := newLoggedService(ntfyClient, personClient, logger)
 	if _, err := service.Provision(context.Background(), provisionRequestForAlice); err != nil {
