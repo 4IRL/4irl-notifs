@@ -709,7 +709,6 @@ export const strings = {
   invalidProbeBodyMatch: 'Body text must be 1 to 256 bytes, not blank, with no NUL character.',
   invalidProbeInterval: 'Interval must be a whole number of seconds between 60 and 86400.',
   invalidProbeTimeout: 'Timeout must be a whole number of seconds between 1 and 8.',
-  invalidProbeTimeoutVsInterval: 'Timeout must be shorter than the interval.',
   invalidProbeCredentialPair: 'Enter both the client ID and secret.',
   invalidProbeCredential: 'Use 1 to 256 visible ASCII characters with no spaces.',
   heartbeatNeedsDestination: 'Select at least one alert destination.',

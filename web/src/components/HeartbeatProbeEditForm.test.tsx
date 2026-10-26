@@ -344,6 +344,57 @@ describe('probe edit form: diff', () => {
     expect(second.form).toHaveTextContent(strings.invalidProbeBodyMatch);
   });
 
+  it('an unchanged URL the client rules reject never blocks an unrelated change', async () => {
+    const check = probeCheck({ probe: { url: 'http://legacy.example/health' } });
+    const { user, form, api } = await openEditor({ check });
+    await replaceText({
+      user,
+      input: field(form, strings.heartbeatProbeTimeoutLabel),
+      text: '4',
+    });
+    await save(user, form);
+    await waitFor(() => expect(api.updateHeartbeat).toHaveBeenCalledTimes(1));
+    expect(lastUpdate(api)).toEqual({ id: 7, probe: { timeoutSeconds: 4 } });
+  });
+
+  it('errors on a changed URL that fails the scheme rule and sends nothing', async () => {
+    const { user, form, api } = await openEditor();
+    await replaceText({
+      user,
+      input: field(form, strings.heartbeatProbeUrlLabel),
+      text: 'http://x',
+    });
+    await save(user, form);
+    expect(api.updateHeartbeat).not.toHaveBeenCalled();
+    expect(form).toHaveTextContent(strings.invalidProbeUrlScheme);
+    expect(field(form, strings.heartbeatProbeUrlLabel)).toHaveFocus();
+  });
+
+  it('an unchanged invalid stored statuses never block; a changed invalid one errors', async () => {
+    const check = probeCheck({ probe: { expectedStatuses: [99] } });
+    const first = await openEditor({ check });
+    await replaceText({
+      user: first.user,
+      input: field(first.form, strings.heartbeatProbeTimeoutLabel),
+      text: '4',
+    });
+    await save(first.user, first.form);
+    await waitFor(() => expect(first.api.updateHeartbeat).toHaveBeenCalledTimes(1));
+    expect(lastUpdate(first.api)).toEqual({ id: 7, probe: { timeoutSeconds: 4 } });
+    cleanup();
+
+    const second = await openEditor();
+    await replaceText({
+      user: second.user,
+      input: field(second.form, strings.heartbeatProbeStatusesLabel),
+      text: '99',
+    });
+    await save(second.user, second.form);
+    expect(second.api.updateHeartbeat).not.toHaveBeenCalled();
+    expect(second.form).toHaveTextContent(strings.invalidProbeStatuses);
+    expect(field(second.form, strings.heartbeatProbeStatusesLabel)).toHaveFocus();
+  });
+
   it('never sends period or grace on a probe edit, and a push edit never sends probe', async () => {
     const probe = await openEditor();
     await replaceText({

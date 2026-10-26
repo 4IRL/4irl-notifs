@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -292,6 +292,51 @@ describe('add form: validation', () => {
     expect(client.createHeartbeat).not.toHaveBeenCalled();
   });
 
+  it('flags a credential with a space and a whitespace-only body match', async () => {
+    const client = buildClient();
+    const { user, form } = await openAddForm(client);
+    await chooseProbe({ user, form });
+    await fillCommon({ user, form });
+    await fillProbe({ user, form });
+    await user.type(field(form, strings.heartbeatProbeBodyMatchLabel), '   ');
+    await user.type(field(form, strings.heartbeatCredentialsClientIdLabel), 'bad id');
+    await user.type(field(form, strings.heartbeatCredentialsClientSecretLabel), 'sec1');
+    await user.click(submit(form));
+
+    const bodyMatch = field(form, strings.heartbeatProbeBodyMatchLabel);
+    const clientId = field(form, strings.heartbeatCredentialsClientIdLabel);
+    expect(within(form).getByText(strings.invalidProbeBodyMatch)).toBeInTheDocument();
+    expect(within(form).getByText(strings.invalidProbeCredential)).toBeInTheDocument();
+    expect(bodyMatch).toHaveAttribute('aria-invalid', 'true');
+    expect(clientId).toHaveAttribute('aria-invalid', 'true');
+    expect(field(form, strings.heartbeatCredentialsClientSecretLabel)).not.toHaveAttribute(
+      'aria-invalid',
+    );
+    expect(bodyMatch).toHaveFocus();
+    expect(client.createHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['empty', '', strings.invalidProbeUrlEmpty],
+    ['tooLong', `https://${'a'.repeat(2050)}.example/`, strings.invalidProbeUrlTooLong],
+    ['malformed', 'https://host.example/#frag', strings.invalidProbeUrlMalformed],
+  ])('maps a %s URL to its message', async (_name, value, message) => {
+    const client = buildClient();
+    const { user, form } = await openAddForm(client);
+    await chooseProbe({ user, form });
+    await fillCommon({ user, form });
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    if (value !== '') {
+      fireEvent.change(url, { target: { value } });
+    }
+    await user.click(submit(form));
+
+    expect(within(form).getByText(message)).toBeInTheDocument();
+    expect(url).toHaveAttribute('aria-invalid', 'true');
+    expect(url).toHaveFocus();
+    expect(client.createHeartbeat).not.toHaveBeenCalled();
+  });
+
   it('errors on an interval under a minute and focuses it', async () => {
     const { user, form } = await openAddForm(buildClient());
     await chooseProbe({ user, form });
@@ -310,7 +355,7 @@ describe('add form: validation', () => {
     expect(interval).toHaveAttribute('aria-invalid', 'true');
   });
 
-  it('flags timeout >= interval on Timeout', async () => {
+  it('flags an out-of-range timeout', async () => {
     const { user, form } = await openAddForm(buildClient());
     await chooseProbe({ user, form });
     await fillCommon({ user, form });

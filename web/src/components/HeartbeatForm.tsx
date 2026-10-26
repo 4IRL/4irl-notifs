@@ -416,16 +416,8 @@ export function HeartbeatForm({
     if (intervalChanged && !intervalValid) {
       errors.interval = strings.invalidProbeInterval;
     }
-    const timeoutValid = probeTimeoutProblem(timeoutSeconds) === null;
-    if (timeoutChanged && !timeoutValid) {
+    if (timeoutChanged && probeTimeoutProblem(timeoutSeconds) !== null) {
       errors.timeout = strings.invalidProbeTimeout;
-    } else if (
-      (intervalChanged || timeoutChanged) &&
-      timeoutValid &&
-      intervalValid &&
-      timeoutSeconds >= intervalSeconds
-    ) {
-      errors.timeout = strings.invalidProbeTimeoutVsInterval;
     }
     const pairActive = !baseline.hasAccessToken || staged === 'replacing';
     if (!pairActive) {
