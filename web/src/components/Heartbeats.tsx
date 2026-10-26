@@ -690,6 +690,8 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
           periodSeconds: changes.periodSeconds,
           graceSeconds: changes.graceSeconds,
           destinations: changes.destinations,
+          probe: changes.probe,
+          accessToken: changes.accessToken,
         });
         // The row was deleted while this was in flight: nothing to update or announce.
         if (!checksRef.current.some((candidate) => candidate.id === id)) {

@@ -7,6 +7,7 @@ import type {
   DestinationSummary,
   DestinationType,
   HeartbeatCheck,
+  ProbeConfigInput,
   UpdateHeartbeatParams,
 } from '../api/deliveryClient';
 import { strings } from '../strings';
@@ -28,10 +29,12 @@ import { DurationField } from './DurationField';
 import { HeartbeatProbeFields } from './HeartbeatProbeFields';
 import type { ProbeFieldValues } from './HeartbeatProbeFields';
 import { ProbeCredentialsField } from './ProbeCredentialsField';
+import type { CredentialsStaged } from './ProbeCredentialsField';
 import { describedBy, fieldErrorId, focusFirstInvalid } from './fieldErrors';
 import type { FieldErrors } from './fieldErrors';
 import { splitDuration, toSeconds } from './heartbeatDuration';
 import type { DurationInput } from './heartbeatDuration';
+import { probeAccessHintOf } from './heartbeatRowState';
 import './DestinationForm.css';
 import './RouteForm.css';
 
@@ -138,6 +141,34 @@ function sameSet({ left, right }: { left: string[]; right: string[] }): boolean 
   return left.length === right.length && left.every((name) => right.includes(name));
 }
 
+function sameNumberSet({ left, right }: { left: number[]; right: number[] }): boolean {
+  return left.length === right.length && left.every((value) => right.includes(value));
+}
+
+/**
+ * The credentials suggestion for a probe edit, chosen once at mount. A 403 hint wins over the
+ * config hint, which wins over none.
+ */
+function credentialsHintOf(check: HeartbeatCheck): string | null {
+  const { probe } = check;
+  if (probe === null) {
+    return null;
+  }
+  const access = probeAccessHintOf(check);
+  if (access === 'tokenRejected') {
+    return strings.heartbeatCredentialsHintTokenRejected;
+  }
+  if (access === 'tokenMissing') {
+    return strings.heartbeatCredentialsHintTokenMissing;
+  }
+  if (check.downReason === 'config' || probe.lastResult?.reason === 'config') {
+    return probe.hasAccessToken
+      ? strings.heartbeatCredentialsHintConfigStored
+      : strings.heartbeatCredentialsHintConfigMissing;
+  }
+  return null;
+}
+
 /** The small text after a destination's name: its type, then "(disabled)" and "(not found)". */
 function marksOf(option: DestinationOption): string {
   return [
@@ -171,7 +202,12 @@ export function HeartbeatForm({
     periodSeconds: check?.periodSeconds,
     graceSeconds: check?.graceSeconds,
     destinations: check?.destinations.map((destination) => destination.name) ?? [],
+    probe: check?.probe ?? null,
+    hasAccessToken: check?.probe?.hasAccessToken === true,
+    credentialsHint: check === undefined ? null : credentialsHintOf(check),
   }));
+  const baselineProbe = baseline.probe;
+  const [staged, setStaged] = useState<CredentialsStaged>('untouched');
   const [appId, setAppId] = useState('');
   const [name, setName] = useState('');
   const [period, setPeriod] = useState<DurationInput>(
@@ -180,8 +216,18 @@ export function HeartbeatForm({
   const [grace, setGrace] = useState<DurationInput>(
     check === undefined ? DEFAULT_GRACE : splitDuration(check.graceSeconds),
   );
-  const [kind, setKind] = useState<CheckKind>('push');
-  const [probe, setProbe] = useState<ProbeFieldValues>(DEFAULT_PROBE);
+  const [kind, setKind] = useState<CheckKind>(baselineProbe === null ? 'push' : 'probe');
+  const [probe, setProbe] = useState<ProbeFieldValues>(() =>
+    baselineProbe === null
+      ? DEFAULT_PROBE
+      : {
+          url: baselineProbe.url,
+          statuses: baselineProbe.expectedStatuses.join(', '),
+          bodyMatch: baselineProbe.bodyMatch ?? '',
+          interval: splitDuration(baselineProbe.intervalSeconds),
+          timeout: String(baselineProbe.timeoutSeconds),
+        },
+  );
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
   const [selected, setSelected] = useState<string[]>(baseline.destinations);
@@ -201,10 +247,17 @@ export function HeartbeatForm({
   const clientSecretRef = useRef<HTMLInputElement | null>(null);
   const destinationsRef = useRef<HTMLInputElement | null>(null);
   const isProbeAdd = !isEdit && kind === 'probe';
+  const isProbeEdit = baselineProbe !== null;
+  const isProbe = isProbeAdd || isProbeEdit;
 
   useEffect(() => {
-    // Add focuses App ID; edit has no App ID input, so it focuses Period.
-    (isEdit ? periodRef : firstFieldRef).current?.focus();
+    // Add focuses App ID; a push edit has no App ID input, so it focuses Period; a probe edit
+    // has no Period, so it focuses the URL.
+    let target = firstFieldRef;
+    if (isEdit) {
+      target = isProbeEdit ? urlRef : periodRef;
+    }
+    target.current?.focus();
     // Mount-only: the target never changes for the life of the form.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -263,6 +316,17 @@ export function HeartbeatForm({
     } else {
       clearFieldErrors(PUSH_FIELDS);
     }
+  }
+
+  function changeStaged(next: CredentialsStaged) {
+    if (submitting || saving) {
+      return;
+    }
+    setStaged(next);
+    // Typed values and their errors belong to one replace attempt: never carry them over.
+    setClientId('');
+    setClientSecret('');
+    clearFieldErrors(['clientId', 'clientSecret']);
   }
 
   function changeProbe(next: Partial<ProbeFieldValues>) {
@@ -335,28 +399,58 @@ export function HeartbeatForm({
     timeoutSeconds: number;
   }): FieldErrors<FormField> {
     const errors: FieldErrors<FormField> = {};
+    // On an edit a probe field is checked only when it differs from the saved value, so a
+    // server-valid value the stricter client rules reject never blocks an unrelated change.
+    const base = baselineProbe;
+    const parsedStatuses = parseExpectedStatuses(probe.statuses);
+    const urlChanged = base === null || probe.url.trim() !== base.url;
+    let statusesChanged = true;
+    if (base !== null) {
+      statusesChanged = parsedStatuses.ok
+        ? !sameNumberSet({ left: parsedStatuses.statuses, right: base.expectedStatuses })
+        : probe.statuses !== base.expectedStatuses.join(', ');
+    }
+    const bodyMatchChanged = base === null || probe.bodyMatch !== (base.bodyMatch ?? '');
+    const intervalChanged = base === null || intervalSeconds !== base.intervalSeconds;
+    const timeoutChanged = base === null || timeoutSeconds !== base.timeoutSeconds;
+
     const urlProblem = probeUrlProblem(probe.url.trim());
-    if (urlProblem !== null) {
+    if (urlChanged && urlProblem !== null) {
       errors.url = PROBE_URL_ERRORS[urlProblem];
     }
-    if (!parseExpectedStatuses(probe.statuses).ok) {
+    if (statusesChanged && !parsedStatuses.ok) {
       errors.statuses = strings.invalidProbeStatuses;
     }
-    if (probe.bodyMatch !== '' && bodyMatchProblem(probe.bodyMatch) !== null) {
+    if (bodyMatchChanged && probe.bodyMatch !== '' && bodyMatchProblem(probe.bodyMatch) !== null) {
       errors.bodyMatch = strings.invalidProbeBodyMatch;
     }
     const intervalValid =
       intervalSeconds !== null && probeIntervalProblem(intervalSeconds) === null;
-    if (!intervalValid) {
+    if (intervalChanged && !intervalValid) {
       errors.interval = strings.invalidProbeInterval;
     }
     const timeoutValid = probeTimeoutProblem(timeoutSeconds) === null;
-    if (!timeoutValid) {
+    if (timeoutChanged && !timeoutValid) {
       errors.timeout = strings.invalidProbeTimeout;
-    } else if (intervalValid && timeoutSeconds >= intervalSeconds) {
+    } else if (
+      (intervalChanged || timeoutChanged) &&
+      timeoutValid &&
+      intervalValid &&
+      timeoutSeconds >= intervalSeconds
+    ) {
       errors.timeout = strings.invalidProbeTimeoutVsInterval;
     }
-    if (clientId === '' && clientSecret !== '') {
+    const pairActive = !baseline.hasAccessToken || staged === 'replacing';
+    if (!pairActive) {
+      return errors;
+    }
+    if (clientId === '' && clientSecret === '') {
+      if (baseline.hasAccessToken) {
+        // Replacing with nothing typed: both halves are needed.
+        errors.clientId = strings.invalidProbeCredentialPair;
+        errors.clientSecret = strings.invalidProbeCredentialPair;
+      }
+    } else if (clientId === '' && clientSecret !== '') {
       errors.clientId = strings.invalidProbeCredentialPair;
     } else if (clientId !== '' && clientSecret === '') {
       errors.clientSecret = strings.invalidProbeCredentialPair;
@@ -391,7 +485,7 @@ export function HeartbeatForm({
     }
     Object.assign(
       errors,
-      isProbeAdd
+      isProbe
         ? validateProbe({ intervalSeconds, timeoutSeconds })
         : validatePush({ periodSeconds, graceSeconds }),
     );
@@ -404,7 +498,7 @@ export function HeartbeatForm({
     if (Object.keys(errors).length > 0) {
       setError(null);
       focusFirstInvalid({
-        order: ['appId', 'name', ...(isProbeAdd ? PROBE_FIELDS : PUSH_FIELDS), 'destinations'],
+        order: ['appId', 'name', ...(isProbe ? PROBE_FIELDS : PUSH_FIELDS), 'destinations'],
         errors,
         refs: {
           appId: firstFieldRef,
@@ -463,6 +557,49 @@ export function HeartbeatForm({
         graceSeconds,
         destinations: orderedSelected,
       });
+    } else if (baselineProbe !== null) {
+      const changes: HeartbeatEditSubmission = {};
+      const probeChanges: Partial<ProbeConfigInput> = {};
+      const statuses = parseExpectedStatuses(probe.statuses);
+      if (probe.url.trim() !== baselineProbe.url) {
+        probeChanges.url = probe.url.trim();
+      }
+      if (
+        statuses.ok &&
+        !sameNumberSet({ left: statuses.statuses, right: baselineProbe.expectedStatuses })
+      ) {
+        probeChanges.expectedStatuses = statuses.statuses;
+      }
+      if (probe.bodyMatch !== (baselineProbe.bodyMatch ?? '')) {
+        probeChanges.bodyMatch = probe.bodyMatch === '' ? null : probe.bodyMatch;
+      }
+      if (timeoutSeconds !== baselineProbe.timeoutSeconds) {
+        probeChanges.timeoutSeconds = timeoutSeconds;
+      }
+      if (intervalSeconds !== null && intervalSeconds !== baselineProbe.intervalSeconds) {
+        probeChanges.intervalSeconds = intervalSeconds;
+      }
+      if (Object.keys(probeChanges).length > 0) {
+        changes.probe = probeChanges;
+      }
+      if (baseline.hasAccessToken) {
+        if (staged === 'clearing') {
+          changes.accessToken = null;
+        } else if (staged === 'replacing') {
+          changes.accessToken = { clientId, clientSecret };
+        }
+      } else if (clientId !== '') {
+        changes.accessToken = { clientId, clientSecret };
+      }
+      if (!sameSet({ left: orderedSelected, right: baseline.destinations })) {
+        changes.destinations = orderedSelected;
+      }
+      if (Object.keys(changes).length === 0) {
+        setError(null);
+        onClose();
+        return;
+      }
+      pending = onSubmit(changes);
     } else if (periodSeconds === null || graceSeconds === null) {
       setError(strings.genericError);
       return;
@@ -504,6 +641,14 @@ export function HeartbeatForm({
     submitLabel = strings.addingHeartbeat;
   }
   const checkLabel = isEdit ? `${check.appId}/${check.name}` : '';
+  let intervalHint: string = strings.heartbeatProbeIntervalHintAdd;
+  if (isEdit) {
+    const threshold = baselineProbe?.failureThreshold ?? null;
+    intervalHint =
+      threshold !== null && Number.isInteger(threshold) && threshold > 0
+        ? `${strings.heartbeatProbeIntervalHintEdit} ${strings.heartbeatProbeIntervalThreshold({ threshold })}`
+        : strings.heartbeatProbeIntervalHintEdit;
+  }
 
   const form = (
     <form
@@ -515,7 +660,9 @@ export function HeartbeatForm({
     >
       {isEdit && (
         <p className="destination-form__hint">
-          {strings.heartbeatEditingNotice({ check: checkLabel })}
+          {isProbeEdit
+            ? strings.heartbeatEditingNoticeProbe({ check: checkLabel })
+            : strings.heartbeatEditingNotice({ check: checkLabel })}
         </p>
       )}
       {!isEdit && (
@@ -602,7 +749,7 @@ export function HeartbeatForm({
             </div>
           </>
         )}
-        {!isProbeAdd && (
+        {!isProbe && (
           <>
             <DurationField
               id={`heartbeat-period-${idSuffix}`}
@@ -627,7 +774,7 @@ export function HeartbeatForm({
           </>
         )}
       </div>
-      {isProbeAdd && (
+      {isProbe && (
         <>
           <HeartbeatProbeFields
             idSuffix={idSuffix}
@@ -641,7 +788,7 @@ export function HeartbeatForm({
               timeout: timeoutRef,
             }}
             onChange={changeProbe}
-            intervalHint={strings.heartbeatProbeIntervalHintAdd}
+            intervalHint={intervalHint}
           />
           <ProbeCredentialsField
             idSuffix={idSuffix}
@@ -657,8 +804,14 @@ export function HeartbeatForm({
             clientSecretRef={clientSecretRef}
             clientIdError={fieldErrors.clientId}
             clientSecretError={fieldErrors.clientSecret}
-            hint={strings.heartbeatCredentialsHintAdd}
+            hint={
+              isEdit ? strings.heartbeatCredentialsHintEdit : strings.heartbeatCredentialsHintAdd
+            }
             inFlight={inFlight}
+            hasStoredCredentials={baseline.hasAccessToken}
+            staged={staged}
+            onStagedChange={changeStaged}
+            stateHint={baseline.credentialsHint}
           />
         </>
       )}
@@ -703,6 +856,9 @@ export function HeartbeatForm({
         >
           {fieldErrors.destinations}
         </span>
+      )}
+      {isProbeEdit && (
+        <p className="destination-form__hint">{strings.heartbeatProbeEditRestartNote}</p>
       )}
       <div className="destination-form__actions">
         <button

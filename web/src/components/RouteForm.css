@@ -41,8 +41,26 @@
 
 .heartbeat-form__full,
 .heartbeat-form__creds > .destination-form__inline-label,
-.heartbeat-form__creds > .destination-form__hint {
+.heartbeat-form__creds > .destination-form__hint,
+.heartbeat-form__creds > .heartbeat-form__creds-state,
+.heartbeat-form__creds > .heartbeat-form__creds-actions {
   grid-column: 1 / -1;
+}
+
+.heartbeat-form__creds-state {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-h);
+}
+
+.heartbeat-form__creds-state--clearing {
+  color: var(--danger);
+}
+
+.heartbeat-form__creds-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 .route-form__sub {

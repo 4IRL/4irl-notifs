@@ -663,6 +663,12 @@ export const strings = {
   heartbeatProbeIntervalUnitLabel: 'Interval unit',
   heartbeatProbeIntervalHintAdd:
     '1 minute to 24 hours. The check goes down after repeated failed probes in a row.',
+  heartbeatProbeIntervalHintEdit: '1 minute to 24 hours.',
+  heartbeatProbeIntervalThreshold: ({ threshold }: { threshold: number }): string =>
+    `Down after ${threshold} failed probes in a row.`,
+  heartbeatEditingNoticeProbe: ({ check }: { check: string }): string =>
+    `Editing ${check}. The app ID and name cannot change. Type: Website probe.`,
+  heartbeatProbeEditRestartNote: 'Saving probe changes restarts failure counting.',
   heartbeatProbeTimeoutLabel: 'Timeout (seconds)',
   heartbeatProbeTimeoutHint: '1 to 8 seconds, shorter than the interval.',
   heartbeatCredentialsCaption: 'Cloudflare Access credentials (optional)',
@@ -670,6 +676,23 @@ export const strings = {
   heartbeatCredentialsClientSecretLabel: 'Client secret',
   heartbeatCredentialsHintAdd:
     'Optional. Cloudflare Access service token for a protected endpoint. Cleared if you switch to Push.',
+  heartbeatCredentialsHintEdit:
+    'Optional. Cloudflare Access service token for a protected endpoint.',
+  heartbeatCredentialsStored: 'Access credentials set',
+  heartbeatCredentialsReplacing: 'New credentials will replace the stored ones on save',
+  heartbeatCredentialsClearing: 'Access credentials will be removed on save',
+  heartbeatCredentialsReplace: 'Replace',
+  heartbeatCredentialsClear: 'Clear',
+  heartbeatCredentialsCancelReplace: 'Cancel replace',
+  heartbeatCredentialsUndo: 'Undo',
+  heartbeatCredentialsHintTokenRejected:
+    'Cloudflare rejected the last probe (HTTP 403). The Access token may have expired or been revoked. Use Replace to enter new ones.',
+  heartbeatCredentialsHintTokenMissing:
+    'The last probe got HTTP 403. The endpoint may be behind Cloudflare Access. Enter credentials below.',
+  heartbeatCredentialsHintConfigStored:
+    'The last probe could not use these credentials. Use Replace to enter new ones.',
+  heartbeatCredentialsHintConfigMissing:
+    'The last probe could not use the stored credentials. Enter new ones below.',
   heartbeatDestinationNotFoundMark: '(not found)',
   invalidHeartbeatAppId:
     'App ID must be lowercase letters, digits or underscores, starting with a letter or digit (up to 63 characters).',
