@@ -12,10 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/enforcement"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfypublish"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
@@ -34,6 +36,8 @@ type NtfyClient interface {
 	ListTokens(ctx context.Context, userID string) ([]ntfycli.Token, error)
 	RemoveToken(ctx context.Context, userID string, token string) error
 	ListUsers(ctx context.Context) ([]ntfycli.User, error)
+	// GetUser reads one user's grants; a missing user is ntfycli.ErrNotFound.
+	GetUser(ctx context.Context, userID string) (ntfycli.User, error)
 }
 
 // PersonServiceClient is the subset of the person-service dual-write client
@@ -89,6 +93,9 @@ type ServiceConfig struct {
 	// Logger receives best-effort dual-write failure warnings. Optional;
 	// defaults to a discarding logger.
 	Logger *slog.Logger
+	// AppGrantMode switches the per-app grant check between enforce and
+	// log-only. The zero value is enforce (fail closed).
+	AppGrantMode enforcement.Mode
 }
 
 // Service orchestrates ntfy CLI operations into provision/deprovision calls.
@@ -101,6 +108,11 @@ type Service struct {
 	personClient PersonServiceClient
 	publisher    NotificationPublisher
 	logger       *slog.Logger
+	// appGrantMode is the per-app grant check mode (zero value = enforce).
+	appGrantMode enforcement.Mode
+	// resetAttempts throttles ResetPassword attempts per person/app ahead of
+	// the grant lookup (see resetAttemptLimit).
+	resetAttempts attemptThrottle
 }
 
 // NewService builds a Service from config.
@@ -120,6 +132,7 @@ func NewService(config ServiceConfig) *Service {
 		personClient:               config.PersonClient,
 		publisher:                  config.Publisher,
 		logger:                     logger,
+		appGrantMode:               config.AppGrantMode,
 	}
 }
 
@@ -758,16 +771,36 @@ type DeprovisionRequest struct {
 // remaining topic patterns after the reset, their ntfy user is deleted
 // entirely ("left the whole family" semantics) — otherwise they are kept,
 // since they may still be provisioned into other apps. If the user is
-// somehow absent from the user list after a successful reset, this is
-// treated as already gone. ntfycli.ErrNotFound from ResetAccess propagates.
+// somehow absent from ntfy after a successful reset, this is treated as
+// already gone.
+//
+// Before any reset, checkAppGrant verifies the person holds a grant in the
+// calling app. An unknown ntfy user is caught by that pre-reset GetUser lookup
+// and returns nil as the already-gone no-op, so this path never reaches
+// ResetAccess; a residual ResetAccess-level ntfycli.ErrNotFound (e.g. a grant
+// revoked in the narrow window between the grant check and the reset) still
+// propagates as before.
 func (service *Service) Deprovision(ctx context.Context, request DeprovisionRequest) error {
 	personHash := strings.TrimPrefix(request.NtfyUserID, "u_")
 	topicPattern := ntfycli.TopicPattern(request.AppID, personHash)
 
+	alreadyGone, grantErr := service.checkAppGrant(ctx, appGrantCheck{
+		route:      grantRouteDeprovision,
+		appID:      request.AppID,
+		ntfyUserID: request.NtfyUserID,
+		personHash: personHash,
+	})
+	if grantErr != nil {
+		return grantErr
+	}
+	if alreadyGone {
+		return nil
+	}
+
 	if resetErr := service.client.ResetAccess(ctx, request.NtfyUserID, topicPattern); resetErr != nil {
 		return resetErr
 	}
-	// Reset the per-app broadcast grant too, BEFORE the zero-count ListUsers
+	// Reset the per-app broadcast grant too, BEFORE the zero-count GetUser
 	// check below — otherwise a user deprovisioned from their last app would keep
 	// a lingering {app_id}-broadcast grant, never reach TopicPatterns == 0, and
 	// be orphaned. Tolerate ErrNotFound (Decision 3): a pre-existing subscriber
@@ -795,28 +828,26 @@ func (service *Service) Deprovision(ctx context.Context, request DeprovisionRequ
 	unlock := service.personLocks.lock(personHash)
 	defer unlock()
 
-	ntfyUsers, listUsersErr := service.client.ListUsers(ctx)
-	if listUsersErr != nil {
-		return listUsersErr
-	}
-	for _, ntfyUser := range ntfyUsers {
-		if ntfyUser.Name != request.NtfyUserID {
-			continue
-		}
-		if len(ntfyUser.TopicPatterns) == 0 {
-			// Deprovisioning the person's last app deletes their ntfy user
-			// entirely, so their reverse-index row must go too — otherwise
-			// deprovision-to-empty orphans the person row (the same bug
-			// DeleteUser's dual-delete fixes for the explicit-delete path).
-			if deleteErr := service.client.DeleteUser(ctx, request.NtfyUserID); deleteErr != nil {
-				return deleteErr
-			}
-			if personHash, isPersonUser := strings.CutPrefix(request.NtfyUserID, "u_"); isPersonUser {
-				service.dualDeletePerson(ctx, personHash)
-			}
+	// One single-user lookup replaces a full ListUsers scan; an absent user
+	// (ErrNotFound) is the same already-gone no-op as in the grant check.
+	remainingUser, getUserErr := service.client.GetUser(ctx, request.NtfyUserID)
+	if getUserErr != nil {
+		if errors.Is(getUserErr, ntfycli.ErrNotFound) {
 			return nil
 		}
-		return nil
+		return getUserErr
+	}
+	if len(remainingUser.TopicPatterns) == 0 {
+		// Deprovisioning the person's last app deletes their ntfy user
+		// entirely, so their reverse-index row must go too — otherwise
+		// deprovision-to-empty orphans the person row (the same bug
+		// DeleteUser's dual-delete fixes for the explicit-delete path).
+		if deleteErr := service.client.DeleteUser(ctx, request.NtfyUserID); deleteErr != nil {
+			return deleteErr
+		}
+		if personHash, isPersonUser := strings.CutPrefix(request.NtfyUserID, "u_"); isPersonUser {
+			service.dualDeletePerson(ctx, personHash)
+		}
 	}
 	return nil
 }
@@ -895,10 +926,22 @@ type SetPasswordResult struct {
 // claim fails) nothing changes and an error is returned. If ChangePassword
 // fails, the prior stamp is restored (only if it still matches). For an ntfy
 // user with no person row, the stamp is recorded after the change succeeds.
+//
+// Before anything else, checkAppGrant verifies the person holds a grant in the
+// calling app (any app they hold works: the password is global per person).
 func (service *Service) SetPassword(ctx context.Context, request SetPasswordRequest) (SetPasswordResult, error) {
 	personHash := personhash.Hash(request.Email)
 	ntfyUserID := personhash.NtfyUser(request.Email)
 	email := personhash.Normalize(request.Email)
+
+	if _, grantErr := service.checkAppGrant(ctx, appGrantCheck{
+		route:      grantRouteSetPassword,
+		appID:      request.AppID,
+		ntfyUserID: ntfyUserID,
+		personHash: personHash,
+	}); grantErr != nil {
+		return SetPasswordResult{}, grantErr
+	}
 
 	unlock := service.personLocks.lock(personHash)
 	defer unlock()
@@ -961,6 +1004,12 @@ type ResetPasswordResult struct {
 	Password string
 }
 
+// The ResetPassword attempt throttle: attempts (granted or rejected) allowed per
+// person/app pair per rolling window before the grant lookup. It sits well above
+// the 5-per-hour reset limit so a legitimate caller never meets it; it only caps
+// how many lookups a hammering caller can queue.
+const resetAttemptLimit = 20
+
 // Outcome values of the "password reset" log line.
 const (
 	resetOutcomeReset             = "reset"
@@ -972,10 +1021,16 @@ const (
 )
 
 // ResetPassword replaces the person's ntfy password with a generated one, at
-// most 5 times per person per rolling hour. The limit is checked first (429
-// wins over 404, and an unconfigured or failing limit store refuses). A reset
-// slot is claimed before the person lock; the stamp claim and the password
-// change run under it. A failed attempt gives its slot (and stamp) back.
+// most 5 times per person per rolling hour. A cheap in-process attempt throttle
+// (resetAttemptLimit per person/app per attemptThrottleWindow, rejected attempts
+// included) runs first, so an over-limit caller gets 429 without any ntfy CLI
+// call queuing behind the ntfycli mutex. The per-app grant check
+// (checkAppGrant) runs next, so a person who does not belong to the calling app
+// gets 404 without claiming a reset slot, and that 404 takes precedence over
+// the reset limit. After it, the limit is checked first as before (429 wins over
+// 404, and an unconfigured or failing limit store refuses). A reset slot is
+// claimed before the person lock; the stamp claim and the password change run
+// under it. A failed attempt gives its slot (and stamp) back.
 func (service *Service) ResetPassword(ctx context.Context, request ResetPasswordRequest) (ResetPasswordResult, error) {
 	personHash := personhash.Hash(request.Email)
 	ntfyUserID := personhash.NtfyUser(request.Email)
@@ -983,6 +1038,25 @@ func (service *Service) ResetPassword(ctx context.Context, request ResetPassword
 
 	logOutcome := func(outcome string) {
 		service.logger.Info("password reset", "person_hash", personHash, "app_id", request.AppID, "outcome", outcome)
+	}
+
+	allowed, retryAfter := service.resetAttempts.allow(personHash+"|"+request.AppID, resetAttemptLimit)
+	if !allowed {
+		retryAfterSeconds := int(math.Ceil(retryAfter.Seconds()))
+		if retryAfterSeconds < 1 {
+			retryAfterSeconds = DefaultRetryAfterSeconds
+		}
+		logOutcome(resetOutcomeLimited)
+		return ResetPasswordResult{}, &TooManyPasswordChangesError{RetryAfterSeconds: retryAfterSeconds}
+	}
+
+	if _, grantErr := service.checkAppGrant(ctx, appGrantCheck{
+		route:      grantRouteResetPassword,
+		appID:      request.AppID,
+		ntfyUserID: ntfyUserID,
+		personHash: personHash,
+	}); grantErr != nil {
+		return ResetPasswordResult{}, grantErr
 	}
 
 	if !service.personStoreConfigured() {
