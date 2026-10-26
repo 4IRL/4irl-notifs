@@ -105,11 +105,11 @@ services:
       # read from the persistent file secret. LOCKSTEP: delivery-api reads the same secret as
       # DELIVERY_PROVISIONING_CREDENTIAL_FILE.
       - PROVISIONING_INTERNAL_CREDENTIAL_FILE=/run/secrets/PROVISIONING_INTERNAL_CREDENTIAL
-      # The grant check enforces: no app calls provisioning-api, so there is no audit window. The
-      # credential check stays log-only because the admin UI proxy reaches provisioning-api without
-      # the credential until it is re-homed under delivery-api (one-door master Steps 5-6, flipped
-      # in Step 8). LOCKSTEP: docker-compose.yml runs the credential check log-only and the grant
-      # check enforce.
+      # The grant check enforces (operator decision 2026-10-26: no app calls provisioning-api, so
+      # no log-only audit window). The credential check stays log-only because the admin UI proxy
+      # reaches provisioning-api without the credential until it is re-homed under delivery-api
+      # (one-door master Steps 5-6, flipped in Step 8). LOCKSTEP: docker-compose.yml runs the
+      # credential check log-only and the grant check enforce.
       - PROVISIONING_INTERNAL_CREDENTIAL_MODE=log-only
       - PROVISIONING_APP_GRANT_MODE=enforce
     secrets:
