@@ -65,7 +65,12 @@ describe('strings module', () => {
     expect(strings.resetPasswordRevealLead({ user: 'alice@example.com' })).toBe(
       'The new password for alice@example.com is shown only once. It replaces any earlier password.',
     );
-    expect(strings.resetPasswordNotFound).toBe('This person does not exist. Refresh the list.');
+    expect(strings.resetPasswordNotFound).toBe(
+      'This person does not exist, or has no access in this app. Refresh the list.',
+    );
+    expect(strings.deprovisionNotFound).toBe(
+      'This person does not exist, or has no access in this app. Refresh the list.',
+    );
     expect(strings.resetPasswordFailed).toBe('Could not reset the password. Try again.');
     expect(strings.resetPasswordDefaultRetrySeconds).toBe(60);
   });

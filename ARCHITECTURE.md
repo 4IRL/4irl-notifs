@@ -586,7 +586,7 @@ credential check as `log-only` (explicit settings in `docker-compose.prod.yml`);
   rejection in either mode: per-user `POST /v1/deprovision` of an absent ntfy user now answers 200
   `{removed:true}` in both modes instead of the former 404, an idempotent no-op outside the log-only safety
   net); `lookup_failed` (any other lookup error: `enforce` answers 500, `log-only`
-  continues). **Rollout:** no app calls provisioning-api, so there was no audit window: prod compose runs
+  continues). **Rollout:** on 2026-10-26 the operator decided that no app calls provisioning-api, so the grant check went straight to `enforce` with no log-only audit window: prod compose runs
   `PROVISIONING_APP_GRANT_MODE=enforce`, like local compose. `log-only` stays available as a diagnostic switch.
 
 `POST /v1/provision` gains an optional `password` (`xxxx-xxxx-xxxx-xxxx`, about 80 bits) only when that call

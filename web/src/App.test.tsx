@@ -260,6 +260,37 @@ describe('App', () => {
     expect(await screen.findByText(strings.genericError)).toBeInTheDocument();
   });
 
+  it('shows the not-found-or-no-grant wording when a deprovision fails with a 404', async () => {
+    const listUsers = vi.fn().mockResolvedValue([
+      {
+        userId: 'u_abcdefgh23456777',
+        apps: ['urls4irl'],
+        topicPatterns: ['urls4irl-abcdefgh23456777-*'],
+      },
+    ]);
+    const deprovision = vi
+      .fn()
+      .mockRejectedValue(new ApiError({ status: 404, message: 'user does not exist' }));
+    const client = buildFakeClient({ listUsers, deprovision });
+    render(<App client={client} />);
+
+    const row = (
+      await within(sectionByHeading(strings.usersHeading)).findByText('u_abcdefgh23456777')
+    ).closest('tr');
+    if (row === null) {
+      throw new Error('user row not found');
+    }
+    await userEvent.click(
+      within(row).getByRole('button', { name: `${strings.deprovisionAction} urls4irl` }),
+    );
+    await userEvent.click(
+      within(row).getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
+    );
+
+    expect(await screen.findByText(strings.deprovisionNotFound)).toBeInTheDocument();
+    expect(screen.queryByText('user does not exist')).not.toBeInTheDocument();
+  });
+
   it('shows the generic error message when the initial user load fails', async () => {
     const listUsers = vi.fn().mockRejectedValue(new Error('network down'));
     const client = buildFakeClient({ listUsers });
