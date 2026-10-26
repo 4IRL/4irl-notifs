@@ -527,7 +527,7 @@ export const strings = {
   heartbeatsHeading: 'Heartbeats',
   heartbeatsRefresh: 'Refresh heartbeats',
   heartbeatsHint:
-    'Apps ping POST /v1/heartbeats/{app_id}/{name}. A check is late after its period and down after period + grace, which sends one down alert, then one recovery alert on the next ping. Times are UTC.',
+    'Push checks: apps ping POST /v1/heartbeats/{app_id}/{name}. A check is late after its period and down after period + grace, which sends one down alert, then one recovery alert on the next ping. Probe checks: delivery-api requests an HTTPS URL on an interval and alerts after repeated failures in a row. Times are UTC.',
   heartbeatsLoading: 'Loading heartbeat checks…',
   heartbeatsLoadError: 'Could not load heartbeat checks.',
   heartbeatsEmpty: 'No heartbeat checks yet.',
@@ -535,7 +535,7 @@ export const strings = {
     `${down} of ${total} ${total === 1 ? 'check' : 'checks'} down`,
   columnHeartbeatState: 'State',
   columnHeartbeatCheck: 'Check',
-  columnHeartbeatLastPing: 'Last ping',
+  columnHeartbeatLastPing: 'Last ping / probe',
   columnHeartbeatSchedule: 'Schedule',
   columnHeartbeatAlertsTo: 'Alerts to',
   columnHeartbeatActions: 'Actions',
@@ -553,6 +553,31 @@ export const strings = {
   heartbeatWasLate: 'late',
   heartbeatWasDown: 'down',
   heartbeatWasWaiting: 'waiting',
+  heartbeatStateNew: 'New',
+  heartbeatFirstProbe: 'first probe',
+  heartbeatAwaitingProbe: 'Awaiting next probe',
+  heartbeatProbeProgress: ({ count, threshold }: { count: number; threshold: number }): string =>
+    `${count} of ${threshold} failures`,
+  heartbeatProbedAgo: ({ relative }: { relative: string }): string => `probed ${relative}`,
+  heartbeatProbeResultLine: ({ result, probed }: { result: string; probed: string }): string =>
+    `${result} · ${probed}`,
+  heartbeatProbeTimeout: ({ timeout }: { timeout: number }): string => `timeout ${timeout} s`,
+  heartbeatDownReasonSince: ({ reason, time }: { reason: string; time: string }): string =>
+    `${reason} · since ${time}`,
+  probeReasonHttpStatus: ({ status }: { status: number }): string => `HTTP ${status}`,
+  probeReasonHttpStatusUnknown: 'Unexpected HTTP status',
+  probeReasonTimeout: 'Timed out',
+  probeReasonBodyMismatch: 'Body did not match',
+  probeReasonBlocked: 'Address blocked',
+  probeReasonTls: 'TLS error',
+  probeReasonScheme: 'Not HTTPS',
+  probeReasonNetwork: 'Network error',
+  probeReasonConfig: 'Credentials could not be used',
+  probeReasonMissed: 'Prober stalled',
+  probeReasonFail: 'Reported failure',
+  probeReasonUnknown: 'Failed (reason not recognised)',
+  probeResultOk: ({ status }: { status: number }): string => `OK · HTTP ${status}`,
+  probeResultOkNoStatus: 'OK',
   heartbeatWaitingSub: 'for first ping',
   heartbeatWaitingDeadline: ({ deadline }: { deadline: string }): string =>
     `down if none by ${deadline}`,
@@ -568,6 +593,11 @@ export const strings = {
   pausingHeartbeat: 'Pausing…',
   pausingHeartbeatNamed: ({ check }: { check: string }): string => `Pausing ${check}`,
   pauseHeartbeatNotice: 'No alerts are sent while paused. Pings are still recorded.',
+  pauseProbeNotice: 'No probes run and no alerts are sent while paused.',
+  probeAccessHintTokenRejected:
+    '403 with Access credentials set: the Cloudflare token may have expired or been revoked. Edit the check and use Replace.',
+  probeAccessHintTokenMissing:
+    '403: the endpoint may be behind Cloudflare Access. Edit the check and add credentials.',
   resumeHeartbeat: 'Resume',
   resumeHeartbeatNamed: ({ check }: { check: string }): string => `Resume ${check}`,
   resumingHeartbeat: 'Resuming…',
@@ -621,6 +651,50 @@ export const strings = {
   heartbeatGraceHint:
     'Extra wait before “down” (1 min – 7 days). Use ≥ 1 h for daily jobs to absorb DST shifts.',
   heartbeatDestinationsLegend: 'Alert destinations',
+  heartbeatKindLegend: 'Check type',
+  heartbeatKindPush: 'Push (app pings in)',
+  heartbeatKindProbe: 'Website probe',
+  heartbeatProbeLegend: 'Probe',
+  heartbeatProbeUrlLabel: 'URL',
+  heartbeatProbeUrlHint: 'A public https URL. Not localhost or an IP address.',
+  heartbeatProbeStatusesLabel: 'Expected statuses',
+  heartbeatProbeStatusesHint: 'Comma-separated codes, e.g. 200, 204. 3xx allowed.',
+  heartbeatProbeBodyMatchLabel: 'Body must contain',
+  heartbeatProbeBodyMatchHint: 'Optional. The response body must include this text.',
+  heartbeatProbeIntervalLabel: 'Interval',
+  heartbeatProbeIntervalUnitLabel: 'Interval unit',
+  heartbeatProbeIntervalHintAdd:
+    '1 minute to 24 hours. The check goes down after repeated failed probes in a row.',
+  heartbeatProbeIntervalHintEdit: '1 minute to 24 hours.',
+  heartbeatProbeIntervalThreshold: ({ threshold }: { threshold: number }): string =>
+    `Down after ${threshold} failed probes in a row.`,
+  heartbeatEditingNoticeProbe: ({ check }: { check: string }): string =>
+    `Editing ${check}. The app ID and name cannot change. Type: Website probe.`,
+  heartbeatProbeEditRestartNote: 'Saving probe changes restarts failure counting.',
+  heartbeatProbeTimeoutLabel: 'Timeout (seconds)',
+  heartbeatProbeTimeoutHint: '1 to 8 seconds, shorter than the interval.',
+  heartbeatCredentialsCaption: 'Cloudflare Access credentials (optional)',
+  heartbeatCredentialsClientIdLabel: 'Client ID',
+  heartbeatCredentialsClientSecretLabel: 'Client secret',
+  heartbeatCredentialsHintAdd:
+    'Optional. Cloudflare Access service token for a protected endpoint. Cleared if you switch to Push.',
+  heartbeatCredentialsHintEdit:
+    'Optional. Cloudflare Access service token for a protected endpoint.',
+  heartbeatCredentialsStored: 'Access credentials set',
+  heartbeatCredentialsReplacing: 'New credentials will replace the stored ones on save',
+  heartbeatCredentialsClearing: 'Access credentials will be removed on save',
+  heartbeatCredentialsReplace: 'Replace',
+  heartbeatCredentialsClear: 'Clear',
+  heartbeatCredentialsCancelReplace: 'Cancel replace',
+  heartbeatCredentialsUndo: 'Undo',
+  heartbeatCredentialsHintTokenRejected:
+    'Cloudflare rejected the last probe (HTTP 403). The Access token may have expired or been revoked. Use Replace to enter new ones.',
+  heartbeatCredentialsHintTokenMissing:
+    'The last probe got HTTP 403. The endpoint may be behind Cloudflare Access. Enter credentials below.',
+  heartbeatCredentialsHintConfigStored:
+    'The last probe could not use these credentials. Use Replace to enter new ones.',
+  heartbeatCredentialsHintConfigMissing:
+    'The last probe could not use the stored credentials. Enter new ones below.',
   heartbeatDestinationNotFoundMark: '(not found)',
   invalidHeartbeatAppId:
     'App ID must be lowercase letters, digits or underscores, starting with a letter or digit (up to 63 characters).',
@@ -628,6 +702,18 @@ export const strings = {
     'Check name must be lowercase letters, digits or underscores, starting with a letter or digit (up to 63 characters).',
   invalidHeartbeatPeriod: 'Period must be between 1 minute and 31 days.',
   invalidHeartbeatGrace: 'Grace must be between 1 minute and 7 days.',
+  invalidProbeUrlEmpty: 'Enter the URL to check.',
+  invalidProbeUrlScheme: 'URL must start with https://.',
+  invalidProbeUrlTooLong: 'URL must be at most 2048 bytes.',
+  invalidProbeUrlMalformed:
+    'Enter a public https URL without a #fragment, username or password, and not localhost or an IP address.',
+  invalidProbeStatuses:
+    'Enter 1 to 10 distinct status codes between 100 and 599, separated by commas.',
+  invalidProbeBodyMatch: 'Body text must be 1 to 256 bytes, not blank, with no NUL character.',
+  invalidProbeInterval: 'Interval must be a whole number of seconds between 60 and 86400.',
+  invalidProbeTimeout: 'Timeout must be a whole number of seconds between 1 and 8.',
+  invalidProbeCredentialPair: 'Enter both the client ID and secret.',
+  invalidProbeCredential: 'Use 1 to 256 visible ASCII characters with no spaces.',
   heartbeatNeedsDestination: 'Select at least one alert destination.',
   heartbeatTooManyDestinations: 'Select at most 20 alert destinations.',
 

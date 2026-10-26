@@ -113,6 +113,18 @@
   color: var(--accent-contrast);
 }
 
+.destination-form__field-error {
+  color: var(--danger);
+  font-size: 0.8125rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.destination-form input[aria-invalid='true'],
+.destination-form select[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
 .destination-form__button--danger {
   border-color: var(--danger-border);
   background: var(--danger-bg);

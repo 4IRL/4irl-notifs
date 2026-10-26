@@ -40,6 +40,8 @@ function buildCheck(overrides: Partial<HeartbeatCheck> & { id: number }): Heartb
     destinations: [{ name: 'ops_discord', type: 'discord', enabled: true }],
     ownerKind: 'operator',
     ownerAppId: null,
+    downReason: null,
+    probe: null,
     createdAt: '2026-10-17T10:00:00Z',
     updatedAt: '2026-10-18T08:01:00Z',
     ...overrides,
@@ -1418,6 +1420,7 @@ describe('Heartbeats add check', () => {
 
     await waitFor(() =>
       expect(createHeartbeat).toHaveBeenCalledWith({
+        kind: 'push',
         appId: 'minecrafting',
         name: 'daily_report',
         periodSeconds: 86_400,
@@ -1459,6 +1462,7 @@ describe('Heartbeats add check', () => {
 
     await waitFor(() =>
       expect(createHeartbeat).toHaveBeenCalledWith({
+        kind: 'push',
         appId: 'urls4irl',
         name: 'nightly',
         periodSeconds: 172_800,
@@ -1536,7 +1540,10 @@ describe('Heartbeats add check', () => {
       }
       await user.click(submitButton());
 
-      expect(within(addForm()).getByRole('alert')).toHaveTextContent(testCase.message);
+      expect(within(addForm()).getByText(testCase.message)).toHaveClass(
+        'destination-form__field-error',
+      );
+      expect(within(addForm()).queryByRole('alert')).not.toBeInTheDocument();
       expect(createHeartbeat).not.toHaveBeenCalled();
     });
 
@@ -1592,9 +1599,10 @@ describe('Heartbeats add check', () => {
       }
       await user.click(submitButton());
 
-      expect(within(addForm()).getByRole('alert')).toHaveTextContent(
-        strings.heartbeatTooManyDestinations,
+      expect(within(addForm()).getByText(strings.heartbeatTooManyDestinations)).toHaveClass(
+        'destination-form__field-error',
       );
+      expect(within(addForm()).queryByRole('alert')).not.toBeInTheDocument();
       expect(createHeartbeat).not.toHaveBeenCalled();
     });
   });
@@ -1917,7 +1925,8 @@ describe('Heartbeats edit check', () => {
     await setDuration({ user, label: fieldLabel, unitLabel, value, unit });
     await user.click(button(strings.saveHeartbeat));
 
-    expect(within(editForm()).getByRole('alert')).toHaveTextContent(message);
+    expect(within(editForm()).getByText(message)).toHaveClass('destination-form__field-error');
+    expect(within(editForm()).queryByRole('alert')).not.toBeInTheDocument();
     expect(updateHeartbeat).not.toHaveBeenCalled();
   });
 
@@ -1928,9 +1937,10 @@ describe('Heartbeats edit check', () => {
     await user.click(checkbox('ops_discord'));
     await user.click(button(strings.saveHeartbeat));
 
-    expect(within(editForm()).getByRole('alert')).toHaveTextContent(
-      strings.heartbeatNeedsDestination,
+    expect(within(editForm()).getByText(strings.heartbeatNeedsDestination)).toHaveClass(
+      'destination-form__field-error',
     );
+    expect(within(editForm()).queryByRole('alert')).not.toBeInTheDocument();
     expect(updateHeartbeat).not.toHaveBeenCalled();
   });
 

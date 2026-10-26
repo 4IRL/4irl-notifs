@@ -789,8 +789,10 @@ The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_pr
 | `POST /v1/admin/routes`                              | `{"app_pattern","channel_pattern","destinations":["<name>",…],"enabled"?}`                    | `201 {"route":{…}}`                              | 400 validation or `unknown destination`, 409 `route already exists`          |
 | `GET /v1/admin/routes`; `GET`, `PATCH`, `DELETE /v1/admin/routes/{id}` | `PATCH`: any of the four fields; `destinations` replaces the whole set       | `200` (`DELETE`: `{"id","deleted"}`)             | 404 `route does not exist`; `PATCH` of an app-owned route's `app_pattern` away from its owner is 400 `request violates a data constraint` |
 | `POST /v1/admin/heartbeats`                          | `{"app_id","name","period_seconds","grace_seconds","destinations":["<name>",…]}`              | `201 {"check":{…}}`                              | 400 validation or `unknown destination`, 409 `check already exists`          |
+| `POST /v1/admin/heartbeats` (probe check)            | `{"app_id","name","destinations":[…],"probe":{"url","expected_statuses","body_match"?,"timeout_seconds","interval_seconds","access_token"?:{"client_id","client_secret"}}}` (no `period_seconds`/`grace_seconds`) | `201 {"check":{…}}` with a `probe` block | 400 validation (`invalid probe.<field>`), 400 if `period_seconds`/`grace_seconds` is present at all, 409 `check already exists` |
 | `GET /v1/admin/heartbeats`                           | none                                                                                          | `200 {"checks":[…]}`                             |                                                                              |
 | `GET`, `PATCH`, `DELETE /v1/admin/heartbeats/{id}`   | `PATCH`: any of `period_seconds`, `grace_seconds`, `destinations`                             | `200 {"check":{…}}` (`DELETE`: `{"id","deleted"}`, idempotent) | 400 `app_id and name are immutable`, 404 `check not found`         |
+| `PATCH /v1/admin/heartbeats/{id}` (probe check)      | `destinations` and/or `probe` with any of `url`, `expected_statuses`, `body_match` (`null` clears), `timeout_seconds`, `interval_seconds`, `access_token` (omitted keeps, `null` clears, a `{client_id,client_secret}` pair replaces) | `200 {"check":{…}}` | 400 validation, 400 `check kind is immutable` (`probe: null`), 400 on `period_seconds`/`grace_seconds`, 404 |
 | `POST /v1/admin/heartbeats/{id}/pause` and `/resume` | none                                                                                          | `200 {"check":{…}}` (idempotent)                 | 404                                                                          |
 | `POST /v1/admin/apps/{app_id}/ntfy-publisher`        | none                                                                                          | `200 {"publisher":{"app_id","publisher_user_id","topic_pattern","created_at","updated_at"}}` (never the token) | 502 mint failed, 503 not configured |
 | `GET`, `DELETE /v1/admin/apps/{app_id}/ntfy-publisher` | none                                                                                        | `200` as above / `204` (idempotent)              | 404 `GET` when none is stored                                                |
@@ -821,6 +823,23 @@ route view is `{"id","app_pattern","channel_pattern","destinations","enabled","c
 2678400; `grace_seconds` 60 to 604800; 1-20 distinct, existing `destinations`. A check view is
 `{"id","app_id","name","period_seconds","grace_seconds","paused","state","last_ping_at","last_ping_kind","down_since","deadline_at","destinations":[{"name","type","enabled"}],"created_at","updated_at"}`
 with `state` one of `new`, `up`, `late`, `down` and `last_ping_kind` `success` or `fail`.
+
+**Probe checks (operator-created website checks).** Instead of a push schedule a probe check carries a
+`probe` object; create and patch decode strictly, so an unknown key at any depth is a 400 `invalid JSON
+body`. Limits: `url` at most 2048 bytes, lowercase `https://` prefix, no `#`, no userinfo, host not
+`localhost`/`*.localhost`/an IP literal; `expected_statuses` 1 to 10 distinct integers, each 100 to 599;
+`body_match` 1 to 256 bytes of valid UTF-8 without NUL (optional); `interval_seconds` 60 to 86400;
+`timeout_seconds` 1 to 8 and strictly below the interval; each `access_token` half (`client_id`,
+`client_secret`) 1 to 256 bytes of characters 0x21 to 0x7E. `access_token` is write-only: omitted on a
+patch keeps the stored pair, `null` clears it, a pair replaces it, and a view returns only
+`has_access_token`. A probe check's view adds a `probe` block
+`{"url","expected_statuses","body_match","timeout_seconds","interval_seconds","consecutive_failures","failure_threshold","has_access_token","last_result":{"at","status","reason"}|null}`
+(push checks have no `probe` key). `failure_threshold` is the number of consecutive failed probes that
+takes the check down; read it from the view. `last_result.reason` is one of `http_status`, `timeout`,
+`body_mismatch`, `blocked`, `tls`, `scheme`, `network` or `config` (and a down check's `down_reason` can
+also be `missed` or `fail`). A host that resolves to a
+private address is not rejected at save; it shows later as a `blocked` result. Probes run from the VPS,
+so they cannot detect a VPS or Cloudflare Tunnel outage (the watchdog covers that).
 
 ### Copy-paste onboarding recipe
 
@@ -1329,6 +1348,11 @@ operator creates the check), as `channel: "heartbeat"` messages.
 `POST /v1/admin/heartbeats` with the proxy token), with your `app_id`, a `name`, a `period_seconds`, a
 `grace_seconds` and its destinations. A ping for a check that does not exist is a `404`; pings never
 create one.
+
+**Probe checks are operator-created.** An operator can also add a website probe check, which delivery-api
+runs itself. A push ping or `/fail` on a probe check returns `409` `check is a probe check`, and an app
+cannot create a probe check (a `probe` key on `POST /v1/apps/{app_id}/heartbeats` is a 400). The probe
+fields and limits are under "Heartbeat bounds" in the agent reference.
 
 **Ping (success).** `POST https://notifs-delivery.4irl.app/v1/heartbeats/<app_id>/<name>`, with your app's
 `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers (the same service token as `POST /v1/messages`;

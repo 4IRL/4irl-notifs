@@ -97,6 +97,23 @@
   font-size: 0.75rem;
 }
 
+/* A probe's URL (host + path) on one ellipsized line under the Check cell. */
+.heartbeats__url {
+  display: block;
+  max-width: min(20rem, 40cqw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+
+/* A sub-line that must wrap (the Access 403 hint) instead of widening the nowrap column. */
+.heartbeats__sub--wrap {
+  white-space: normal;
+  max-width: min(20rem, 40cqw);
+  overflow-wrap: anywhere;
+}
+
 .heartbeats__fail {
   color: var(--danger);
 }

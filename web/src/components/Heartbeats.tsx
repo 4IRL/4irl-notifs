@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 
-import type { DeliveryApiClient, HeartbeatCheck } from '../api/deliveryClient';
+import type { DeliveryApiClient, HeartbeatCheck, HeartbeatProbe } from '../api/deliveryClient';
 import { useExclusive } from '../hooks/useExclusive';
 import { useFocusRegistry } from '../hooks/useFocusRegistry';
 import { useCompactTable } from '../hooks/useCompactTable';
@@ -12,8 +12,23 @@ import { formatDuration, formatRelativeFuture, formatRelativePast } from './form
 import { formatMinute } from './formatUtc';
 import { HeartbeatForm } from './HeartbeatForm';
 import type { HeartbeatAddSubmission, HeartbeatEditSubmission } from './HeartbeatForm';
+import { probeResultCopy, reasonCopy } from './heartbeatReasonCopy';
+import {
+  TICK_MS,
+  lateKeyOf,
+  liveStateOf,
+  needsReload,
+  nullWindowExpired,
+  probeAccessHintOf,
+  probePausedWasOf,
+  rowStateOf,
+  turnedLateLocally,
+  wasLabel,
+} from './heartbeatRowState';
+import type { RowState } from './heartbeatRowState';
 import { OwnerBadge } from './OwnerBadge';
 import { ownerInlineNoteOf, ownerNoteOf } from './ownership';
+import { displayProbeUrl } from './probeUrl';
 import { RowActionsMenu } from './RowActionsMenu';
 import type { RowMenuItem } from './RowActionsMenu';
 import type { DestinationsLoadState } from './RoutesSection';
@@ -33,13 +48,8 @@ interface HeartbeatsProps {
   destinationsState: DestinationsLoadState;
 }
 
-/** What a row shows; `late` is derived client-side and never stored or alerted on. */
-type RowState = 'up' | 'late' | 'down' | 'paused' | 'waiting';
-
 type ToggleKind = 'pause' | 'resume';
 
-const TICK_MS = 30_000;
-const MS_PER_SECOND = 1000;
 const HEADING_KEY = 'heading';
 const ADD_KEY = 'add';
 const ADD_HINT_ID = 'heartbeats-add-hint';
@@ -57,76 +67,9 @@ function labelOf(check: HeartbeatCheck): string {
   return `${check.appId}/${check.name}`;
 }
 
-function isPastDeadline({ check, now }: { check: HeartbeatCheck; now: number }): boolean {
-  return now > Date.parse(check.deadlineAt);
-}
-
-/** The state a check would show if it were not paused. */
-function liveStateOf({ check, now }: { check: HeartbeatCheck; now: number }): RowState {
-  switch (check.state) {
-    case 'new':
-      return 'waiting';
-    case 'up':
-    case 'late': {
-      // The late boundary is anchor + period = deadline - grace. The server's
-      // own `late` is never hidden, so a skewed browser clock cannot mask it.
-      const lateAfter = Date.parse(check.deadlineAt) - check.graceSeconds * MS_PER_SECOND;
-      return check.state === 'late' || now > lateAfter ? 'late' : 'up';
-    }
-    default:
-      // `down`, and fail closed on any state this build does not know.
-      return 'down';
-  }
-}
-
-function rowStateOf({ check, now }: { check: HeartbeatCheck; now: number }): RowState {
-  return check.paused ? 'paused' : liveStateOf({ check, now });
-}
-
-/**
- * True when the server reports `up` but the local clock says the check has
- * crossed its late boundary: the server will by now report it `late`, so one
- * reload brings the list back in line. A server-reported `late` never counts
- * (the server already knows), and a paused check is never late.
- */
-function turnedLateLocally({ check, now }: { check: HeartbeatCheck; now: number }): boolean {
-  return !check.paused && check.state === 'up' && liveStateOf({ check, now }) === 'late';
-}
-
-/** Identifies one lateness episode: a ping moves `deadline_at`, so it starts a new one. */
-function lateKeyOf(check: HeartbeatCheck): string {
-  return `${check.id}:${check.deadlineAt}`;
-}
-
-/**
- * True when the server may have moved a live check on since the last load: it
- * is Down (it recovers on the server without the list knowing) or past its
- * deadline (about to go, or just gone, Down). The caller's own Late-once rule
- * and the in-flight and visibility guards bound how often this reloads.
- */
-function needsReload({ check, now }: { check: HeartbeatCheck; now: number }): boolean {
-  if (check.paused) {
-    return false;
-  }
-  return liveStateOf({ check, now }) === 'down' || isPastDeadline({ check, now });
-}
-
 /** True when the section is unmounted, inside a `hidden` tab panel, or the browser tab is hidden. */
 function isSectionHidden(section: HTMLElement | null): boolean {
   return section === null || document.hidden || section.closest('[hidden]') !== null;
-}
-
-function wasLabel(state: RowState): string {
-  switch (state) {
-    case 'up':
-      return strings.heartbeatWasUp;
-    case 'late':
-      return strings.heartbeatWasLate;
-    case 'waiting':
-      return strings.heartbeatWasWaiting;
-    default:
-      return strings.heartbeatWasDown;
-  }
 }
 
 /** The id of the row containing `element`, or null. */
@@ -139,6 +82,132 @@ function firstControlKey(check: HeartbeatCheck): string {
   return check.paused ? `resume:${check.id}` : `pause:${check.id}`;
 }
 
+function timeOfDay(at: string): string {
+  return formatMinute(at).slice(TIME_OF_DAY_START);
+}
+
+/** A probe row's State cell; precedence paused > down > new/up. */
+function renderProbeStateCell({
+  check,
+  probe,
+  state,
+}: {
+  check: HeartbeatCheck;
+  probe: HeartbeatProbe;
+  state: RowState;
+}): JSX.Element {
+  const { lastResult } = probe;
+  if (state === 'paused') {
+    const was = probePausedWasOf(check);
+    return (
+      <>
+        <span className="heartbeats__pill heartbeats__pill--neutral">
+          {strings.heartbeatStatePaused}
+        </span>
+        {was !== null && (
+          <span className="heartbeats__sub">
+            {strings.heartbeatPausedWas({
+              was: was === 'up' ? strings.heartbeatWasUp : strings.heartbeatWasDown,
+            })}
+          </span>
+        )}
+      </>
+    );
+  }
+  if (state === 'down') {
+    const { downReason, downSince } = check;
+    // Only a result for the same failure may lend its status code to the reason line.
+    const status =
+      lastResult !== null && lastResult.reason === downReason ? lastResult.status : null;
+    const reason = reasonCopy({ reason: downReason ?? '', status });
+    return (
+      <>
+        <span className="heartbeats__pill heartbeats__pill--down">
+          {strings.heartbeatStateDown}
+        </span>
+        <span className="heartbeats__sub">
+          {downSince === null
+            ? reason
+            : strings.heartbeatDownReasonSince({ reason, time: timeOfDay(downSince) })}
+        </span>
+      </>
+    );
+  }
+  const isNew = state === 'waiting';
+  let detail: JSX.Element | null = null;
+  if (lastResult === null) {
+    detail = (
+      <span className="heartbeats__sub">
+        {isNew ? strings.heartbeatFirstProbe : strings.heartbeatAwaitingProbe}
+      </span>
+    );
+  } else if (lastResult.reason !== null && probe.failureThreshold !== null) {
+    detail = (
+      <span className="heartbeats__sub heartbeats__fail">
+        {strings.heartbeatProbeProgress({
+          count: probe.consecutiveFailures,
+          threshold: probe.failureThreshold,
+        })}
+      </span>
+    );
+  }
+  return (
+    <>
+      {isNew ? (
+        <span className="heartbeats__pill heartbeats__pill--neutral">
+          {strings.heartbeatStateNew}
+        </span>
+      ) : (
+        <span className="heartbeats__pill heartbeats__pill--up">{strings.heartbeatStateUp}</span>
+      )}
+      {detail}
+    </>
+  );
+}
+
+/** A probe row's Last ping / probe cell: the latest result, how long ago, and an Access hint. */
+function renderProbeResultCell({
+  check,
+  probe,
+  now,
+}: {
+  check: HeartbeatCheck;
+  probe: HeartbeatProbe;
+  now: number;
+}): JSX.Element {
+  const { lastResult } = probe;
+  if (lastResult === null) {
+    return <span className="heartbeats__mono">{strings.noValue}</span>;
+  }
+  const hint = probeAccessHintOf(check);
+  return (
+    <>
+      <time dateTime={lastResult.at} className="heartbeats__mono">
+        {formatMinute(lastResult.at)}
+      </time>
+      <span className={`heartbeats__sub${lastResult.reason === null ? '' : ' heartbeats__fail'}`}>
+        {strings.heartbeatProbeResultLine({
+          result: probeResultCopy({ result: lastResult }),
+          probed: strings.heartbeatProbedAgo({
+            relative: formatRelativePast({ at: lastResult.at, now }),
+          }),
+        })}
+      </span>
+      {hint !== null && (
+        <span className="heartbeats__sub heartbeats__sub--wrap">
+          {hint === 'tokenRejected'
+            ? strings.probeAccessHintTokenRejected
+            : strings.probeAccessHintTokenMissing}
+        </span>
+      )}
+    </>
+  );
+}
+
+function pauseNoticeOf(check: HeartbeatCheck): string {
+  return check.probe !== null ? strings.pauseProbeNotice : strings.pauseHeartbeatNotice;
+}
+
 function renderStateCell({
   check,
   state,
@@ -148,6 +217,9 @@ function renderStateCell({
   state: RowState;
   now: number;
 }): JSX.Element {
+  if (check.probe !== null) {
+    return renderProbeStateCell({ check, probe: check.probe, state });
+  }
   switch (state) {
     case 'up':
       return (
@@ -216,6 +288,9 @@ function renderLastPingCell({
   state: RowState;
   now: number;
 }): JSX.Element {
+  if (check.probe !== null) {
+    return renderProbeResultCell({ check, probe: check.probe, now });
+  }
   if (check.lastPingAt === null) {
     return (
       <>
@@ -320,10 +395,7 @@ function HeartbeatActionsMenu({
         confirmAriaLabel: strings.confirmPauseHeartbeatNamed({ check: label }),
         cancelLabel: strings.keepHeartbeatRunning,
         cancelAriaLabel: strings.keepHeartbeatRunningNamed({ check: label }),
-        notice:
-          ownerNote === null
-            ? strings.pauseHeartbeatNotice
-            : `${strings.pauseHeartbeatNotice} ${ownerNote}`,
+        notice: ownerNote === null ? pauseNoticeOf(check) : `${pauseNoticeOf(check)} ${ownerNote}`,
         onConfirm: () => onToggle('pause'),
       },
     });
@@ -387,6 +459,8 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
   const inFlightRef = useRef(0);
   // Lateness episodes (`lateKeyOf`) the tick has already reloaded for.
   const lateReloadedRef = useRef<Set<string>>(new Set());
+  // When the tick first saw each probe row (by id) with no last result, for the null-result window.
+  const nullSeenRef = useRef<Map<string, number>>(new Map());
   const { registerControl, requestFocus } = useFocusRegistry();
   const { isBusy, exclusive } = useExclusive<string>();
   const { isSteppedAside, reportConfirming } = useConfirmingRows();
@@ -442,10 +516,43 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
     const timer = setInterval(() => {
       const current = Date.now();
       setNow(current);
-      if (inFlightRef.current > 0 || isSectionHidden(sectionRef.current)) {
+      const latest = checksRef.current;
+      // (1) Prune: keep only rows that are still never-probed, live probes.
+      const nullProbes = new Map<string, HeartbeatProbe>();
+      for (const check of latest) {
+        if (check.probe !== null && !check.paused && check.probe.lastResult === null) {
+          nullProbes.set(String(check.id), check.probe);
+        }
+      }
+      const seen = new Map<string, number>();
+      for (const [key] of nullProbes) {
+        // (2) First-seen write for a row without an entry.
+        seen.set(key, nullSeenRef.current.get(key) ?? current);
+      }
+      // (3) Snapshot the pre-re-arm values and which of them have expired.
+      const nullSeenAtById = new Map(seen);
+      const expired = [...nullProbes].filter(([key, probe]) =>
+        nullWindowExpired({
+          nullSeenAt: nullSeenAtById.get(key) ?? current,
+          intervalSeconds: probe.intervalSeconds,
+          now: current,
+        }),
+      );
+      // (4) A hidden section neither reloads nor burns a window.
+      if (isSectionHidden(sectionRef.current)) {
+        nullSeenRef.current = seen;
         return;
       }
-      const latest = checksRef.current;
+      // (5) Re-arm expired entries, also on a tick the in-flight guard suppresses.
+      for (const [key] of expired) {
+        seen.set(key, current);
+      }
+      nullSeenRef.current = seen;
+      // (6) Never overlap an in-flight load.
+      if (inFlightRef.current > 0) {
+        return;
+      }
+      // (7) Late episodes and reload conditions.
       const episodes = new Set(latest.map(lateKeyOf));
       // Forget episodes whose row is gone or has since been pinged.
       const handled = new Set([...lateReloadedRef.current].filter((key) => episodes.has(key)));
@@ -454,7 +561,10 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
         .filter((check) => turnedLateLocally({ check, now: current }))
         .map(lateKeyOf)
         .filter((key) => !handled.has(key));
-      if (newlyLate.length === 0 && !latest.some((check) => needsReload({ check, now: current }))) {
+      const due = latest.some((check) =>
+        needsReload({ check, now: current, nullSeenAt: nullSeenAtById.get(String(check.id)) }),
+      );
+      if (newlyLate.length === 0 && !due) {
         return;
       }
       for (const key of newlyLate) {
@@ -579,6 +689,8 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
           periodSeconds: changes.periodSeconds,
           graceSeconds: changes.graceSeconds,
           destinations: changes.destinations,
+          probe: changes.probe,
+          accessToken: changes.accessToken,
         });
         // The row was deleted while this was in flight: nothing to update or announce.
         if (!checksRef.current.some((candidate) => candidate.id === id)) {
@@ -801,6 +913,11 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                         <span className="heartbeats__mono">{check.appId}</span>
                         {strings.heartbeatCheckSeparator}
                         <span className="heartbeats__name">{check.name}</span>
+                        {check.probe !== null && (
+                          <span className="heartbeats__sub heartbeats__url">
+                            {displayProbeUrl(check.probe.url)}
+                          </span>
+                        )}
                         {compact && (
                           <span className="admin-table__owner-line">
                             <OwnerBadge ownerKind={check.ownerKind} ownerAppId={check.ownerAppId} />
@@ -815,14 +932,29 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                       )}
                       <td>{renderLastPingCell({ check, state, now })}</td>
                       <td className="heartbeats__mono">
-                        {strings.heartbeatEvery({
-                          period: formatDuration({ seconds: check.periodSeconds }),
-                        })}
-                        <span className="heartbeats__sub">
-                          {strings.heartbeatGrace({
-                            grace: formatDuration({ seconds: check.graceSeconds }),
-                          })}
-                        </span>
+                        {check.probe === null ? (
+                          <>
+                            {strings.heartbeatEvery({
+                              period: formatDuration({ seconds: check.periodSeconds }),
+                            })}
+                            <span className="heartbeats__sub">
+                              {strings.heartbeatGrace({
+                                grace: formatDuration({ seconds: check.graceSeconds }),
+                              })}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            {strings.heartbeatEvery({
+                              period: formatDuration({ seconds: check.probe.intervalSeconds }),
+                            })}
+                            <span className="heartbeats__sub">
+                              {strings.heartbeatProbeTimeout({
+                                timeout: check.probe.timeoutSeconds,
+                              })}
+                            </span>
+                          </>
+                        )}
                       </td>
                       <td className="admin-table__fill">
                         {check.destinations.map((destination) => (
@@ -912,8 +1044,8 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                                 className="heartbeats__button heartbeats__button--ghost"
                                 confirmNotice={
                                   ownerNote === null
-                                    ? strings.pauseHeartbeatNotice
-                                    : `${strings.pauseHeartbeatNotice} ${ownerNote}`
+                                    ? pauseNoticeOf(check)
+                                    : `${pauseNoticeOf(check)} ${ownerNote}`
                                 }
                                 busy={toggleBusy}
                                 busyLabel={

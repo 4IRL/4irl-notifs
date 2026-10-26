@@ -39,6 +39,17 @@ the VPS; person-service + admin UI are Cloudflare-native.
   deleted); a `down` or `recovered` alert is one message per destination through the normal pipeline.
   The ping routes bind `app_id` to the caller's key (the same model as `/v1/messages`), so one app can
   no longer ping or fail another app's check.
+  **Probe checks.** `POST /v1/admin/heartbeats` also creates a website probe check: instead of
+  `period_seconds`/`grace_seconds` (either key present at all, even `0` or `null`, is a 400) the body
+  carries a `probe` object `{"url","expected_statuses","body_match"?,"timeout_seconds","interval_seconds","access_token"?}`
+  where `access_token` is `{"client_id","client_secret"}`. `PATCH` takes any subset of those probe keys;
+  `access_token` is a tri-state: omitted keeps the stored pair, `null` clears it, a `{client_id,client_secret}`
+  pair replaces it. It is write-only: a view returns only `has_access_token`. `probe: null` on a patch is
+  a 400 (`check kind is immutable`) and an unknown key at any depth is a 400. A check view gains
+  `down_reason` (non-null only while `down`) and, on probe checks only, a `probe` block
+  `{"url","expected_statuses","body_match","timeout_seconds","interval_seconds","consecutive_failures","failure_threshold","has_access_token","last_result":{"at","status","reason"}}`
+  (`failure_threshold` is 3 today; read it from the view). A push ping or `/fail` on a probe check is
+  `409 check is a probe check`, and an app cannot create one through `/v1/apps/{app_id}/heartbeats` (400).
   Contract and client examples are in `docs/app-integration-guide.md` ("Heartbeats").
 - `/v1/admin/destinations` (`POST`, `GET`) and `/v1/admin/destinations/{name}` (`GET`, `PATCH`, `DELETE`) —
   the destination registry. Destination secrets are sealed with AES-256-GCM before they are stored and
@@ -856,6 +867,51 @@ The Heartbeats admin section ships with its backend: `VITE_HEARTBEATS_ENABLED=tr
 `VITE_APP_IDENTITIES_ENABLED=true` is set in `pages-deploy.yml`, so the section is live in production with
 the backend that serves `/v1/admin/app-identity/*` (until the VPS deploy finishes it shows a load error). The watchdog goes live separately, once this runbook is done.
 
+### Probe checks (operator note)
+
+Probe checks run from the VPS, so they cannot see a VPS or Cloudflare Tunnel outage; the watchdog covers that, and external-vantage probing is follow-up #101.
+
+An operator adds a probe check in the Heartbeats section (kind "Website probe"). The row shows the last
+result, the failure progress (`consecutive_failures` of `failure_threshold`) and the down reason, and
+never reads Late. The URL must be `https://` with no userinfo or `#`, and the host must not be
+`localhost`, `*.localhost` or an IP literal. A host that resolves to a private address is accepted at
+save and surfaces later as a `blocked` result.
+
+#### Gating a health endpoint for probes
+
+Placeholders only below (`<probe-token>`, `<team-domain>`, `<host>`); real token names, team domains and
+account IDs stay in the Cloudflare dashboard and are never committed.
+
+- **Approach.** Use one Cloudflare Access service token for all probes (for example `<probe-token>`) with
+  one reusable Service Auth policy. Paste the token's client ID and secret into each probe check's Access
+  credentials. The probe sends them as `CF-Access-Client-Id` / `CF-Access-Client-Secret`. A native
+  per-app key is not supported: every service sits behind Cloudflare, and the probe only sends the Access
+  header pair.
+- **Pi apps.** They sit behind the wildcard tunnel and the wildcard family Access application. Attach the
+  reusable Service Auth policy to that wildcard application once, and every Pi app's health path is
+  reachable by the prober. See `~/code/misc/home-pi1.md`, ingress row.
+- **VPS apps.** These are tunnel `hetz-hills-001` routes, configured per hostname. Hostnames already
+  behind Access (`notifs-api`, `notifs-delivery`) need the policy attached to their application. For
+  public hostnames (`urls.4irl.app`, ntfy `notifs.4irl.app`), add a path-scoped self-hosted Access
+  application covering only the health path (for example `<host>/healthz`) with the Service Auth policy;
+  the rest of the site stays public. Third-party ntfy cannot check a key, so either gate its health path
+  this way or probe it without credentials. Probing VPS-hosted services from the VPS cannot detect a VPS
+  outage (see the caveat above). See `~/code/misc/hetzner-vps1.md`, "Tunnel routes".
+- **Workers/Pages.** Use a custom domain or route with a path-scoped Access application, as for VPS
+  public hosts. A `workers.dev` URL can also be protected with Access per Worker.
+- **Token expiry.** Service tokens are created with a chosen duration (for example 8760h). When a token
+  expires or is revoked, every probe using it fails with HTTP 403, and the row shows the 403 hint. Renew
+  the token, then use Replace on each probe check.
+- **Verify.** An unauthenticated `curl -sI https://<host>/healthz` returns 403 from Cloudflare. The probe
+  check shows Up after its next interval.
+- **Cloudflare docs:**
+  [service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/),
+  [Access policies (Service Auth action)](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/),
+  [reusable policies](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/policy-management/),
+  [application paths (the more specific path wins)](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/),
+  [self-hosted applications](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/),
+  [Access on workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/).
+
 ## Debugging quick reference
 
 | Symptom                                               | Likely cause                                                                                                                                                                                         |
@@ -872,6 +928,7 @@ the backend that serves `/v1/admin/app-identity/*` (until the VPS deploy finishe
 | Watchdog reports delivery-api (or another target) down | Read the Discord detail: `access denied (HTTP 403/3xx)` = `notifs-watchdog` token missing from that Access app or expired; `timeout`, `request failed` or `HTTP 5xx` (e.g. 502/530) = VPS, Tunnel or the service is down (the watchdog runs on Cloudflare's network, independent of the VPS, so this is a real outage); `readiness status …` = a `/readyz` problem. An alert means two probes 30 s apart both failed (a deploy that keeps a container down longer than that also alerts, and recovers on the next run). To see what each attempt returned (status, duration, detail) and whether the retry cleared a failure, read the Worker's logs (Cloudflare dashboard > Workers & Pages > `notifs-watchdog` > Logs, or `npx wrangler tail notifs-watchdog`) and search `watchdog: probe`. Nothing posts at all = the Worker is not running: `npx wrangler tail notifs-watchdog`, then check the cron trigger and the three secrets. |
 | Rotate secret → 404 right after a deploy              | The Pages UI deploys in parallel with the backend; an old `delivery-api` binary has no `rotate-secret` route. Wait for the `deploy-prod` job, then retry (not "destination does not exist"). |
 | Watchdog says "heartbeat prober stale" | The website probe loop has not scanned for 90 s (`/readyz` `heartbeat_prober.stale: true`): the prober loop died or is wedged, or the process just started. Check `docker compose logs delivery-api` for `heartbeat probe scan failed` / `heartbeat probe scan panicked`, then restart delivery-api. `/readyz` still answers 200. |
+| Probe check down with "Credentials could not be used" | The Access token was rejected or cannot be unsealed. Use Replace credentials on the check (or enter new credentials if none are stored any more). |
 | "Stalled" status card or Heartbeats load error right after the first heartbeats deploy | The Pages UI deployed before the VPS: the old `delivery-api` binary has no `/v1/admin/heartbeats` routes or `heartbeat_checker` field, and migration 0006 may not be applied yet. Wait for the `deploy-prod` job to finish, then refresh. |
 | App call `401 {"error":"app key required"}`           | No `Authorization: Bearer dak_...` header, or the value is not a well-formed key (wrong scheme, wrong length). The Cloudflare Access headers alone are not enough on `/v1/messages`, the heartbeat pings and `/v1/apps/*`. |
 | App call `401 {"error":"invalid app key"}`            | The key is well-formed but unknown, revoked, unbound, or a superseded key more than 24 h after the app's next deploy issued a newer one (deploys that never ran, or a stale secret on the app host). `GET /v1/admin/app-identity/bindings` shows each key's state (for an unbound app the keys are gone and the app has no row; re-run the deploy to file a new request); the delivery-api log line `app key rejected` has the reason and the key hint (never the key). Fix: redeploy through the `notifs-app` action to mint a key and store it. |
