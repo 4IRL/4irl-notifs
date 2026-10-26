@@ -656,6 +656,19 @@ export const strings = {
     'Check name must be lowercase letters, digits or underscores, starting with a letter or digit (up to 63 characters).',
   invalidHeartbeatPeriod: 'Period must be between 1 minute and 31 days.',
   invalidHeartbeatGrace: 'Grace must be between 1 minute and 7 days.',
+  invalidProbeUrlEmpty: 'Enter the URL to check.',
+  invalidProbeUrlScheme: 'URL must start with https://.',
+  invalidProbeUrlTooLong: 'URL must be at most 2048 bytes.',
+  invalidProbeUrlMalformed:
+    'Enter a public https URL without a #fragment, username or password, and not localhost or an IP address.',
+  invalidProbeStatuses:
+    'Enter 1 to 10 distinct status codes between 100 and 599, separated by commas.',
+  invalidProbeBodyMatch: 'Body text must be 1 to 256 bytes, not blank, with no NUL character.',
+  invalidProbeInterval: 'Interval must be a whole number of seconds between 60 and 86400.',
+  invalidProbeTimeout: 'Timeout must be a whole number of seconds between 1 and 8.',
+  invalidProbeTimeoutVsInterval: 'Timeout must be shorter than the interval.',
+  invalidProbeCredentialPair: 'Enter both the client ID and secret.',
+  invalidProbeCredential: 'Use 1 to 256 visible ASCII characters with no spaces.',
   heartbeatNeedsDestination: 'Select at least one alert destination.',
   heartbeatTooManyDestinations: 'Select at most 20 alert destinations.',
 

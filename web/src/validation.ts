@@ -97,6 +97,135 @@ export const HEARTBEAT_GRACE_RANGE_SECONDS = { min: 60, max: 604_800 } as const;
 /** The most alert destinations one check may have. */
 export const MAX_HEARTBEAT_DESTINATIONS = 20;
 
+// Website probe limits. Mirrors delivery-api heartbeat/validate.go. A UX pre-check only.
+export const PROBE_URL_MAX_BYTES = 2048;
+export const PROBE_INTERVAL_RANGE_SECONDS = { min: 60, max: 86_400 } as const;
+export const PROBE_TIMEOUT_RANGE_SECONDS = { min: 1, max: 8 } as const;
+export const PROBE_MAX_EXPECTED_STATUSES = 10;
+export const PROBE_BODY_MATCH_MAX_BYTES = 256;
+export const PROBE_ACCESS_CREDENTIAL_MAX_BYTES = 256;
+
+const PROBE_STATUS_PATTERN = /^\d{3}$/;
+const PROBE_STATUS_RANGE = { min: 100, max: 599 } as const;
+const IPV4_HOST_PATTERN = /^\d+(\.\d+){3}$/;
+const WHITESPACE_PATTERN = /\s/;
+const URL_AUTHORITY_END_PATTERN = /[/?#]/;
+const LOCALHOST = 'localhost';
+const LOCALHOST_SUFFIX = '.localhost';
+
+export type ProbeUrlProblem = 'empty' | 'scheme' | 'tooLong' | 'malformed';
+
+/**
+ * Mirrors delivery-api's probe URL rule: literal lowercase `https://` prefix, at
+ * most 2048 bytes, no `#`, no userinfo, a non-empty host that is not
+ * `localhost`/`*.localhost` or an IP literal. Callers pass the trimmed value.
+ */
+export function probeUrlProblem(value: string): ProbeUrlProblem | null {
+  if (value.trim() === '') {
+    return 'empty';
+  }
+  if (!value.startsWith(HTTPS_PREFIX)) {
+    return 'scheme';
+  }
+  if (TEXT_ENCODER.encode(value).length > PROBE_URL_MAX_BYTES) {
+    return 'tooLong';
+  }
+  if (value.includes('#') || WHITESPACE_PATTERN.test(value)) {
+    return 'malformed';
+  }
+  const rest = value.slice(HTTPS_PREFIX.length);
+  const authorityEnd = rest.search(URL_AUTHORITY_END_PATTERN);
+  const authority = authorityEnd === -1 ? rest : rest.slice(0, authorityEnd);
+  if (authority.includes('@') || authority.startsWith('[')) {
+    return 'malformed';
+  }
+  const host = authority.split(':')[0].toLowerCase();
+  if (
+    host === '' ||
+    host === LOCALHOST ||
+    host.endsWith(LOCALHOST_SUFFIX) ||
+    IPV4_HOST_PATTERN.test(host)
+  ) {
+    return 'malformed';
+  }
+  return null;
+}
+
+/** Parses a comma-separated list of 1..10 distinct HTTP status codes (100..599). */
+export function parseExpectedStatuses(
+  text: string,
+): { ok: true; statuses: number[] } | { ok: false } {
+  const parts = text.split(',').map((part) => part.trim());
+  if (parts.length < 1 || parts.length > PROBE_MAX_EXPECTED_STATUSES) {
+    return { ok: false };
+  }
+  const statuses: number[] = [];
+  for (const part of parts) {
+    if (!PROBE_STATUS_PATTERN.test(part)) {
+      return { ok: false };
+    }
+    const status = Number(part);
+    if (status < PROBE_STATUS_RANGE.min || status > PROBE_STATUS_RANGE.max) {
+      return { ok: false };
+    }
+    if (statuses.includes(status)) {
+      return { ok: false };
+    }
+    statuses.push(status);
+  }
+  return { ok: true, statuses };
+}
+
+/**
+ * Body-match text must be 1..256 bytes, non-blank and free of NUL. The caller
+ * treats an empty string as "no match" and does not call this for it.
+ */
+export function bodyMatchProblem(value: string): 'invalid' | null {
+  if (
+    value.trim() === '' ||
+    value.includes('\u0000') ||
+    TEXT_ENCODER.encode(value).length > PROBE_BODY_MATCH_MAX_BYTES
+  ) {
+    return 'invalid';
+  }
+  return null;
+}
+
+/**
+ * One Access credential half: 1..256 bytes, every char 0x21..0x7E. Callers check
+ * the blank/half-filled pair first and only call this on non-empty halves.
+ */
+export function accessCredentialProblem(value: string): 'invalid' | null {
+  if (value.length < 1 || value.length > PROBE_ACCESS_CREDENTIAL_MAX_BYTES) {
+    return 'invalid';
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x21 || code > 0x7e) {
+      return 'invalid';
+    }
+  }
+  return null;
+}
+
+/** Probe timeout must be a whole number of seconds in 1..8. */
+export function probeTimeoutProblem(value: number): 'range' | null {
+  return Number.isInteger(value) &&
+    value >= PROBE_TIMEOUT_RANGE_SECONDS.min &&
+    value <= PROBE_TIMEOUT_RANGE_SECONDS.max
+    ? null
+    : 'range';
+}
+
+/** Probe interval must be a whole number of seconds in 60..86400. */
+export function probeIntervalProblem(value: number): 'range' | null {
+  return Number.isInteger(value) &&
+    value >= PROBE_INTERVAL_RANGE_SECONDS.min &&
+    value <= PROBE_INTERVAL_RANGE_SECONDS.max
+    ? null
+    : 'range';
+}
+
 /** Mirrors delivery-api's ntfy topic rule. A UX pre-check only. */
 export function isValidNtfyTopic(topic: string): boolean {
   return NTFY_TOPIC_PATTERN.test(topic);
