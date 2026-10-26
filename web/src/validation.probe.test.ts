@@ -27,6 +27,10 @@ describe('probeUrlProblem', () => {
     [`https://a.com/${'x'.repeat(2048)}`, 'tooLong'],
     ['https://example.com/health?x=1', null],
     ['https://example.com:8443', null],
+    ['https://exa mple.com/', 'malformed'],
+    ['https://example.com/a\tb', 'malformed'],
+    ['https://example.com/a b', null],
+    ['https://[2001:db8::1]:8443/', 'malformed'],
   ])('probeUrlProblem(%j) === %s', (value, expected) => {
     expect(probeUrlProblem(value)).toBe(expected);
   });

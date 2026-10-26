@@ -109,6 +109,8 @@ const PROBE_STATUS_PATTERN = /^\d{3}$/;
 const PROBE_STATUS_RANGE = { min: 100, max: 599 } as const;
 const IPV4_HOST_PATTERN = /^\d+(\.\d+){3}$/;
 const WHITESPACE_PATTERN = /\s/;
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const CONTROL_CHAR_PATTERN = /[\u0000-\u001f\u007f]/;
 const URL_AUTHORITY_END_PATTERN = /[/?#]/;
 const LOCALHOST = 'localhost';
 const LOCALHOST_SUFFIX = '.localhost';
@@ -130,13 +132,16 @@ export function probeUrlProblem(value: string): ProbeUrlProblem | null {
   if (TEXT_ENCODER.encode(value).length > PROBE_URL_MAX_BYTES) {
     return 'tooLong';
   }
-  if (value.includes('#') || WHITESPACE_PATTERN.test(value)) {
+  // The server (Go url.Parse) rejects control characters anywhere and a space in the
+  // host, but accepts a plain space in the path or query, so only those are flagged.
+  if (value.includes('#') || CONTROL_CHAR_PATTERN.test(value)) {
     return 'malformed';
   }
   const rest = value.slice(HTTPS_PREFIX.length);
   const authorityEnd = rest.search(URL_AUTHORITY_END_PATTERN);
   const authority = authorityEnd === -1 ? rest : rest.slice(0, authorityEnd);
-  if (authority.includes('@') || authority.startsWith('[')) {
+  // A bracketed authority can only be an IPv6 literal, which the server rejects too.
+  if (authority.includes('@') || authority.startsWith('[') || WHITESPACE_PATTERN.test(authority)) {
     return 'malformed';
   }
   const host = authority.split(':')[0].toLowerCase();

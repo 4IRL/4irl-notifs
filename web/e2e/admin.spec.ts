@@ -2531,7 +2531,9 @@ test.describe('admin UI Delivery tab', () => {
     await form.getByLabel('App ID').fill('minecrafting');
     await form.getByLabel('Check name').fill('daily_report');
     await form.getByRole('button', { name: 'Add check', exact: true }).click();
-    await expect(form.getByRole('alert')).toHaveText('Select at least one alert destination.');
+    await expect(form.locator('.destination-form__field-error')).toHaveText(
+      'Select at least one alert destination.',
+    );
     expect(mock.mutations).toEqual([]);
 
     // A duplicate surfaces the server's message and keeps the form open.

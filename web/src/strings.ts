@@ -649,6 +649,27 @@ export const strings = {
   heartbeatGraceHint:
     'Extra wait before “down” (1 min – 7 days). Use ≥ 1 h for daily jobs to absorb DST shifts.',
   heartbeatDestinationsLegend: 'Alert destinations',
+  heartbeatKindLegend: 'Check type',
+  heartbeatKindPush: 'Push (app pings in)',
+  heartbeatKindProbe: 'Website probe',
+  heartbeatProbeLegend: 'Probe',
+  heartbeatProbeUrlLabel: 'URL',
+  heartbeatProbeUrlHint: 'A public https URL. Not localhost or an IP address.',
+  heartbeatProbeStatusesLabel: 'Expected statuses',
+  heartbeatProbeStatusesHint: 'Comma-separated codes, e.g. 200, 204. 3xx allowed.',
+  heartbeatProbeBodyMatchLabel: 'Body must contain',
+  heartbeatProbeBodyMatchHint: 'Optional. The response body must include this text.',
+  heartbeatProbeIntervalLabel: 'Interval',
+  heartbeatProbeIntervalUnitLabel: 'Interval unit',
+  heartbeatProbeIntervalHintAdd:
+    '1 minute to 24 hours. The check goes down after repeated failed probes in a row.',
+  heartbeatProbeTimeoutLabel: 'Timeout (seconds)',
+  heartbeatProbeTimeoutHint: '1 to 8 seconds, shorter than the interval.',
+  heartbeatCredentialsCaption: 'Cloudflare Access credentials (optional)',
+  heartbeatCredentialsClientIdLabel: 'Client ID',
+  heartbeatCredentialsClientSecretLabel: 'Client secret',
+  heartbeatCredentialsHintAdd:
+    'Optional. Cloudflare Access service token for a protected endpoint. Cleared if you switch to Push.',
   heartbeatDestinationNotFoundMark: '(not found)',
   invalidHeartbeatAppId:
     'App ID must be lowercase letters, digits or underscores, starting with a letter or digit (up to 63 characters).',
