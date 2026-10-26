@@ -6,6 +6,7 @@ import {
   liveStateOf,
   needsReload,
   nullWindowExpired,
+  probeAccessHintOf,
   probePausedWasOf,
   rowStateOf,
   turnedLateLocally,
@@ -189,6 +190,63 @@ describe('needsReload for a push check (unchanged)', () => {
 
   it('ignores nullSeenAt', () => {
     expect(needsReload({ check: pushCheck(), now: NOW, nullSeenAt: 0 })).toBe(false);
+  });
+});
+
+describe('probeAccessHintOf', () => {
+  function withResult({
+    result,
+    hasAccessToken,
+    paused = false,
+  }: {
+    result: HeartbeatProbeResult | null;
+    hasAccessToken: boolean;
+    paused?: boolean;
+  }): HeartbeatCheck {
+    return probeCheck({
+      check: { paused },
+      probe: { lastResult: result, hasAccessToken },
+    });
+  }
+  const at = new Date(NOW).toISOString();
+
+  it('says the token was rejected for a 403 with credentials set', () => {
+    const result = { at, status: 403, reason: 'http_status' };
+    expect(probeAccessHintOf(withResult({ result, hasAccessToken: true }))).toBe('tokenRejected');
+  });
+
+  it('says the token is missing for a 403 without credentials', () => {
+    const result = { at, status: 403, reason: 'http_status' };
+    expect(probeAccessHintOf(withResult({ result, hasAccessToken: false }))).toBe('tokenMissing');
+  });
+
+  it.each([
+    ['401', { status: 401, reason: 'http_status' }],
+    ['500', { status: 500, reason: 'http_status' }],
+    ['503', { status: 503, reason: 'http_status' }],
+    ['non-http_status reason', { status: 403, reason: 'config' }],
+    ['a successful 403-less result', { status: 200, reason: null }],
+    ['a 403 with a null reason', { status: 403, reason: null }],
+    ['a null status', { status: null, reason: 'http_status' }],
+  ])('gives no hint for %s', (_name, partial) => {
+    const result = { at, ...partial };
+    expect(probeAccessHintOf(withResult({ result, hasAccessToken: true }))).toBeNull();
+    expect(probeAccessHintOf(withResult({ result, hasAccessToken: false }))).toBeNull();
+  });
+
+  it('gives no hint without a last result', () => {
+    expect(probeAccessHintOf(withResult({ result: null, hasAccessToken: true }))).toBeNull();
+  });
+
+  it('gives no hint for a paused row', () => {
+    const result = { at, status: 403, reason: 'http_status' };
+    expect(
+      probeAccessHintOf(withResult({ result, hasAccessToken: true, paused: true })),
+    ).toBeNull();
+  });
+
+  it('gives no hint for a push check', () => {
+    expect(probeAccessHintOf(pushCheck())).toBeNull();
   });
 });
 

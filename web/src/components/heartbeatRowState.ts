@@ -133,6 +133,25 @@ export function wasLabel(state: RowState): string {
   }
 }
 
+const HTTP_FORBIDDEN = 403;
+
+/**
+ * A 403 from the probed endpoint may mean a Cloudflare Access edge rejection (an expired or
+ * revoked token, or no token at all). The stored-credential `config` reason is a different
+ * failure and never triggers this.
+ */
+export function probeAccessHintOf(check: HeartbeatCheck): 'tokenRejected' | 'tokenMissing' | null {
+  const { probe } = check;
+  if (check.paused || probe === null || probe.lastResult === null) {
+    return null;
+  }
+  const { reason, status } = probe.lastResult;
+  if (reason !== 'http_status' || status !== HTTP_FORBIDDEN) {
+    return null;
+  }
+  return probe.hasAccessToken ? 'tokenRejected' : 'tokenMissing';
+}
+
 /** What a paused probe was doing: `null` renders plain Paused with no "was" line. */
 export function probePausedWasOf(check: HeartbeatCheck): 'up' | 'down' | null {
   switch (check.state) {

@@ -524,7 +524,7 @@ export const strings = {
   heartbeatsHeading: 'Heartbeats',
   heartbeatsRefresh: 'Refresh heartbeats',
   heartbeatsHint:
-    'Apps ping POST /v1/heartbeats/{app_id}/{name}. A check is late after its period and down after period + grace, which sends one down alert, then one recovery alert on the next ping. Times are UTC.',
+    'Push checks: apps ping POST /v1/heartbeats/{app_id}/{name}. A check is late after its period and down after period + grace, which sends one down alert, then one recovery alert on the next ping. Probe checks: delivery-api requests an HTTPS URL on an interval and alerts after repeated failures in a row. Times are UTC.',
   heartbeatsLoading: 'Loading heartbeat checks…',
   heartbeatsLoadError: 'Could not load heartbeat checks.',
   heartbeatsEmpty: 'No heartbeat checks yet.',
@@ -532,7 +532,7 @@ export const strings = {
     `${down} of ${total} ${total === 1 ? 'check' : 'checks'} down`,
   columnHeartbeatState: 'State',
   columnHeartbeatCheck: 'Check',
-  columnHeartbeatLastPing: 'Last ping',
+  columnHeartbeatLastPing: 'Last ping / probe',
   columnHeartbeatSchedule: 'Schedule',
   columnHeartbeatAlertsTo: 'Alerts to',
   columnHeartbeatActions: 'Actions',
@@ -556,6 +556,8 @@ export const strings = {
   heartbeatProbeProgress: ({ count, threshold }: { count: number; threshold: number }): string =>
     `${count} of ${threshold} failures`,
   heartbeatProbedAgo: ({ relative }: { relative: string }): string => `probed ${relative}`,
+  heartbeatProbeResultLine: ({ result, probed }: { result: string; probed: string }): string =>
+    `${result} · ${probed}`,
   heartbeatProbeTimeout: ({ timeout }: { timeout: number }): string => `timeout ${timeout} s`,
   heartbeatDownReasonSince: ({ reason, time }: { reason: string; time: string }): string =>
     `${reason} · since ${time}`,
@@ -589,6 +591,11 @@ export const strings = {
   pausingHeartbeat: 'Pausing…',
   pausingHeartbeatNamed: ({ check }: { check: string }): string => `Pausing ${check}`,
   pauseHeartbeatNotice: 'No alerts are sent while paused. Pings are still recorded.',
+  pauseProbeNotice: 'No probes run and no alerts are sent while paused.',
+  probeAccessHintTokenRejected:
+    '403 with Access credentials set: the Cloudflare token may have expired or been revoked. Edit the check and use Replace.',
+  probeAccessHintTokenMissing:
+    '403: the endpoint may be behind Cloudflare Access. Edit the check and add credentials.',
   resumeHeartbeat: 'Resume',
   resumeHeartbeatNamed: ({ check }: { check: string }): string => `Resume ${check}`,
   resumingHeartbeat: 'Resuming…',
