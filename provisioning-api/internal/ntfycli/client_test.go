@@ -340,6 +340,130 @@ func TestListUsersParsesUserBlocksAndSkipsAnonymous(t *testing.T) {
 	}
 }
 
+// Captured from the pinned ntfy image (binwiederhier/ntfy:v2.26.0) running
+// `ntfy access <user>` against a throwaway auth db.
+const (
+	capturedAccessScopedAndBroadcast = "user u_scoped (role: user, tier: none)\n" +
+		"- read-only access to topic app1-broadcast\n" +
+		"- read-only access to topic app1-hash1-*\n"
+	capturedAccessNoGrants       = "user u_none (role: user, tier: none)\n- no topic-specific permissions\n"
+	capturedAccessUnknownStderr  = "user u_unknown does not exist\n"
+	capturedAccessAnonymousBlock = "user * (role: anonymous, tier: none)\n" +
+		"- no topic-specific permissions\n" +
+		"- no access to any (other) topics (server config)\n"
+)
+
+func TestGetUserReturnsScopedAndBroadcastPatterns(t *testing.T) {
+	runner := &fakeRunner{results: []scriptedResult{{stdout: capturedAccessScopedAndBroadcast}}}
+	client := newTestClient(runner)
+
+	user, err := client.GetUser(context.Background(), "u_scoped")
+	if err != nil {
+		t.Fatalf("GetUser returned unexpected error: %v", err)
+	}
+
+	expected := User{Name: "u_scoped", TopicPatterns: []string{"app1-broadcast", "app1-hash1-*"}}
+	if !reflect.DeepEqual(user, expected) {
+		t.Fatalf("user = %#v, expected %#v", user, expected)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("GetUser must issue exactly one CLI call, got %d", len(runner.calls))
+	}
+	if got := strings.Join(runner.calls[0].args, " "); got != "access u_scoped" {
+		t.Fatalf("args = %q, expected %q", got, "access u_scoped")
+	}
+	if len(runner.calls[0].extraEnv) != 0 {
+		t.Fatalf("GetUser must not pass extra env, got %v", runner.calls[0].extraEnv)
+	}
+}
+
+func TestGetUserWithNoGrantsReturnsEmptyPatternsAndNilError(t *testing.T) {
+	runner := &fakeRunner{results: []scriptedResult{{stdout: capturedAccessNoGrants}}}
+	client := newTestClient(runner)
+
+	user, err := client.GetUser(context.Background(), "u_none")
+	if err != nil {
+		t.Fatalf("GetUser returned unexpected error: %v", err)
+	}
+	if user.Name != "u_none" {
+		t.Fatalf("user name = %q, expected u_none", user.Name)
+	}
+	if len(user.TopicPatterns) != 0 {
+		t.Fatalf("expected no topic patterns, got %v", user.TopicPatterns)
+	}
+}
+
+func TestGetUserUnknownUserIsErrNotFound(t *testing.T) {
+	runner := &fakeRunner{results: []scriptedResult{
+		{stderr: capturedAccessUnknownStderr, err: errors.New("exit status 1")},
+	}}
+	client := newTestClient(runner)
+
+	_, err := client.GetUser(context.Background(), "u_unknown")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for the real unknown-user stderr, got: %v", err)
+	}
+}
+
+func TestGetUserOutputWithoutMatchingBlockIsErrNotFound(t *testing.T) {
+	testCases := []struct {
+		name   string
+		stdout string
+	}{
+		{name: "empty stdout", stdout: ""},
+		{name: "whitespace-only stdout", stdout: "\n  \n"},
+		{name: "block for a different user", stdout: capturedAccessScopedAndBroadcast},
+		{name: "anonymous block only", stdout: capturedAccessAnonymousBlock},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			runner := &fakeRunner{results: []scriptedResult{{stdout: testCase.stdout}}}
+			client := newTestClient(runner)
+
+			user, err := client.GetUser(context.Background(), "u_wanted")
+			if !errors.Is(err, ErrNotFound) {
+				t.Fatalf("expected ErrNotFound, got user %#v err %v", user, err)
+			}
+			if user.Name != "" || len(user.TopicPatterns) != 0 {
+				t.Fatalf("expected the zero User alongside the error, got %#v", user)
+			}
+		})
+	}
+}
+
+func TestGetUserRetriesWhenAuthDatabaseIsBusy(t *testing.T) {
+	busyResult := scriptedResult{stderr: "cannot open auth db: database is locked", err: errors.New("exit status 1")}
+	runner := &fakeRunner{results: []scriptedResult{busyResult, {stdout: capturedAccessScopedAndBroadcast}}}
+	client := newTestClient(runner)
+
+	user, err := client.GetUser(context.Background(), "u_scoped")
+	if err != nil {
+		t.Fatalf("expected busy retry to succeed, got: %v", err)
+	}
+	if user.Name != "u_scoped" {
+		t.Fatalf("user name = %q, expected u_scoped", user.Name)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 attempts, got %d", len(runner.calls))
+	}
+}
+
+func TestGetUserSurfacesOtherCLIErrors(t *testing.T) {
+	runner := &fakeRunner{results: []scriptedResult{
+		{stderr: "permission denied", err: errors.New("exit status 1")},
+	}}
+	client := newTestClient(runner)
+
+	_, err := client.GetUser(context.Background(), "u_scoped")
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatalf("an unrelated CLI failure must not look like ErrNotFound: %v", err)
+	}
+}
+
 func TestPassThroughMethodsBuildExpectedInvocations(t *testing.T) {
 	testCases := []struct {
 		name         string

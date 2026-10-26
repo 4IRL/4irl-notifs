@@ -17,8 +17,8 @@ import (
 func postResetPassword(testInstance *testing.T, fakeService *fakeProvisioningService, rawBody string) (*httptest.ResponseRecorder, *bytes.Buffer) {
 	testInstance.Helper()
 	var logBuffer bytes.Buffer
-	server := NewServer(ServerConfig{Service: fakeService, Logger: slog.New(slog.NewTextHandler(&logBuffer, nil))})
-	request := httptest.NewRequest(http.MethodPost, "/v1/reset-password", strings.NewReader(rawBody))
+	server := newTestServer(ServerConfig{Service: fakeService, Logger: slog.New(slog.NewTextHandler(&logBuffer, nil))})
+	request := newAuthedRequest(http.MethodPost, "/v1/reset-password", strings.NewReader(rawBody))
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, request)
 	return recorder, &logBuffer
@@ -132,8 +132,8 @@ func TestResetPasswordErrorMappingsAreNoStore(testInstance *testing.T) {
 }
 
 func TestResetPasswordRejectsWrongMethod(testInstance *testing.T) {
-	server := NewServer(ServerConfig{Service: &fakeProvisioningService{}})
-	request := httptest.NewRequest(http.MethodGet, "/v1/reset-password", nil)
+	server := newTestServer(ServerConfig{Service: &fakeProvisioningService{}})
+	request := newAuthedRequest(http.MethodGet, "/v1/reset-password", nil)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)

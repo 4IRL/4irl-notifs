@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/4IRL/4irl-notifs/provisioning-api/internal/enforcement"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/ntfycli"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/provisioning-api/internal/provisioning"
@@ -58,13 +59,23 @@ type ServerConfig struct {
 	Service ProvisioningService
 	// Logger receives internal-error diagnostics; defaults to slog.Default().
 	Logger *slog.Logger
+	// InternalCredential is the shared secret every route except GET /healthz
+	// must present in the X-Notifs-Internal-Credential header. Empty means no
+	// credential is configured, which rejects every request (reason
+	// not_configured) unless CredentialMode is LogOnly.
+	InternalCredential string
+	// CredentialMode selects whether a failed credential check rejects the
+	// request (Enforce, the zero value) or only logs it (LogOnly).
+	CredentialMode enforcement.Mode
 }
 
 // Server wraps an *http.ServeMux exposing the provisioning HTTP API.
 type Server struct {
-	service ProvisioningService
-	logger  *slog.Logger
-	mux     *http.ServeMux
+	service            ProvisioningService
+	logger             *slog.Logger
+	mux                *http.ServeMux
+	internalCredential string
+	credentialMode     enforcement.Mode
 }
 
 // NewServer builds a Server from config, applying production defaults and
@@ -76,17 +87,22 @@ func NewServer(config ServerConfig) *Server {
 	}
 
 	server := &Server{
-		service: config.Service,
-		logger:  logger,
-		mux:     http.NewServeMux(),
+		service:            config.Service,
+		logger:             logger,
+		mux:                http.NewServeMux(),
+		internalCredential: config.InternalCredential,
+		credentialMode:     config.CredentialMode,
 	}
 	server.routes()
 	return server
 }
 
-// Handler returns the http.Handler serving the provisioning API.
+// Handler returns the http.Handler serving the provisioning API: the mux
+// wrapped by the internal-credential check (every route except GET /healthz),
+// all wrapped by the per-request completion log so rejected requests are logged
+// too.
 func (server *Server) Handler() http.Handler {
-	return server.mux
+	return server.logCompletion(server.requireInternalCredential(server.mux))
 }
 
 // routes registers every HTTP route on the server's mux.
