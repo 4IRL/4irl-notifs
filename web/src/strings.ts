@@ -97,7 +97,10 @@ export const strings = {
   resetPasswordDoneNamed: ({ user }: { user: string }): string => `Done with password for ${user}`,
   resetPasswordRevealLead: ({ user }: { user: string }): string =>
     `The new password for ${user} is shown only once. It replaces any earlier password.`,
-  resetPasswordNotFound: 'This person does not exist. Refresh the list.',
+  resetPasswordNotFound:
+    'This person does not exist, or has no access in this app. Refresh the list.',
+  deprovisionNotFound:
+    'This person does not exist, or has no access in this app. Refresh the list.',
   resetPasswordTooMany: ({ seconds }: { seconds: number }): string =>
     `Too many password changes. Try again in ${seconds} s.`,
   resetPasswordFailed: 'Could not reset the password. Try again.',

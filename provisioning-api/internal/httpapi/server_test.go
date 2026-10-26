@@ -121,9 +121,9 @@ const (
 // TestHealthzReturnsOK verifies GET /healthz responds 200 with body "ok" and
 // Content-Type text/plain.
 func TestHealthzReturnsOK(testInstance *testing.T) {
-	server := NewServer(ServerConfig{})
+	server := newTestServer(ServerConfig{})
 
-	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	request := newAuthedRequest(http.MethodGet, "/healthz", nil)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -153,10 +153,10 @@ func TestProvisionHappyPath(testInstance *testing.T) {
 			Token:          "tk_abc123",
 		},
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","email":%q}`, aliceEmail))
-	request := httptest.NewRequest(http.MethodPost, "/v1/provision", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/provision", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -207,10 +207,10 @@ func TestProvisionMissingOrInvalidEmailRejected(testInstance *testing.T) {
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
 			fakeService := &fakeProvisioningService{}
-			server := NewServer(ServerConfig{Service: fakeService})
+			server := newTestServer(ServerConfig{Service: fakeService})
 
 			requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","email":%q}`, testCase.email))
-			request := httptest.NewRequest(http.MethodPost, "/v1/provision", requestBody)
+			request := newAuthedRequest(http.MethodPost, "/v1/provision", requestBody)
 			recorder := httptest.NewRecorder()
 
 			server.Handler().ServeHTTP(recorder, request)
@@ -234,10 +234,10 @@ func TestProvisionMissingOrInvalidEmailRejected(testInstance *testing.T) {
 // Service.Deprovision with that id.
 func TestDeprovisionByEmailHappyPath(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","email":%q}`, aliceEmail))
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -265,10 +265,10 @@ func TestDeprovisionByEmailHappyPath(testInstance *testing.T) {
 // with that id directly, without deriving it from an email.
 func TestDeprovisionByNtfyUserIDHappyPath(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","user_id":%q}`, aliceNtfyUser))
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -288,10 +288,10 @@ func TestDeprovisionByNtfyUserIDHappyPath(testInstance *testing.T) {
 // {"error":"email or user_id required"} without calling Service.Deprovision.
 func TestDeprovisionWithNeitherEmailNorUserIDRejected(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(`{"app_id":"myapp"}`)
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -312,10 +312,10 @@ func TestDeprovisionWithNeitherEmailNorUserIDRejected(testInstance *testing.T) {
 // malformed email responds 400 {"error":"invalid email"}.
 func TestDeprovisionInvalidEmailRejected(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(`{"app_id":"myapp","email":"not-an-email"}`)
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -337,10 +337,10 @@ func TestDeprovisionInvalidEmailRejected(testInstance *testing.T) {
 // username shape responds 400 {"error":"invalid user_id"}.
 func TestDeprovisionInvalidNtfyUserIDShapeRejected(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(`{"app_id":"myapp","user_id":"alice"}`)
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -362,10 +362,10 @@ func TestDeprovisionInvalidNtfyUserIDShapeRejected(testInstance *testing.T) {
 // even considered.
 func TestDeprovisionInvalidAppIDRejectedBeforeEmailOrUserID(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(`{"app_id":"my-app"}`)
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -387,9 +387,9 @@ func TestListUsersHappyPath(testInstance *testing.T) {
 			{UserID: "alice", Apps: []string{"myapp"}, TopicPatterns: []string{"myapp-*"}},
 		},
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodGet, "/v1/users", nil)
+	request := newAuthedRequest(http.MethodGet, "/v1/users", nil)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -411,9 +411,9 @@ func TestListUsersHappyPath(testInstance *testing.T) {
 // Service.DeleteUser with the path parameter and returns a confirmation.
 func TestDeleteUserHappyPath(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodDelete, "/v1/users/alice", nil)
+	request := newAuthedRequest(http.MethodDelete, "/v1/users/alice", nil)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -441,9 +441,9 @@ func TestDeleteUserHappyPath(testInstance *testing.T) {
 // ntfy username shape.
 func TestDeleteUserAcceptsDerivedNtfyUserIDShape(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodDelete, "/v1/users/"+aliceNtfyUser, nil)
+	request := newAuthedRequest(http.MethodDelete, "/v1/users/"+aliceNtfyUser, nil)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -474,9 +474,9 @@ func TestMalformedOrEmptyBodyRejected(testInstance *testing.T) {
 		for _, route := range routes {
 			testInstance.Run(testCase.name+" "+route, func(subTest *testing.T) {
 				fakeService := &fakeProvisioningService{}
-				server := NewServer(ServerConfig{Service: fakeService})
+				server := newTestServer(ServerConfig{Service: fakeService})
 
-				request := httptest.NewRequest(http.MethodPost, route, strings.NewReader(testCase.body))
+				request := newAuthedRequest(http.MethodPost, route, strings.NewReader(testCase.body))
 				recorder := httptest.NewRecorder()
 
 				server.Handler().ServeHTTP(recorder, request)
@@ -521,14 +521,14 @@ func TestValidationFailures(testInstance *testing.T) {
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
 			fakeService := &fakeProvisioningService{}
-			server := NewServer(ServerConfig{Service: fakeService})
+			server := newTestServer(ServerConfig{Service: fakeService})
 
 			var requestBodyBuffer bytes.Buffer
 			if encodeErr := json.NewEncoder(&requestBodyBuffer).Encode(provisionRequestBody{AppID: testCase.appID, Email: aliceEmail}); encodeErr != nil {
 				subTest.Fatalf("failed to encode request body: %v", encodeErr)
 			}
 
-			request := httptest.NewRequest(http.MethodPost, "/v1/provision", &requestBodyBuffer)
+			request := newAuthedRequest(http.MethodPost, "/v1/provision", &requestBodyBuffer)
 			recorder := httptest.NewRecorder()
 
 			server.Handler().ServeHTTP(recorder, request)
@@ -561,11 +561,11 @@ func TestProvisionIgnoresUserIDInBody(testInstance *testing.T) {
 			Token:        "tk_abc123",
 		},
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	// "Invalid User!" would have failed the old validateUserID gate.
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","user_id":"Invalid User!","email":%q}`, aliceEmail))
-	request := httptest.NewRequest(http.MethodPost, "/v1/provision", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/provision", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -586,10 +586,10 @@ func TestDeprovisionNotFoundMapsTo404(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{
 		deprovisionErr: fmt.Errorf("ntfy access: %w: no such user", ntfycli.ErrNotFound),
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","email":%q}`, aliceEmail))
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -636,10 +636,10 @@ func TestGenericServiceErrorMapsTo500(testInstance *testing.T) {
 			}
 			var logBuffer bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
-			server := NewServer(ServerConfig{Service: fakeService, Logger: logger})
+			server := newTestServer(ServerConfig{Service: fakeService, Logger: logger})
 
 			requestBody := strings.NewReader(testCase.body)
-			request := httptest.NewRequest(http.MethodPost, testCase.route, requestBody)
+			request := newAuthedRequest(http.MethodPost, testCase.route, requestBody)
 			recorder := httptest.NewRecorder()
 
 			server.Handler().ServeHTTP(recorder, request)
@@ -665,9 +665,9 @@ func TestGenericServiceErrorMapsTo500(testInstance *testing.T) {
 // serializes as {"users":[]} — a literal empty JSON array, never null.
 func TestListUsersEmptyReturnsEmptyArray(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{listUsersResult: nil}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodGet, "/v1/users", nil)
+	request := newAuthedRequest(http.MethodGet, "/v1/users", nil)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -690,9 +690,9 @@ func TestListUsersEmptySlicesSerializeAsEmptyArrays(testInstance *testing.T) {
 			{UserID: "alice", Apps: nil, TopicPatterns: nil},
 		},
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodGet, "/v1/users", nil)
+	request := newAuthedRequest(http.MethodGet, "/v1/users", nil)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -712,9 +712,9 @@ func TestListUsersEmptySlicesSerializeAsEmptyArrays(testInstance *testing.T) {
 // without ever calling Service.DeleteUser.
 func TestDeleteUserInvalidPathUserIDRejected(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodDelete, "/v1/users/Alice", nil)
+	request := newAuthedRequest(http.MethodDelete, "/v1/users/Alice", nil)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -743,10 +743,10 @@ func TestProvisionAppHappyPath(testInstance *testing.T) {
 			Token:           "tk_publisher_abc",
 		},
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(`{"app_id":"myapp"}`)
-	request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/provision-app", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -785,10 +785,10 @@ func TestProvisionAppHappyPath(testInstance *testing.T) {
 // calling Service.ProvisionApp.
 func TestProvisionAppInvalidAppIDRejected(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(`{"app_id":"My-App"}`)
-	request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/provision-app", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -809,10 +809,10 @@ func TestProvisionAppInvalidAppIDRejected(testInstance *testing.T) {
 // rejects malformed JSON with 400 {"error":"invalid JSON body"}.
 func TestProvisionAppMalformedJSONRejected(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(`{"app_id": "myapp",`)
-	request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/provision-app", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -835,10 +835,10 @@ func TestProvisionAppServiceErrorMapsTo500(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{
 		provisionAppErr: errors.New("connection refused to database at 10.0.0.5:9999 with credential xyz"),
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(`{"app_id":"myapp"}`)
-	request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/provision-app", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -869,9 +869,9 @@ func TestProvisionAppForwardsRotateFlag(testInstance *testing.T) {
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
 			fakeService := &fakeProvisioningService{}
-			server := NewServer(ServerConfig{Service: fakeService})
+			server := newTestServer(ServerConfig{Service: fakeService})
 
-			request := httptest.NewRequest(http.MethodPost, "/v1/provision-app", strings.NewReader(testCase.body))
+			request := newAuthedRequest(http.MethodPost, "/v1/provision-app", strings.NewReader(testCase.body))
 			recorder := httptest.NewRecorder()
 
 			server.Handler().ServeHTTP(recorder, request)
@@ -891,9 +891,9 @@ func TestProvisionAppForwardsRotateFlag(testInstance *testing.T) {
 // Service.DeprovisionApp with the decoded app_id and returns a confirmation.
 func TestDeprovisionAppHappyPath(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":"myapp"}`))
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":"myapp"}`))
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -919,9 +919,9 @@ func TestDeprovisionAppHappyPath(testInstance *testing.T) {
 // rejects an invalid app_id with 400 without calling Service.DeprovisionApp.
 func TestDeprovisionAppInvalidAppIDRejected(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":"My-App"}`))
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":"My-App"}`))
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -942,9 +942,9 @@ func TestDeprovisionAppInvalidAppIDRejected(testInstance *testing.T) {
 // rejects malformed JSON with 400 {"error":"invalid JSON body"}.
 func TestDeprovisionAppMalformedJSONRejected(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":`))
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":`))
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -962,9 +962,9 @@ func TestDeprovisionAppMalformedJSONRejected(testInstance *testing.T) {
 // from Service.DeprovisionApp maps to 500 {"error":"internal error"}.
 func TestDeprovisionAppServiceErrorMapsTo500(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{deprovisionAppErr: errors.New("cascade blew up")}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":"myapp"}`))
+	request := newAuthedRequest(http.MethodPost, "/v1/deprovision-app", strings.NewReader(`{"app_id":"myapp"}`))
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -992,10 +992,10 @@ func TestTestNotifyHappyPath(testInstance *testing.T) {
 			},
 		},
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q,%q]}`, aliceHash, aliceEmail))
-	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/test-notify", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -1034,10 +1034,10 @@ func TestTestNotifyHappyPath(testInstance *testing.T) {
 // the service is called — proving trim-before-default ordering.
 func TestTestNotifyWhitespaceMessageDefaultsApplied(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"channel":"   ","message":"   ","title":"   "}`, aliceHash))
-	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/test-notify", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -1061,10 +1061,10 @@ func TestTestNotifyWhitespaceMessageDefaultsApplied(testInstance *testing.T) {
 // forwarded to the service instead of the "<app_id> test" default.
 func TestTestNotifyForwardsTrimmedTitle(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"title":"  Chore Reaper test  "}`, aliceHash))
-	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/test-notify", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -1089,11 +1089,11 @@ func TestTestNotifyForwardsTrimmedTitle(testInstance *testing.T) {
 // whitespace is accepted and forwarded unpadded.
 func TestTestNotifyAcceptsMaxLengthTitleAfterTrim(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	maxLengthTitle := strings.Repeat("a", maxTitleLength)
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q],"title":%q}`, aliceHash, "  "+maxLengthTitle+"  "))
-	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/test-notify", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -1111,9 +1111,9 @@ func TestTestNotifyAcceptsMaxLengthTitleAfterTrim(testInstance *testing.T) {
 // service.
 func TestTestNotifyMalformedJSONRejected(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
-	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", strings.NewReader(`{"app_id":"myapp",`))
+	request := newAuthedRequest(http.MethodPost, "/v1/test-notify", strings.NewReader(`{"app_id":"myapp",`))
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -1156,9 +1156,9 @@ func TestTestNotifyRequestValidationFailures(testInstance *testing.T) {
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
 			fakeService := &fakeProvisioningService{}
-			server := NewServer(ServerConfig{Service: fakeService})
+			server := newTestServer(ServerConfig{Service: fakeService})
 
-			request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", strings.NewReader(testCase.body))
+			request := newAuthedRequest(http.MethodPost, "/v1/test-notify", strings.NewReader(testCase.body))
 			recorder := httptest.NewRecorder()
 
 			server.Handler().ServeHTTP(recorder, request)
@@ -1186,10 +1186,10 @@ func TestTestNotifyGenericServiceErrorMapsTo500(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{testNotifyErr: errors.New(secretErrText)}
 	var logBuffer bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
-	server := NewServer(ServerConfig{Service: fakeService, Logger: logger})
+	server := newTestServer(ServerConfig{Service: fakeService, Logger: logger})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q]}`, aliceHash))
-	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/test-notify", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -1216,10 +1216,10 @@ func TestTestNotifyNotFoundMapsTo404(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{
 		testNotifyErr: fmt.Errorf("mint publisher token: %w: no such user", ntfycli.ErrNotFound),
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"myapp","recipients":[%q]}`, aliceHash))
-	request := httptest.NewRequest(http.MethodPost, "/v1/test-notify", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/test-notify", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -1240,10 +1240,10 @@ func TestSetPasswordHappyPath(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{
 		setPasswordResult: provisioning.SetPasswordResult{UserID: aliceNtfyUser},
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":"sekrit-pw"}`, aliceEmail))
-	request := httptest.NewRequest(http.MethodPost, "/v1/set-password", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/set-password", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -1291,9 +1291,9 @@ func TestSetPasswordValidationRejections(testInstance *testing.T) {
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
 			fakeService := &fakeProvisioningService{}
-			server := NewServer(ServerConfig{Service: fakeService})
+			server := newTestServer(ServerConfig{Service: fakeService})
 
-			request := httptest.NewRequest(http.MethodPost, "/v1/set-password", strings.NewReader(testCase.body))
+			request := newAuthedRequest(http.MethodPost, "/v1/set-password", strings.NewReader(testCase.body))
 			recorder := httptest.NewRecorder()
 
 			server.Handler().ServeHTTP(recorder, request)
@@ -1319,10 +1319,10 @@ func TestSetPasswordNotFoundMapsTo404(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{
 		setPasswordErr: fmt.Errorf("ntfy user: %w: no such user", ntfycli.ErrNotFound),
 	}
-	server := NewServer(ServerConfig{Service: fakeService})
+	server := newTestServer(ServerConfig{Service: fakeService})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":"sekrit-pw"}`, aliceEmail))
-	request := httptest.NewRequest(http.MethodPost, "/v1/set-password", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/set-password", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)
@@ -1345,10 +1345,10 @@ func TestSetPasswordGenericErrorMapsTo500(testInstance *testing.T) {
 	fakeService := &fakeProvisioningService{setPasswordErr: errors.New(secretErrText)}
 	var logBuffer bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
-	server := NewServer(ServerConfig{Service: fakeService, Logger: logger})
+	server := newTestServer(ServerConfig{Service: fakeService, Logger: logger})
 
 	requestBody := strings.NewReader(fmt.Sprintf(`{"app_id":"tasktracker","email":%q,"password":"sekrit-pw"}`, aliceEmail))
-	request := httptest.NewRequest(http.MethodPost, "/v1/set-password", requestBody)
+	request := newAuthedRequest(http.MethodPost, "/v1/set-password", requestBody)
 	recorder := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(recorder, request)

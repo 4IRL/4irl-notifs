@@ -32,6 +32,7 @@ jobs:
           docker run -d --name provisioning-api-smoke -p 127.0.0.1:8080:8080 \
             -e NTFY_AUTH_FILE=/var/lib/ntfy/auth.db \
             -e NTFY_AUTH_DEFAULT_ACCESS=deny-all \
+            -e PROVISIONING_INTERNAL_CREDENTIAL=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
             4irl-notifs-provisioning-api:ci-test
 
           for i in $(seq 1 60); do

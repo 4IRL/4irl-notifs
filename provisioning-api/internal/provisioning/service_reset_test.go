@@ -42,7 +42,7 @@ func slotCount(personClient *fakePersonClient) int {
 }
 
 func TestResetPasswordReturnsGeneratedPasswordAfterRecordingStampFirst(t *testing.T) {
-	ntfyClient := &fakeNtfyClient{}
+	ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl")}
 	service, personClient := newResetService(ntfyClient)
 	personClient.recordTo = &ntfyClient.invocations
 
@@ -53,7 +53,7 @@ func TestResetPasswordReturnsGeneratedPasswordAfterRecordingStampFirst(t *testin
 	if result.UserID != aliceNtfyUser || result.AppID != "urls4irl" || result.Password != subscriberPassword {
 		t.Fatalf("result = %+v", result)
 	}
-	expected := fmt.Sprintf("ClaimResetSlot(%s) | ClaimPassword(%s,alice@example.com,update_only) | ChangePassword(%s,pw=%s)", aliceHash, aliceHash, aliceNtfyUser, subscriberPassword)
+	expected := fmt.Sprintf("GetUser(%s) | ClaimResetSlot(%s) | ClaimPassword(%s,alice@example.com,update_only) | ChangePassword(%s,pw=%s)", aliceNtfyUser, aliceHash, aliceHash, aliceNtfyUser, subscriberPassword)
 	if got := strings.Join(ntfyClient.invocations, " | "); got != expected {
 		t.Fatalf("invocations = %s, expected %s", got, expected)
 	}
@@ -90,7 +90,7 @@ func TestResetPasswordSlotFailuresGiveTooManyWithoutAnyNtfyCall(t *testing.T) {
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			ntfyClient := &fakeNtfyClient{changePasswordErr: fmt.Errorf("ntfy user: %w", ntfycli.ErrNotFound)}
+			ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl"), changePasswordErr: fmt.Errorf("ntfy user: %w", ntfycli.ErrNotFound)}
 			service := newLoggedService(ntfyClient, testCase.personFake(), nil)
 
 			_, err := service.ResetPassword(context.Background(), resetRequestForAlice)
@@ -106,9 +106,8 @@ func TestResetPasswordSlotFailuresGiveTooManyWithoutAnyNtfyCall(t *testing.T) {
 			if !errors.As(err, &tooManyErr) || tooManyErr.RetryAfterSeconds != testCase.wantSeconds {
 				t.Fatalf("err = %#v, expected RetryAfterSeconds %d", err, testCase.wantSeconds)
 			}
-			if len(ntfyClient.invocations) != 0 {
-				t.Fatalf("no ntfy call may be made, got %v", ntfyClient.invocations)
-			}
+			// The grant check passes silently; its own GetUser is the only ntfy call.
+			requireOnlyGrantLookup(t, ntfyClient.invocations)
 		})
 	}
 }
@@ -125,7 +124,7 @@ func TestTooManyPasswordChangesErrorSatisfiesIsAndAsWhenWrapped(t *testing.T) {
 }
 
 func TestResetPasswordSixthResetInAnHourIsLimitedAndRunsNoChangePassword(t *testing.T) {
-	ntfyClient := &fakeNtfyClient{}
+	ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl")}
 	service, _ := newResetService(ntfyClient)
 
 	for attempt := 1; attempt <= fakeResetLimit; attempt++ {
@@ -141,13 +140,16 @@ func TestResetPasswordSixthResetInAnHourIsLimitedAndRunsNoChangePassword(t *test
 	if !errors.As(err, &tooManyErr) || tooManyErr.RetryAfterSeconds != 120 {
 		t.Fatalf("err = %v, expected the limit error carrying 120 seconds", err)
 	}
-	if got := len(snapshotInvocations(&ntfyClient.invocations)); got != changesBefore {
-		t.Fatalf("the sixth reset ran %d extra ntfy calls", got-changesBefore)
+	// The limited sixth attempt still passes the grant check, so its GetUser is
+	// the one new ntfy call; no ChangePassword may follow.
+	after := snapshotInvocations(&ntfyClient.invocations)
+	if len(after) != changesBefore+1 || after[changesBefore] != fmt.Sprintf("GetUser(%s)", aliceNtfyUser) {
+		t.Fatalf("the sixth reset must add only its grant lookup, got %v", after[changesBefore:])
 	}
 }
 
 func TestResetPasswordStampClaimErrorReleasesSlotAndMakesNoNtfyCall(t *testing.T) {
-	ntfyClient := &fakeNtfyClient{}
+	ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl")}
 	service, personClient := newResetService(ntfyClient)
 	claimErr := errors.New("claim boom")
 	personClient.claimErr = claimErr
@@ -157,9 +159,7 @@ func TestResetPasswordStampClaimErrorReleasesSlotAndMakesNoNtfyCall(t *testing.T
 	if !errors.Is(err, claimErr) || errors.Is(err, ErrTooManyPasswordChanges) {
 		t.Fatalf("err = %v, expected the claim error (a 500, not a 429)", err)
 	}
-	if len(ntfyClient.invocations) != 0 {
-		t.Fatalf("no ntfy call may be made, got %v", ntfyClient.invocations)
-	}
+	requireOnlyGrantLookup(t, ntfyClient.invocations)
 	if slotCount(personClient) != 0 {
 		t.Fatalf("the slot must be released, have %d", slotCount(personClient))
 	}
@@ -206,7 +206,7 @@ func TestResetPasswordNotFoundRestoresStampReleasesSlotAndCreatesNoRow(t *testin
 
 func TestResetPasswordOtherApplyFailureRestoresStampAndReleasesSlot(t *testing.T) {
 	changeErr := errors.New("change failed")
-	ntfyClient := &fakeNtfyClient{changePasswordErr: changeErr}
+	ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl"), changePasswordErr: changeErr}
 	service, personClient := newResetService(ntfyClient)
 
 	_, err := service.ResetPassword(context.Background(), resetRequestForAlice)
@@ -223,7 +223,7 @@ func TestResetPasswordOtherApplyFailureRestoresStampAndReleasesSlot(t *testing.T
 }
 
 func TestResetPasswordReleaseDoesNotUndoANewerStamp(t *testing.T) {
-	ntfyClient := &fakeNtfyClient{}
+	ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl")}
 	service, personClient := newResetService(ntfyClient)
 	ntfyClient.changePasswordHook = func() error {
 		if _, err := personClient.ClaimPassword(context.Background(), aliceHash, aliceEmail, personsvc.ClaimAlways); err != nil {
@@ -242,7 +242,7 @@ func TestResetPasswordReleaseDoesNotUndoANewerStamp(t *testing.T) {
 
 func TestResetPasswordForRowlessExistingUserRecordsStampAfterwards(t *testing.T) {
 	t.Run("record succeeds", func(t *testing.T) {
-		ntfyClient := &fakeNtfyClient{}
+		ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl")}
 		personClient := newStatefulPersonClient()
 		personClient.recordTo = &ntfyClient.invocations
 		service := newLoggedService(ntfyClient, personClient, nil)
@@ -250,7 +250,7 @@ func TestResetPasswordForRowlessExistingUserRecordsStampAfterwards(t *testing.T)
 		if _, err := service.ResetPassword(context.Background(), resetRequestForAlice); err != nil {
 			t.Fatalf("ResetPassword returned unexpected error: %v", err)
 		}
-		expected := fmt.Sprintf("ClaimResetSlot(%s) | ClaimPassword(%s,alice@example.com,update_only) | ChangePassword(%s,pw=%s) | ClaimPassword(%s,alice@example.com,always)", aliceHash, aliceHash, aliceNtfyUser, subscriberPassword, aliceHash)
+		expected := fmt.Sprintf("GetUser(%s) | ClaimResetSlot(%s) | ClaimPassword(%s,alice@example.com,update_only) | ChangePassword(%s,pw=%s) | ClaimPassword(%s,alice@example.com,always)", aliceNtfyUser, aliceHash, aliceHash, aliceNtfyUser, subscriberPassword, aliceHash)
 		if got := strings.Join(ntfyClient.invocations, " | "); got != expected {
 			t.Fatalf("invocations = %s, expected %s", got, expected)
 		}
@@ -262,7 +262,7 @@ func TestResetPasswordForRowlessExistingUserRecordsStampAfterwards(t *testing.T)
 		logger, buffer := newJSONLogger()
 		personClient := newStatefulPersonClient()
 		personClient.claimErrByMode = map[personsvc.ClaimMode]error{personsvc.ClaimAlways: errors.New("always boom")}
-		service := newLoggedService(&fakeNtfyClient{}, personClient, logger)
+		service := newLoggedService(&fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl")}, personClient, logger)
 
 		result, err := service.ResetPassword(context.Background(), resetRequestForAlice)
 
@@ -281,7 +281,7 @@ func TestResetPasswordForRowlessExistingUserRecordsStampAfterwards(t *testing.T)
 
 func TestResetPasswordLogsNeverContainThePasswordOrEmail(t *testing.T) {
 	logger, buffer := newJSONLogger()
-	ntfyClient := &fakeNtfyClient{}
+	ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl")}
 	personClient := newStatefulPersonClient()
 	seedRow(personClient, "earlier-stamp")
 	service := newLoggedService(ntfyClient, personClient, logger)
@@ -331,7 +331,7 @@ func TestResetPasswordOutcomeLoggingAndFailedReleaseLogging(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			logger, buffer := newJSONLogger()
-			ntfyClient := &fakeNtfyClient{}
+			ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl")}
 			personClient := newStatefulPersonClient()
 			seedRow(personClient, "earlier-stamp")
 			testCase.setup(ntfyClient, personClient)
@@ -352,7 +352,7 @@ func TestResetPasswordOutcomeLoggingAndFailedReleaseLogging(t *testing.T) {
 
 	t.Run("failed stamp release and slot release are logged at Error level", func(t *testing.T) {
 		logger, buffer := newJSONLogger()
-		ntfyClient := &fakeNtfyClient{changePasswordErr: errors.New("change failed")}
+		ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl"), changePasswordErr: errors.New("change failed")}
 		personClient := newStatefulPersonClient()
 		seedRow(personClient, "earlier-stamp")
 		personClient.releaseClaimErr = errors.New("stamp release boom")
@@ -374,7 +374,7 @@ func TestResetPasswordOutcomeLoggingAndFailedReleaseLogging(t *testing.T) {
 		personClient := newStatefulPersonClient()
 		personClient.claimErr = errors.New("claim boom")
 		personClient.releaseSlotErr = errors.New("slot release boom")
-		service := newLoggedService(&fakeNtfyClient{}, personClient, logger)
+		service := newLoggedService(&fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl")}, personClient, logger)
 
 		_, _ = service.ResetPassword(context.Background(), resetRequestForAlice)
 
@@ -389,7 +389,7 @@ func TestResetWaitsForProvisionOfSamePersonFromItsStampClaim(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var gateOnce sync.Once
-	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new", statefulUsers: true}
+	ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl"), addTokenValue: "tk_new", statefulUsers: true}
 	ntfyClient.addUserHook = func() {
 		gateOnce.Do(func() {
 			close(entered)
@@ -443,7 +443,7 @@ func TestProvisionWaitsForResetOfSamePersonFromItsStampClaim(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var gateOnce sync.Once
-	ntfyClient := &fakeNtfyClient{addTokenValue: "tk_new", statefulUsers: true, users: map[string]bool{aliceNtfyUser: true}}
+	ntfyClient := &fakeNtfyClient{listUsers: aliceGrantedIn("urls4irl"), addTokenValue: "tk_new", statefulUsers: true, users: map[string]bool{aliceNtfyUser: true}}
 	ntfyClient.changePasswordHook = func() error {
 		gateOnce.Do(func() {
 			close(entered)

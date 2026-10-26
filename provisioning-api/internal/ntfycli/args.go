@@ -87,6 +87,13 @@ func UserListArgs() []string {
 	return []string{"user", "list"}
 }
 
+// UserAccessArgs builds the CLI arguments showing one user's grants. With no
+// topic argument `ntfy access <user>` prints only that user's block, in the
+// same format as `ntfy user list`.
+func UserAccessArgs(userID string) []string {
+	return []string{"access", userID}
+}
+
 // AccessGrantArgs builds the CLI arguments granting permission to userID on
 // topicPattern.
 func AccessGrantArgs(userID string, topicPattern string, permission Permission) []string {

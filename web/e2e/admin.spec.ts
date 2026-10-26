@@ -278,7 +278,9 @@ test.describe('admin UI critical flows', () => {
       status = 404;
       await confirmReset(section);
       await expect(
-        section.getByText('This person does not exist. Refresh the list.'),
+        section.getByText(
+          'This person does not exist, or has no access in this app. Refresh the list.',
+        ),
       ).toBeVisible();
       await expect(section.getByText('Too many password changes')).toHaveCount(0);
     });

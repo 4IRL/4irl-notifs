@@ -216,6 +216,11 @@ function App({
           return refreshUsers();
         })
         .catch((rejection: unknown) => {
+          if (rejection instanceof ApiError && rejection.status === 404) {
+            // 404 covers both a vanished user and one with no grant in this app.
+            setError(strings.deprovisionNotFound);
+            return;
+          }
           setError(rejection instanceof ApiError ? rejection.message : strings.genericError);
         });
     },

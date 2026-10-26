@@ -26,6 +26,7 @@ const (
 	defaultListenAddress = ":8080"
 	defaultNtfyBinary    = "ntfy"
 	readHeaderTimeout    = 10 * time.Second
+	appGrantModeEnv      = "PROVISIONING_APP_GRANT_MODE"
 )
 
 // envOrDefault returns the environment value for key, or fallback when unset.
@@ -89,6 +90,27 @@ func main() {
 	publisher := ntfypublish.NewClient(ntfypublish.Config{BaseURL: ntfyPublishURL})
 	logger.Info("ntfy publisher", "configured", publisher.Configured(), "url", ntfyPublishURL)
 
+	// PROVISIONING_APP_GRANT_MODE: unset or empty means enforce (fail closed);
+	// "log-only" is an explicit rollout setting; anything else stops startup.
+	appGrantMode, appGrantModeErr := resolveGrantMode(os.Getenv(appGrantModeEnv))
+	if appGrantModeErr != nil {
+		logger.Error("invalid app grant configuration", "error", appGrantModeErr)
+		os.Exit(1)
+	}
+	logger.Info("app grant mode", "mode", appGrantMode.String())
+
+	// PROVISIONING_INTERNAL_CREDENTIAL(_FILE) + PROVISIONING_INTERNAL_CREDENTIAL_MODE:
+	// an invalid mode, or enforce with no credential, stops startup before
+	// listening. The credential value is never logged.
+	credentialMode, internalCredential, credentialModeErr := resolveCredentialMode(
+		logger, os.Getenv(internalCredentialModeEnv), resolveSecretEnv(logger, internalCredentialEnv))
+	if credentialModeErr != nil {
+		logger.Error("invalid internal credential configuration", "error", credentialModeErr)
+		os.Exit(1)
+	}
+	logger.Info("internal credential mode",
+		"mode", credentialMode.String(), "credential_configured", internalCredential != "")
+
 	service := provisioning.NewService(provisioning.ServiceConfig{
 		Client:                     ntfyClient,
 		GeneratePassword:           provisioning.GenerateRandomPassword,
@@ -96,8 +118,14 @@ func main() {
 		PersonClient:               personClient,
 		Publisher:                  publisher,
 		Logger:                     logger,
+		AppGrantMode:               appGrantMode,
 	})
-	server := httpapi.NewServer(httpapi.ServerConfig{Service: service, Logger: logger})
+	server := httpapi.NewServer(httpapi.ServerConfig{
+		Service:            service,
+		Logger:             logger,
+		InternalCredential: internalCredential,
+		CredentialMode:     credentialMode,
+	})
 
 	httpServer := &http.Server{
 		Addr:              listenAddress,

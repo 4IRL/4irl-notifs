@@ -9,18 +9,24 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-const validToken = "tk_abcdefghijklmnopqrstuvwxyz012"
+const (
+	validToken = "tk_abcdefghijklmnopqrstuvwxyz012"
+	// testCredential is a fake stand-in with the real shape (64 lowercase hex); it is not a real secret.
+	testCredential = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+)
 
 func TestMintPublisherSendsExactRequestAndDecodesGrant(testInstance *testing.T) {
-	var gotMethod, gotPath, gotContentType, gotBody string
+	var gotMethod, gotPath, gotContentType, gotCredential, gotBody string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		gotMethod = request.Method
 		gotPath = request.URL.Path
 		gotContentType = request.Header.Get("Content-Type")
+		gotCredential = request.Header.Get("X-Notifs-Internal-Credential")
 		bodyBytes, _ := io.ReadAll(request.Body)
 		gotBody = string(bodyBytes)
 		writer.Header().Set("Content-Type", "application/json")
@@ -33,7 +39,7 @@ func TestMintPublisherSendsExactRequestAndDecodesGrant(testInstance *testing.T) 
 	}))
 	defer server.Close()
 
-	client := New(Config{BaseURL: server.URL + "/"})
+	client := New(Config{BaseURL: server.URL + "/", Credential: testCredential})
 	grant, mintErr := client.MintPublisher(context.Background(), "urls4irl")
 	if mintErr != nil {
 		testInstance.Fatalf("MintPublisher: %v", mintErr)
@@ -44,6 +50,9 @@ func TestMintPublisherSendsExactRequestAndDecodesGrant(testInstance *testing.T) 
 	}
 	if gotContentType != "application/json" {
 		testInstance.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+	if gotCredential != testCredential {
+		testInstance.Error("X-Notifs-Internal-Credential header does not equal the configured credential")
 	}
 	if gotBody != `{"app_id":"urls4irl","rotate":false}` {
 		testInstance.Errorf("body = %s, want exactly {\"app_id\":\"urls4irl\",\"rotate\":false}", gotBody)
@@ -79,7 +88,7 @@ func TestMintPublisherRejectsBadResponses(testInstance *testing.T) {
 			}))
 			defer server.Close()
 
-			client := New(Config{BaseURL: server.URL})
+			client := New(Config{BaseURL: server.URL, Credential: testCredential})
 			grant, mintErr := client.MintPublisher(context.Background(), "urls4irl")
 			if mintErr == nil {
 				subTest.Fatalf("MintPublisher succeeded with %+v, want an error", grant)
@@ -109,7 +118,7 @@ func TestMintPublisherRejectsAnOversizeResponseBody(testInstance *testing.T) {
 	}))
 	defer server.Close()
 
-	grant, mintErr := New(Config{BaseURL: server.URL}).MintPublisher(context.Background(), "urls4irl")
+	grant, mintErr := New(Config{BaseURL: server.URL, Credential: testCredential}).MintPublisher(context.Background(), "urls4irl")
 
 	if mintErr == nil {
 		testInstance.Fatalf("MintPublisher succeeded with %d-byte body, want an error", len(oversize))
@@ -136,7 +145,7 @@ func TestMintPublisherDoesNotFollowRedirects(testInstance *testing.T) {
 			}))
 			defer redirector.Close()
 
-			grant, mintErr := New(Config{BaseURL: redirector.URL}).MintPublisher(context.Background(), "urls4irl")
+			grant, mintErr := New(Config{BaseURL: redirector.URL, Credential: testCredential}).MintPublisher(context.Background(), "urls4irl")
 
 			if mintErr == nil {
 				subTest.Fatalf("MintPublisher succeeded with %+v after a redirect, want an error", grant)
@@ -162,7 +171,7 @@ func TestMintPublisherHonorsContextCancellation(testInstance *testing.T) {
 	defer server.Close()
 	defer close(release)
 
-	client := New(Config{BaseURL: server.URL})
+	client := New(Config{BaseURL: server.URL, Credential: testCredential})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -182,18 +191,125 @@ func TestMintPublisherAppliesTimeout(testInstance *testing.T) {
 	defer server.Close()
 	defer close(release)
 
-	client := New(Config{BaseURL: server.URL, Timeout: 50 * time.Millisecond})
+	client := New(Config{BaseURL: server.URL, Credential: testCredential, Timeout: 50 * time.Millisecond})
 	if _, mintErr := client.MintPublisher(context.Background(), "urls4irl"); mintErr == nil {
 		testInstance.Fatal("MintPublisher succeeded against a hung server, want a timeout error")
 	}
 }
 
 func TestConfigured(testInstance *testing.T) {
-	if New(Config{}).Configured() {
-		testInstance.Error("Configured() = true for an empty BaseURL")
+	testCases := []struct {
+		name   string
+		config Config
+		want   bool
+	}{
+		{name: "neither", config: Config{}, want: false},
+		{name: "url only", config: Config{BaseURL: "http://provisioning-api:8080"}, want: false},
+		{name: "credential only", config: Config{Credential: testCredential}, want: false},
+		{name: "both", config: Config{BaseURL: "http://provisioning-api:8080", Credential: testCredential}, want: true},
 	}
-	if !New(Config{BaseURL: "http://provisioning-api:8080"}).Configured() {
-		testInstance.Error("Configured() = false for a set BaseURL")
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			if got := New(testCase.config).Configured(); got != testCase.want {
+				subTest.Errorf("Configured() = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestDefaultTimeoutCoversTheMeasuredWorstCase(testInstance *testing.T) {
+	// Measured worst provisioning call was 663ms (5 concurrent provisions); the rule is
+	// max(15s, 3 x worst), so the floor of 15s applies.
+	if defaultTimeout < 15*time.Second {
+		testInstance.Errorf("defaultTimeout = %s, want at least 15s", defaultTimeout)
+	}
+	if got := New(Config{}).httpClient.Timeout; got != defaultTimeout {
+		testInstance.Errorf("client timeout = %s, want the default %s", got, defaultTimeout)
+	}
+}
+
+func TestMintPublisherAttemptsExactlyOnce(testInstance *testing.T) {
+	testCases := []struct {
+		name    string
+		hang    bool
+		timeout time.Duration
+	}{
+		{name: "server error", timeout: 5 * time.Second},
+		{name: "hang past timeout", hang: true, timeout: 300 * time.Millisecond},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			var hits atomic.Int32
+			received := make(chan struct{}, 8)
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				hits.Add(1)
+				received <- struct{}{}
+				if testCase.hang {
+					select {
+					case <-release:
+					case <-request.Context().Done():
+					}
+					return
+				}
+				writer.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
+			defer close(release)
+
+			client := New(Config{BaseURL: server.URL, Credential: testCredential, Timeout: testCase.timeout})
+			if _, mintErr := client.MintPublisher(context.Background(), "urls4irl"); mintErr == nil {
+				subTest.Fatal("MintPublisher succeeded, want an error")
+			}
+			// On a loaded machine the client can time out before the handler goroutine has run, so wait
+			// for the first arrival instead of reading the counter immediately.
+			select {
+			case <-received:
+			case <-time.After(5 * time.Second):
+				subTest.Fatal("server never saw the request")
+			}
+			if got := hits.Load(); got != 1 {
+				subTest.Errorf("server saw %d requests, want exactly 1 (no retry)", got)
+			}
+		})
+	}
+}
+
+func TestMintPublisherErrorsNeverContainTheCredential(testInstance *testing.T) {
+	testCases := []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{name: "server error echoing the header", handler: func(writer http.ResponseWriter, request *http.Request) {
+			writer.WriteHeader(http.StatusUnauthorized)
+			_, _ = writer.Write([]byte(request.Header.Get("X-Notifs-Internal-Credential")))
+		}},
+		{name: "malformed body", handler: func(writer http.ResponseWriter, request *http.Request) {
+			_, _ = writer.Write([]byte(request.Header.Get("X-Notifs-Internal-Credential")))
+		}},
+		{name: "connection dropped", handler: func(writer http.ResponseWriter, _ *http.Request) {
+			connection, _, hijackErr := writer.(http.Hijacker).Hijack()
+			if hijackErr != nil {
+				testInstance.Errorf("hijack failed, so this case would not drop the connection: %v", hijackErr)
+				return
+			}
+			_ = connection.Close()
+		}},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			server := httptest.NewServer(testCase.handler)
+			defer server.Close()
+
+			_, mintErr := New(Config{BaseURL: server.URL, Credential: testCredential}).MintPublisher(
+				context.Background(), "urls4irl")
+			if mintErr == nil {
+				subTest.Fatal("MintPublisher succeeded, want an error")
+			}
+			if strings.Contains(mintErr.Error(), testCredential) {
+				subTest.Errorf("error %q leaks the credential", mintErr)
+			}
+		})
 	}
 }
 
@@ -206,10 +322,22 @@ func (failing failingRoundTripper) RoundTrip(request *http.Request) (*http.Respo
 }
 
 func TestMintPublisherUnconfiguredFailsWithoutDialing(testInstance *testing.T) {
-	client := New(Config{})
-	client.httpClient.Transport = failingRoundTripper{testInstance: testInstance}
-	_, mintErr := client.MintPublisher(context.Background(), "urls4irl")
-	if !errors.Is(mintErr, ErrNotConfigured) {
-		testInstance.Fatalf("MintPublisher error = %v, want ErrNotConfigured", mintErr)
+	testCases := []struct {
+		name   string
+		config Config
+	}{
+		{name: "neither", config: Config{}},
+		{name: "url only", config: Config{BaseURL: "http://provisioning-api:8080"}},
+		{name: "credential only", config: Config{Credential: testCredential}},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			client := New(testCase.config)
+			client.httpClient.Transport = failingRoundTripper{testInstance: subTest}
+			_, mintErr := client.MintPublisher(context.Background(), "urls4irl")
+			if !errors.Is(mintErr, ErrNotConfigured) {
+				subTest.Fatalf("MintPublisher error = %v, want ErrNotConfigured", mintErr)
+			}
+		})
 	}
 }

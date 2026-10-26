@@ -36,7 +36,13 @@ type fakeNtfyClient struct {
 	listUsers               []ntfycli.User
 	listUsersErr            error
 	// listUsersFunc, when set, replaces listUsers (for call-dependent results).
-	listUsersFunc func() []ntfycli.User
+	// It receives the user a GetUser lookup asks for ("" for ListUsers), so a
+	// fixture can answer per user and per call.
+	listUsersFunc func(requestedUser string) []ntfycli.User
+	// getUserErrs scripts GetUser failures by call order: the i-th call fails
+	// with getUserErrs[i] when i is in range and the entry is non-nil.
+	getUserErrs  []error
+	getUserCalls int
 
 	// statefulUsers makes AddUser behave like ntfy: ErrAlreadyExists for a
 	// user that already exists, and DeleteUser forgets it.
@@ -139,9 +145,80 @@ func (client *fakeNtfyClient) RemoveToken(_ context.Context, userID string, toke
 func (client *fakeNtfyClient) ListUsers(_ context.Context) ([]ntfycli.User, error) {
 	client.record("ListUsers()")
 	if client.listUsersFunc != nil {
-		return client.listUsersFunc(), client.listUsersErr
+		return client.listUsersFunc(""), client.listUsersErr
 	}
 	return client.listUsers, client.listUsersErr
+}
+
+// GetUser answers from the same fixture ListUsers uses (listUsersFunc, else
+// listUsers) so there is a single source of truth: a user absent from it is
+// ntfycli.ErrNotFound, never an implicit grant.
+func (client *fakeNtfyClient) GetUser(_ context.Context, userID string) (ntfycli.User, error) {
+	client.record("GetUser(%s)", userID)
+	recordMutex.Lock()
+	callIndex := client.getUserCalls
+	client.getUserCalls++
+	recordMutex.Unlock()
+	if callIndex < len(client.getUserErrs) && client.getUserErrs[callIndex] != nil {
+		return ntfycli.User{}, client.getUserErrs[callIndex]
+	}
+	users := client.listUsers
+	if client.listUsersFunc != nil {
+		users = client.listUsersFunc(userID)
+	}
+	for _, user := range users {
+		if user.Name == userID {
+			return user, nil
+		}
+	}
+	return ntfycli.User{}, fmt.Errorf("ntfy access: %w", ntfycli.ErrNotFound)
+}
+
+// aliceGrantedIn is the fixture "alice holds the scoped grant of each app".
+func aliceGrantedIn(appIDs ...string) []ntfycli.User {
+	patterns := make([]string, 0, len(appIDs))
+	for _, appID := range appIDs {
+		patterns = append(patterns, appID+"-"+aliceHash+"-*")
+	}
+	return []ntfycli.User{{Name: aliceNtfyUser, TopicPatterns: patterns}}
+}
+
+// requireOnlyGrantLookup fails unless the grant check's own GetUser call is the
+// single ntfy call made: nothing mutating ran after (or alongside) it.
+func requireOnlyGrantLookup(t *testing.T, invocations []string) {
+	t.Helper()
+	expected := []string{fmt.Sprintf("GetUser(%s)", aliceNtfyUser)}
+	if !reflect.DeepEqual(invocations, expected) {
+		t.Fatalf("ntfy invocations = %v, expected only the grant lookup %v", invocations, expected)
+	}
+}
+
+// grantedThenEmptied returns a listUsersFunc for Deprovision tests whose people
+// end with zero remaining patterns. Deprovision looks each user up twice, so
+// one static snapshot cannot be both "holds the app's grant" (the pre-reset
+// grant check) and "nothing left" (the last-app check after the resets): the
+// first lookup of a user shows its scoped grant for appID, every later lookup
+// of that same user shows no patterns. ListUsers ("" asked for) lists everyone
+// with the grant and counts nothing, so each subscriber has its own counter.
+func grantedThenEmptied(appID string, userIDs ...string) func(requestedUser string) []ntfycli.User {
+	var mutex sync.Mutex
+	lookups := map[string]int{}
+	return func(requestedUser string) []ntfycli.User {
+		mutex.Lock()
+		defer mutex.Unlock()
+		if requestedUser != "" {
+			lookups[requestedUser]++
+		}
+		users := make([]ntfycli.User, 0, len(userIDs))
+		for _, userID := range userIDs {
+			patterns := []string{appID + "-" + strings.TrimPrefix(userID, "u_") + "-*"}
+			if userID == requestedUser && lookups[userID] > 1 {
+				patterns = nil
+			}
+			users = append(users, ntfycli.User{Name: userID, TopicPatterns: patterns})
+		}
+		return users
+	}
 }
 
 func newTestService(client *fakeNtfyClient) *Service {
@@ -555,7 +632,7 @@ func TestProvisionLogsWarnWhenPersonServiceDualWriteFails(t *testing.T) {
 func TestDeprovisionResetsAccessAndRemovesAppTokens(t *testing.T) {
 	client := &fakeNtfyClient{
 		listUsers: []ntfycli.User{
-			{Name: aliceNtfyUser, TopicPatterns: []string{"chores4irl-" + aliceHash + "-*"}},
+			{Name: aliceNtfyUser, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "chores4irl-" + aliceHash + "-*"}},
 		},
 		listTokens: []ntfycli.Token{
 			{Value: "tk_urls4irl_token", Label: "urls4irl"},
@@ -569,11 +646,12 @@ func TestDeprovisionResetsAccessAndRemovesAppTokens(t *testing.T) {
 	}
 
 	expectedInvocations := strings.Join([]string{
+		fmt.Sprintf("GetUser(%s)", aliceNtfyUser),
 		fmt.Sprintf("ResetAccess(%s,urls4irl-%s-*)", aliceNtfyUser, aliceHash),
 		fmt.Sprintf("ResetAccess(%s,urls4irl-broadcast)", aliceNtfyUser),
 		fmt.Sprintf("ListTokens(%s)", aliceNtfyUser),
 		fmt.Sprintf("RemoveToken(%s,tk_urls4irl_token)", aliceNtfyUser),
-		"ListUsers()",
+		fmt.Sprintf("GetUser(%s)", aliceNtfyUser),
 	}, " | ")
 	if got := strings.Join(client.invocations, " | "); got != expectedInvocations {
 		t.Fatalf("invocations = %s, expected %s", got, expectedInvocations)
@@ -583,7 +661,7 @@ func TestDeprovisionResetsAccessAndRemovesAppTokens(t *testing.T) {
 func TestDeprovisionTreatsBroadcastResetNotFoundAsSuccess(t *testing.T) {
 	client := &fakeNtfyClient{
 		listUsers: []ntfycli.User{
-			{Name: aliceNtfyUser, TopicPatterns: []string{"chores4irl-" + aliceHash + "-*"}},
+			{Name: aliceNtfyUser, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "chores4irl-" + aliceHash + "-*"}},
 		},
 		resetAccessErrByPattern: map[string]error{
 			"urls4irl-broadcast": fmt.Errorf("ntfy access: %w: no such grant", ntfycli.ErrNotFound),
@@ -603,7 +681,7 @@ func TestDeprovisionPropagatesBroadcastResetAccessError(t *testing.T) {
 	broadcastResetErr := errors.New("broadcast reset failed")
 	client := &fakeNtfyClient{
 		listUsers: []ntfycli.User{
-			{Name: aliceNtfyUser, TopicPatterns: []string{"chores4irl-" + aliceHash + "-*"}},
+			{Name: aliceNtfyUser, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "chores4irl-" + aliceHash + "-*"}},
 		},
 		resetAccessErrByPattern: map[string]error{"urls4irl-broadcast": broadcastResetErr},
 	}
@@ -618,9 +696,7 @@ func TestDeprovisionPropagatesBroadcastResetAccessError(t *testing.T) {
 
 func TestDeprovisionDeletesUserWhenOnlyBroadcastRemnantRemains(t *testing.T) {
 	client := &fakeNtfyClient{
-		listUsers: []ntfycli.User{
-			{Name: aliceNtfyUser, TopicPatterns: nil},
-		},
+		listUsersFunc: grantedThenEmptied("urls4irl", aliceNtfyUser),
 	}
 	service := newTestService(client)
 
@@ -645,9 +721,7 @@ func TestDeprovisionDeletesUserWhenOnlyBroadcastRemnantRemains(t *testing.T) {
 
 func TestDeprovisionDeletesUserWhenNoTopicPatternsRemain(t *testing.T) {
 	client := &fakeNtfyClient{
-		listUsers: []ntfycli.User{
-			{Name: aliceNtfyUser, TopicPatterns: nil},
-		},
+		listUsersFunc: grantedThenEmptied("urls4irl", aliceNtfyUser),
 	}
 	service := newTestService(client)
 
@@ -664,7 +738,7 @@ func TestDeprovisionDeletesUserWhenNoTopicPatternsRemain(t *testing.T) {
 func TestDeprovisionKeepsUserWhenTopicPatternsRemain(t *testing.T) {
 	client := &fakeNtfyClient{
 		listUsers: []ntfycli.User{
-			{Name: aliceNtfyUser, TopicPatterns: []string{"chores4irl-" + aliceHash + "-*"}},
+			{Name: aliceNtfyUser, TopicPatterns: []string{"urls4irl-" + aliceHash + "-*", "chores4irl-" + aliceHash + "-*"}},
 		},
 	}
 	service := newTestService(client)
@@ -693,15 +767,65 @@ func TestDeprovisionDoesNothingWhenUserAbsentFromList(t *testing.T) {
 	}
 }
 
-func TestDeprovisionPropagatesUnknownUser(t *testing.T) {
+// The last-app lookup (the second GetUser) races other writers: the user can
+// vanish between the grant check and the teardown, which is the already-gone
+// no-op, while any other lookup error must surface and tear nothing down.
+func TestDeprovisionSecondLookupBranches(t *testing.T) {
+	t.Run("user vanishes before the last-app lookup", func(t *testing.T) {
+		client := &fakeNtfyClient{
+			listUsers:   aliceGrantedIn("urls4irl"),
+			getUserErrs: []error{nil, fmt.Errorf("x: %w", ntfycli.ErrNotFound)},
+		}
+		personClient := &fakePersonClient{configuredValue: true}
+		service := newTestServiceWithPersonClient(client, personClient)
+
+		if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser}); err != nil {
+			t.Fatalf("Deprovision returned unexpected error: %v", err)
+		}
+		if joined := strings.Join(client.invocations, " | "); strings.Contains(joined, "DeleteUser(") {
+			t.Fatalf("an already-gone user must not be deleted again: %s", joined)
+		}
+		if len(personClient.invocations) != 0 {
+			t.Fatalf("person invocations = %v, expected none", personClient.invocations)
+		}
+	})
+	t.Run("last-app lookup fails", func(t *testing.T) {
+		lookupErr := errors.New("boom")
+		client := &fakeNtfyClient{
+			listUsers:   aliceGrantedIn("urls4irl"),
+			getUserErrs: []error{nil, lookupErr},
+		}
+		personClient := &fakePersonClient{configuredValue: true}
+		service := newTestServiceWithPersonClient(client, personClient)
+
+		err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: aliceNtfyUser})
+		if !errors.Is(err, lookupErr) {
+			t.Fatalf("err = %v, expected the lookup error", err)
+		}
+		if joined := strings.Join(client.invocations, " | "); strings.Contains(joined, "DeleteUser(") {
+			t.Fatalf("a failed last-app lookup must not delete the user: %s", joined)
+		}
+		if len(personClient.invocations) != 0 {
+			t.Fatalf("person invocations = %v, expected no person-row delete", personClient.invocations)
+		}
+	})
+}
+
+// An unknown ntfy user is caught by the pre-reset grant check's GetUser lookup
+// and is the already-gone no-op, so ResetAccess (and its scripted ErrNotFound)
+// is never reached.
+func TestDeprovisionOfUnknownUserIsAlreadyGoneAndNeverResetsAccess(t *testing.T) {
 	client := &fakeNtfyClient{
 		resetAccessErr: fmt.Errorf("ntfy access: %w: user ghost does not exist", ntfycli.ErrNotFound),
 	}
 	service := newTestService(client)
 
-	err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: "u_ghost0000000000"})
-	if !errors.Is(err, ntfycli.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound to propagate, got: %v", err)
+	if err := service.Deprovision(context.Background(), DeprovisionRequest{AppID: "urls4irl", NtfyUserID: "u_ghost0000000000"}); err != nil {
+		t.Fatalf("Deprovision of an absent user must succeed as a no-op, got: %v", err)
+	}
+	joined := strings.Join(client.invocations, " | ")
+	if strings.Contains(joined, "DeleteUser(") || strings.Contains(joined, "ResetAccess(") {
+		t.Fatalf("an absent user must cause no mutation, got: %s", joined)
 	}
 }
 
@@ -937,7 +1061,7 @@ func newSetPasswordService(client *fakeNtfyClient) (*Service, *fakePersonClient)
 }
 
 func TestSetPasswordDelegatesToClient(t *testing.T) {
-	client := &fakeNtfyClient{}
+	client := &fakeNtfyClient{listUsers: aliceGrantedIn("tasktracker")}
 	service, personClient := newSetPasswordService(client)
 
 	result, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"})
@@ -947,8 +1071,9 @@ func TestSetPasswordDelegatesToClient(t *testing.T) {
 	if result.UserID != aliceNtfyUser {
 		t.Fatalf("result.UserID = %q, expected %q", result.UserID, aliceNtfyUser)
 	}
-	if got := strings.Join(client.invocations, " | "); got != fmt.Sprintf("ChangePassword(%s,pw=sekrit-pw)", aliceNtfyUser) {
-		t.Fatalf("invocations = %s, expected ChangePassword(%s,pw=sekrit-pw)", got, aliceNtfyUser)
+	expectedNtfyInvocations := fmt.Sprintf("GetUser(%s) | ChangePassword(%s,pw=sekrit-pw)", aliceNtfyUser, aliceNtfyUser)
+	if got := strings.Join(client.invocations, " | "); got != expectedNtfyInvocations {
+		t.Fatalf("invocations = %s, expected %s", got, expectedNtfyInvocations)
 	}
 	if got := strings.Join(personClient.invocations, " | "); got != fmt.Sprintf("ClaimPassword(%s,alice@example.com,update_only)", aliceHash) {
 		t.Fatalf("person invocations = %s, expected a single update_only claim", got)
@@ -956,7 +1081,7 @@ func TestSetPasswordDelegatesToClient(t *testing.T) {
 }
 
 func TestSetPasswordPropagatesClientError(t *testing.T) {
-	client := &fakeNtfyClient{changePasswordErr: errors.New("boom")}
+	client := &fakeNtfyClient{changePasswordErr: errors.New("boom"), listUsers: aliceGrantedIn("tasktracker")}
 	service, _ := newSetPasswordService(client)
 
 	if _, err := service.SetPassword(context.Background(), SetPasswordRequest{AppID: "tasktracker", Email: aliceEmail, Password: "sekrit-pw"}); err == nil {
@@ -991,6 +1116,9 @@ func TestSetPasswordIsEmailGlobalAcrossApps(t *testing.T) {
 	if _, err := service.Provision(context.Background(), ProvisionRequest{AppID: "urls4irl", Email: aliceEmail}); err != nil {
 		t.Fatalf("Provision returned unexpected error: %v", err)
 	}
+	// The fake's GrantAccess only records the call, so state what ntfy would now
+	// report: alice holds a grant in both apps.
+	client.listUsers = aliceGrantedIn("urls4irl", "tasktracker")
 
 	// Reset her password via a DIFFERENT but valid app_id. The ntfy user is
 	// email-global, so this must still succeed for the email-derived user.
@@ -1017,9 +1145,7 @@ func TestSetPasswordIsEmailGlobalAcrossApps(t *testing.T) {
 
 func TestDeprovisionDualDeletesPersonRowWhenLastAppRemoved(t *testing.T) {
 	ntfyClient := &fakeNtfyClient{
-		listUsers: []ntfycli.User{
-			{Name: aliceNtfyUser, TopicPatterns: nil},
-		},
+		listUsersFunc: grantedThenEmptied("urls4irl", aliceNtfyUser),
 	}
 	personClient := &fakePersonClient{configuredValue: true}
 	service := newTestServiceWithPersonClient(ntfyClient, personClient)

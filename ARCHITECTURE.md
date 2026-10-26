@@ -125,7 +125,8 @@ the VPS; person-service + admin UI are Cloudflare-native.
   an alert skips a destination the check's app may not use, as before.
 - `/v1/admin/apps/{app_id}/ntfy-publisher` (`POST`, `GET`, `DELETE`) — the per-app ntfy publisher token
   that `to.recipient` delivery publishes with. `POST` mints one through provisioning-api
-  (`DELIVERY_PROVISIONING_URL`; unset answers 503) and stores it sealed, `GET` returns the record (never
+  (`DELIVERY_PROVISIONING_URL`, sending the internal credential `DELIVERY_PROVISIONING_CREDENTIAL`;
+  either unset answers 503) and stores it sealed, `GET` returns the record (never
   the token), and `DELETE` removes delivery-api's stored copy (idempotent, 204) so recipient submits fail
   closed until a re-mint. It does not revoke the token in ntfy.
 
@@ -362,6 +363,7 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 | ------------------------------- | ----------------------------------------------------- | ------------------------------------------- |
 | `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`)         | `notifs-api` + `notifs-people` + `notifs-delivery` Service Auth apps |
 | VPS dual-write token            | provisioning-api (Go)                                 | `notifs-people` Service Auth                |
+| internal credential (not an Access token) | delivery-api `provisionclient` (`X-Notifs-Internal-Credential`) | provisioning-api's in-app credential check (log-only until one-door master Step 8) |
 | per-consuming-app tokens        | tasktracker backend (live); urls4irl backend (future) | `notifs-api` Service Auth; the whole-host `notifs-delivery` app once split from `/v1/admin` (never the `/v1/admin` app) |
 | `notifs-watchdog`               | watchdog Worker (secrets `CF_ACCESS_CLIENT_ID/SECRET`) | `notifs-api` Service Auth; the whole-host `notifs-delivery` app **excluding `/v1/admin`** (only after the `/v1/admin` split exists) |
 
@@ -540,7 +542,7 @@ graph LR
   end
 ```
 
-### provisioning-api endpoints (`notifs-api.4irl.app`, all Service-Auth gated)
+### provisioning-api endpoints (`notifs-api.4irl.app`, all Service-Auth gated at the edge, plus the in-app checks below)
 
 `POST /v1/provision` · `POST /v1/reset-password` · `POST /v1/deprovision` · `POST /v1/set-password` · `GET /v1/users` ·
 `DELETE /v1/users/{user_id}` · `POST /v1/provision-app` · `POST /v1/deprovision-app` ·
@@ -562,13 +564,50 @@ must already be provisioned (missing user → `404 {"error":"user does not exist
 validated at 8–128 chars (`400 {"error":"invalid password"}`), it records `password_set_at` before
 changing the password (so a later provision won't replace a chosen one) and returns `500` with nothing
 changed when that record can't be written, and like every `/v1/*` route it is Service-Auth gated at the
-edge (no Go-level auth). Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
+edge. Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
+
+**In-app checks (provisioning-api).** Beyond the edge, provisioning-api has two Go-level checks. Each has a
+mode switch with the same shape: `PROVISIONING_INTERNAL_CREDENTIAL_MODE` and `PROVISIONING_APP_GRANT_MODE`
+accept `enforce` or `log-only`; empty or unset means `enforce` (fail closed) and any other value is a startup
+error (the process logs it and exits non-zero). Production runs the grant check as `enforce` and the
+credential check as `log-only` (explicit settings in `docker-compose.prod.yml`); the local
+`docker-compose.yml` runs the same two modes (grant enforced so the integration suite exercises it).
+
+- **Internal credential.** Every route except exactly `GET /healthz` is wrapped by a middleware that checks the
+  `X-Notifs-Internal-Credential` header against the persistent `PROVISIONING_INTERNAL_CREDENTIAL` secret
+  (constant-time compare; the value is never logged or echoed). A rejection reason is `missing`, `mismatch` or
+  `not_configured`. In `log-only` mode it logs WARN `internal credential would reject` (`reason`, `method`,
+  `path`) and the request proceeds; in `enforce` mode it answers `401 {"error":"unauthorized"}` and never
+  reaches the handler (`enforce` with no credential loaded is a startup error). delivery-api's
+  `provisionclient` sends the credential on every call (default timeout 15 s, set from local measurements of
+  the new grant lookup: sequential `POST /v1/provision` 126 to 163 ms, `POST /v1/provision-app` 93 to 116 ms,
+  5 concurrent `/v1/provision` 542 to 663 ms, since the CLI calls are serialized). The check stays `log-only`
+  in prod until every caller goes through the delivery-api door (one-door master Step 8); the full
+  one-door rewrite of this section is master Step 9. delivery-api refuses to start when
+  `DELIVERY_PROVISIONING_URL` names any host other than `provisioning-api`, so the credential is never sent
+  to another origin. A successful `GET /healthz` writes no completion log line (Docker's healthcheck and the
+  watchdog probe it constantly); a failing one is still logged.
+- **App grant check.** `POST /v1/reset-password`, `/v1/set-password` and `/v1/deprovision` read the one ntfy
+  user (`ntfy access <user>`, via `NtfyClient.GetUser`) before any state change and require that the person
+  holds a grant in the calling `app_id` (set/reset succeed for any app the person holds a grant in;
+  deprovision still revokes only the calling app's grant). Every decision logs an `app grant check` line (INFO
+  for `allow` and `already_gone`, ERROR for an enforced `lookup_failed`, WARN otherwise) with `mode`, `route`, `app_id`, `person_hash`, `decision` and `reason` (never an email or password). Decisions:
+  `allow`; `would_reject` (`log-only`, no grant: the request continues) or `rejected` (`enforce`, no grant:
+  `404 {"error":"user does not exist"}`); `already_gone` (deprovision of a user that does not exist, never a
+  rejection in either mode: per-user `POST /v1/deprovision` of an absent ntfy user now answers 200
+  `{removed:true}` in both modes instead of the former 404, an idempotent no-op outside the log-only safety
+  net); `lookup_failed` (any other lookup error: `enforce` answers 500, `log-only`
+  continues). **Rollout:** on 2026-10-26 the operator decided that no app calls provisioning-api, so the grant check went straight to `enforce` with no log-only audit window: prod compose runs
+  `PROVISIONING_APP_GRANT_MODE=enforce`, like local compose. `log-only` stays available as a diagnostic switch.
 
 `POST /v1/provision` gains an optional `password` (`xxxx-xxxx-xxxx-xxxx`, about 80 bits) only when that call
 generated one; every `200` sends `Cache-Control: no-store`. `POST /v1/reset-password {app_id, email}` →
 `{user_id, app_id, password}` makes a fresh one (`400` invalid JSON body / app_id / email, `404`
 user does not exist, `429` too many password changes, `500`), every response `Cache-Control: no-store`.
-The limit is 5 resets per person per rolling hour and is checked first, so `429` wins over `404`. Every
+The limit is 5 resets per person per rolling hour and is checked first, so `429` wins over `404`. Ahead of
+the grant lookup, an in-process throttle of 20 attempts per person and app per rolling hour (rejected
+attempts included, no reset slot claimed) answers `429` without any ntfy CLI call; its
+`Retry-After` is the seconds until the oldest counted attempt leaves the hour window (up to 3600). Every
 reset `429` carries `Retry-After`: the seconds until the oldest slot expires for a true limit, a fixed 60
 for a limit-store outage or unconfigured client (status and body identical). The limit store fails
 closed: if it is down or unconfigured, reset answers `429` and makes no ntfy call.
@@ -772,6 +811,19 @@ graph TD
   offline**: losing or changing it orphans every stored destination secret, and there is no rotation path.
   Recovery after a key loss: a destination's sealed blob can no longer be opened, so remove the routes that
   reference it, then delete and recreate the affected destinations.
+- **`PROVISIONING_INTERNAL_CREDENTIAL` (required repo secret)**: the internal credential shared only by
+  provisioning-api and delivery-api, exactly 64 lowercase hex characters (`openssl rand -hex 32`); the
+  deploy fails before touching the VPS if it is missing or malformed, so set it before the first merge.
+  It is written to `secrets-persistent/` on every deploy and never deleted, and both services read the
+  same file (provisioning-api as `PROVISIONING_INTERNAL_CREDENTIAL_FILE`, delivery-api as
+  `DELIVERY_PROVISIONING_CREDENTIAL_FILE`). Both services read it at startup only, and `up -d` does not
+  recreate a service when just a bind-mounted secret file's contents change, so **rotating** it means
+  updating the GitHub secret, redeploying, then running `docker compose -f docker-compose.prod.yml up -d
+  --force-recreate provisioning-api delivery-api` on the VPS so both ends restart with the same value.
+  Prod runs `PROVISIONING_APP_GRANT_MODE` as `enforce` (see "In-app checks" under the provisioning-api
+  endpoints) and `PROVISIONING_INTERNAL_CREDENTIAL_MODE` as `log-only`: the admin UI proxy reaches
+  provisioning-api without the credential until it is re-homed, so the credential check is flipped to
+  `enforce` only in one-door master Step 8.
 - **person-service D1 schema** is applied by CI: `worker-deploy.yml` runs `wrangler d1 migrations apply
   person-service --remote` **before** `wrangler deploy`, so a new Worker code path never hits a table its
   migration hasn't created (idempotent — applied migrations are skipped). Adding a table = add a
