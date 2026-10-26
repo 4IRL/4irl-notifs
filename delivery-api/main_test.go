@@ -758,7 +758,8 @@ func TestLocalComposeWiresTheInternalCredentialAndModes(testInstance *testing.T)
 }
 
 // TestProdComposeMountsTheInternalCredentialSecret pins production: both services read the one
-// persistent file secret, both modes are log-only for the audit window, and no credential value
+// persistent file secret, the credential check is log-only until the admin UI is re-homed while the
+// grant check enforces, and no credential value
 // is written into the compose file.
 func TestProdComposeMountsTheInternalCredentialSecret(testInstance *testing.T) {
 	const secretPath = "/run/secrets/PROVISIONING_INTERNAL_CREDENTIAL"
@@ -786,10 +787,13 @@ func TestProdComposeMountsTheInternalCredentialSecret(testInstance *testing.T) {
 			testInstance.Errorf("docker-compose.prod.yml %s sets a plain %s value; use the _FILE secret", credentialService.service, credentialService.plainVar)
 		}
 	}
-	for _, modeName := range []string{"PROVISIONING_INTERNAL_CREDENTIAL_MODE", "PROVISIONING_APP_GRANT_MODE"} {
+	for modeName, wantMode := range map[string]string{
+		"PROVISIONING_INTERNAL_CREDENTIAL_MODE": "log-only",
+		"PROVISIONING_APP_GRANT_MODE":           "enforce",
+	} {
 		gotValue, present := composeEnvValue(provisioningLines, modeName)
-		if !present || gotValue != "log-only" {
-			testInstance.Errorf("docker-compose.prod.yml provisioning-api: %s = %q (present=%v), want log-only", modeName, gotValue, present)
+		if !present || gotValue != wantMode {
+			testInstance.Errorf("docker-compose.prod.yml provisioning-api: %s = %q (present=%v), want %s", modeName, gotValue, present, wantMode)
 		}
 	}
 

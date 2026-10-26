@@ -586,10 +586,8 @@ integration suite exercises it) and the credential check as `log-only`.
   rejection in either mode: per-user `POST /v1/deprovision` of an absent ntfy user now answers 200
   `{removed:true}` in both modes instead of the former 404, an idempotent no-op outside the log-only safety
   net); `lookup_failed` (any other lookup error: `enforce` answers 500, `log-only`
-  continues). **Rollout:** after merge, prod runs `log-only` for a 7-day audit window that includes normal
-  traffic from every caller; if provisioning-api's journald logs then hold zero `"decision":"would_reject"` and
-  zero `"decision":"lookup_failed"` lines, a separate one-line PR sets prod `PROVISIONING_APP_GRANT_MODE=enforce`.
-  Any hit restarts the window after the cause is fixed.
+  continues). **Rollout:** no app calls provisioning-api, so there was no audit window: prod compose runs
+  `PROVISIONING_APP_GRANT_MODE=enforce`, like local compose. `log-only` stays available as a diagnostic switch.
 
 `POST /v1/provision` gains an optional `password` (`xxxx-xxxx-xxxx-xxxx`, about 80 bits) only when that call
 generated one; every `200` sends `Cache-Control: no-store`. `POST /v1/reset-password {app_id, email}` →
@@ -811,9 +809,10 @@ graph TD
   recreate a service when just a bind-mounted secret file's contents change, so **rotating** it means
   updating the GitHub secret, redeploying, then running `docker compose -f docker-compose.prod.yml up -d
   --force-recreate provisioning-api delivery-api` on the VPS so both ends restart with the same value.
-  Prod runs `PROVISIONING_INTERNAL_CREDENTIAL_MODE` and `PROVISIONING_APP_GRANT_MODE` as `log-only`. The
-  grant check is flipped to `enforce` by a follow-up PR after the 7-day audit window (see "In-app checks"
-  under the provisioning-api endpoints); the credential check stays `log-only` until one-door master Step 8.
+  Prod runs `PROVISIONING_APP_GRANT_MODE` as `enforce` (see "In-app checks" under the provisioning-api
+  endpoints) and `PROVISIONING_INTERNAL_CREDENTIAL_MODE` as `log-only`: the admin UI proxy reaches
+  provisioning-api without the credential until it is re-homed, so the credential check is flipped to
+  `enforce` only in one-door master Step 8.
 - **person-service D1 schema** is applied by CI: `worker-deploy.yml` runs `wrangler d1 migrations apply
   person-service --remote` **before** `wrangler deploy`, so a new Worker code path never hits a table its
   migration hasn't created (idempotent — applied migrations are skipped). Adding a table = add a

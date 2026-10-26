@@ -33,7 +33,7 @@ const (
 )
 
 // Values of the "decision" and "reason" fields of the "app grant check" log
-// line. The 7-day log-only audit greps journald for would_reject and
+// line. A log-only diagnostic run greps journald for would_reject and
 // lookup_failed (see ARCHITECTURE.md 'In-app checks').
 const (
 	grantDecisionAllow        = "allow"
@@ -78,7 +78,7 @@ type appGrantCheck struct {
 // Audit note: because an absent user rejects on reset/set in both modes,
 // decision=rejected with reason=user_not_found can appear even in log-only
 // mode (it is the same 404 ChangePassword gave an absent user, now answered
-// before the rate limiter). The 7-day audit therefore greps only would_reject
+// before the rate limiter). A log-only diagnostic run therefore greps only would_reject
 // and lookup_failed.
 //
 // The check is not atomic with the mutation that follows: a concurrent
