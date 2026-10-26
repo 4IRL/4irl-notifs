@@ -558,9 +558,9 @@ edge. Full contract: `docs/app-integration-guide.md` + `provisioning-api/interna
 **In-app checks (provisioning-api).** Beyond the edge, provisioning-api has two Go-level checks. Each has a
 mode switch with the same shape: `PROVISIONING_INTERNAL_CREDENTIAL_MODE` and `PROVISIONING_APP_GRANT_MODE`
 accept `enforce` or `log-only`; empty or unset means `enforce` (fail closed) and any other value is a startup
-error (the process logs it and exits non-zero). Production runs both as `log-only` (an explicit setting in
-`docker-compose.prod.yml`); the local `docker-compose.yml` runs the grant check as `enforce` (so the
-integration suite exercises it) and the credential check as `log-only`.
+error (the process logs it and exits non-zero). Production runs the grant check as `enforce` and the
+credential check as `log-only` (explicit settings in `docker-compose.prod.yml`); the local
+`docker-compose.yml` runs the same two modes (grant enforced so the integration suite exercises it).
 
 - **Internal credential.** Every route except exactly `GET /healthz` is wrapped by a middleware that checks the
   `X-Notifs-Internal-Credential` header against the persistent `PROVISIONING_INTERNAL_CREDENTIAL` secret

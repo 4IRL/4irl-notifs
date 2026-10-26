@@ -78,8 +78,8 @@ type appGrantCheck struct {
 // Audit note: because an absent user rejects on reset/set in both modes,
 // decision=rejected with reason=user_not_found can appear even in log-only
 // mode (it is the same 404 ChangePassword gave an absent user, now answered
-// before the rate limiter). A log-only diagnostic run therefore greps only would_reject
-// and lookup_failed.
+// before the rate limiter). A log-only diagnostic run therefore greps only
+// would_reject and lookup_failed.
 //
 // The check is not atomic with the mutation that follows: a concurrent
 // deprovision of the same person from the calling app between the lookup and the
