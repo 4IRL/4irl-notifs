@@ -82,7 +82,7 @@ provisioning-api in-app checks (environment; see `ARCHITECTURE.md` "In-app check
 | --- | --- | --- |
 | `PROVISIONING_INTERNAL_CREDENTIAL` or `PROVISIONING_INTERNAL_CREDENTIAL_FILE` | unset | Internal credential every route except `GET /healthz` expects in `X-Notifs-Internal-Credential` (64 lowercase hex, shared only with delivery-api's `DELIVERY_PROVISIONING_CREDENTIAL`); never logged |
 | `PROVISIONING_INTERNAL_CREDENTIAL_MODE` | `enforce` | `enforce` (a missing or wrong credential answers 401) or `log-only` (WARN `internal credential would reject`, request proceeds); any other value fails startup; `enforce` with no credential loaded fails startup. Local and prod compose both set `log-only` |
-| `PROVISIONING_APP_GRANT_MODE` | `enforce` | `enforce` (reset-password, set-password and deprovision answer 404 when the person holds no grant in the calling `app_id`) or `log-only` (WARN `app grant check` with `decision=would_reject`, request proceeds); any other value fails startup. Local compose sets `enforce`; prod compose sets `log-only` for the 7-day audit window |
+| `PROVISIONING_APP_GRANT_MODE` | `enforce` | `enforce` (reset-password, set-password and deprovision answer 404 when the person holds no grant in the calling `app_id`) or `log-only` (WARN `app grant check` with `decision=would_reject`, request proceeds); any other value fails startup. Local and prod compose both set `enforce` |
 
 The live per-app cap (`429`) integration case needs a small cap (2 to 5) on the stack, and skips otherwise.
 Start the stack and run the suite with the same value:

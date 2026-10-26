@@ -1746,11 +1746,11 @@ Notes:
   order); `404 { "error": "user does not exist" }`; `429 { "error": "too many password changes" }` with
   a `Retry-After` header; `500 { "error": "internal error" }`. Every response from it carries
   `Cache-Control: no-store`. A `404` also means the person has no grant in the calling `app_id`
-  (enforced once the audit window closes).
+  (enforced).
 - **`POST /v1/set-password`** is **not for new apps**; use the generated password instead. It sets a
   person's ntfy password to one your app chose. The user **must already be provisioned**: setting a
   password on a not-yet-provisioned email returns `404 { "error": "user does not exist" }`; a `404`
-  also means the person has no grant in the calling `app_id` (enforced once the audit window closes). The password
+  also means the person has no grant in the calling `app_id` (enforced). The password
   is validated at **8–128 characters** (`400 { "error": "invalid password" }` otherwise; `app_id` and
   `email` are validated first, in that order). It records that the person has a password
   (`password_set_at`) before changing it, so a later `POST /v1/provision` will not replace a chosen
@@ -1758,8 +1758,8 @@ Notes:
   nothing. `change-pass` overwrites any existing password, so calling it again simply resets the
   credential. The response `{ user_id, app_id, updated }` echoes the derived `user_id`
   (`u_<person_hash>`) with `updated: true`.
-- **`POST /v1/deprovision`**: a `404` means the person has no grant in the calling `app_id` (enforced once
-  the audit window closes). It is **idempotent for an absent ntfy user** (same as `DELETE /v1/users/{user_id}`
+- **`POST /v1/deprovision`**: a `404` means the person has no grant in the calling `app_id` (enforced).
+  It is **idempotent for an absent ntfy user** (same as `DELETE /v1/users/{user_id}`
   above): deprovisioning a person whose ntfy user does not exist returns `200 { removed: true }`, in every
   mode, where it used to return `404`. Do not branch on a `404` to detect an already-removed person.
 - `POST /v1/deprovision-app` fully removes an app: its publisher identity, every subscriber's grant for
