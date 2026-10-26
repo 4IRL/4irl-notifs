@@ -3,6 +3,7 @@ import type { JSX, Ref } from 'react';
 import { strings } from '../strings';
 import { DurationField } from './DurationField';
 import { describedBy, fieldErrorId } from './fieldErrors';
+import type { FieldErrors } from './fieldErrors';
 import type { DurationInput } from './heartbeatDuration';
 import './DestinationForm.css';
 import './RouteForm.css';
@@ -16,13 +17,9 @@ export interface ProbeFieldValues {
   timeout: string;
 }
 
-export interface ProbeFieldErrors {
-  url?: string;
-  statuses?: string;
-  bodyMatch?: string;
-  interval?: string;
-  timeout?: string;
-}
+export type ProbeFieldErrors = FieldErrors<
+  'url' | 'statuses' | 'bodyMatch' | 'interval' | 'timeout'
+>;
 
 interface ProbeFieldRefs {
   url: Ref<HTMLInputElement>;
@@ -75,11 +72,7 @@ function ProbeTextField({
 }: TextFieldProps): JSX.Element {
   const id = `heartbeat-${FIELD_SLUG[field]}-${idSuffix}`;
   return (
-    <div
-      className={
-        fullWidth ? 'destination-form__field heartbeat-form__full' : 'destination-form__field'
-      }
-    >
+    <div className={`destination-form__field${fullWidth ? ' heartbeat-form__full' : ''}`}>
       <label htmlFor={id}>{label}</label>
       <input
         ref={inputRef}

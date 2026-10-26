@@ -10,22 +10,30 @@ export function fieldErrorId({ fieldId }: { fieldId: string }): string {
 
 /**
  * The `aria-describedby` value for a field: the hint id first, then the error id.
- * `hintId` overrides the default `${fieldId}-hint` (a shared hint element).
+ * `hintId` overrides the default `${fieldId}-hint` (a shared hint element); `extraIds` are
+ * further ids placed after the hint (null entries are skipped).
  */
 export function describedBy({
   fieldId,
   hasHint,
   error,
   hintId,
+  extraIds = [],
 }: {
   fieldId: string;
   hasHint: boolean;
   error: string | undefined;
   hintId?: string;
+  extraIds?: Array<string | null>;
 }): string | undefined {
   const ids: string[] = [];
   if (hasHint) {
     ids.push(hintId ?? `${fieldId}-hint`);
+  }
+  for (const extraId of extraIds) {
+    if (extraId !== null) {
+      ids.push(extraId);
+    }
   }
   if (error) {
     ids.push(fieldErrorId({ fieldId }));

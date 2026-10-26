@@ -1,7 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 
-import { isProbeCheck } from '../api/deliveryClient';
 import type { DeliveryApiClient, HeartbeatCheck, HeartbeatProbe } from '../api/deliveryClient';
 import { useExclusive } from '../hooks/useExclusive';
 import { useFocusRegistry } from '../hooks/useFocusRegistry';
@@ -12,6 +11,8 @@ import { ConfirmButton } from './ConfirmButton';
 import { formatDuration, formatRelativeFuture, formatRelativePast } from './formatRelative';
 import { formatMinute } from './formatUtc';
 import { HeartbeatForm } from './HeartbeatForm';
+import type { HeartbeatAddSubmission, HeartbeatEditSubmission } from './HeartbeatForm';
+import { probeResultCopy, reasonCopy } from './heartbeatReasonCopy';
 import {
   TICK_MS,
   lateKeyOf,
@@ -24,12 +25,10 @@ import {
   turnedLateLocally,
   wasLabel,
 } from './heartbeatRowState';
-import { probeResultCopy, reasonCopy } from './heartbeatReasonCopy';
-import { displayProbeUrl } from './probeUrl';
 import type { RowState } from './heartbeatRowState';
-import type { HeartbeatAddSubmission, HeartbeatEditSubmission } from './HeartbeatForm';
 import { OwnerBadge } from './OwnerBadge';
 import { ownerInlineNoteOf, ownerNoteOf } from './ownership';
+import { displayProbeUrl } from './probeUrl';
 import { RowActionsMenu } from './RowActionsMenu';
 import type { RowMenuItem } from './RowActionsMenu';
 import type { DestinationsLoadState } from './RoutesSection';
@@ -128,7 +127,7 @@ function renderProbeStateCell({
         </span>
         <span className="heartbeats__sub">
           {downSince === null
-            ? strings.heartbeatDownReason({ reason })
+            ? reason
             : strings.heartbeatDownReasonSince({ reason, time: timeOfDay(downSince) })}
         </span>
       </>
@@ -206,7 +205,7 @@ function renderProbeResultCell({
 }
 
 function pauseNoticeOf(check: HeartbeatCheck): string {
-  return isProbeCheck(check) ? strings.pauseProbeNotice : strings.pauseHeartbeatNotice;
+  return check.probe !== null ? strings.pauseProbeNotice : strings.pauseHeartbeatNotice;
 }
 
 function renderStateCell({

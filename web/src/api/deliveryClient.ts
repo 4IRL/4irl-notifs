@@ -270,8 +270,6 @@ export interface HeartbeatProbe {
   lastResult: HeartbeatProbeResult | null;
 }
 
-export const isProbeCheck = (check: HeartbeatCheck): boolean => check.probe !== null;
-
 export interface ProbeConfigInput {
   url: string;
   expectedStatuses: number[];

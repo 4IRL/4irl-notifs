@@ -7,7 +7,7 @@ export type RowState = 'up' | 'late' | 'down' | 'paused' | 'waiting';
 export const TICK_MS = 30_000;
 const MS_PER_SECOND = 1000;
 
-export function isPastDeadline({ check, now }: { check: HeartbeatCheck; now: number }): boolean {
+function isPastDeadline({ check, now }: { check: HeartbeatCheck; now: number }): boolean {
   return now > Date.parse(check.deadlineAt);
 }
 

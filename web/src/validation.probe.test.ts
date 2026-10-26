@@ -31,6 +31,12 @@ describe('probeUrlProblem', () => {
     ['https://example.com/a\tb', 'malformed'],
     ['https://example.com/a b', null],
     ['https://[2001:db8::1]:8443/', 'malformed'],
+    ['https://localhost./', 'malformed'],
+    ['https://foo.localhost.:8080/', 'malformed'],
+    ['https://127.0.0.1./', 'malformed'],
+    ['https://example.com:abc/', 'malformed'],
+    ['https://example.com./', null],
+    ['https://example.com:/', null],
   ])('probeUrlProblem(%j) === %s', (value, expected) => {
     expect(probeUrlProblem(value)).toBe(expected);
   });

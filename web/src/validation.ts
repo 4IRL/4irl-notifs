@@ -108,6 +108,9 @@ export const PROBE_ACCESS_CREDENTIAL_MAX_BYTES = 256;
 const PROBE_STATUS_PATTERN = /^\d{3}$/;
 const PROBE_STATUS_RANGE = { min: 100, max: 599 } as const;
 const IPV4_HOST_PATTERN = /^\d+(\.\d+){3}$/;
+// Go's url.Parse accepts an empty port ("host:") but rejects a non-numeric one.
+const PORT_PATTERN = /^\d*$/;
+const TRAILING_DOT_PATTERN = /\.$/;
 const WHITESPACE_PATTERN = /\s/;
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL_CHAR_PATTERN = /[\u0000-\u001f\u007f]/;
@@ -144,7 +147,12 @@ export function probeUrlProblem(value: string): ProbeUrlProblem | null {
   if (authority.includes('@') || authority.startsWith('[') || WHITESPACE_PATTERN.test(authority)) {
     return 'malformed';
   }
-  const host = authority.split(':')[0].toLowerCase();
+  const [hostPart, port] = authority.split(':');
+  if (port !== undefined && !PORT_PATTERN.test(port)) {
+    return 'malformed';
+  }
+  // A single trailing dot is the same host (`localhost.` is still localhost).
+  const host = hostPart.toLowerCase().replace(TRAILING_DOT_PATTERN, '');
   if (
     host === '' ||
     host === LOCALHOST ||
@@ -161,7 +169,7 @@ export function parseExpectedStatuses(
   text: string,
 ): { ok: true; statuses: number[] } | { ok: false } {
   const parts = text.split(',').map((part) => part.trim());
-  if (parts.length < 1 || parts.length > PROBE_MAX_EXPECTED_STATUSES) {
+  if (parts.length > PROBE_MAX_EXPECTED_STATUSES) {
     return { ok: false };
   }
   const statuses: number[] = [];

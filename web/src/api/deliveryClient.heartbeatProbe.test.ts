@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createDeliveryApiClient, isProbeCheck } from './deliveryClient';
+import { createDeliveryApiClient } from './deliveryClient';
 
 describe('delivery api client: website probe checks', () => {
   const fetchMock = vi.fn();
@@ -82,12 +82,10 @@ describe('delivery api client: website probe checks', () => {
       const check = await listOne(baseWire);
       expect(check.probe).toBeNull();
       expect(check.downReason).toBeNull();
-      expect(isProbeCheck(check)).toBe(false);
     });
 
     it('maps a probe wire fully', async () => {
       const check = await listOne({ ...baseWire, down_reason: 'status', probe: probeWire });
-      expect(isProbeCheck(check)).toBe(true);
       expect(check.downReason).toBe('status');
       expect(check.probe).toEqual({
         url: 'https://example.com/health',

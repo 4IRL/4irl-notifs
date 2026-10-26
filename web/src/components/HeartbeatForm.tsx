@@ -26,15 +26,15 @@ import {
 } from '../validation';
 import type { ProbeUrlProblem } from '../validation';
 import { DurationField } from './DurationField';
-import { HeartbeatProbeFields } from './HeartbeatProbeFields';
-import type { ProbeFieldValues } from './HeartbeatProbeFields';
-import { ProbeCredentialsField } from './ProbeCredentialsField';
-import type { CredentialsStaged } from './ProbeCredentialsField';
 import { describedBy, fieldErrorId, focusFirstInvalid } from './fieldErrors';
 import type { FieldErrors } from './fieldErrors';
 import { splitDuration, toSeconds } from './heartbeatDuration';
 import type { DurationInput } from './heartbeatDuration';
+import { HeartbeatProbeFields } from './HeartbeatProbeFields';
+import type { ProbeFieldValues } from './HeartbeatProbeFields';
 import { probeAccessHintOf } from './heartbeatRowState';
+import { ProbeCredentialsField } from './ProbeCredentialsField';
+import type { CredentialsStaged } from './ProbeCredentialsField';
 import './DestinationForm.css';
 import './RouteForm.css';
 
@@ -340,27 +340,14 @@ export function HeartbeatForm({
     clearFieldErrors(touched);
   }
 
-  function updateText({
+  function updateField<T>({
     field,
     setter,
     value,
   }: {
     field: FormField;
-    setter: (value: string) => void;
-    value: string;
-  }) {
-    setter(value);
-    clearFieldErrors([field]);
-  }
-
-  function updateDuration({
-    field,
-    setter,
-    value,
-  }: {
-    field: FormField;
-    setter: (value: DurationInput) => void;
-    value: DurationInput;
+    setter: (value: T) => void;
+    value: T;
   }) {
     setter(value);
     clearFieldErrors([field]);
@@ -454,7 +441,7 @@ export function HeartbeatForm({
       errors.clientId = strings.invalidProbeCredentialPair;
     } else if (clientId !== '' && clientSecret === '') {
       errors.clientSecret = strings.invalidProbeCredentialPair;
-    } else if (clientId !== '') {
+    } else {
       if (accessCredentialProblem(clientId) !== null) {
         errors.clientId = strings.invalidProbeCredential;
       }
@@ -645,7 +632,7 @@ export function HeartbeatForm({
   if (isEdit) {
     const threshold = baselineProbe?.failureThreshold ?? null;
     intervalHint =
-      threshold !== null && Number.isInteger(threshold) && threshold > 0
+      threshold !== null
         ? `${strings.heartbeatProbeIntervalHintEdit} ${strings.heartbeatProbeIntervalThreshold({ threshold })}`
         : strings.heartbeatProbeIntervalHintEdit;
   }
@@ -708,7 +695,7 @@ export function HeartbeatForm({
                   error: fieldErrors.appId,
                 })}
                 onChange={(event) =>
-                  updateText({ field: 'appId', setter: setAppId, value: event.target.value })
+                  updateField({ field: 'appId', setter: setAppId, value: event.target.value })
                 }
               />
               {fieldErrors.appId && (
@@ -735,7 +722,7 @@ export function HeartbeatForm({
                   error: fieldErrors.name,
                 })}
                 onChange={(event) =>
-                  updateText({ field: 'name', setter: setName, value: event.target.value })
+                  updateField({ field: 'name', setter: setName, value: event.target.value })
                 }
               />
               {fieldErrors.name && (
@@ -757,7 +744,7 @@ export function HeartbeatForm({
               unitLabel={strings.heartbeatPeriodUnitLabel}
               hint={strings.heartbeatPeriodHint}
               duration={period}
-              onChange={(value) => updateDuration({ field: 'period', setter: setPeriod, value })}
+              onChange={(value) => updateField({ field: 'period', setter: setPeriod, value })}
               inputRef={periodRef}
               error={fieldErrors.period}
             />
@@ -767,7 +754,7 @@ export function HeartbeatForm({
               unitLabel={strings.heartbeatGraceUnitLabel}
               hint={strings.heartbeatGraceHint}
               duration={grace}
-              onChange={(value) => updateDuration({ field: 'grace', setter: setGrace, value })}
+              onChange={(value) => updateField({ field: 'grace', setter: setGrace, value })}
               inputRef={graceRef}
               error={fieldErrors.grace}
             />
@@ -795,10 +782,10 @@ export function HeartbeatForm({
             clientId={clientId}
             clientSecret={clientSecret}
             onClientIdChange={(value) =>
-              updateText({ field: 'clientId', setter: setClientId, value })
+              updateField({ field: 'clientId', setter: setClientId, value })
             }
             onClientSecretChange={(value) =>
-              updateText({ field: 'clientSecret', setter: setClientSecret, value })
+              updateField({ field: 'clientSecret', setter: setClientSecret, value })
             }
             clientIdRef={clientIdRef}
             clientSecretRef={clientSecretRef}

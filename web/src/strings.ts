@@ -561,7 +561,6 @@ export const strings = {
   heartbeatProbeTimeout: ({ timeout }: { timeout: number }): string => `timeout ${timeout} s`,
   heartbeatDownReasonSince: ({ reason, time }: { reason: string; time: string }): string =>
     `${reason} · since ${time}`,
-  heartbeatDownReason: ({ reason }: { reason: string }): string => reason,
   probeReasonHttpStatus: ({ status }: { status: number }): string => `HTTP ${status}`,
   probeReasonHttpStatusUnknown: 'Unexpected HTTP status',
   probeReasonTimeout: 'Timed out',

@@ -72,7 +72,6 @@ describe('probe strings', () => {
           'heartbeatProbedAgo',
           'heartbeatProbeTimeout',
           'heartbeatDownReasonSince',
-          'heartbeatDownReason',
         ].includes(key),
     );
     expect(keys.length).toBeGreaterThan(10);

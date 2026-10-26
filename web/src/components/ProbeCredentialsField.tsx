@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { JSX, RefObject } from 'react';
 
 import { strings } from '../strings';
-import { fieldErrorId } from './fieldErrors';
+import { describedBy, fieldErrorId } from './fieldErrors';
 import './DestinationForm.css';
 
 /** What the operator has staged for already-stored credentials (nothing is sent until Save). */
@@ -29,22 +29,6 @@ interface ProbeCredentialsFieldProps {
   onStagedChange?: (next: CredentialsStaged) => void;
   /** A one-off suggestion chosen by the form at mount (for example "Use Replace"). */
   stateHint?: string | null;
-}
-
-function describedByIds({
-  ids,
-  error,
-  fieldId,
-}: {
-  ids: Array<string | null>;
-  error: string | undefined;
-  fieldId: string;
-}): string | undefined {
-  const all = ids.filter((id) => id !== null);
-  if (error) {
-    all.push(fieldErrorId({ fieldId }));
-  }
-  return all.length > 0 ? all.join(' ') : undefined;
 }
 
 /**
@@ -200,10 +184,11 @@ export function ProbeCredentialsField({
               readOnly={inFlight}
               value={clientId}
               aria-invalid={clientIdError ? 'true' : undefined}
-              aria-describedby={describedByIds({
-                ids: describedIds,
-                error: clientIdError,
+              aria-describedby={describedBy({
                 fieldId: clientIdFieldId,
+                hasHint: false,
+                extraIds: describedIds,
+                error: clientIdError,
               })}
               onChange={(event) => onClientIdChange(event.target.value)}
             />
@@ -228,10 +213,11 @@ export function ProbeCredentialsField({
               readOnly={inFlight}
               value={clientSecret}
               aria-invalid={clientSecretError ? 'true' : undefined}
-              aria-describedby={describedByIds({
-                ids: describedIds,
-                error: clientSecretError,
+              aria-describedby={describedBy({
                 fieldId: clientSecretFieldId,
+                hasHint: false,
+                extraIds: describedIds,
+                error: clientSecretError,
               })}
               onChange={(event) => onClientSecretChange(event.target.value)}
             />

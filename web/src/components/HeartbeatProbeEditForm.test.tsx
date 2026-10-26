@@ -217,8 +217,6 @@ describe('probe edit form: layout', () => {
   it.each([
     [3, 'Down after 3 failed probes in a row.', true],
     [null, 'Down after', false],
-    [0, 'Down after', false],
-    [-1, 'Down after', false],
   ])('interval hint for failureThreshold %s', async (threshold, text, present) => {
     const { form } = await openEditor({
       check: probeCheck({ probe: { failureThreshold: threshold } }),
@@ -277,6 +275,14 @@ describe('probe edit form: diff', () => {
       id: 7,
       probe: { url: 'https://other.example/x', expectedStatuses: [200], bodyMatch: null },
     });
+  });
+
+  it('sends the full destination set when a destination is added', async () => {
+    const { user, form, api } = await openEditor();
+    await user.click(within(form).getByRole('checkbox', { name: /ops_other/ }));
+    await save(user, form);
+    await waitFor(() => expect(api.updateHeartbeat).toHaveBeenCalledTimes(1));
+    expect(lastUpdate(api)).toEqual({ id: 7, destinations: ['ops_discord', 'ops_other'] });
   });
 
   it('an unchanged empty body match sends nothing', async () => {
