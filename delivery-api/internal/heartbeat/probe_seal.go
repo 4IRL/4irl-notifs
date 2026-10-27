@@ -24,8 +24,9 @@ type probeAccessPlaintext struct {
 	ClientSecret string `json:"client_secret"`
 }
 
-// probeAccessAAD binds a sealed token to its check, so it cannot be copied onto another one.
-func probeAccessAAD(checkID int64) []byte {
+// ProbeAccessAAD binds a sealed token to its check, so it cannot be copied onto another one.
+// The key rotation tool shares this derivation.
+func ProbeAccessAAD(checkID int64) []byte {
 	return []byte(probeAccessAADPrefix + strconv.FormatInt(checkID, 10))
 }
 
@@ -38,7 +39,7 @@ func sealProbeAccessToken(sealer *seal.Sealer, checkID int64, token AccessToken)
 	if marshalErr != nil {
 		return nil, errMalformedAccessToken
 	}
-	return sealer.Seal(plaintext, probeAccessAAD(checkID))
+	return sealer.Seal(plaintext, ProbeAccessAAD(checkID))
 }
 
 // OpenProbeAccessToken is the single unseal path for a probe check's Access token. A wrong check id
@@ -47,7 +48,7 @@ func OpenProbeAccessToken(sealer *seal.Sealer, checkID int64, sealed []byte) (Ac
 	if sealer == nil {
 		return AccessToken{}, errNoSealer
 	}
-	plaintext, openErr := sealer.Open(sealed, probeAccessAAD(checkID))
+	plaintext, openErr := sealer.Open(sealed, ProbeAccessAAD(checkID))
 	if openErr != nil {
 		return AccessToken{}, openErr
 	}

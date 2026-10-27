@@ -527,9 +527,9 @@ func (service *Service) applyDestinationPatch(
 	return current, nil
 }
 
-// destinationAAD returns the additional authenticated data that binds a sealed
-// blob to the destination name.
-func destinationAAD(name string) []byte {
+// DestinationSecretsAAD returns the additional authenticated data that binds a sealed
+// blob to the destination name. The key rotation tool shares this derivation.
+func DestinationSecretsAAD(name string) []byte {
 	return []byte(secretsAADPrefix + name)
 }
 
@@ -539,7 +539,7 @@ func (service *Service) sealSecrets(name string, secrets map[string]string) ([]b
 	if marshalErr != nil {
 		return nil, fmt.Errorf("encode secrets of destination %q", name)
 	}
-	sealed, sealErr := service.sealer.Seal(plaintext, destinationAAD(name))
+	sealed, sealErr := service.sealer.Seal(plaintext, DestinationSecretsAAD(name))
 	if sealErr != nil {
 		return nil, fmt.Errorf("seal secrets of destination %q: %w", name, sealErr)
 	}
@@ -549,7 +549,7 @@ func (service *Service) sealSecrets(name string, secrets map[string]string) ([]b
 // openSecrets opens and decodes a sealed blob. Its errors name the destination
 // and wrap only the seal sentinels, never plaintext or payload text.
 func (service *Service) openSecrets(name string, sealed []byte) (map[string]string, error) {
-	plaintext, openErr := service.sealer.Open(sealed, destinationAAD(name))
+	plaintext, openErr := service.sealer.Open(sealed, DestinationSecretsAAD(name))
 	if openErr != nil {
 		return nil, fmt.Errorf("open secrets of destination %q: %w", name, openErr)
 	}

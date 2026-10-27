@@ -28,8 +28,9 @@ func NewService(store Store, minter Minter, sealer *seal.Sealer) *Service {
 	return &Service{store: store, minter: minter, sealer: sealer}
 }
 
-// tokenAAD returns the additional data a token is sealed under.
-func tokenAAD(appID string) []byte {
+// TokenAAD returns the additional data a token is sealed under. The key
+// rotation tool shares this derivation.
+func TokenAAD(appID string) []byte {
 	return []byte(tokenAADPrefix + appID)
 }
 
@@ -51,7 +52,7 @@ func (service *Service) Mint(ctx context.Context, appID string) (PublisherView, 
 	if grant.AppID != appID {
 		return PublisherView{}, errors.New("mint publisher: grant is for a different app")
 	}
-	sealedToken, sealErr := service.sealer.Seal([]byte(grant.Token), tokenAAD(appID))
+	sealedToken, sealErr := service.sealer.Seal([]byte(grant.Token), TokenAAD(appID))
 	if sealErr != nil {
 		return PublisherView{}, fmt.Errorf("seal publisher token: %w", sealErr)
 	}
@@ -108,7 +109,7 @@ func (service *Service) Token(ctx context.Context, appID string) (string, error)
 	if getErr != nil {
 		return "", getErr
 	}
-	token, openErr := service.sealer.Open(stored.SealedToken, tokenAAD(appID))
+	token, openErr := service.sealer.Open(stored.SealedToken, TokenAAD(appID))
 	if openErr != nil {
 		return "", fmt.Errorf("open publisher token: %w", openErr)
 	}
