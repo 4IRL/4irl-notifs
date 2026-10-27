@@ -39,8 +39,15 @@ on:
         required: true
       # Required: exactly 64 lowercase hex (`openssl rand -hex 32`), validated on the runner first.
       # Back it up offline: losing it orphans every stored destination secret.
+      # A key change needs `up -d --force-recreate --no-deps delivery-api` (`up -d` does not notice a
+      # changed secret file); see the ARCHITECTURE.md key rotation runbook.
       DELIVERY_MASTER_KEY:
         required: true
+      # Optional: the old master key during a rotation window; when set, exactly 64 lowercase hex and
+      # different from DELIVERY_MASTER_KEY, validated on the runner first. When unset the deploy
+      # truncates its file to empty (compose needs the file to exist; empty means absent).
+      DELIVERY_MASTER_KEY_PREVIOUS:
+        required: false
       # Required: exactly 64 lowercase hex (`openssl rand -hex 32`), validated on the runner first.
       # The one internal credential provisioning-api and delivery-api share. Both read it at startup
       # only and `up -d` does not recreate a service when just this file's contents change, so
@@ -70,6 +77,22 @@ jobs:
           if ! [[ "${DELIVERY_MASTER_KEY}" =~ ^[0-9a-f]{64}$ ]]; then
             echo "DELIVERY_MASTER_KEY secret must be exactly 64 lowercase hex characters (openssl rand -hex 32); nothing was copied or changed on the VPS"
             exit 1
+          fi
+
+      - name: Validate DELIVERY_MASTER_KEY_PREVIOUS secret
+        env:
+          DELIVERY_MASTER_KEY: ${{ secrets.DELIVERY_MASTER_KEY }}
+          DELIVERY_MASTER_KEY_PREVIOUS: ${{ secrets.DELIVERY_MASTER_KEY_PREVIOUS }}
+        run: |
+          if [[ -n "${DELIVERY_MASTER_KEY_PREVIOUS}" ]]; then
+            if ! [[ "${DELIVERY_MASTER_KEY_PREVIOUS}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "DELIVERY_MASTER_KEY_PREVIOUS secret must be exactly 64 lowercase hex characters (openssl rand -hex 32) or unset; nothing was copied or changed on the VPS"
+              exit 1
+            fi
+            if [[ "${DELIVERY_MASTER_KEY_PREVIOUS}" == "${DELIVERY_MASTER_KEY}" ]]; then
+              echo "DELIVERY_MASTER_KEY_PREVIOUS secret must differ from DELIVERY_MASTER_KEY; nothing was copied or changed on the VPS"
+              exit 1
+            fi
           fi
 
       - name: Validate PROVISIONING_INTERNAL_CREDENTIAL secret
@@ -162,6 +185,7 @@ jobs:
           cd /home/4irl-notifs;
           DELIVERY_DB_PASSWORD_VALUE="${{ secrets.DELIVERY_DB_PASSWORD }}";
           DELIVERY_MASTER_KEY_VALUE="${{ secrets.DELIVERY_MASTER_KEY }}";
+          DELIVERY_MASTER_KEY_PREVIOUS_VALUE="${{ secrets.DELIVERY_MASTER_KEY_PREVIOUS }}";
           PROVISIONING_INTERNAL_CREDENTIAL_VALUE="${{ secrets.PROVISIONING_INTERNAL_CREDENTIAL }}";
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
 
@@ -178,6 +202,12 @@ jobs:
           printf "%s" "${DELIVERY_MASTER_KEY_VALUE}" > ./secrets-persistent/DELIVERY_MASTER_KEY;
           chmod 644 ./secrets-persistent/DELIVERY_MASTER_KEY;
           [ -s ./secrets-persistent/DELIVERY_MASTER_KEY ] || { echo "DELIVERY_MASTER_KEY file is empty after write; aborting"; exit 1; };
+          if [ -n "${DELIVERY_MASTER_KEY_PREVIOUS_VALUE}" ]; then
+            printf "%s" "${DELIVERY_MASTER_KEY_PREVIOUS_VALUE}" > ./secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS;
+          else
+            : > ./secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS;
+          fi;
+          chmod 644 ./secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS;
           printf "%s" "${PROVISIONING_INTERNAL_CREDENTIAL_VALUE}" > ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL;
           chmod 644 ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL;
           [ -s ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL ] || { echo "PROVISIONING_INTERNAL_CREDENTIAL file is empty after write; aborting"; exit 1; };

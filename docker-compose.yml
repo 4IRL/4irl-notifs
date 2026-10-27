@@ -175,6 +175,9 @@ services:
       - DELIVERY_DB_NAME=delivery
       - DELIVERY_DB_PASSWORD=delivery-local-dev # dev-only credential; prod uses a file secret
       - DELIVERY_MASTER_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef # dev-only, obviously-fake key; prod uses a persistent file secret
+      # Optional old master key for a rotation window; unset locally so delivery-api runs single-key.
+      # LOCKSTEP: keep in sync with docker-compose.prod.yml (which reads it from a file secret).
+      - DELIVERY_MASTER_KEY_PREVIOUS=${DELIVERY_MASTER_KEY_PREVIOUS:-}
       # In-compose HTTP origin of the ntfy server, used by the ntfy delivery sink (the ntfy service
       # listens on :80 inside the compose network). Unset disables the ntfy sink. LOCKSTEP: keep in
       # sync with docker-compose.prod.yml and with provisioning-api's NTFY_PUBLISH_URL.

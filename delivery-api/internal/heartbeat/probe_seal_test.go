@@ -15,7 +15,7 @@ func TestOpenProbeAccessTokenFailsClosed(testInstance *testing.T) {
 	const checkID int64 = 7
 	sealPlaintext := func(plaintext string) []byte {
 		testInstance.Helper()
-		sealed, err := sealer.Seal([]byte(plaintext), probeAccessAAD(checkID))
+		sealed, err := sealer.Seal([]byte(plaintext), ProbeAccessAAD(checkID))
 		if err != nil {
 			testInstance.Fatalf("seal: %v", err)
 		}

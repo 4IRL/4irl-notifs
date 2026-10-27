@@ -808,9 +808,45 @@ graph TD
   deploy fails before touching the VPS if it is missing or malformed, so set it before the first merge.
   Like the DB password it is written to `secrets-persistent/` on every deploy and never deleted, but only
   delivery-api receives it (as `DELIVERY_MASTER_KEY_FILE`; `delivery-migrate` never needs it). **Back it up
-  offline**: losing or changing it orphans every stored destination secret, and there is no rotation path.
-  Recovery after a key loss: a destination's sealed blob can no longer be opened, so remove the routes that
-  reference it, then delete and recreate the affected destinations.
+  offline**: it seals three tables (destination secrets, app publisher tokens, probe Access credentials),
+  and changing it without the rotation runbook below orphans all of them. Keys are read only at process
+  start (no reload), so a key change takes effect only when delivery-api is recreated.
+- **`DELIVERY_MASTER_KEY_PREVIOUS` (optional repo secret)**: the old master key during a rotation window,
+  64 lowercase hex characters and different from `DELIVERY_MASTER_KEY`. Unset normally. When unset, the
+  deploy writes an empty `secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS` file (compose needs the file to
+  exist) and delivery-api treats the empty value as absent. delivery-api reads it as
+  `DELIVERY_MASTER_KEY_PREVIOUS_FILE` and can then open rows sealed under either key.
+
+  **Master-key rotation runbook** (`rotate-keys` and `verify-keys` are delivery-api subcommands; run them
+  on the VPS):
+  1. Back up: take a `pg_dump` of the delivery database and keep it until step 4 is done.
+  2. Set the new key as the `DELIVERY_MASTER_KEY` secret and the old key as `DELIVERY_MASTER_KEY_PREVIOUS`,
+     then deploy. A deploy alone does not restart delivery-api (a changed secret file does not trigger a
+     recreate), so run `docker compose -f docker-compose.prod.yml up -d --force-recreate --no-deps
+     delivery-api`. Confirm the container was recreated after the deploy: its creation/start time from
+     `docker inspect` or `docker compose ps` must be later than the deploy (`/readyz` cannot show this).
+     Do not go on before this: rotating while a container still runs the old key alone would leave it unable
+     to open rotated rows.
+  3. Run `docker compose -f docker-compose.prod.yml run --rm --no-deps delivery-api rotate-keys`, then
+     `docker compose -f docker-compose.prod.yml run --rm --no-deps delivery-api verify-keys`, which must
+     exit 0. On a non-zero exit, read the reported reasons: rows reported as `changed_concurrently` clear
+     on a rerun of `rotate-keys`, so rerun it and verify again; rows that fail to decrypt or are malformed
+     or an unsupported version do not clear on a rerun and need the recovery guidance below.
+  4. Only after `verify-keys` passes, remove the `DELIVERY_MASTER_KEY_PREVIOUS` secret, deploy, and run
+     the same `up -d --force-recreate --no-deps delivery-api` command again, with the same recreation check.
+     If `verify-keys` keeps failing, keep the previous key and never drop it.
+
+  Rotation is per-row, not one transaction: each row is re-sealed on its own, so an interrupted
+  `rotate-keys` leaves a mix of old-key and new-key rows that delivery-api still opens (both keys loaded),
+  and it is safe to re-run; rows already under the new key are skipped.
+
+  **Recovery.** A wrong key (the deploy carries the wrong `DELIVERY_MASTER_KEY`) loses nothing: fix the
+  secret, redeploy and recreate delivery-api. A lost key (the old key is gone and rows are still sealed
+  under it) cannot be recovered: destination secrets are unreadable, so remove the routes that reference
+  them, then delete and recreate the affected destinations; app publisher tokens must be re-minted; probe
+  Access credentials are restored with Replace credentials on each check. A check whose credentials cannot
+  be opened goes down with "Credentials could not be used" (the `config` down reason; see the
+  troubleshooting table).
 - **`PROVISIONING_INTERNAL_CREDENTIAL` (required repo secret)**: the internal credential shared only by
   provisioning-api and delivery-api, exactly 64 lowercase hex characters (`openssl rand -hex 32`); the
   deploy fails before touching the VPS if it is missing or malformed, so set it before the first merge.

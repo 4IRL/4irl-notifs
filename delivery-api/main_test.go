@@ -874,6 +874,114 @@ func TestProdDeployWorkflowValidatesTheInternalCredentialFirst(testInstance *tes
 	}
 }
 
+// TestProdComposeMountsThePreviousMasterKeySecret pins production: only delivery-api reads the
+// optional previous master key, through a _FILE secret mapped to the persistent directory, never a
+// plain value, and delivery-migrate carries no master key at all.
+func TestProdComposeMountsThePreviousMasterKeySecret(testInstance *testing.T) {
+	const secretPath = "/run/secrets/DELIVERY_MASTER_KEY_PREVIOUS"
+	deliveryLines := composeServiceLines(testInstance, "docker-compose.prod.yml", "delivery-api")
+	migrateLines := composeServiceLines(testInstance, "docker-compose.prod.yml", "delivery-migrate")
+
+	gotValue, present := composeEnvValue(deliveryLines, "DELIVERY_MASTER_KEY_PREVIOUS_FILE")
+	if !present || gotValue != secretPath {
+		testInstance.Errorf("docker-compose.prod.yml delivery-api: DELIVERY_MASTER_KEY_PREVIOUS_FILE = %q (present=%v), want %q", gotValue, present, secretPath)
+	}
+	if !composeListsSecret(deliveryLines, "DELIVERY_MASTER_KEY_PREVIOUS") {
+		testInstance.Error("docker-compose.prod.yml delivery-api does not list the DELIVERY_MASTER_KEY_PREVIOUS secret")
+	}
+	if _, plainPresent := composeEnvValue(deliveryLines, "DELIVERY_MASTER_KEY_PREVIOUS"); plainPresent {
+		testInstance.Error("docker-compose.prod.yml delivery-api sets a plain DELIVERY_MASTER_KEY_PREVIOUS value; use the _FILE secret")
+	}
+	for _, migrateLine := range migrateLines {
+		if strings.Contains(migrateLine, "DELIVERY_MASTER_KEY") {
+			testInstance.Errorf("docker-compose.prod.yml delivery-migrate must not carry a master key, found %q", migrateLine)
+		}
+	}
+
+	contents, readErr := os.ReadFile(filepath.Join("..", "docker-compose.prod.yml"))
+	if readErr != nil {
+		testInstance.Fatalf("read docker-compose.prod.yml: %v", readErr)
+	}
+	secretMapping := regexp.MustCompile(`(?m)^  DELIVERY_MASTER_KEY_PREVIOUS:\n    file: \./secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS$`)
+	if !secretMapping.Match(contents) {
+		testInstance.Error("docker-compose.prod.yml does not map DELIVERY_MASTER_KEY_PREVIOUS to ./secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS")
+	}
+	plainValue := regexp.MustCompile(`(?m)(^|[\s"'-])DELIVERY_MASTER_KEY_PREVIOUS[ \t]*[=:][ \t]*[^\s/]`)
+	if plainValue.Match(contents) {
+		testInstance.Error("docker-compose.prod.yml sets a plain DELIVERY_MASTER_KEY_PREVIOUS value; production reads only the _FILE secret")
+	}
+}
+
+// TestProdDeployWorkflowHandlesThePreviousMasterKey pins the deploy wiring of the optional previous
+// key: an optional workflow_call secret, a validation step before the SSH key is installed that
+// checks the shape only when set and rejects a value equal to the current key without echoing it,
+// a set-branch write and an unset-branch truncate, and the build-and-deploy passthrough.
+func TestProdDeployWorkflowHandlesThePreviousMasterKey(testInstance *testing.T) {
+	deployContents, deployErr := os.ReadFile(filepath.Join("..", ".github", "workflows", "prod-deploy.yml"))
+	if deployErr != nil {
+		testInstance.Fatalf("read prod-deploy.yml: %v", deployErr)
+	}
+	buildContents, buildErr := os.ReadFile(filepath.Join("..", ".github", "workflows", "prod-build-and-deploy.yml"))
+	if buildErr != nil {
+		testInstance.Fatalf("read prod-build-and-deploy.yml: %v", buildErr)
+	}
+	deploy := string(deployContents)
+
+	declared := regexp.MustCompile(`(?m)^      DELIVERY_MASTER_KEY_PREVIOUS:\n        required: false$`)
+	if !declared.MatchString(deploy) {
+		testInstance.Error("prod-deploy.yml does not declare DELIVERY_MASTER_KEY_PREVIOUS as an optional (required: false) workflow_call secret")
+	}
+	validateAt := strings.Index(deploy, "- name: Validate DELIVERY_MASTER_KEY_PREVIOUS secret")
+	installKeyAt := strings.Index(deploy, "- name: Install SSH key")
+	if validateAt < 0 || installKeyAt < 0 || validateAt > installKeyAt {
+		testInstance.Fatal("prod-deploy.yml must validate DELIVERY_MASTER_KEY_PREVIOUS before the Install SSH key step")
+	}
+	// Bound the step at the next step header so another step's text cannot satisfy these checks.
+	validationStep := deploy[validateAt:installKeyAt]
+	if nextStepAt := strings.Index(deploy[validateAt+1:], "\n      - name:"); nextStepAt >= 0 {
+		validationStep = deploy[validateAt : validateAt+1+nextStepAt]
+	}
+	if !strings.Contains(validationStep, `-n "${DELIVERY_MASTER_KEY_PREVIOUS}"`) {
+		testInstance.Error("the DELIVERY_MASTER_KEY_PREVIOUS validation step must only check a non-empty value")
+	}
+	if !strings.Contains(validationStep, `"${DELIVERY_MASTER_KEY_PREVIOUS}" =~ ^[0-9a-f]{64}$`) || !strings.Contains(validationStep, "exit 1") {
+		testInstance.Error("the DELIVERY_MASTER_KEY_PREVIOUS validation step does not fail on a value outside ^[0-9a-f]{64}$")
+	}
+	if !strings.Contains(validationStep, `"${DELIVERY_MASTER_KEY_PREVIOUS}" == "${DELIVERY_MASTER_KEY}"`) {
+		testInstance.Error("the DELIVERY_MASTER_KEY_PREVIOUS validation step does not reject a value equal to DELIVERY_MASTER_KEY")
+	}
+	if !strings.Contains(validationStep, "nothing was copied") {
+		testInstance.Error("the DELIVERY_MASTER_KEY_PREVIOUS validation messages must say nothing was copied")
+	}
+	echoesKey := regexp.MustCompile(`echo.*(\$\{?DELIVERY_MASTER_KEY|\$\{\{)`)
+	for _, line := range strings.Split(validationStep, "\n") {
+		if echoesKey.MatchString(line) {
+			testInstance.Errorf("the validation step must never echo a key value: %q", strings.TrimSpace(line))
+		}
+	}
+	// The set branch writes the value, the else branch truncates to empty, then the mode is set.
+	writeBranches := regexp.MustCompile(`if \[ -n "\$\{DELIVERY_MASTER_KEY_PREVIOUS_VALUE\}" \]; then\s+` +
+		`printf "%s" "\$\{DELIVERY_MASTER_KEY_PREVIOUS_VALUE\}" > \./secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS;\s+` +
+		`else\s+: > \./secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS;\s+fi;\s+` +
+		`chmod 644 \./secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS;`)
+	if !writeBranches.MatchString(deploy) {
+		testInstance.Error("prod-deploy.yml must write the previous key when set, truncate its file when unset, then chmod 644")
+	}
+	if !strings.Contains(string(buildContents), "DELIVERY_MASTER_KEY_PREVIOUS: ${{ secrets.DELIVERY_MASTER_KEY_PREVIOUS }}") {
+		testInstance.Error("prod-build-and-deploy.yml does not pass DELIVERY_MASTER_KEY_PREVIOUS through")
+	}
+}
+
+// TestLocalComposeLeavesThePreviousMasterKeyUnset pins the local stack: the previous key is an
+// empty-by-default passthrough, so the local delivery-api runs single-key.
+func TestLocalComposeLeavesThePreviousMasterKeyUnset(testInstance *testing.T) {
+	deliveryLines := composeServiceLines(testInstance, "docker-compose.yml", "delivery-api")
+	gotValue, present := composeEnvValue(deliveryLines, "DELIVERY_MASTER_KEY_PREVIOUS")
+	if !present || gotValue != "${DELIVERY_MASTER_KEY_PREVIOUS:-}" {
+		testInstance.Errorf("docker-compose.yml delivery-api: DELIVERY_MASTER_KEY_PREVIOUS = %q (present=%v), want ${DELIVERY_MASTER_KEY_PREVIOUS:-}", gotValue, present)
+	}
+}
+
 // TestBackgroundStopCancelsAndWaitsForEveryRunner verifies stop cancels the
 // context every runner shares and returns only after all of them have exited.
 func TestBackgroundStopCancelsAndWaitsForEveryRunner(testInstance *testing.T) {
@@ -1142,5 +1250,120 @@ func TestNewProberWiringUsesItsOwnFreshnessAndProductionDefaults(testInstance *t
 	}
 	if wiring.run == nil {
 		testInstance.Fatal("run is nil, want the RunProber background entry")
+	}
+}
+
+var keyRotationSubcommands = []string{"rotate-keys", "verify-keys"}
+
+// TestRunKeySubcommandsRejectArguments verifies no key can be passed on the command line: any argument is
+// rejected before key or database work, and the error never echoes it.
+func TestRunKeySubcommandsRejectArguments(testInstance *testing.T) {
+	keyValue := strings.Repeat("cd", 32)
+	for _, subcommand := range keyRotationSubcommands {
+		for _, argument := range []string{keyValue, "--new-key=" + keyValue} {
+			testInstance.Run(subcommand+" "+argument[:6], func(subTest *testing.T) {
+				err := run(context.Background(), newTestLogger(), []string{subcommand, argument})
+				if err == nil {
+					subTest.Fatal("run returned nil, want the no-arguments error")
+				}
+				if err.Error() != subcommand+" takes no arguments" {
+					subTest.Fatalf("run error = %q, want %q", err, subcommand+" takes no arguments")
+				}
+				if strings.Contains(err.Error(), keyValue) {
+					subTest.Fatalf("run error = %q, must not contain the argument", err)
+				}
+			})
+		}
+	}
+}
+
+// TestRunKeySubcommandsResolveKeysBeforeTheDatabase verifies a missing or malformed master key fails with
+// the key error even though the database is unreachable, so key resolution precedes any database work.
+func TestRunKeySubcommandsResolveKeysBeforeTheDatabase(testInstance *testing.T) {
+	testCases := []struct {
+		name  string
+		value string
+	}{
+		{name: "missing", value: ""},
+		{name: "malformed", value: "not-hex"},
+	}
+	for _, subcommand := range keyRotationSubcommands {
+		for _, testCase := range testCases {
+			testInstance.Run(subcommand+" "+testCase.name, func(subTest *testing.T) {
+				setDatabaseEnv(subTest)
+				subTest.Setenv("DELIVERY_MASTER_KEY", testCase.value)
+				subTest.Setenv("DELIVERY_MASTER_KEY_FILE", "")
+				subTest.Setenv("DELIVERY_MASTER_KEY_PREVIOUS", "")
+				subTest.Setenv("DELIVERY_MASTER_KEY_PREVIOUS_FILE", "")
+
+				ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+				defer cancel()
+				err := run(ctx, newTestLogger(), []string{subcommand})
+
+				if err == nil {
+					subTest.Fatal("run returned nil, want a key error")
+				}
+				if !strings.Contains(err.Error(), "DELIVERY_MASTER_KEY") {
+					subTest.Fatalf("run error = %q, want the master key error", err)
+				}
+				if testCase.value != "" && strings.Contains(err.Error(), testCase.value) {
+					subTest.Fatalf("run error = %q, must not contain the key value", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRunRotateKeysRequiresPreviousKey(testInstance *testing.T) {
+	setDatabaseEnv(testInstance)
+	testInstance.Setenv("DELIVERY_MASTER_KEY", strings.Repeat("ab", 32))
+	testInstance.Setenv("DELIVERY_MASTER_KEY_FILE", "")
+	testInstance.Setenv("DELIVERY_MASTER_KEY_PREVIOUS", "")
+	testInstance.Setenv("DELIVERY_MASTER_KEY_PREVIOUS_FILE", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+	defer cancel()
+	err := run(ctx, newTestLogger(), []string{"rotate-keys"})
+
+	want := "rotate-keys requires DELIVERY_MASTER_KEY_PREVIOUS (the old key)"
+	if err == nil || err.Error() != want {
+		testInstance.Fatalf("run error = %v, want %q", err, want)
+	}
+}
+
+// TestRunKeySubcommandsAcceptKeyFiles verifies keys supplied through the _FILE variables are accepted: the run
+// gets past key resolution and fails only on the unreachable database.
+func TestRunKeySubcommandsAcceptKeyFiles(testInstance *testing.T) {
+	for _, subcommand := range keyRotationSubcommands {
+		testInstance.Run(subcommand, func(subTest *testing.T) {
+			setDatabaseEnv(subTest)
+			keyDirectory := subTest.TempDir()
+			primaryPath := filepath.Join(keyDirectory, "master-key")
+			previousPath := filepath.Join(keyDirectory, "master-key-previous")
+			if writeErr := os.WriteFile(primaryPath, []byte(strings.Repeat("ab", 32)+"\n"), 0o600); writeErr != nil {
+				subTest.Fatalf("write primary key file: %v", writeErr)
+			}
+			if writeErr := os.WriteFile(previousPath, []byte(strings.Repeat("cd", 32)+"\n"), 0o600); writeErr != nil {
+				subTest.Fatalf("write previous key file: %v", writeErr)
+			}
+			subTest.Setenv("DELIVERY_MASTER_KEY", "")
+			subTest.Setenv("DELIVERY_MASTER_KEY_FILE", primaryPath)
+			subTest.Setenv("DELIVERY_MASTER_KEY_PREVIOUS", "")
+			subTest.Setenv("DELIVERY_MASTER_KEY_PREVIOUS_FILE", previousPath)
+
+			ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+			defer cancel()
+			err := run(ctx, newTestLogger(), []string{subcommand})
+
+			if err == nil {
+				subTest.Fatal("run returned nil against an unreachable database, want an error")
+			}
+			if strings.Contains(err.Error(), "DELIVERY_MASTER_KEY") || strings.Contains(err.Error(), "requires") {
+				subTest.Fatalf("run error = %q, want the key files accepted", err)
+			}
+			if !strings.Contains(err.Error(), "read ") {
+				subTest.Fatalf("run error = %q, want the database read error from the unreachable port", err)
+			}
+		})
 	}
 }
