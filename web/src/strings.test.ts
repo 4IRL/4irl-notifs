@@ -198,6 +198,21 @@ describe('strings module', () => {
     expect(strings.routeRowLabel({ id: 7 })).toBe('route 7');
   });
 
+  it('exposes the edit dialog copy', () => {
+    expect(strings.discardChangesMessage).toBe('Discard unsaved changes?');
+    expect(strings.discardChanges).toBe('Discard changes');
+    expect(strings.keepEditing).toBe('Keep editing');
+    expect(strings.editRowGone).toBe('This item was removed. Close this dialog to continue.');
+    expect(strings.closeAction).toBe('Close dialog');
+    expect(strings.editDestinationNamed({ name: 'ops' })).toBe('Edit destination ops');
+    expect(strings.editRouteTitle).toBe('Edit route');
+    expect(strings.editAppNamed({ appId: 'u4i' })).toBe('Edit app u4i');
+    expect(strings.tokenShownOnceGuard).toBe('This token is shown once. Close without copying it?');
+    expect(strings.closeAnyway).toBe('Close anyway');
+    expect(strings.keepOpen).toBe('Keep open');
+    expect(strings.appSavedResult({ appId: 'u4i' })).toBe('Saved u4i.');
+  });
+
   it('exposes the people section heading, status copy, and column headers', () => {
     expect(strings.peopleHeading).toBe('People');
     expect(strings.peopleLoading).toBe('Loading people…');

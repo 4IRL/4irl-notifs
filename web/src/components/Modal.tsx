@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef } from 'react';
 import type { JSX, KeyboardEvent, ReactNode, RefObject } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -30,6 +30,10 @@ export interface ModalProps {
   /** Focused after close when the return target is missing, disconnected or hidden. */
   fallbackFocusRef?: RefObject<HTMLElement | null>;
   busy?: boolean;
+  /** Default 'default'. 'wide' widens the desktop card; the compact sheet is unchanged. */
+  size?: 'default' | 'wide';
+  /** Default true. False skips focusing the return target when the dialog closes. */
+  restoreFocus?: boolean;
   children: ReactNode;
   actions: ReactNode;
 }
@@ -53,7 +57,7 @@ function usable(element: HTMLElement | null | undefined): element is HTMLElement
 
 function tabbables(dialog: HTMLElement): HTMLElement[] {
   return Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) => element.closest('[hidden]') === null,
+    (element) => element.closest('[hidden]') === null && element.closest('[inert]') === null,
   );
 }
 
@@ -69,6 +73,8 @@ export function Modal({
   returnFocusRef,
   fallbackFocusRef,
   busy = false,
+  size = 'default',
+  restoreFocus = true,
   children,
   actions,
 }: ModalProps): JSX.Element | null {
@@ -87,6 +93,12 @@ export function Modal({
     returnFocusRef,
   });
   const fallbackRef = useRef(fallbackFocusRef);
+  // Assigned in a layout effect: passive cleanups run before new passive effects, so a ref
+  // refreshed in the passive effect below would be stale in the cleanup of the closing commit.
+  const restoreFocusRef = useRef(restoreFocus);
+  useLayoutEffect(() => {
+    restoreFocusRef.current = restoreFocus;
+  });
   // Declared before the open effect so it has run by the time that effect reads the refs.
   // Invariant: consumers keep returnFocusRef/fallbackFocusRef object identities stable.
   useEffect(() => {
@@ -144,6 +156,7 @@ export function Modal({
       document.body.style.overflow = previousOverflow;
       if (!rootWasInert) appRoot?.removeAttribute('inert');
 
+      if (!restoreFocusRef.current) return;
       const target = latest.current.returnFocusRef?.current ?? opener;
       if (usable(target)) {
         target.focus();
@@ -216,7 +229,7 @@ export function Modal({
     >
       <div
         ref={dialogRef}
-        className="modal"
+        className={size === 'wide' ? 'modal modal--wide' : 'modal'}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

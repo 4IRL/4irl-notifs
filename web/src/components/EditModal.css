@@ -1,0 +1,45 @@
+.edit-modal {
+  min-width: 0;
+}
+
+/* Drop the inline form card chrome so the form does not double-frame inside .modal__body. */
+.edit-modal .destination-form,
+.edit-modal__fieldset > form {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.edit-modal__fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.edit-modal__bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.edit-modal__message {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.edit-modal__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+@media (max-width: 30rem) {
+  .edit-modal__buttons {
+    flex-direction: column-reverse;
+    flex-wrap: nowrap;
+  }
+}
