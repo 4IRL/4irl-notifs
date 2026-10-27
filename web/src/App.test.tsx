@@ -194,7 +194,7 @@ describe('App', () => {
       within(row).getByRole('button', { name: `${strings.deleteAction} u_abcdefgh23456777` }),
     );
     await userEvent.click(
-      within(row).getByRole('button', {
+      screen.getByRole('button', {
         name: `${strings.confirmDeleteAction} u_abcdefgh23456777`,
       }),
     );
@@ -224,7 +224,7 @@ describe('App', () => {
       within(row).getByRole('button', { name: `${strings.deleteAction} u_abcdefgh23456777` }),
     );
     await userEvent.click(
-      within(row).getByRole('button', {
+      screen.getByRole('button', {
         name: `${strings.confirmDeleteAction} u_abcdefgh23456777`,
       }),
     );
@@ -254,7 +254,7 @@ describe('App', () => {
       within(row).getByRole('button', { name: `${strings.deprovisionAction} urls4irl` }),
     );
     await userEvent.click(
-      within(row).getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
+      screen.getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
     );
 
     expect(await screen.findByText(strings.genericError)).toBeInTheDocument();
@@ -284,7 +284,7 @@ describe('App', () => {
       within(row).getByRole('button', { name: `${strings.deprovisionAction} urls4irl` }),
     );
     await userEvent.click(
-      within(row).getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
+      screen.getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
     );
 
     expect(await screen.findByText(strings.deprovisionNotFound)).toBeInTheDocument();
@@ -327,7 +327,7 @@ describe('App', () => {
         within(row!).getByRole('button', { name: `${strings.deprovisionAction} urls4irl` }),
       );
       await userEvent.click(
-        within(row!).getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
+        screen.getByRole('button', { name: `${strings.confirmDeprovisionAction} urls4irl` }),
       );
     }
 
@@ -456,12 +456,14 @@ describe('App', () => {
       }),
     );
     await user.click(
-      within(users).getByRole('button', {
+      within(screen.getByRole('dialog')).getByRole('button', {
         name: strings.resetPasswordConfirmNamed({ user: 'alice@example.com' }),
       }),
     );
 
-    expect(await within(users).findByDisplayValue('abcd-efgh-ijkm-npqr')).toBeInTheDocument();
+    expect(
+      await within(screen.getByRole('dialog')).findByDisplayValue('abcd-efgh-ijkm-npqr'),
+    ).toBeInTheDocument();
     expect(client.resetPassword).toHaveBeenCalledWith({
       appId: 'urls4irl',
       email: 'alice@example.com',
@@ -496,18 +498,16 @@ describe('App', () => {
     const triggerName = strings.resetPasswordTriggerNamed({ user: 'alice@example.com' });
 
     await user.click(await within(users).findByRole('button', { name: triggerName }));
-    expect(within(users).getByText(strings.resetPasswordNotice)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('dialog')).getByText(strings.resetPasswordNotice),
+    ).toBeInTheDocument();
     await user.keyboard('{Escape}');
 
-    expect(within(users).queryByText(strings.resetPasswordNotice)).not.toBeInTheDocument();
-    expect(
-      within(users).queryByRole('button', {
-        name: strings.resetPasswordConfirmNamed({ user: 'alice@example.com' }),
-      }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText(strings.resetPasswordNotice)).not.toBeInTheDocument();
     expect(within(users).getByRole('button', { name: triggerName })).toHaveFocus();
     expect(client.resetPassword).not.toHaveBeenCalled();
-    expect(within(users).queryByDisplayValue('abcd-efgh-ijkm-npqr')).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('abcd-efgh-ijkm-npqr')).not.toBeInTheDocument();
   });
 
   it('offers no Reset action when the email is not known (no person client)', async () => {
