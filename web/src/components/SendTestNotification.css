@@ -13,7 +13,7 @@
 }
 
 /* Picker row: target-app select + channel + message. Wraps instead of
-   overflowing on narrow viewports (the app has no @media queries). A tighter
+   overflowing on narrow viewports (it needs no @media query). A tighter
    gap than App.css's `.app__forms` since these controls sit closer together. */
 .send-test__picker-row {
   display: flex;

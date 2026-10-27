@@ -145,59 +145,6 @@
   overflow-wrap: normal;
 }
 
-/* A button the row hides while one of its destructive confirms is open (see
-   useConfirmingRows): the pair takes the place of the row's buttons, so the cell is never wider
-   than when the row is idle. A component's own `display` would otherwise out-specify the UA
-   `[hidden]` rule. */
-.admin-table button[hidden] {
-  display: none;
-}
-
-/* A confirm pair opened in a cell: Confirm and Cancel stay on one line, filling the width of
-   the cell's controls; the notice sits on its own line under them (inside an inline editor it
-   wraps like the rest of the form). The notice contributes nothing to the cell's intrinsic
-   width (`width: 0`), so a long sentence never widens the cell or the table: `min-width: 100%`
-   stretches it to the width the controls give the cell, and it wraps in full within that. This
-   is the one text in a cell that wraps by design, as it is a sentence the operator must read
-   in full, never cut with an ellipsis. */
-.admin-table td:not(.admin-table__editor-cell) .confirm-button__group {
-  flex: 1 1 auto;
-  flex-wrap: wrap;
-  white-space: nowrap;
-}
-
-/* In an Actions cell the pair is a grid that fills the cell's controls: a spare first column,
-   then Confirm and Cancel at their own width (they take the place of the row's other buttons,
-   which are hidden), so they sit at the cell's trailing edge like the idle buttons, with the
-   notice spanning every column under them. The notice is `width: 0` (above), so the buttons
-   alone set the width the pair asks of the cell, and the notice wraps within the cell's width. */
-.admin-table td.admin-table__actions .confirm-button__group {
-  display: grid;
-  grid-template-columns: 1fr max-content max-content;
-  flex: 1 1 auto;
-}
-
-.admin-table td.admin-table__actions .confirm-button__group > button:first-child {
-  grid-column: 2;
-}
-
-.admin-table td.admin-table__actions .confirm-button__group > .confirm-button__cancel {
-  grid-column: 3;
-}
-
-.admin-table td.admin-table__actions .confirm-button__notice {
-  grid-column: 1 / -1;
-}
-
-.admin-table td:not(.admin-table__editor-cell) .confirm-button__notice {
-  box-sizing: border-box;
-  flex: 0 0 auto;
-  width: 0;
-  min-width: 100%;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
 /* The inline edit row (and the one-time secret reveal): a full-width cell whose content
    is pinned to the visible width of the wrapper, so the form wraps normally, never sits
    under a pinned cell (this row has none) and never needs horizontal scrolling. */
