@@ -48,6 +48,43 @@ interface ChannelWarningParams {
 
 export const strings = {
   appTitle: '4IRL Notifications Admin',
+
+  // Confirm dialogs (shared Modal shell).
+  closeDialog: 'Close',
+  dialogItemUser: 'User',
+  dialogItemUserApp: 'User · app',
+  dialogUserApp: ({ user, app }: { user: string; app: string }): string => `${user} · ${app}`,
+  dialogItemPerson: 'Person',
+  dialogItemApp: 'App',
+  dialogItemDelivery: 'Delivery',
+  deprovisionDialogTitle: 'Deprovision app access?',
+  deprovisionNotice: "Removes this person's access to this app. Their other apps are unaffected.",
+  deleteUserDialogTitle: 'Delete user?',
+  deleteUserNotice: 'Removes this user from every app.',
+  deletePersonDialogTitle: 'Delete person?',
+  deletePersonNotice: 'Deletes the person, every app grant and token.',
+  removeAppDialogTitle: 'Remove app?',
+  removeAppNotice: 'Removes the app, its publisher identity and every subscriber grant.',
+  replayDeliveryDialogTitle: 'Replay delivery?',
+  replayDeliveryNotice: 'Sends the same message to the destination again.',
+  dialogItemDestination: 'Destination',
+  dialogItemRoute: 'Route',
+  disableDestinationDialogTitle: 'Disable destination?',
+  deleteDestinationDialogTitle: 'Delete destination?',
+  deleteRouteDialogTitle: 'Delete route?',
+  dialogItemCheck: 'Check',
+  dialogItemSend: 'Send key',
+  dialogItemKey: 'Key',
+  dialogKeyForApp: ({ hint, app }: { hint: string; app: string }): string => `${hint} for ${app}`,
+  pauseHeartbeatDialogTitle: 'Pause check?',
+  deleteHeartbeatDialogTitle: 'Delete check?',
+  cancelSendDialogTitle: 'Cancel scheduled send?',
+  rejectIdentityDialogTitle: 'Reject identity request?',
+  revokeKeyDialogTitle: 'Revoke key?',
+  unbindAppDialogTitle: 'Unbind app?',
+  rotateDestinationDialogTitle: 'Rotate signing secret?',
+  rotateTokenDialogTitle: 'Revoke and re-mint publisher token?',
+
   headerBadge: 'ntfy hub',
 
   provisionHeading: 'Provision a user into an app',
@@ -105,6 +142,9 @@ export const strings = {
     `Too many password changes. Try again in ${seconds} s.`,
   resetPasswordFailed: 'Could not reset the password. Try again.',
   resetPasswordDefaultRetrySeconds: 60,
+  resetPasswordDialogTitle: 'Reset password?',
+  resetPasswordTimedOut:
+    'The reset took too long. The password may have changed — reset again to get a new one.',
 
   invalidAppId: 'App ID must be lowercase letters, digits, or underscores.',
   invalidUserId: 'User ID must be lowercase letters, digits, underscores, or hyphens.',
@@ -156,8 +196,8 @@ export const strings = {
   columnEmail: 'Email',
   columnCreated: 'Created',
 
-  // Inline two-step confirmation (no modal): every destructive action first
-  // shows a Confirm/Cancel pair before firing.
+  // Two-step confirmation: every destructive action first opens a confirm
+  // dialog with Confirm/Cancel before firing.
   cancelAction: 'Cancel',
   /** Accessible name of a per-row dismiss button: "Cancel" plus the row's trigger label. */
   cancelActionNamed: ({ subject }: { subject: string }): string => `Cancel ${subject}`,

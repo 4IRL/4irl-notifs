@@ -22,6 +22,7 @@
   --danger-border: rgba(248, 113, 113, 0.4);
   --ok: #4ade80;
   --ok-bg: rgba(74, 222, 128, 0.12);
+  --backdrop: rgb(0 0 0 / 60%);
 
   --radius: 8px;
   --space-1: 0.25rem;

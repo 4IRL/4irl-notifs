@@ -43,6 +43,46 @@ describe('strings module', () => {
 
   it('exposes the operator password reset copy', () => {
     expect(strings.resetPasswordAction).toBe('Reset password');
+    expect(strings.closeDialog).toBe('Close');
+    expect(strings.dialogItemUser).toBe('User');
+    expect(strings.dialogItemUserApp).toBe('User · app');
+    expect(strings.dialogUserApp({ user: 'alice', app: 'urls4irl' })).toBe('alice · urls4irl');
+    expect(strings.dialogItemPerson).toBe('Person');
+    expect(strings.dialogItemApp).toBe('App');
+    expect(strings.dialogItemDelivery).toBe('Delivery');
+    expect(strings.deprovisionDialogTitle).toBe('Deprovision app access?');
+    expect(strings.deprovisionNotice).toBe(
+      "Removes this person's access to this app. Their other apps are unaffected.",
+    );
+    expect(strings.deleteUserDialogTitle).toBe('Delete user?');
+    expect(strings.deleteUserNotice).toBe('Removes this user from every app.');
+    expect(strings.deletePersonDialogTitle).toBe('Delete person?');
+    expect(strings.deletePersonNotice).toBe('Deletes the person, every app grant and token.');
+    expect(strings.removeAppDialogTitle).toBe('Remove app?');
+    expect(strings.removeAppNotice).toBe(
+      'Removes the app, its publisher identity and every subscriber grant.',
+    );
+    expect(strings.replayDeliveryDialogTitle).toBe('Replay delivery?');
+    expect(strings.replayDeliveryNotice).toBe('Sends the same message to the destination again.');
+    expect(strings.dialogItemDestination).toBe('Destination');
+    expect(strings.dialogItemRoute).toBe('Route');
+    expect(strings.disableDestinationDialogTitle).toBe('Disable destination?');
+    expect(strings.deleteDestinationDialogTitle).toBe('Delete destination?');
+    expect(strings.deleteRouteDialogTitle).toBe('Delete route?');
+    expect(strings.dialogItemCheck).toBe('Check');
+    expect(strings.dialogItemSend).toBe('Send key');
+    expect(strings.dialogItemKey).toBe('Key');
+    expect(strings.dialogKeyForApp({ hint: 'dak_7Q2m', app: 'tasktracker' })).toBe(
+      'dak_7Q2m for tasktracker',
+    );
+    expect(strings.pauseHeartbeatDialogTitle).toBe('Pause check?');
+    expect(strings.deleteHeartbeatDialogTitle).toBe('Delete check?');
+    expect(strings.cancelSendDialogTitle).toBe('Cancel scheduled send?');
+    expect(strings.rejectIdentityDialogTitle).toBe('Reject identity request?');
+    expect(strings.revokeKeyDialogTitle).toBe('Revoke key?');
+    expect(strings.unbindAppDialogTitle).toBe('Unbind app?');
+    expect(strings.rotateDestinationDialogTitle).toBe('Rotate signing secret?');
+    expect(strings.rotateTokenDialogTitle).toBe('Revoke and re-mint publisher token?');
     expect(strings.confirmResetPasswordAction).toBe('Confirm reset');
     expect(strings.resettingPasswordAction).toBe('Resetting…');
     expect(strings.resetPasswordNotice).toBe(
@@ -73,6 +113,10 @@ describe('strings module', () => {
     );
     expect(strings.resetPasswordFailed).toBe('Could not reset the password. Try again.');
     expect(strings.resetPasswordDefaultRetrySeconds).toBe(60);
+    expect(strings.resetPasswordDialogTitle).toBe('Reset password?');
+    expect(strings.resetPasswordTimedOut).toBe(
+      'The reset took too long. The password may have changed — reset again to get a new one.',
+    );
   });
 
   it('formats the reset 429 wait so it reads correctly for any count', () => {
