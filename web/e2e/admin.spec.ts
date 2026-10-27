@@ -199,9 +199,9 @@ test.describe('admin UI critical flows', () => {
         .filter({ has: page.getByRole('heading', { name: 'Users', exact: true }) });
     }
 
-    async function confirmReset(section: Locator): Promise<void> {
-      await section.getByRole('button', { name: `Reset password for ${EMAIL}` }).click();
-      await section.getByRole('button', { name: `Confirm reset password for ${EMAIL}` }).click();
+    async function confirmReset(page: Page): Promise<void> {
+      await page.getByRole('button', { name: `Reset password for ${EMAIL}` }).click();
+      await page.getByRole('button', { name: `Confirm reset password for ${EMAIL}` }).click();
     }
 
     test('confirm, reveal once, then Done clears it and refocuses the trigger', async ({
@@ -226,25 +226,27 @@ test.describe('admin UI critical flows', () => {
       });
       await page.goto('/');
       const section = usersSectionOf(page);
+      const dialog = page.getByRole('dialog');
 
       await section.getByRole('button', { name: `Reset password for ${EMAIL}` }).click();
       await expect(
-        section.getByText('Resetting replaces the current password immediately.'),
+        dialog.getByText('Resetting replaces the current password immediately.'),
       ).toBeVisible();
+      await expect(dialog.getByRole('heading', { name: 'Reset password?' })).toBeVisible();
       expect(resetCalls).toBe(0);
-      await section.getByRole('button', { name: `Confirm reset password for ${EMAIL}` }).click();
+      await dialog.getByRole('button', { name: `Confirm reset password for ${EMAIL}` }).click();
 
       await expect(
-        section.getByText(
+        dialog.getByText(
           `The new password for ${EMAIL} is shown only once. It replaces any earlier password.`,
         ),
       ).toBeVisible();
-      await expect(section.getByLabel('Password', { exact: true })).toHaveValue(RESET_PASSWORD);
+      await expect(dialog.getByLabel('Password', { exact: true })).toHaveValue(RESET_PASSWORD);
       expect(resetCalls).toBe(1);
       expect(resetBody).toEqual({ app_id: 'urls4irl', email: EMAIL });
 
-      await section.getByRole('button', { name: `Done with password for ${EMAIL}` }).click();
-      await expect(section.getByLabel('Password', { exact: true })).toHaveCount(0);
+      await dialog.getByRole('button', { name: `Done with password for ${EMAIL}` }).click();
+      await expect(dialog).toHaveCount(0);
       await expect(page.getByText(RESET_PASSWORD)).toHaveCount(0);
       await expect(
         section.getByRole('button', { name: `Reset password for ${EMAIL}` }),
@@ -267,27 +269,36 @@ test.describe('admin UI critical flows', () => {
         });
       });
       await page.goto('/');
-      const section = usersSectionOf(page);
+      const dialog = page.getByRole('dialog');
 
-      await confirmReset(section);
+      await confirmReset(page);
       await expect(
-        section.getByText('Too many password changes. Try again in 42 s.'),
+        dialog
+          .getByRole('alert')
+          .filter({ hasText: 'Too many password changes. Try again in 42 s.' }),
       ).toBeVisible();
-      await expect(section.getByLabel('Password', { exact: true })).toHaveCount(0);
+      await expect(dialog.getByLabel('Password', { exact: true })).toHaveCount(0);
+      await dialog.getByText('Close', { exact: true }).click();
+      await expect(dialog).toHaveCount(0);
 
       status = 404;
-      await confirmReset(section);
+      await confirmReset(page);
       await expect(
-        section.getByText(
-          'This person does not exist, or has no access in this app. Refresh the list.',
-        ),
+        dialog.getByRole('alert').filter({
+          hasText: 'This person does not exist, or has no access in this app. Refresh the list.',
+        }),
       ).toBeVisible();
-      await expect(section.getByText('Too many password changes')).toHaveCount(0);
+      await expect(page.getByText('Too many password changes')).toHaveCount(0);
     });
 
-    test('the reveal fits at 390px with 44px controls', async ({ page }) => {
+    test('each phase fills the viewport at 390px with 44px controls', async ({ page }) => {
       await mockUsersWithEmail(page);
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
       await page.route('**/v1/reset-password', async (route) => {
+        await gate;
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -300,37 +311,40 @@ test.describe('admin UI critical flows', () => {
       });
       await page.setViewportSize({ width: 390, height: 844 });
       await page.goto('/');
-      const section = usersSectionOf(page);
+      const dialog = page.getByRole('dialog');
 
-      const trigger = section.getByRole('button', { name: `Reset password for ${EMAIL}` });
+      async function expectFullScreen(): Promise<void> {
+        const box = await dialog.boundingBox();
+        expect(box?.x ?? -1).toBeCloseTo(0, 0);
+        expect(box?.width ?? 0).toBeCloseTo(390, 0);
+        expect(box?.height ?? 0).toBeCloseTo(844, 0);
+      }
+      async function expectTall(names: string[]): Promise<void> {
+        for (const name of names) {
+          const box = await dialog.getByRole('button', { name }).boundingBox();
+          expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+        }
+      }
+
+      const trigger = usersSectionOf(page).getByRole('button', {
+        name: `Reset password for ${EMAIL}`,
+      });
       expect((await trigger.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
-      await confirmReset(section);
-      await expect(section.getByLabel('Password', { exact: true })).toHaveValue(RESET_PASSWORD);
+      await trigger.click();
+      await expectFullScreen();
+      await expectTall([
+        `Confirm reset password for ${EMAIL}`,
+        `Cancel Reset password for ${EMAIL}`,
+      ]);
 
-      // With a user row the page itself is already wider than 390px (the
-      // unrelated Send-test table is ~587px), so a document-level overflow
-      // assertion would test that table, not this feature. Assert instead that
-      // the reveal, its messages and its controls stay inside the viewport.
-      // Playwright scrolled sideways to reach the row's (pre-existing, wide)
-      // actions cell; measure from the page origin.
-      await page.evaluate(() => window.scrollTo(0, 0));
-      const group = section.getByRole('group', { name: 'New password' });
-      const onScreen = [
-        group,
-        section.getByRole('status'),
-        group.getByLabel('Password', { exact: true }),
-        section.getByRole('button', { name: 'Copy password' }),
-        section.getByRole('button', { name: `Done with password for ${EMAIL}` }),
-      ];
-      for (const target of onScreen) {
-        const box = await target.boundingBox();
-        expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
-        expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
-      }
-      for (const name of ['Copy password', `Done with password for ${EMAIL}`]) {
-        const box = await section.getByRole('button', { name }).boundingBox();
-        expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
-      }
+      await dialog.getByRole('button', { name: `Confirm reset password for ${EMAIL}` }).click();
+      await expect(dialog).toHaveAttribute('aria-busy', 'true');
+      await expectFullScreen();
+
+      release();
+      await expect(dialog.getByLabel('Password', { exact: true })).toHaveValue(RESET_PASSWORD);
+      await expectFullScreen();
+      await expectTall(['Copy password', `Done with password for ${EMAIL}`]);
     });
   });
 

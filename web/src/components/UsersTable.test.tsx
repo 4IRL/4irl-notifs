@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -54,7 +54,7 @@ describe('UsersTable', () => {
     expect(screen.queryAllByRole('row')).toHaveLength(0);
   });
 
-  it('gives each open deprovision and delete confirm a per-row dismiss name', async () => {
+  it("names each row's own item in its deprovision and delete dialogs and keeps per-row cancel names", async () => {
     const user = userEvent.setup();
     const users = [
       { userId: 'alice', apps: ['urls4irl'], topicPatterns: ['u4i-alice'] },
@@ -75,27 +75,35 @@ describe('UsersTable', () => {
       name: `${strings.deprovisionAction} urls4irl`,
     });
     expect(deprovisionTriggers).toHaveLength(2);
-    for (const trigger of deprovisionTriggers) {
-      await user.click(trigger);
+    const names = ['alice', 'bob'];
+    for (const [index, name] of names.entries()) {
+      await user.click(deprovisionTriggers[index]);
+      const dialog = screen.getByRole('dialog', { name: strings.deprovisionDialogTitle });
+      expect(
+        within(dialog).getByText(strings.dialogUserApp({ user: name, app: 'urls4irl' })),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByText(strings.deprovisionNotice)).toBeInTheDocument();
+      const dismiss = within(dialog).getByRole('button', {
+        name: strings.cancelActionNamed({
+          subject: strings.deprovisionAppForUser({ app: 'urls4irl', user: name }),
+        }),
+      });
+      expect(dismiss).toHaveTextContent(strings.cancelAction);
+      await user.click(dismiss);
+      expect(screen.queryByRole('dialog')).toBeNull();
     }
-    await user.click(screen.getByRole('button', { name: `${strings.deleteAction} alice` }));
-    await user.click(screen.getByRole('button', { name: `${strings.deleteAction} bob` }));
-
-    const dismissNames = [
-      strings.cancelActionNamed({
-        subject: strings.deprovisionAppForUser({ app: 'urls4irl', user: 'alice' }),
-      }),
-      strings.cancelActionNamed({
-        subject: strings.deprovisionAppForUser({ app: 'urls4irl', user: 'bob' }),
-      }),
-      strings.cancelActionNamed({ subject: `${strings.deleteAction} alice` }),
-      strings.cancelActionNamed({ subject: `${strings.deleteAction} bob` }),
-    ];
-    expect(new Set(dismissNames).size).toBe(4);
-    for (const name of dismissNames) {
-      expect(screen.getByRole('button', { name })).toHaveTextContent(strings.cancelAction);
+    for (const name of names) {
+      await user.click(screen.getByRole('button', { name: `${strings.deleteAction} ${name}` }));
+      const dialog = screen.getByRole('dialog', { name: strings.deleteUserDialogTitle });
+      expect(within(dialog).getByText(name)).toBeInTheDocument();
+      expect(within(dialog).getByText(strings.deleteUserNotice)).toBeInTheDocument();
+      const dismiss = within(dialog).getByRole('button', {
+        name: strings.cancelActionNamed({ subject: `${strings.deleteAction} ${name}` }),
+      });
+      expect(dismiss).toHaveTextContent(strings.cancelAction);
+      await user.click(dismiss);
+      expect(screen.queryByRole('dialog')).toBeNull();
     }
-    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
   });
 
   it('renders a table with column headers and a row per user', () => {
