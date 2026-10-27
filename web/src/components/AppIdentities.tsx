@@ -18,7 +18,6 @@ import { formatMinute, formatUtc } from './formatUtc';
 import { RowActionsMenu } from './RowActionsMenu';
 import type { RowMenuItem } from './RowActionsMenu';
 import { messageOf, withoutKey } from './rowState';
-import { useConfirmingRows } from './useConfirmingRows';
 import { revealFocusedControl } from './adminTableFocus';
 import './adminTable.css';
 import './AppIdentities.css';
@@ -202,7 +201,6 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
   const loadingRef = useRef(true);
   const { registerControl, requestFocus } = useFocusRegistry();
   const { isBusy, exclusive } = useExclusive<string>();
-  const { isSteppedAside, reportConfirming } = useConfirmingRows();
   const trackList = useLatestRequest();
 
   const commitRequests = useCallback((next: IdentityRequest[]) => {
@@ -487,6 +485,8 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
                 cancelLabel: strings.cancelAction,
                 cancelAriaLabel: strings.cancelRejectIdentityNamed({ app: appId }),
                 notice: strings.rejectIdentityNotice,
+                dialogTitle: strings.rejectIdentityDialogTitle,
+                dialogItem: { label: strings.dialogItemApp, value: appId },
                 onConfirm: () => handleReject(request),
               },
             },
@@ -507,8 +507,6 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
               ref={(element) => registerControl({ key: `approve:${id}`, element })}
               type="button"
               className="app-identities__button app-identities__button--primary"
-              // Reject's confirm pair takes Approve's place while it is open.
-              hidden={isSteppedAside({ rowKey: `request:${id}` })}
               aria-label={
                 approving
                   ? strings.approvingIdentityNamed({ app: appId })
@@ -539,9 +537,8 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
                   ? strings.rejectingIdentityNamed({ app: appId })
                   : strings.rejectIdentityNamed({ app: appId })
               }
-              onConfirmingChange={(confirming) =>
-                reportConfirming({ rowKey: `request:${id}`, control: 'reject', confirming })
-              }
+              dialogTitle={strings.rejectIdentityDialogTitle}
+              dialogItem={{ label: strings.dialogItemApp, value: appId }}
               registerTrigger={(element) => registerControl({ key: `reject:${id}`, element })}
               onConfirm={() => handleReject(request)}
             />
@@ -594,6 +591,11 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
             dismissAriaLabel={strings.cancelRevokeKeyNamed({ hint: keyHint, app: appId })}
             className="app-identities__button app-identities__button--danger"
             confirmNotice={strings.revokeKeyNotice}
+            dialogTitle={strings.revokeKeyDialogTitle}
+            dialogItem={{
+              label: strings.dialogItemKey,
+              value: strings.dialogKeyForApp({ hint: keyHint, app: appId }),
+            }}
             busy={isBusy(`revoke:${id}`)}
             busyLabel={strings.revokingKey}
             busyAriaLabel={strings.revokingKeyNamed({ hint: keyHint, app: appId })}
@@ -816,6 +818,11 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
                                 app: appId,
                               }),
                               notice: strings.revokeKeyNotice,
+                              dialogTitle: strings.revokeKeyDialogTitle,
+                              dialogItem: {
+                                label: strings.dialogItemKey,
+                                value: strings.dialogKeyForApp({ hint: keyHint, app: appId }),
+                              },
                               onConfirm: () => handleRevoke({ identityKey, appId }),
                             },
                           };
@@ -833,6 +840,8 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
                           cancelLabel: strings.cancelAction,
                           cancelAriaLabel: strings.cancelUnbindAppNamed({ app: appId }),
                           notice: strings.unbindAppNotice,
+                          dialogTitle: strings.unbindAppDialogTitle,
+                          dialogItem: { label: strings.dialogItemApp, value: appId },
                           onConfirm: () => handleUnbind(binding),
                         },
                       },
@@ -895,6 +904,8 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
                                 dismissAriaLabel={strings.cancelUnbindAppNamed({ app: appId })}
                                 className="app-identities__button app-identities__button--danger"
                                 confirmNotice={strings.unbindAppNotice}
+                                dialogTitle={strings.unbindAppDialogTitle}
+                                dialogItem={{ label: strings.dialogItemApp, value: appId }}
                                 busy={isBusy(`unbind:${appId}`)}
                                 busyLabel={strings.unbindingApp}
                                 busyAriaLabel={strings.unbindingAppNamed({ app: appId })}

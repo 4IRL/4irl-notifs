@@ -22,7 +22,7 @@ import {
   routeWire,
   scheduledWire,
 } from './support/adminMocks';
-import type { DeliveryMockSeed, Json } from './support/adminMocks';
+import type { DeliveryMockSeed } from './support/adminMocks';
 
 // The real provisioning API is Cloudflare Access-gated, so these critical-flow
 // e2e tests run against the production build (vite preview) with the API mocked
@@ -985,6 +985,36 @@ async function expectCompactButton(locator: Locator): Promise<void> {
   expect(box?.height ?? 0).toBeGreaterThan(20);
 }
 
+/**
+ * Asserts a confirm dialog is full screen (its box is the viewport) and that its named buttons
+ * are fully visible and at least 44px tall.
+ */
+async function expectFullScreenConfirm({
+  page,
+  dialog,
+  buttons,
+}: {
+  page: Page;
+  dialog: Locator;
+  buttons: string[];
+}): Promise<void> {
+  await expect(dialog).toBeVisible();
+  const box = await dialog.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box).not.toBeNull();
+  expect(box?.x).toBe(0);
+  expect(box?.y).toBe(0);
+  expect(box?.width).toBe(viewport?.width);
+  expect(box?.height).toBe(viewport?.height);
+  for (const name of buttons) {
+    const button = dialog.getByRole('button', { name, exact: true });
+    await expect(button).toBeVisible();
+    await expectInViewport({ page, locator: button });
+    const buttonBox = await button.boundingBox();
+    expect(buttonBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+  }
+}
+
 /** Asserts a box lies wholly inside the viewport. */
 async function expectInViewport({
   page,
@@ -1527,7 +1557,10 @@ test.describe('admin UI Delivery tab', () => {
     // Rotate the signing secret and see the one-time reveal.
     await page.getByRole('button', { name: 'Edit hook1', exact: true }).click();
     await page.getByRole('button', { name: 'Rotate hook1', exact: true }).click();
-    await page.getByRole('button', { name: 'Confirm rotate hook1', exact: true }).click();
+    await page
+      .getByRole('dialog', { name: 'Rotate signing secret?' })
+      .getByRole('button', { name: 'Confirm rotate hook1', exact: true })
+      .click();
     await expect(page.getByText('rotated_signing_secret_e2e_0123456789abcdef')).toBeVisible();
     const rotate = mock.mutations.find((request) => request.pathname.endsWith('/rotate-secret'));
     expect(rotate?.method).toBe('POST');
@@ -1538,7 +1571,10 @@ test.describe('admin UI Delivery tab', () => {
 
     // Disable through the confirm.
     await page.getByRole('button', { name: 'Disable hook1', exact: true }).click();
-    await page.getByRole('button', { name: 'Confirm disable hook1', exact: true }).click();
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: 'Confirm disable hook1', exact: true })
+      .click();
     await expect(page.getByRole('button', { name: 'Enable hook1', exact: true })).toBeVisible();
     const disable = mock.mutations.find((request) => request.method === 'PATCH');
     expect(disable?.pathname).toBe('/delivery/v1/admin/destinations/hook1');
@@ -1734,13 +1770,13 @@ test.describe('admin UI Delivery tab', () => {
 
     // Keep running sends nothing.
     await pause.click();
-    await section.getByRole('button', { name: 'Keep running urls4irl/nightly_backup' }).click();
+    await page.getByRole('button', { name: 'Keep running urls4irl/nightly_backup' }).click();
     await expect(pause).toBeFocused();
     expect(mock.mutations).toEqual([]);
 
     // Pause needs a confirm, then focus lands on the row's Resume.
     await pause.click();
-    await section.getByRole('button', { name: 'Confirm pause urls4irl/nightly_backup' }).click();
+    await page.getByRole('button', { name: 'Confirm pause urls4irl/nightly_backup' }).click();
     const resume = section.getByRole('button', {
       name: 'Resume urls4irl/nightly_backup',
       exact: true,
@@ -1762,7 +1798,7 @@ test.describe('admin UI Delivery tab', () => {
 
     // Delete the last row: focus lands on the neighbour's first control.
     await section.getByRole('button', { name: 'Delete urls4irl/reaper', exact: true }).click();
-    await section.getByRole('button', { name: 'Confirm delete urls4irl/reaper' }).click();
+    await page.getByRole('button', { name: 'Confirm delete urls4irl/reaper' }).click();
     await expect(section.getByText('Deleted urls4irl/reaper.')).toBeVisible();
     await expect(
       section.getByRole('button', { name: 'Pause urls4irl/hourly_gauge', exact: true }),
@@ -1903,7 +1939,7 @@ test.describe('admin UI Delivery tab', () => {
     await section
       .getByRole('button', { name: 'Pause minecrafting/daily_report', exact: true })
       .click();
-    await section.getByRole('button', { name: 'Confirm pause minecrafting/daily_report' }).click();
+    await page.getByRole('button', { name: 'Confirm pause minecrafting/daily_report' }).click();
     await expect(createdRow.getByText('Paused', { exact: true })).toBeVisible();
     await expect(
       section.getByRole('button', { name: 'Resume minecrafting/daily_report', exact: true }),
@@ -1913,7 +1949,7 @@ test.describe('admin UI Delivery tab', () => {
     await section
       .getByRole('button', { name: 'Delete minecrafting/daily_report', exact: true })
       .click();
-    await section.getByRole('button', { name: 'Confirm delete minecrafting/daily_report' }).click();
+    await page.getByRole('button', { name: 'Confirm delete minecrafting/daily_report' }).click();
     await expect(section.getByText('Deleted minecrafting/daily_report.')).toBeVisible();
     await expect(createdRow).toHaveCount(0);
     await expect(
@@ -2072,22 +2108,22 @@ test.describe('admin UI Delivery tab', () => {
         check === 'owned' ? 'Managed by chores4irl' : 'deploy may manage this',
       );
       await menu.getByRole('menuitem', { name: `Pause urls4irl/${check}`, exact: true }).click();
-      const confirm = page.getByRole('group', { name: `Pause urls4irl/${check}`, exact: true });
+      const confirm = page.getByRole('dialog', { name: 'Pause check?', exact: true });
       await expect(confirm).toContainText('No alerts are sent while paused.');
       await expect(confirm).toContainText(
         check === 'owned' ? 'Managed by chores4irl' : 'deploy may manage this',
       );
-      await expectInViewport({ page, locator: confirm });
-      await expectFullyPainted(confirm);
-      for (const name of [`Confirm pause urls4irl/${check}`, `Keep running urls4irl/${check}`]) {
-        await expectTouchTarget(confirm.getByRole('button', { name, exact: true }));
-      }
+      await expectFullScreenConfirm({
+        page,
+        dialog: confirm,
+        buttons: [`Confirm pause urls4irl/${check}`, `Keep running urls4irl/${check}`],
+      });
       expect(await maxRenderedLines({ root: row })).toBe(1);
       await page
         .getByRole('button', { name: `Keep running urls4irl/${check}`, exact: true })
         .click();
-      await expect(menu).toBeVisible();
-      await page.keyboard.press('Escape');
+      await expect(confirm).toBeHidden();
+      await expect(rowKebab({ page, row: `urls4irl/${check}` })).toBeFocused();
       await expectNoPageOverflow(page);
     }
 
@@ -2158,9 +2194,15 @@ test.describe('admin UI Delivery tab', () => {
     // Pause: Keep running sends nothing; Confirm pauses and focus stays on the kebab.
     let menu = await openRowMenu({ page, row: first });
     await menu.getByRole('menuitem', { name: `Pause ${first}`, exact: true }).click();
+    await expectFullScreenConfirm({
+      page,
+      dialog: page.getByRole('dialog', { name: 'Pause check?', exact: true }),
+      buttons: [`Confirm pause ${first}`, `Keep running ${first}`],
+    });
     await page.getByRole('button', { name: `Keep running ${first}`, exact: true }).click();
-    await expect(menu.getByRole('menuitem', { name: `Pause ${first}` })).toBeFocused();
+    await expect(rowKebab({ page, row: first })).toBeFocused();
     expect(mock.mutations).toEqual([]);
+    menu = await openRowMenu({ page, row: first });
     await menu.getByRole('menuitem', { name: `Pause ${first}`, exact: true }).click();
     await page.getByRole('button', { name: `Confirm pause ${first}`, exact: true }).click();
     await expect(menu).toBeHidden();
@@ -2244,9 +2286,11 @@ test.describe('admin UI Delivery tab', () => {
       .getByRole('button', { name: 'Reject identity request for chores4irl', exact: true })
       .click();
     await expect(
-      section.getByText('The deploy keeps failing until a new request is approved.'),
+      page
+        .getByRole('dialog', { name: 'Reject identity request?' })
+        .getByText('The deploy keeps failing until a new request is approved.'),
     ).toBeVisible();
-    await section
+    await page
       .getByRole('button', { name: 'Confirm reject identity request for chores4irl', exact: true })
       .click();
     await expect(section.getByRole('heading', { name: 'Requests' })).toBeFocused();
@@ -2256,7 +2300,7 @@ test.describe('admin UI Delivery tab', () => {
     await section
       .getByRole('button', { name: 'Revoke key dak_7Q2m for tasktracker', exact: true })
       .click();
-    await section
+    await page
       .getByRole('button', { name: 'Confirm revoke key dak_7Q2m for tasktracker', exact: true })
       .click();
     await expect(
@@ -2268,7 +2312,7 @@ test.describe('admin UI Delivery tab', () => {
 
     // Unbind removes the row; focus goes to the neighbouring binding's first control.
     await section.getByRole('button', { name: 'Unbind tasktracker', exact: true }).click();
-    await section.getByRole('button', { name: 'Confirm unbind tasktracker', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirm unbind tasktracker', exact: true }).click();
     await expect(section.getByText('Unbound tasktracker. Its keys are revoked.')).toBeVisible();
     await expect(
       section.getByRole('button', { name: 'Unbind urls4irl', exact: true }),
@@ -2471,27 +2515,24 @@ test.describe('admin UI Delivery tab', () => {
     const widthBefore = await wrappers.nth(0).evaluate((element) => element.scrollWidth);
     menu = await openRowMenu({ page, row: 'urls4irl' });
     await menu.getByRole('menuitem', { name: 'Reject identity request for urls4irl' }).click();
-    const confirm = page.getByRole('group', {
-      name: 'Reject identity request for urls4irl',
-      exact: true,
-    });
+    const confirm = page.getByRole('dialog', { name: 'Reject identity request?', exact: true });
     await expect(confirm).toContainText(
       'The deploy keeps failing until a new request is approved.',
     );
-    await expectInViewport({ page, locator: confirm });
-    for (const name of [
-      'Confirm reject identity request for urls4irl',
-      'Cancel reject identity request for urls4irl',
-    ]) {
-      await expectTouchTarget(confirm.getByRole('button', { name, exact: true }));
-    }
-    expect(await wrappers.nth(0).evaluate((element) => element.scrollWidth)).toBe(widthBefore);
-    expect(await maxRenderedLines({ root: wrappers.nth(0) })).toBe(1);
+    await expectFullScreenConfirm({
+      page,
+      dialog: confirm,
+      buttons: [
+        'Confirm reject identity request for urls4irl',
+        'Cancel reject identity request for urls4irl',
+      ],
+    });
     await page
       .getByRole('button', { name: 'Cancel reject identity request for urls4irl', exact: true })
       .click();
-    await expect(menu).toBeVisible();
-    await page.keyboard.press('Escape');
+    await expect(confirm).toBeHidden();
+    expect(await wrappers.nth(0).evaluate((element) => element.scrollWidth)).toBe(widthBefore);
+    expect(await maxRenderedLines({ root: wrappers.nth(0) })).toBe(1);
     await expectNoPageOverflow(page);
     expect(mock.mutations).toEqual([]);
     expect(mock.unmocked).toEqual([]);
@@ -2824,9 +2865,7 @@ test.describe('admin UI Delivery tab', () => {
 
     // Deleting an app-owned row repeats the note on the confirm.
     await page.getByRole('button', { name: 'Delete route 2', exact: true }).click();
-    await expect(
-      page.locator('.routes__table tbody tr').nth(1).locator('.confirm-button__notice'),
-    ).toHaveText(managed);
+    await expect(page.getByRole('dialog').locator('.modal__notice')).toHaveText(managed);
     await page.getByRole('button', { name: 'Cancel Delete route 2', exact: true }).click();
 
     // An open editor row spans every column, Owner included.
@@ -3294,25 +3333,20 @@ test.describe('admin UI Delivery tab', () => {
         await page.keyboard.press('Home');
         await expect(all.first()).toBeFocused();
         if (row === last) {
-          // The destructive confirm step (the last item of every table) is a taller popover:
-          // at the bottom of the viewport it too stays inside it, flipped above the kebab.
+          // The destructive confirm (the last item of every table) closes the menu and opens a
+          // full-screen dialog, so a row at the bottom of the viewport has no popover to flip.
           const destructive = items.at(-1) ?? '';
           await menu.getByRole('menuitem', { name: destructive, exact: true }).click();
-          const step = page.getByRole('group', { name: destructive, exact: true });
-          await expect(step).toBeVisible();
-          await expectInViewport({ page, locator: step });
-          await expectFullyPainted(step);
-          const stepBox = await step.boundingBox();
-          expect((stepBox?.y ?? Infinity) + (stepBox?.height ?? 0)).toBeLessThanOrEqual(
-            kebabBox.y + 1,
-          );
-          // Escape backs out to the list first.
+          const step = page.getByRole('dialog');
+          await expectFullScreenConfirm({ page, dialog: step, buttons: [] });
+          await expect(menu).toBeHidden();
+          // Escape closes the dialog without firing.
           await page.keyboard.press('Escape');
           await expect(step).toBeHidden();
-          await expect(menu).toBeVisible();
+        } else {
+          // Escape closes the menu.
+          await page.keyboard.press('Escape');
         }
-        // Escape closes it and returns focus to the kebab.
-        await page.keyboard.press('Escape');
         await expect(menu).toBeHidden();
         await expect(kebab).toBeFocused();
         expect(await kebab.getAttribute('aria-expanded')).toBe('false');
@@ -3396,25 +3430,35 @@ test.describe('admin UI Delivery tab', () => {
       0,
     );
 
-    // Disable: the confirm is a step inside the menu; Escape backs out of it, then Cancel.
+    // Disable: the confirm is a full-screen dialog; Escape and Cancel back out to the kebab.
     let menu = await openRowMenu({ page, row: 'hook1' });
     await menu.getByRole('menuitem', { name: 'Disable hook1', exact: true }).click();
-    const confirm = page.getByRole('group', { name: 'Disable hook1', exact: true });
-    await expect(confirm).toContainText('Disable hook1?');
-    await expect(confirm.getByRole('button', { name: 'Confirm disable hook1' })).toBeFocused();
-    await expectInViewport({ page, locator: confirm });
+    const confirm = page.getByRole('dialog', { name: 'Disable destination?', exact: true });
+    await expectFullScreenConfirm({
+      page,
+      dialog: confirm,
+      buttons: ['Confirm disable hook1', 'Cancel Disable hook1'],
+    });
+    await expect(menu).toBeHidden();
+    // Initial focus is Cancel, so Enter on open never fires a destructive action.
+    await expect(confirm.getByRole('button', { name: 'Cancel Disable hook1' })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(confirm).toBeHidden();
-    await expect(menu).toBeVisible();
+    await expect(rowKebab({ page, row: 'hook1' })).toBeFocused();
+    menu = await openRowMenu({ page, row: 'hook1' });
     await menu.getByRole('menuitem', { name: 'Disable hook1', exact: true }).click();
     await page.getByRole('button', { name: 'Cancel Disable hook1', exact: true }).click();
-    await expect(menu).toBeVisible();
+    await expect(confirm).toBeHidden();
+    await expect(rowKebab({ page, row: 'hook1' })).toBeFocused();
     expect(mock.mutations).toEqual([]);
-    // ... and the keyboard completes it: select Disable, then Enter on the focused Confirm.
+    // ... and the keyboard completes it: select Disable, Tab to Confirm, Enter.
+    menu = await openRowMenu({ page, row: 'hook1' });
     await menu.getByRole('menuitem', { name: 'Disable hook1', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Cancel Disable hook1' })).toBeFocused();
+    await page.keyboard.press('Tab');
     await expect(page.getByRole('button', { name: 'Confirm disable hook1' })).toBeFocused();
     await page.keyboard.press('Enter');
-    await expect(menu).toBeHidden();
+    await expect(confirm).toBeHidden();
     await expect(rowKebab({ page, row: 'hook1' })).toBeFocused();
     expect(mock.mutations.map((request) => `${request.method} ${request.pathname}`)).toEqual([
       'PATCH /delivery/v1/admin/destinations/hook1',
@@ -3443,6 +3487,8 @@ test.describe('admin UI Delivery tab', () => {
     await page.keyboard.press('End');
     await expect(menu.getByRole('menuitem', { name: 'Delete hook1', exact: true })).toBeFocused();
     await page.keyboard.press('Enter');
+    await expect(page.getByRole('button', { name: 'Cancel Delete hook1' })).toBeFocused();
+    await page.keyboard.press('Tab');
     await expect(page.getByRole('button', { name: 'Confirm delete hook1' })).toBeFocused();
     expect(mock.mutations).toHaveLength(3);
     await page.keyboard.press('Enter');
@@ -3874,32 +3920,33 @@ test.describe('admin UI Delivery tab', () => {
     await expect(ownedMenu.getByText('Edits are overridden on next deploy')).toBeVisible();
     await expect(ownedMenu.getByText(managedNote)).toHaveCount(0);
     await ownedMenu.getByRole('menuitem', { name: 'Delete ops_discord', exact: true }).click();
-    const ownedConfirm = page.getByRole('group', { name: 'Delete ops_discord', exact: true });
+    const ownedConfirm = page.getByRole('dialog', { name: 'Delete destination?', exact: true });
     await expect(ownedConfirm).toContainText(managedNote);
-    // The popover may wrap its text (a sentence), stays inside the viewport and has 44px
-    // controls.
-    await expectInViewport({ page, locator: ownedConfirm });
-    for (const name of ['Confirm delete ops_discord', 'Cancel Delete ops_discord']) {
-      await expectTouchTarget(ownedConfirm.getByRole('button', { name, exact: true }));
-    }
+    // The dialog is full screen with 44px controls.
+    await expectFullScreenConfirm({
+      page,
+      dialog: ownedConfirm,
+      buttons: ['Confirm delete ops_discord', 'Cancel Delete ops_discord'],
+    });
     expect(await maxRenderedLines({ root: ownedRow })).toBe(1);
     expect(
       await page.locator('.destinations__scroll').evaluate((element) => element.scrollWidth),
     ).toBe(widthBefore);
     await page.keyboard.press('Escape');
-    await page.keyboard.press('Escape');
+    await expect(ownedConfirm).toBeHidden();
     // Same for the app-owned route's Delete confirm.
     const ownedRoute = page.locator('.routes__table tbody tr').first();
     const routeMenu = await openRowMenu({ page, row: 'route 1' });
     await expect(routeMenu.getByText('Edits are overridden on next deploy')).toBeVisible();
     await expect(routeMenu.getByText(managedNote)).toHaveCount(0);
     await routeMenu.getByRole('menuitem', { name: 'Delete route 1', exact: true }).click();
-    const routeConfirm = page.getByRole('group', { name: 'Delete route 1', exact: true });
+    const routeConfirm = page.getByRole('dialog', { name: 'Delete route?', exact: true });
     await expect(routeConfirm).toContainText(managedNote);
-    await expectInViewport({ page, locator: routeConfirm });
-    for (const name of ['Confirm delete route 1', 'Cancel Delete route 1']) {
-      await expectTouchTarget(routeConfirm.getByRole('button', { name, exact: true }));
-    }
+    await expectFullScreenConfirm({
+      page,
+      dialog: routeConfirm,
+      buttons: ['Confirm delete route 1', 'Cancel Delete route 1'],
+    });
     expect(await maxRenderedLines({ root: ownedRoute })).toBe(1);
     const afterConfirm = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
@@ -4074,7 +4121,9 @@ test.describe('admin UI Delivery tab', () => {
     for (const [index, table] of tables.entries()) {
       const target = ['hook1', 'route 1', 'urls4irl/nightly_backup'][index];
       await table.wrapper.getByRole('button', { name: `Delete ${target}`, exact: true }).click();
-      await table.wrapper
+      // Every table confirms in a body-level dialog.
+      await page
+        .getByRole('dialog')
         .getByRole('button', { name: `Confirm delete ${target}`, exact: true })
         .click();
       await expect(table.wrapper.getByText(longError.trim())).toBeVisible();
@@ -4087,9 +4136,8 @@ test.describe('admin UI Delivery tab', () => {
     expect(mock.unmocked).toEqual([]);
   });
 
-  // An open destructive confirm must not make its table wider: the row's other inline buttons
-  // step aside (hidden, still mounted) so the confirm pair takes their place, and the long
-  // notice wraps under the pair inside the cell instead of widening it.
+  // Every row confirm opens a body-level dialog, so the open confirm never changes a table's
+  // width and nothing in the row steps aside.
   const CONFIRM_SEED: DeliveryMockSeed = {
     destinations: [
       destinationWire({
@@ -4140,328 +4188,194 @@ test.describe('admin UI Delivery tab', () => {
       }),
       identityBindingWire({ appId: 'notifier' }),
     ],
+    scheduled: [scheduledWire({ id: 'msg-1', key: 'digest-1' })],
   };
 
-  // Unbind is the one confirm whose pair is wider than its row's only idle button, so the
-  // Actions column has to grow by the difference. Without keys the bindings table has room for
-  // it (the Keys column is the one that gives); with keys it already fills the wrapper.
-  const UNBIND_SEED: DeliveryMockSeed = {
-    ...CONFIRM_SEED,
-    identityBindings: [
-      identityBindingWire({ appId: 'notifier' }),
-      identityBindingWire({ appId: 'mailer' }),
-    ],
-  };
-
-  type ConfirmTable =
-    'destinations' | 'routes' | 'heartbeats' | 'identityRequests' | 'identityBindings';
-
-  interface ConfirmCase {
+  // Every row confirm is a modal dialog (body-level portal), not inline.
+  interface DialogCase {
     label: string;
-    /** The table's wrapper. */
-    wrapper: (page: Page) => Locator;
-    /** Accessible name of the trigger that opens the confirm. */
     trigger: string;
-    /** Accessible name of the confirm button. */
+    title: string;
+    itemLabel: string;
+    itemValue: string;
     confirm: string;
-    /** The row's other inline buttons, which step aside while the confirm is open. */
-    siblings: string[];
-    /** The cell that holds the trigger (the Actions cell, or the Keys cell for Revoke). */
-    cell: string;
+    cancel: string;
     mutation: RegExp;
-    seed?: DeliveryMockSeed;
-    /** The table and row to keep when the case also runs with a single row (the common case). */
-    single?: { table: ConfirmTable; keep: (row: Json) => boolean };
-    /**
-     * The table's idle row is within a font's width of the wrapper, so a wider sans (DejaVu Sans
-     * on the CI runner) already scrolls it sideways before anything is opened. Such a case asserts
-     * only that the open confirm adds no scroll beyond the idle one.
-     */
-    idleMayScroll?: boolean;
   }
 
-  const CONFIRM_CASES: ConfirmCase[] = [
+  const DIALOG_CASES: DialogCase[] = [
     {
       label: 'destinations Delete (app-owned)',
-      wrapper: (page) => page.locator('.destinations__scroll'),
       trigger: 'Delete chores4irl_hook',
+      title: 'Delete destination?',
+      itemLabel: 'Destination',
+      itemValue: 'chores4irl_hook',
       confirm: 'Confirm delete chores4irl_hook',
-      siblings: ['Send test to chores4irl_hook', 'Edit chores4irl_hook', 'Disable chores4irl_hook'],
-      cell: 'td.admin-table__actions',
+      cancel: 'Cancel Delete chores4irl_hook',
       mutation: /^DELETE \/delivery\/v1\/admin\/destinations\/chores4irl_hook$/,
-      single: { table: 'destinations', keep: (row) => row.name === 'chores4irl_hook' },
     },
     {
       label: 'destinations Disable (unknown owner)',
-      wrapper: (page) => page.locator('.destinations__scroll'),
       trigger: 'Disable mystery_hook',
+      title: 'Disable destination?',
+      itemLabel: 'Destination',
+      itemValue: 'mystery_hook',
       confirm: 'Confirm disable mystery_hook',
-      siblings: ['Send test to mystery_hook', 'Edit mystery_hook', 'Delete mystery_hook'],
-      cell: 'td.admin-table__actions',
+      cancel: 'Cancel Disable mystery_hook',
       mutation: /^PATCH \/delivery\/v1\/admin\/destinations\/mystery_hook$/,
     },
     {
       label: 'destinations Delete (disabled destination)',
-      wrapper: (page) => page.locator('.destinations__scroll'),
       trigger: 'Delete off_hook',
+      title: 'Delete destination?',
+      itemLabel: 'Destination',
+      itemValue: 'off_hook',
       confirm: 'Confirm delete off_hook',
-      siblings: ['Send test to off_hook', 'Edit off_hook', 'Enable off_hook'],
-      cell: 'td.admin-table__actions',
+      cancel: 'Cancel Delete off_hook',
       mutation: /^DELETE \/delivery\/v1\/admin\/destinations\/off_hook$/,
     },
     {
       label: 'routes Delete (app-owned)',
-      wrapper: (page) => page.locator('.routes__scroll'),
       trigger: 'Delete route 2',
+      title: 'Delete route?',
+      itemLabel: 'Route',
+      itemValue: 'route 2',
       confirm: 'Confirm delete route 2',
-      siblings: ['Edit route 2'],
-      cell: 'td.admin-table__actions',
+      cancel: 'Cancel Delete route 2',
       mutation: /^DELETE \/delivery\/v1\/admin\/routes\/2$/,
-      single: { table: 'routes', keep: (row) => row.id === 2 },
     },
     {
       label: 'heartbeats Pause (app-owned)',
-      wrapper: (page) => page.locator('.heartbeats__scroll'),
       trigger: 'Pause chores4irl/daily',
+      title: 'Pause check?',
+      itemLabel: 'Check',
+      itemValue: 'chores4irl/daily',
       confirm: 'Confirm pause chores4irl/daily',
-      siblings: ['Edit chores4irl/daily', 'Delete chores4irl/daily'],
-      cell: 'td.admin-table__actions',
+      cancel: 'Keep running chores4irl/daily',
       mutation: /^POST \/delivery\/v1\/admin\/heartbeats\/2\/pause$/,
-      single: { table: 'heartbeats', keep: (row) => row.id === 2 },
     },
     {
       label: 'heartbeats Delete (app-owned)',
-      wrapper: (page) => page.locator('.heartbeats__scroll'),
       trigger: 'Delete chores4irl/daily',
+      title: 'Delete check?',
+      itemLabel: 'Check',
+      itemValue: 'chores4irl/daily',
       confirm: 'Confirm delete chores4irl/daily',
-      siblings: ['Edit chores4irl/daily', 'Pause chores4irl/daily'],
-      cell: 'td.admin-table__actions',
+      cancel: 'Cancel Delete chores4irl/daily',
       mutation: /^DELETE \/delivery\/v1\/admin\/heartbeats\/2$/,
     },
     {
       label: 'heartbeats Delete (paused check)',
-      wrapper: (page) => page.locator('.heartbeats__scroll'),
       trigger: 'Delete urls4irl/stopped',
+      title: 'Delete check?',
+      itemLabel: 'Check',
+      itemValue: 'urls4irl/stopped',
       confirm: 'Confirm delete urls4irl/stopped',
-      siblings: ['Edit urls4irl/stopped', 'Resume urls4irl/stopped'],
-      cell: 'td.admin-table__actions',
+      cancel: 'Cancel Delete urls4irl/stopped',
       mutation: /^DELETE \/delivery\/v1\/admin\/heartbeats\/4$/,
     },
     {
       label: 'app identity requests Reject',
-      wrapper: (page) => page.locator('.app-identities__scroll').first(),
       trigger: 'Reject identity request for chores4irl',
+      title: 'Reject identity request?',
+      itemLabel: 'App',
+      itemValue: 'chores4irl',
       confirm: 'Confirm reject identity request for chores4irl',
-      siblings: ['Approve identity request for chores4irl'],
-      cell: 'td.admin-table__actions',
+      cancel: 'Cancel reject identity request for chores4irl',
       mutation: /^POST \/delivery\/v1\/admin\/app-identity\/requests\/2\/reject$/,
-      single: { table: 'identityRequests', keep: (row) => row.id === 2 },
     },
     {
       label: 'app identity bindings Unbind',
-      wrapper: (page) => page.locator('.app-identities__scroll').nth(1),
       trigger: 'Unbind notifier',
+      title: 'Unbind app?',
+      itemLabel: 'App',
+      itemValue: 'notifier',
       confirm: 'Confirm unbind notifier',
-      siblings: [],
-      cell: 'td.admin-table__actions',
+      cancel: 'Cancel unbind notifier',
       mutation: /^DELETE \/delivery\/v1\/admin\/app-identity\/bindings\/notifier$/,
-      seed: UNBIND_SEED,
-      single: { table: 'identityBindings', keep: (row) => row.app_id === 'notifier' },
     },
     {
       label: 'app identity keys Revoke',
-      wrapper: (page) => page.locator('.app-identities__scroll').nth(1),
       trigger: 'Revoke key dak_7Q2m for tasktracker',
+      title: 'Revoke key?',
+      itemLabel: 'Key',
+      itemValue: 'dak_7Q2m for tasktracker',
       confirm: 'Confirm revoke key dak_7Q2m for tasktracker',
-      siblings: [],
-      cell: 'td.admin-table__fill',
+      cancel: 'Cancel revoke key dak_7Q2m for tasktracker',
       mutation: /^POST \/delivery\/v1\/admin\/app-identity\/keys\/11\/revoke$/,
-      idleMayScroll: true,
+    },
+    {
+      label: 'pending sends Cancel send',
+      trigger: 'Cancel send digest-1',
+      title: 'Cancel scheduled send?',
+      itemLabel: 'Send key',
+      itemValue: 'digest-1',
+      confirm: 'Confirm cancel send digest-1',
+      cancel: 'Keep send digest-1',
+      mutation: /^DELETE \/delivery\/v1\/admin\/scheduled-messages\/msg-1$/,
     },
   ];
 
-  /** The names of every rendered (not display:none) button in a table wrapper. */
-  async function renderedButtons(wrapper: Locator): Promise<string[]> {
-    return wrapper
-      .getByRole('button')
-      .evaluateAll((buttons) =>
-        buttons
-          .filter((button) => button.getClientRects().length > 0)
-          .map((button) => button.getAttribute('aria-label') ?? button.textContent ?? ''),
-      );
-  }
-
-  /**
-   * How far the wrapper overflows sideways, the cell's width, whether the controls share one
-   * line, and every control or notice that sticks out of the cell's content box (either side)
-   * or the wrapper, or whose notice is cut off.
-   */
-  async function confirmFit(cell: Locator): Promise<{
-    overflow: number;
-    cellWidth: number;
-    /** The width a cell needs to hold its controls: their span plus the cell's padding and gap. */
-    pairWidth: number;
-    oneLine: boolean;
-    stickingOut: string[];
-  }> {
-    return cell.evaluate((element) => {
-      const scroller = element.closest<HTMLElement>('.admin-table__scroll');
-      if (scroller === null) {
-        throw new Error('the cell is not inside an admin table wrapper');
-      }
-      const port = scroller.getBoundingClientRect();
-      const cellBox = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      const contentLeft = cellBox.left + parseFloat(style.paddingLeft);
-      const contentRight = cellBox.right - parseFloat(style.paddingRight);
-      const stickingOut: string[] = [];
-      const buttons: DOMRect[] = [];
-      for (const part of element.querySelectorAll<HTMLElement>('button, .confirm-button__notice')) {
-        if (part.getClientRects().length === 0) {
-          continue;
-        }
-        const box = part.getBoundingClientRect();
-        if (part.tagName === 'BUTTON') {
-          buttons.push(box);
-        }
-        if (
-          box.right > contentRight + 0.5 ||
-          box.left < contentLeft - 0.5 ||
-          box.right > port.right + 0.5
-        ) {
-          stickingOut.push(`${part.textContent} spans ${box.left}..${box.right}`);
-        }
-        if (part.classList.contains('confirm-button__notice')) {
-          if (
-            getComputedStyle(part).textOverflow === 'ellipsis' ||
-            part.scrollWidth > part.clientWidth + 1
-          ) {
-            stickingOut.push(`${part.textContent} is cut off`);
-          }
-        }
-      }
-      const group = element.querySelector('.confirm-button__group');
-      const gap = group === null ? 0 : parseFloat(getComputedStyle(group).columnGap) || 0;
-      const span =
-        buttons.length === 0
-          ? 0
-          : Math.max(...buttons.map((box) => box.right)) -
-            Math.min(...buttons.map((box) => box.left));
-      return {
-        overflow: scroller.scrollWidth - scroller.clientWidth,
-        cellWidth: cellBox.width,
-        pairWidth: span + gap + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight),
-        oneLine: buttons.every((box) => Math.abs(box.top - buttons[0].top) < 1),
-        stickingOut,
-      };
-    });
-  }
-
-  const CONFIRM_RUNS = CONFIRM_CASES.flatMap((confirmCase) =>
-    confirmCase.single === undefined
-      ? [{ confirmCase, oneRow: false }]
-      : [
-          { confirmCase, oneRow: false },
-          { confirmCase, oneRow: true },
-        ],
-  );
-
-  for (const { confirmCase, oneRow } of CONFIRM_RUNS) {
-    test(`${confirmCase.label}${oneRow ? ' in a one-row table' : ''} at 1280px: the open confirm hides the row's other buttons and never widens the table`, async ({
+  for (const dialogCase of DIALOG_CASES) {
+    test(`${dialogCase.label} at 1280px: the dialog names the action and item, all four exits close it with no mutation, Confirm fires once`, async ({
       page,
     }) => {
-      const baseSeed = confirmCase.seed ?? CONFIRM_SEED;
-      const { single } = confirmCase;
-      const seed: DeliveryMockSeed =
-        oneRow && single !== undefined
-          ? { ...baseSeed, [single.table]: (baseSeed[single.table] ?? []).filter(single.keep) }
-          : baseSeed;
-      const mock = await mockDelivery(page, seed);
+      const mock = await mockDelivery(page, CONFIRM_SEED);
       await page.setViewportSize({ width: 1280, height: 900 });
       await page.goto('/#delivery');
 
-      const wrapper = confirmCase.wrapper(page);
-      await expect(wrapper).toBeVisible();
-      await wrapper.scrollIntoViewIfNeeded();
-      const trigger = wrapper.getByRole('button', { name: confirmCase.trigger, exact: true });
-      const confirm = wrapper.getByRole('button', { name: confirmCase.confirm, exact: true });
-      // The row is found by its trigger or, while the pair is open, by its confirm button.
-      const escaped = [confirmCase.trigger, confirmCase.confirm].map((name) =>
-        name.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&'),
-      );
-      const row = wrapper.locator('tbody tr').filter({
-        has: page.getByRole('button', { name: new RegExp(`^(${escaped.join('|')})$`) }),
-      });
-      const cell = row.locator(confirmCase.cell);
-      const cancel = row.locator('.confirm-button__cancel');
-      const siblings = confirmCase.siblings.map((name) =>
-        row.getByRole('button', { name, exact: true }),
-      );
+      const trigger = page.getByRole('button', { name: dialogCase.trigger, exact: true });
+      await expect(trigger).toBeVisible();
+      await trigger.scrollIntoViewIfNeeded();
+      const dialog = page.getByRole('dialog');
+      const row = page.locator('tbody tr').filter({ has: trigger });
+      const rowButtonCount = await row.getByRole('button').count();
 
-      const idle = await confirmFit(cell);
-      const allowedOverflow = confirmCase.idleMayScroll === true ? idle.overflow : 0;
-      if (confirmCase.idleMayScroll !== true) {
-        expect(idle.overflow).toBeLessThanOrEqual(0);
-      }
-      const idleButtons = await renderedButtons(wrapper);
-      for (const name of [confirmCase.trigger, ...confirmCase.siblings]) {
-        expect(idleButtons).toContain(name);
-      }
-
-      const assertOpen = async () => {
-        await expect(confirm).toBeVisible();
-        await expect(confirm).toBeFocused();
-        await expect(cancel).toBeVisible();
-        for (const sibling of siblings) {
-          await expect(sibling).toBeHidden();
+      const open = async () => {
+        await trigger.click();
+        await expect(dialog).toBeVisible();
+        await expect(dialog.getByRole('heading', { name: dialogCase.title })).toBeVisible();
+        await expect(dialog.locator('.modal__item')).toContainText(dialogCase.itemLabel);
+        await expect(dialog.locator('.modal__item')).toContainText(dialogCase.itemValue);
+        await expect(
+          dialog.getByRole('button', { name: dialogCase.cancel, exact: true }),
+        ).toBeFocused();
+        // Nothing in the row steps aside while the dialog is open.
+        await expect(row.getByRole('button', { includeHidden: true })).toHaveCount(rowButtonCount);
+        for (const button of await row.getByRole('button', { includeHidden: true }).all()) {
+          await expect(button).toBeVisible();
         }
-        await expect(trigger).toBeHidden();
-        const open = await confirmFit(cell);
-        expect(open.stickingOut).toEqual([]);
-        expect(open.oneLine, 'Confirm and Cancel wrap onto two lines').toBe(true);
-        expect(open.overflow, 'the wrapper scrolls sideways').toBeLessThanOrEqual(allowedOverflow);
-        // Never wider than idle, unless the pair itself is wider than the buttons it replaced
-        // (Unbind's lone button, a one-row table): then only as wide as the pair needs.
-        expect(open.cellWidth, 'the cell got wider than idle or its pair').toBeLessThanOrEqual(
-          Math.max(idle.cellWidth, open.pairWidth) + 0.5,
-        );
-        // Every other row keeps all of its buttons, in view.
-        const away = [confirmCase.trigger, ...confirmCase.siblings];
-        const names = await renderedButtons(wrapper);
-        const stillThere = idleButtons.filter((name) => !away.includes(name));
-        expect(names.filter((name) => stillThere.includes(name))).toEqual(stillThere);
-        expect(names).toHaveLength(stillThere.length + 2);
-        await expectNoPageOverflow(page);
       };
-      const assertRestored = async () => {
-        await expect(confirm).toHaveCount(0);
-        await expect(trigger).toBeVisible();
+      const expectClosed = async () => {
+        await expect(dialog).toHaveCount(0);
         await expect(trigger).toBeFocused();
-        for (const sibling of siblings) {
-          await expect(sibling).toBeVisible();
-        }
-        expect(await renderedButtons(wrapper)).toEqual(idleButtons);
+        expect(mock.mutations).toEqual([]);
       };
 
-      // Escape backs out, Cancel backs out; both restore the row and return focus to the trigger.
-      await trigger.click();
-      await assertOpen();
+      await open();
+      await dialog.getByRole('button', { name: dialogCase.cancel, exact: true }).click();
+      await expectClosed();
+
+      await open();
+      await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+      await expectClosed();
+
+      await open();
       await page.keyboard.press('Escape');
-      await assertRestored();
-      await trigger.click();
-      await assertOpen();
-      await cancel.click();
-      await assertRestored();
-      expect(mock.mutations).toEqual([]);
+      await expectClosed();
+
+      await open();
+      await page.locator('.modal__backdrop').click({ position: { x: 5, y: 5 } });
+      await expectClosed();
 
       // Confirm runs the action exactly once.
-      await trigger.click();
-      await assertOpen();
-      await confirm.click();
+      await open();
+      await dialog.getByRole('button', { name: dialogCase.confirm, exact: true }).click();
+      await expect(dialog).toHaveCount(0);
       await expect
         .poll(() =>
           mock.mutations.filter((request) =>
-            confirmCase.mutation.test(`${request.method} ${request.pathname}`),
+            dialogCase.mutation.test(`${request.method} ${request.pathname}`),
           ),
         )
         .toHaveLength(1);

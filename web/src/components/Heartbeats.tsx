@@ -33,7 +33,6 @@ import { RowActionsMenu } from './RowActionsMenu';
 import type { RowMenuItem } from './RowActionsMenu';
 import type { DestinationsLoadState } from './RoutesSection';
 import { messageOf, withoutKey } from './rowState';
-import { useConfirmingRows } from './useConfirmingRows';
 import { revealFocusedControl } from './adminTableFocus';
 import './adminTable.css';
 import './Heartbeats.css';
@@ -396,6 +395,9 @@ function HeartbeatActionsMenu({
         cancelLabel: strings.keepHeartbeatRunning,
         cancelAriaLabel: strings.keepHeartbeatRunningNamed({ check: label }),
         notice: ownerNote === null ? pauseNoticeOf(check) : `${pauseNoticeOf(check)} ${ownerNote}`,
+        dialogTitle: strings.pauseHeartbeatDialogTitle,
+        dialogItem: { label: strings.dialogItemCheck, value: label },
+        tone: 'primary',
         onConfirm: () => onToggle('pause'),
       },
     });
@@ -416,6 +418,8 @@ function HeartbeatActionsMenu({
         subject: strings.deleteHeartbeatNamed({ check: label }),
       }),
       notice: ownerNote ?? undefined,
+      dialogTitle: strings.deleteHeartbeatDialogTitle,
+      dialogItem: { label: strings.dialogItemCheck, value: label },
       onConfirm: onDelete,
     },
   });
@@ -463,7 +467,6 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
   const nullSeenRef = useRef<Map<string, number>>(new Map());
   const { registerControl, requestFocus } = useFocusRegistry();
   const { isBusy, exclusive } = useExclusive<string>();
-  const { isSteppedAside, reportConfirming } = useConfirmingRows();
   const trackList = useLatestRequest();
 
   const commitChecks = useCallback((next: HeartbeatCheck[]) => {
@@ -899,10 +902,6 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                 const isEditing = editingId === id;
                 const ownerNote = ownerNoteOf(check);
                 const ownerInlineNote = ownerInlineNoteOf(check);
-                // While one of the row's destructive confirms is open, its other buttons step
-                // aside so the pair takes their place and the Actions cell never gets wider.
-                const rowKey = String(id);
-                const steppedAside = isSteppedAside({ rowKey });
                 return (
                   <Fragment key={id}>
                     <tr data-check-id={id}>
@@ -992,7 +991,6 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                               ref={(element) => registerControl({ key: `edit:${id}`, element })}
                               type="button"
                               className="heartbeats__button heartbeats__button--ghost"
-                              hidden={steppedAside}
                               aria-expanded={isEditing}
                               aria-disabled={formLocked ? 'true' : undefined}
                               aria-label={
@@ -1011,7 +1009,6 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                                 ref={(element) => registerControl({ key: `resume:${id}`, element })}
                                 type="button"
                                 className="heartbeats__button"
-                                hidden={steppedAside}
                                 aria-label={
                                   toggleBusy && toggleKind === 'resume'
                                     ? strings.resumingHeartbeatNamed({ check: label })
@@ -1058,10 +1055,9 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                                     ? strings.resumingHeartbeatNamed({ check: label })
                                     : strings.pausingHeartbeatNamed({ check: label })
                                 }
-                                hidden={isSteppedAside({ rowKey, control: 'pause' })}
-                                onConfirmingChange={(confirming) =>
-                                  reportConfirming({ rowKey, control: 'pause', confirming })
-                                }
+                                dialogTitle={strings.pauseHeartbeatDialogTitle}
+                                dialogItem={{ label: strings.dialogItemCheck, value: label }}
+                                tone="primary"
                                 registerTrigger={(element) =>
                                   registerControl({ key: `pause:${id}`, element })
                                 }
@@ -1083,10 +1079,8 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
                               busy={isBusy(`delete:${id}`)}
                               busyLabel={strings.deletingHeartbeat}
                               busyAriaLabel={strings.deletingHeartbeatNamed({ check: label })}
-                              hidden={isSteppedAside({ rowKey, control: 'delete' })}
-                              onConfirmingChange={(confirming) =>
-                                reportConfirming({ rowKey, control: 'delete', confirming })
-                              }
+                              dialogTitle={strings.deleteHeartbeatDialogTitle}
+                              dialogItem={{ label: strings.dialogItemCheck, value: label }}
                               registerTrigger={(element) =>
                                 registerControl({ key: `delete:${id}`, element })
                               }

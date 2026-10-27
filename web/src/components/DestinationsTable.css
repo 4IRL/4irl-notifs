@@ -77,8 +77,7 @@
 /* Compact buttons by default; a touch screen gets the 44px target. (The narrow-layout row
    menu has its own 44px controls.) */
 @media (pointer: coarse) {
-  .destinations__button,
-  .destinations .confirm-button__cancel {
+  .destinations__button {
     min-height: 2.75rem;
     /* A bare verb ("Test", "Edit") is narrower than a touch target. */
     min-width: 2.75rem;

@@ -14,7 +14,6 @@ import { ownerInlineNoteOf, ownerNoteOf } from './ownership';
 import { RowActionsMenu } from './RowActionsMenu';
 import type { RowMenuItem } from './RowActionsMenu';
 import { destinationActionLabels } from './rowActionLabels';
-import { useConfirmingRows } from './useConfirmingRows';
 import { revealFocusedControl } from './adminTableFocus';
 import './adminTable.css';
 import './DestinationsTable.css';
@@ -190,7 +189,6 @@ export function DestinationsTable({
   onRotate,
 }: DestinationsTableProps): JSX.Element {
   const compact = useCompactTable();
-  const { isSteppedAside, reportConfirming } = useConfirmingRows();
   const columns = compact ? COMPACT_COLUMNS : WIDE_COLUMNS;
   const columnCount = compact ? COMPACT_COLUMN_COUNT : WIDE_COLUMN_COUNT;
   const headers: Record<DestinationColumn, JSX.Element> = {
@@ -254,9 +252,6 @@ export function DestinationsTable({
             const rowError = rowErrors[name];
             const ownerNote = ownerNoteOf(destination);
             const ownerInlineNote = ownerInlineNoteOf(destination);
-            // While one of the row's destructive confirms is open, its other buttons step aside
-            // so the pair takes their place and the Actions cell never gets wider than idle.
-            const steppedAside = isSteppedAside({ rowKey: name });
 
             // The visible text is the bare verb (the row names the destination); the accessible
             // name keeps the destination. A busy action shows its progress text for both.
@@ -293,6 +288,8 @@ export function DestinationsTable({
                   cancelLabel: labels.cancelDisable.visible,
                   cancelAriaLabel: labels.cancelDisable.accessible,
                   notice: ownerNote ?? undefined,
+                  dialogTitle: strings.disableDestinationDialogTitle,
+                  dialogItem: { label: strings.dialogItemDestination, value: name },
                   onConfirm: () => onSetEnabled({ name, enabled: false }),
                 },
               });
@@ -317,6 +314,8 @@ export function DestinationsTable({
                 cancelLabel: labels.cancelDelete.visible,
                 cancelAriaLabel: labels.cancelDelete.accessible,
                 notice: ownerNote ?? undefined,
+                dialogTitle: strings.deleteDestinationDialogTitle,
+                dialogItem: { label: strings.dialogItemDestination, value: name },
                 onConfirm: () => onDelete(name),
               },
             });
@@ -401,7 +400,6 @@ export function DestinationsTable({
                           ref={(element) => registerControl({ key: `first:${name}`, element })}
                           type="button"
                           className="destinations__button"
-                          hidden={steppedAside}
                           aria-label={testBusy ? undefined : labels.test.accessible}
                           aria-disabled={testBlocked ? 'true' : undefined}
                           aria-describedby={!destination.enabled ? reasonId : undefined}
@@ -419,7 +417,6 @@ export function DestinationsTable({
                             ref={(element) => registerControl({ key: `edit:${name}`, element })}
                             type="button"
                             className="destinations__button"
-                            hidden={steppedAside}
                             aria-label={labels.edit.accessible}
                             aria-expanded={isEditing}
                             onClick={() => onToggleEditor(name)}
@@ -438,10 +435,8 @@ export function DestinationsTable({
                             confirmNotice={ownerNote ?? undefined}
                             busy={toggleBusy}
                             busyLabel={strings.disablingDestination}
-                            hidden={isSteppedAside({ rowKey: name, control: 'disable' })}
-                            onConfirmingChange={(confirming) =>
-                              reportConfirming({ rowKey: name, control: 'disable', confirming })
-                            }
+                            dialogTitle={strings.disableDestinationDialogTitle}
+                            dialogItem={{ label: strings.dialogItemDestination, value: name }}
                             onConfirm={() => onSetEnabled({ name, enabled: false })}
                           />
                         ) : (
@@ -449,7 +444,6 @@ export function DestinationsTable({
                             ref={(element) => registerControl({ key: `enable:${name}`, element })}
                             type="button"
                             className="destinations__button"
-                            hidden={steppedAside}
                             aria-label={toggleBusy ? undefined : labels.enable.accessible}
                             aria-disabled={toggleBusy ? 'true' : undefined}
                             onClick={() => {
@@ -472,10 +466,8 @@ export function DestinationsTable({
                           confirmNotice={ownerNote ?? undefined}
                           busy={deleteBusy}
                           busyLabel={strings.deletingDestination}
-                          hidden={isSteppedAside({ rowKey: name, control: 'delete' })}
-                          onConfirmingChange={(confirming) =>
-                            reportConfirming({ rowKey: name, control: 'delete', confirming })
-                          }
+                          dialogTitle={strings.deleteDestinationDialogTitle}
+                          dialogItem={{ label: strings.dialogItemDestination, value: name }}
                           onConfirm={() => onDelete(name)}
                         />
                       </div>

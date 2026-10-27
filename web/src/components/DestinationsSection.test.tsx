@@ -249,31 +249,58 @@ describe('send test', () => {
 });
 
 describe('enable, disable and delete', () => {
-  it('gives each open disable and delete confirm a per-row dismiss name', async () => {
+  it.each([
+    { verb: 'Disable', title: strings.disableDestinationDialogTitle },
+    { verb: 'Delete', title: strings.deleteDestinationDialogTitle },
+  ])(
+    '$verb confirms in a dialog that names the action and the destination',
+    async ({ verb, title }) => {
+      const user = userEvent.setup();
+      const listDestinations = vi
+        .fn()
+        .mockResolvedValue([
+          buildDestination({ name: 'ops' }),
+          buildDestination({ name: 'family' }),
+        ]);
+      const client = buildClient({ listDestinations });
+      renderSection(client);
+
+      await user.click(await screen.findByRole('button', { name: `${verb} ops` }));
+
+      const dialog = screen.getByRole('dialog', { name: title });
+      expect(within(dialog).getByText(strings.dialogItemDestination)).toBeInTheDocument();
+      expect(within(dialog).getByText('ops')).toBeInTheDocument();
+      // Cancel has initial focus and the row keeps all four buttons while the dialog is open.
+      const cancel = within(dialog).getByRole('button', {
+        name: strings.cancelActionNamed({ subject: `${verb} ops` }),
+      });
+      expect(cancel).toHaveFocus();
+      for (const name of ['Send test to ops', 'Edit ops', 'Disable ops', 'Delete ops']) {
+        expect(screen.getByRole('button', { name, hidden: true }), name).toBeVisible();
+      }
+
+      await user.click(
+        within(dialog).getByRole('button', { name: `Confirm ${verb.toLowerCase()} ops` }),
+      );
+      expect(screen.queryByRole('dialog')).toBeNull();
+      const mutation = verb === 'Delete' ? client.deleteDestination : client.updateDestination;
+      expect(mutation).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('Escape closes the dialog without a mutation and returns focus to the trigger', async () => {
     const user = userEvent.setup();
-    const listDestinations = vi
-      .fn()
-      .mockResolvedValue([buildDestination({ name: 'ops' }), buildDestination({ name: 'family' })]);
-    renderSection(buildClient({ listDestinations }));
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildDestination({ name: 'ops' })]),
+    });
+    renderSection(client);
 
-    // One confirm per row at a time (an open pair hides the row's other buttons), so two rows
-    // mid-confirm at once is the same verb in both rows, then the other verb.
-    await screen.findByRole('button', { name: strings.disableDestination({ name: 'ops' }) });
-    for (const verb of [strings.disableDestination, strings.deleteDestination]) {
-      const subjects = [verb({ name: 'ops' }), verb({ name: 'family' })];
-      for (const subject of subjects) {
-        await user.click(button(subject));
-      }
+    await user.click(await screen.findByRole('button', { name: 'Delete ops' }));
+    await user.keyboard('{Escape}');
 
-      for (const subject of subjects) {
-        const dismiss = button(strings.cancelActionNamed({ subject }));
-        expect(dismiss).toHaveTextContent(strings.cancelAction);
-      }
-      expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
-      for (const subject of subjects) {
-        await user.click(button(strings.cancelActionNamed({ subject })));
-      }
-    }
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(button('Delete ops')).toHaveFocus();
+    expect(client.deleteDestination).not.toHaveBeenCalled();
   });
 
   it('disables with a confirm, shows the progress label and focuses Enable afterwards', async () => {
@@ -436,39 +463,26 @@ describe('owner column', () => {
     const user = userEvent.setup();
     await renderOwned();
 
-    await user.click(button('Delete chores4irl_hook'));
-    expect(within(rowOf('chores4irl_hook')).getAllByText(managedNote)).toHaveLength(1);
+    const cases = [
+      { trigger: 'Delete chores4irl_hook', note: managedNote },
+      { trigger: 'Disable chores4irl_hook', note: managedNote },
+      // An unknown owner is never treated as safe: its confirms warn too.
+      { trigger: 'Delete mystery', note: strings.ownerUnknownNote },
+      { trigger: 'Disable mystery', note: strings.ownerUnknownNote },
+    ];
+    for (const { trigger, note } of cases) {
+      await user.click(button(trigger));
+      expect(within(screen.getByRole('dialog')).getAllByText(note)).toHaveLength(1);
+      await user.click(button(strings.cancelActionNamed({ subject: trigger })));
+      expect(screen.queryByRole('dialog')).toBeNull();
+    }
     expect(within(rowOf('chores4irl_hook')).getAllByText(managedInline)).toHaveLength(1);
-    await user.click(
-      screen.getByRole('button', {
-        name: strings.cancelActionNamed({
-          subject: 'Delete chores4irl_hook',
-        }),
-      }),
-    );
-
-    await user.click(button('Disable chores4irl_hook'));
-    expect(within(rowOf('chores4irl_hook')).getAllByText(managedNote)).toHaveLength(1);
-    await user.click(
-      screen.getByRole('button', {
-        name: strings.cancelActionNamed({
-          subject: 'Disable chores4irl_hook',
-        }),
-      }),
-    );
-
-    // An unknown owner is never treated as safe: its confirms warn too.
-    await user.click(button('Delete mystery'));
-    expect(within(rowOf('mystery')).getAllByText(strings.ownerUnknownNote)).toHaveLength(1);
-    await user.click(button(strings.cancelActionNamed({ subject: 'Delete mystery' })));
-    await user.click(button('Disable mystery'));
-    expect(within(rowOf('mystery')).getAllByText(strings.ownerUnknownNote)).toHaveLength(1);
-    await user.click(button(strings.cancelActionNamed({ subject: 'Disable mystery' })));
 
     // The operator's own row confirms with no notice at all.
     await user.click(button('Delete ops'));
-    expect(button('Confirm delete ops')).toBeInTheDocument();
-    expect(rowOf('ops').querySelector('.confirm-button__notice')).toBeNull();
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Confirm delete ops' })).toBeInTheDocument();
+    expect(dialog.querySelector('.modal__notice')).toBeNull();
   });
 
   it('keeps an open editor row spanning the whole table', async () => {
@@ -820,12 +834,66 @@ describe('rotate signing secret', () => {
     expect(screen.queryByText(strings.rotateInvalidatesPrevious)).not.toBeInTheDocument();
     await user.click(button('Confirm rotate chores_hook'));
 
+    expect(client.rotateSecret).toHaveBeenCalledTimes(1);
     expect(client.rotateSecret).toHaveBeenCalledWith({ name: 'chores_hook', overlapHours: 24 });
     const secret = await screen.findByText('NEW_SECRET_VALUE');
     expect(secret.closest('[tabindex="-1"]')).toHaveFocus();
     expect(
       screen.getByText('Previous secret valid until 2099-01-02 03:04 UTC.'),
     ).toBeInTheDocument();
+  });
+
+  it('rotate dialog names the action and destination; Escape closes only the dialog', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    const urlField = screen.getByLabelText(strings.destWebhookUrlLabel);
+    await user.type(urlField, 'https://new.example/hook');
+    const trigger = button('Rotate chores_hook');
+    await user.click(trigger);
+
+    const dialog = within(
+      screen.getByRole('dialog', { name: strings.rotateDestinationDialogTitle }),
+    );
+    expect(dialog.getByText(strings.dialogItemDestination)).toBeInTheDocument();
+    expect(dialog.getByText('chores_hook')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(strings.destWebhookUrlLabel)).toHaveValue(
+      'https://new.example/hook',
+    );
+    expect(trigger).toHaveFocus();
+    expect(client.rotateSecret).not.toHaveBeenCalled();
+    expect(client.updateDestination).not.toHaveBeenCalled();
+  });
+
+  it('Cancel closes only the dialog, keeps the editor values and returns focus to the trigger', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    await user.type(screen.getByLabelText(strings.destWebhookUrlLabel), 'https://new.example/hook');
+    const trigger = button('Rotate chores_hook');
+    await user.click(trigger);
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: strings.cancelAction }),
+    );
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(strings.destWebhookUrlLabel)).toHaveValue(
+      'https://new.example/hook',
+    );
+    expect(trigger).toHaveFocus();
+    expect(client.rotateSecret).not.toHaveBeenCalled();
+    expect(client.updateDestination).not.toHaveBeenCalled();
   });
 
   it('sends the chosen overlap', async () => {
@@ -857,7 +925,9 @@ describe('rotate signing secret', () => {
     expect(screen.queryByText(strings.rotateInvalidatesPrevious)).not.toBeInTheDocument();
     await user.click(button('Rotate chores_hook'));
 
-    expect(screen.getByText(strings.rotateInvalidatesPrevious)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('dialog')).getByText(strings.rotateInvalidatesPrevious),
+    ).toBeInTheDocument();
   });
 
   it('shows no warning when the previous secret has expired', async () => {
@@ -1073,112 +1143,5 @@ describe('overlapping refreshes', () => {
 
     await waitFor(() => expect(screen.queryByText('stale_one')).not.toBeInTheDocument());
     expect(screen.getByText('fresh_one')).toBeInTheDocument();
-  });
-});
-
-describe('an open confirm steps the row aside', () => {
-  const OPS_BUTTONS = ['Send test to ops', 'Edit ops', 'Disable ops', 'Delete ops'];
-  const FAMILY_BUTTONS = ['Send test to family', 'Edit family', 'Disable family', 'Delete family'];
-
-  async function renderRows(overrides: Partial<DeliveryApiClient> = {}) {
-    const client = buildClient({
-      listDestinations: vi
-        .fn()
-        .mockResolvedValue([
-          buildDestination({ name: 'ops' }),
-          buildDestination({ name: 'family' }),
-        ]),
-      ...overrides,
-    });
-    renderSection(client);
-    await screen.findByRole('button', { name: 'Delete ops' });
-    return client;
-  }
-
-  function expectOnlyRendered({ names, rendered }: { names: string[]; rendered: string[] }) {
-    for (const name of names) {
-      const present = screen.queryByRole('button', { name }) !== null;
-      expect(present, name).toBe(rendered.includes(name));
-    }
-  }
-
-  it.each([
-    { verb: 'Delete', stays: 'Delete ops' },
-    { verb: 'Disable', stays: 'Disable ops' },
-  ])(
-    '$verb hides the row’s other buttons, leaves other rows alone and restores them on Cancel and Escape',
-    async ({ verb, stays }) => {
-      const user = userEvent.setup();
-      await renderRows();
-
-      await user.click(button(stays));
-      const confirm = button(`Confirm ${verb.toLowerCase()} ops`);
-      expect(confirm).toHaveFocus();
-      // Only the open pair is left of the row; the other row keeps all four buttons.
-      expectOnlyRendered({ names: OPS_BUTTONS, rendered: [] });
-      expectOnlyRendered({ names: FAMILY_BUTTONS, rendered: FAMILY_BUTTONS });
-      // The hidden buttons stay mounted so the row's focus keys still resolve.
-      expect(screen.getByLabelText('Edit ops')).toHaveAttribute('hidden');
-
-      await user.click(button(strings.cancelActionNamed({ subject: stays })));
-      expectOnlyRendered({ names: OPS_BUTTONS, rendered: OPS_BUTTONS });
-      expect(button(stays)).toHaveFocus();
-
-      await user.click(button(stays));
-      expectOnlyRendered({ names: OPS_BUTTONS, rendered: [] });
-      await user.keyboard('{Escape}');
-      expectOnlyRendered({ names: OPS_BUTTONS, rendered: OPS_BUTTONS });
-      expect(button(stays)).toHaveFocus();
-    },
-  );
-
-  it('hides Enable (not Disable) on a disabled destination, and brings it back on Escape', async () => {
-    const user = userEvent.setup();
-    await renderRows({
-      listDestinations: vi
-        .fn()
-        .mockResolvedValue([
-          buildDestination({ name: 'ops', enabled: false, disabledReason: 'by operator' }),
-          buildDestination({ name: 'family' }),
-        ]),
-    });
-
-    await user.click(button('Delete ops'));
-    for (const name of ['Send test to ops', 'Edit ops', 'Enable ops']) {
-      expect(screen.queryByRole('button', { name }), name).toBeNull();
-    }
-    expect(screen.getByLabelText('Enable ops')).toHaveAttribute('hidden');
-    expect(button('Disable family')).toBeVisible();
-    await user.keyboard('{Escape}');
-
-    for (const name of ['Send test to ops', 'Edit ops', 'Enable ops', 'Delete ops']) {
-      expect(button(name)).toBeVisible();
-    }
-  });
-
-  it('confirming runs the action once and leaves the other row alone', async () => {
-    const user = userEvent.setup();
-    const client = await renderRows();
-
-    await user.click(button('Delete ops'));
-    await user.click(button('Confirm delete ops'));
-
-    expect(client.deleteDestination).toHaveBeenCalledTimes(1);
-    expect(client.deleteDestination).toHaveBeenCalledWith({ name: 'ops' });
-    expectOnlyRendered({ names: FAMILY_BUTTONS, rendered: FAMILY_BUTTONS });
-  });
-
-  it('lets two rows confirm at once, each hiding only its own buttons', async () => {
-    const user = userEvent.setup();
-    await renderRows();
-
-    await user.click(button('Delete ops'));
-    await user.click(button('Disable family'));
-
-    expectOnlyRendered({ names: OPS_BUTTONS, rendered: [] });
-    expectOnlyRendered({ names: FAMILY_BUTTONS, rendered: [] });
-    await user.click(button(strings.cancelActionNamed({ subject: 'Delete ops' })));
-    expectOnlyRendered({ names: OPS_BUTTONS, rendered: OPS_BUTTONS });
-    expectOnlyRendered({ names: FAMILY_BUTTONS, rendered: [] });
   });
 });

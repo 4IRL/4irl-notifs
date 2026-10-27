@@ -236,13 +236,17 @@ describe('Destinations table, narrow layout', () => {
     await chooseItem({ user, name: 'Disable family_ntfy' });
 
     expect(updateDestination).not.toHaveBeenCalled();
-    expect(screen.getByRole('group', { name: 'Disable family_ntfy' })).toHaveTextContent(
-      'Disable family_ntfy?',
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Disable destination?' })).toHaveTextContent(
+      'family_ntfy',
     );
-    // Cancel goes back to the list.
+    // Cancel closes the dialog and returns to the kebab.
     await user.click(screen.getByRole('button', { name: 'Cancel Disable family_ntfy' }));
-    expect(screen.getByRole('menu')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(kebab('family_ntfy')).toHaveFocus();
     expect(updateDestination).not.toHaveBeenCalled();
+
+    await openMenu({ user, row: 'family_ntfy' });
 
     await chooseItem({ user, name: 'Disable family_ntfy' });
     await user.click(screen.getByRole('button', { name: 'Confirm disable family_ntfy' }));
@@ -294,7 +298,7 @@ describe('Destinations table, narrow layout', () => {
     expect(menu).not.toHaveTextContent(strings.ownerManagedNote({ appId: 'chores4irl' }));
 
     await chooseItem({ user, name: 'Delete family_ntfy' });
-    expect(screen.getByRole('group', { name: 'Delete family_ntfy' })).toHaveTextContent(
+    expect(screen.getByRole('dialog', { name: 'Delete destination?' })).toHaveTextContent(
       strings.ownerManagedNote({ appId: 'chores4irl' }),
     );
     expect(deleteDestination).not.toHaveBeenCalled();
@@ -307,7 +311,7 @@ describe('Destinations table, narrow layout', () => {
     expect(screen.queryByRole('button', { name: 'Actions for family_ntfy' })).toBeNull();
   });
 
-  it('Escape in the confirm step cancels it first and closes the menu second, back on the kebab', async () => {
+  it('Escape in the confirm dialog closes it without firing, back on the kebab', async () => {
     const user = userEvent.setup();
     const deleteDestination = vi.fn();
     renderDestinations(
@@ -320,10 +324,10 @@ describe('Destinations table, narrow layout', () => {
     await openMenu({ user, row: 'family_ntfy' });
     await chooseItem({ user, name: 'Delete family_ntfy' });
 
-    await user.keyboard('{Escape}');
-    expect(screen.getByRole('menu')).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Delete destination?' })).toBeInTheDocument();
     await user.keyboard('{Escape}');
 
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByRole('menu')).toBeNull();
     expect(kebab('family_ntfy')).toHaveFocus();
     expect(deleteDestination).not.toHaveBeenCalled();
@@ -493,7 +497,7 @@ describe('Routes table, narrow layout', () => {
 
     await openMenu({ user, row: 'route 1' });
     await chooseItem({ user, name: 'Delete route 1' });
-    expect(screen.getByRole('group', { name: 'Delete route 1' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Delete route?' })).toBeInTheDocument();
     expect(deleteRoute).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Confirm delete route 1' }));
 
@@ -606,14 +610,16 @@ describe('Heartbeats table, narrow layout', () => {
 
     await openMenu({ user, row: ROW_1 });
     await chooseItem({ user, name: `Pause ${ROW_1}` });
-    expect(screen.getByRole('group', { name: `Pause ${ROW_1}` })).toHaveTextContent(
+    expect(screen.getByRole('dialog', { name: 'Pause check?' })).toHaveTextContent(
       strings.pauseHeartbeatNotice,
     );
     expect(pauseHeartbeat).not.toHaveBeenCalled();
-    // Keep running dismisses back to the list.
+    // Keep running closes the dialog and returns to the kebab.
     await user.click(screen.getByRole('button', { name: `Keep running ${ROW_1}` }));
-    expect(screen.getByRole('menu')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(kebab(ROW_1)).toHaveFocus();
 
+    await openMenu({ user, row: ROW_1 });
     await chooseItem({ user, name: `Pause ${ROW_1}` });
     await user.click(screen.getByRole('button', { name: `Confirm pause ${ROW_1}` }));
 
@@ -660,10 +666,11 @@ describe('Heartbeats table, narrow layout', () => {
     expect(menu).not.toHaveTextContent(note);
 
     await chooseItem({ user, name: `Pause ${ROW_1}` });
-    expect(screen.getByRole('group', { name: `Pause ${ROW_1}` })).toHaveTextContent(note);
+    expect(screen.getByRole('dialog', { name: 'Pause check?' })).toHaveTextContent(note);
     await user.keyboard('{Escape}');
+    await openMenu({ user, row: ROW_1 });
     await chooseItem({ user, name: `Delete ${ROW_1}` });
-    expect(screen.getByRole('group', { name: `Delete ${ROW_1}` })).toHaveTextContent(note);
+    expect(screen.getByRole('dialog', { name: 'Delete check?' })).toHaveTextContent(note);
   });
 
   it('Edit opens the inline editor with focus in it', async () => {
@@ -837,9 +844,9 @@ describe('App identities tables, narrow layout', () => {
 
     await openMenu({ user, row: 'app_1' });
     await chooseItem({ user, name: 'Reject identity request for app_1' });
-    expect(
-      screen.getByRole('group', { name: 'Reject identity request for app_1' }),
-    ).toHaveTextContent(strings.rejectIdentityNotice);
+    expect(screen.getByRole('dialog', { name: 'Reject identity request?' })).toHaveTextContent(
+      strings.rejectIdentityNotice,
+    );
     expect(rejectIdentityRequest).not.toHaveBeenCalled();
     await user.click(
       screen.getByRole('button', { name: 'Confirm reject identity request for app_1' }),
@@ -898,9 +905,9 @@ describe('App identities tables, narrow layout', () => {
 
     await openMenu({ user, row: 'tasktracker' });
     await chooseItem({ user, name: 'Revoke key dak_7Q2m for tasktracker' });
-    expect(
-      screen.getByRole('group', { name: 'Revoke key dak_7Q2m for tasktracker' }),
-    ).toHaveTextContent(strings.revokeKeyNotice);
+    expect(screen.getByRole('dialog', { name: 'Revoke key?' })).toHaveTextContent(
+      strings.revokeKeyNotice,
+    );
     expect(revokeIdentityKey).not.toHaveBeenCalled();
     await user.click(
       screen.getByRole('button', { name: 'Confirm revoke key dak_7Q2m for tasktracker' }),
@@ -911,7 +918,7 @@ describe('App identities tables, narrow layout', () => {
 
     await openMenu({ user, row: 'tasktracker' });
     await chooseItem({ user, name: 'Unbind tasktracker' });
-    expect(screen.getByRole('group', { name: 'Unbind tasktracker' })).toHaveTextContent(
+    expect(screen.getByRole('dialog', { name: 'Unbind app?' })).toHaveTextContent(
       strings.unbindAppNotice,
     );
     await user.click(screen.getByRole('button', { name: 'Confirm unbind tasktracker' }));
@@ -978,6 +985,11 @@ function rowButtons(row: HTMLElement): { visible: string[]; names: string[] } {
   };
 }
 
+/** The dialog's X shows a glyph, not a word, so its "Close" name is exempt from label-in-name. */
+function exceptModalClose(buttons: HTMLElement[]): HTMLElement[] {
+  return buttons.filter((button) => !button.classList.contains('modal__close'));
+}
+
 function rowOfButton(name: string): HTMLElement {
   return screen.getByRole('button', { name }).closest('tr') as HTMLElement;
 }
@@ -1022,22 +1034,22 @@ describe('Row action labels, roomy layout', () => {
     expect(editing.names[1]).toBe('Close family_ntfy');
     await user.click(screen.getByRole('button', { name: 'Close family_ntfy' }));
 
-    // Each confirm pair: the verb is still short and the name still carries the destination.
+    // Each confirm dialog: the verb is still short and the name still carries the destination.
     for (const verb of ['Disable', 'Delete']) {
       await user.click(screen.getByRole('button', { name: `${verb} family_ntfy` }));
-      const row = rowOfButton(`Confirm ${verb.toLowerCase()} family_ntfy`);
-      const pairButtons = within(row)
+      const dialog = screen.getByRole('dialog');
+      const pairButtons = within(dialog)
         .getAllByRole('button')
         .filter((button) => /^(Confirm|Cancel)/.test(button.textContent ?? ''));
       expect(pairButtons.map((button) => button.textContent)).toEqual([
-        `Confirm ${verb.toLowerCase()}`,
         'Cancel',
+        `Confirm ${verb.toLowerCase()}`,
       ]);
       expect(pairButtons.map((button) => accessibleNameOf(button))).toEqual([
-        `Confirm ${verb.toLowerCase()} family_ntfy`,
         `Cancel ${verb} family_ntfy`,
+        `Confirm ${verb.toLowerCase()} family_ntfy`,
       ]);
-      expect(labelInNameViolations(within(row).getAllByRole('button'))).toEqual([]);
+      expect(labelInNameViolations(pairButtons)).toEqual([]);
       await user.click(screen.getByRole('button', { name: `Cancel ${verb} family_ntfy` }));
     }
   });
@@ -1057,12 +1069,21 @@ describe('Row action labels, roomy layout', () => {
     expect(editing.names[0]).toBe('Close route 1');
     await user.click(screen.getByRole('button', { name: 'Close route 1' }));
 
-    // The open pair takes the place of the row's other buttons.
+    // The dialog's buttons keep the short verb and the route in their names.
     await user.click(screen.getByRole('button', { name: 'Delete route 1' }));
-    const pair = rowButtons(rowOfButton('Confirm delete route 1'));
-    expect(pair.visible).toEqual(['Confirm delete', 'Cancel']);
-    expect(pair.names).toEqual(['Confirm delete route 1', 'Cancel Delete route 1']);
-    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+    const pair = rowButtons(screen.getByRole('dialog'));
+    expect(pair.visible).toEqual(expect.arrayContaining(['Confirm delete', 'Cancel']));
+    expect(pair.names).toEqual(
+      expect.arrayContaining(['Confirm delete route 1', 'Cancel Delete route 1']),
+    );
+    // The dialog's X shows a glyph, not a word, so its "Close" name is exempt.
+    expect(
+      labelInNameViolations(
+        screen
+          .getAllByRole('button')
+          .filter((button) => !button.classList.contains('modal__close')),
+      ),
+    ).toEqual([]);
   });
 
   it('Heartbeats: the row buttons already read as bare verbs and every name contains its text', async () => {
@@ -1083,11 +1104,13 @@ describe('Row action labels, roomy layout', () => {
     expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
 
     await user.click(screen.getByRole('button', { name: `Pause ${ROW_1}` }));
-    const confirming = rowButtons(rowOfButton(`Confirm pause ${ROW_1}`));
-    // The open pair takes the place of the row's other buttons.
-    expect(confirming.visible).toEqual(['Confirm pause', 'Keep running']);
-    expect(confirming.names).toEqual([`Confirm pause ${ROW_1}`, `Keep running ${ROW_1}`]);
-    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+    const confirming = rowButtons(screen.getByRole('dialog'));
+    // The dialog's X shows a glyph (named Close); the pair keeps the short verbs.
+    expect(confirming.visible).toEqual(expect.arrayContaining(['Confirm pause', 'Keep running']));
+    expect(confirming.names).toEqual(
+      expect.arrayContaining([`Confirm pause ${ROW_1}`, `Keep running ${ROW_1}`]),
+    );
+    expect(labelInNameViolations(exceptModalClose(screen.getAllByRole('button')))).toEqual([]);
   });
 
   it('App identities: every row button name contains its visible text', async () => {
@@ -1116,12 +1139,12 @@ describe('Row action labels, roomy layout', () => {
     expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
 
     await user.click(screen.getByRole('button', { name: 'Reject identity request for app_1' }));
-    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+    expect(labelInNameViolations(exceptModalClose(screen.getAllByRole('button')))).toEqual([]);
     await user.click(
       screen.getByRole('button', { name: 'Cancel reject identity request for app_1' }),
     );
     await user.click(screen.getByRole('button', { name: 'Unbind tasktracker' }));
-    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+    expect(labelInNameViolations(exceptModalClose(screen.getAllByRole('button')))).toEqual([]);
   });
 });
 
@@ -1245,7 +1268,7 @@ async function expectMenuAndConfirmNotes({
     expect(menu).not.toHaveTextContent(ownerCase.long);
   }
   await chooseItem({ user, name: deleteName });
-  const confirm = screen.getByRole('group', { name: deleteName });
+  const confirm = screen.getByRole('dialog');
   if (ownerCase.long === null) {
     expect(confirm).not.toHaveTextContent(strings.ownerManagedNote({ appId: 'chores4irl' }));
     expect(confirm).not.toHaveTextContent(strings.ownerUnknownNote);

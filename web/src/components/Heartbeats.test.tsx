@@ -519,33 +519,41 @@ describe('Heartbeats owner column', () => {
     await renderOwned();
 
     await user.click(button(`Delete ${label(APP_OWNED)}`));
-    expect(within(rowOf(11)).getAllByText(managedNote)).toHaveLength(1);
+    expect(within(screen.getByRole('dialog')).getAllByText(managedNote)).toHaveLength(1);
     expect(within(rowOf(11)).getAllByText(strings.ownerManagedInlineNote)).toHaveLength(1);
     await user.click(button(`Cancel Delete ${label(APP_OWNED)}`));
 
     await user.click(button(`Pause ${label(APP_OWNED)}`));
     expect(
-      within(rowOf(11)).getByText(`${strings.pauseHeartbeatNotice} ${managedNote}`),
+      within(screen.getByRole('dialog')).getByText(
+        `${strings.pauseHeartbeatNotice} ${managedNote}`,
+      ),
     ).toBeInTheDocument();
     await user.click(button(`Keep running ${label(APP_OWNED)}`));
 
     // An unknown owner is never treated as safe: its confirms warn too.
     await user.click(button(`Delete ${label(UNKNOWN_OWNED)}`));
-    expect(within(rowOf(13)).getAllByText(strings.ownerUnknownNote)).toHaveLength(1);
+    expect(within(screen.getByRole('dialog')).getAllByText(strings.ownerUnknownNote)).toHaveLength(
+      1,
+    );
     await user.click(button(`Cancel Delete ${label(UNKNOWN_OWNED)}`));
     await user.click(button(`Pause ${label(UNKNOWN_OWNED)}`));
     expect(
-      within(rowOf(13)).getByText(`${strings.pauseHeartbeatNotice} ${strings.ownerUnknownNote}`),
+      within(screen.getByRole('dialog')).getByText(
+        `${strings.pauseHeartbeatNotice} ${strings.ownerUnknownNote}`,
+      ),
     ).toBeInTheDocument();
     await user.click(button(`Keep running ${label(UNKNOWN_OWNED)}`));
 
     // The operator's own row confirms with no owner note, and Pause shows only its own notice.
     await user.click(button(`Pause ${label(OPERATOR_OWNED)}`));
-    expect(within(rowOf(12)).getByText(strings.pauseHeartbeatNotice)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('dialog')).getByText(strings.pauseHeartbeatNotice),
+    ).toBeInTheDocument();
     await user.click(button(`Keep running ${label(OPERATOR_OWNED)}`));
     await user.click(button(`Delete ${label(OPERATOR_OWNED)}`));
     expect(button(`Confirm delete ${label(OPERATOR_OWNED)}`)).toBeInTheDocument();
-    expect(rowOf(12).querySelector('.confirm-button__notice')).toBeNull();
+    expect(screen.getByRole('dialog').querySelector('.modal__notice')).toBeNull();
   });
 
   it('keeps an open editor row spanning the whole table', async () => {
@@ -923,60 +931,83 @@ describe('Heartbeats pause, resume and delete', () => {
   });
 
   it.each([
-    { verb: 'Pause', dismiss: (name: string) => `Keep running ${name}` },
-    { verb: 'Delete', dismiss: (name: string) => `Cancel Delete ${name}` },
+    {
+      verb: 'Pause',
+      title: strings.pauseHeartbeatDialogTitle,
+      notice: strings.pauseHeartbeatNotice,
+      cancel: (name: string) => `Keep running ${name}`,
+      confirmClass: 'modal__button--primary',
+    },
+    {
+      verb: 'Delete',
+      title: strings.deleteHeartbeatDialogTitle,
+      notice: null,
+      cancel: (name: string) => `Cancel Delete ${name}`,
+      confirmClass: 'modal__button--danger',
+    },
   ])(
-    'an open $verb confirm hides the row’s other buttons, leaves row 2 alone and restores them on dismiss and Escape',
-    async ({ verb, dismiss }) => {
+    'the $verb confirm is a dialog naming the check, leaves the row buttons in place and closes on dismiss and Escape',
+    async ({ verb, title, notice, cancel, confirmClass }) => {
       const user = userEvent.setup();
       renderSection(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1, CHECK_2]) }));
       const name = label(CHECK_1);
-      const rowButtons = [`Edit ${name}`, `Pause ${name}`, `Delete ${name}`];
-      const present = () =>
-        rowButtons.filter(
-          (rowButton) => screen.queryByRole('button', { name: rowButton }) !== null,
-        );
 
       await user.click(await screen.findByRole('button', { name: `${verb} ${name}` }));
-      expect(button(`Confirm ${verb.toLowerCase()} ${name}`)).toHaveFocus();
-      expect(present()).toEqual([]);
-      // The hidden buttons stay mounted, so the row's focus keys still resolve.
-      expect(screen.getByLabelText(`Edit ${name}`)).toHaveAttribute('hidden');
-      for (const other of [`Edit ${label(CHECK_2)}`, `Pause ${label(CHECK_2)}`]) {
-        expect(button(other)).toBeVisible();
+      const dialog = screen.getByRole('dialog', { name: title });
+      expect(within(dialog).getByText(strings.dialogItemCheck)).toBeInTheDocument();
+      expect(within(dialog).getByText(name)).toBeInTheDocument();
+      if (notice !== null) {
+        expect(within(dialog).getByText(notice)).toBeInTheDocument();
+      }
+      expect(button(`Confirm ${verb.toLowerCase()} ${name}`)).toHaveClass(confirmClass);
+      expect(button(cancel(name))).toHaveFocus();
+      // The row's other buttons no longer step aside.
+      for (const other of [`Edit ${name}`, `Pause ${name}`, `Delete ${name}`]) {
+        expect(button(other)).toBeInTheDocument();
       }
 
-      await user.click(button(dismiss(name)));
-      expect(present()).toEqual(rowButtons);
+      await user.click(button(cancel(name)));
+      expect(screen.queryByRole('dialog')).toBeNull();
       expect(button(`${verb} ${name}`)).toHaveFocus();
 
       await user.click(button(`${verb} ${name}`));
-      expect(present()).toEqual([]);
       await user.keyboard('{Escape}');
-      expect(present()).toEqual(rowButtons);
+      expect(screen.queryByRole('dialog')).toBeNull();
       expect(button(`${verb} ${name}`)).toHaveFocus();
     },
   );
 
-  it('an open Delete confirm on a paused check hides Resume too, and Escape brings it back', async () => {
+  it('a double Confirm on a delete sends one request', async () => {
     const user = userEvent.setup();
+    const deleteHeartbeat = vi.fn().mockResolvedValue(undefined);
     renderSection(
       buildClient({
-        listHeartbeats: vi.fn().mockResolvedValue([{ ...CHECK_1, paused: true }, CHECK_2]),
+        listHeartbeats: vi.fn().mockResolvedValue([CHECK_1, CHECK_2]),
+        deleteHeartbeat,
       }),
     );
-    const name = label(CHECK_1);
 
-    await user.click(await screen.findByRole('button', { name: `Delete ${name}` }));
-    for (const hidden of [`Edit ${name}`, `Resume ${name}`]) {
-      expect(screen.queryByRole('button', { name: hidden }), hidden).toBeNull();
-    }
-    expect(screen.getByLabelText(`Resume ${name}`)).toHaveAttribute('hidden');
-    await user.keyboard('{Escape}');
+    await user.click(await screen.findByRole('button', { name: `Delete ${label(CHECK_1)}` }));
+    await user.dblClick(button(`Confirm delete ${label(CHECK_1)}`));
 
-    for (const shown of [`Edit ${name}`, `Resume ${name}`, `Delete ${name}`]) {
-      expect(button(shown)).toBeVisible();
-    }
+    expect(deleteHeartbeat).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes an open delete dialog without firing when a reload drops the check', async () => {
+    const user = userEvent.setup();
+    const deleteHeartbeat = vi.fn();
+    const listHeartbeats = vi
+      .fn()
+      .mockResolvedValueOnce([CHECK_1, CHECK_2])
+      .mockResolvedValue([CHECK_2]);
+    renderSection(buildClient({ listHeartbeats, deleteHeartbeat }));
+
+    await user.click(await screen.findByRole('button', { name: `Delete ${label(CHECK_1)}` }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: strings.heartbeatsRefresh }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(deleteHeartbeat).not.toHaveBeenCalled();
   });
 
   it('confirming a delete runs it once and keeps the row’s buttons in view', async () => {
@@ -997,31 +1028,6 @@ describe('Heartbeats pause, resume and delete', () => {
     expect(deleteHeartbeat).toHaveBeenCalledWith({ id: 1 });
     expect(button(`Edit ${label(CHECK_1)}`)).toBeVisible();
     expect(button(`Pause ${label(CHECK_1)}`)).toBeVisible();
-  });
-
-  it('gives two rows mid-confirm distinguishable dismiss buttons', async () => {
-    const user = userEvent.setup();
-    renderSection(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1, CHECK_2]) }));
-
-    await user.click(await screen.findByRole('button', { name: `Pause ${label(CHECK_1)}` }));
-    await user.click(button(`Pause ${label(CHECK_2)}`));
-
-    for (const check of [CHECK_1, CHECK_2]) {
-      const dismiss = button(`Keep running ${label(check)}`);
-      expect(dismiss).toHaveTextContent(strings.keepHeartbeatRunning);
-    }
-    expect(screen.queryByRole('button', { name: strings.keepHeartbeatRunning })).toBeNull();
-
-    // Delete's dismiss is distinguishable too. (An open pair hides its row's other buttons, so
-    // the Pause confirms are dismissed first.)
-    for (const check of [CHECK_1, CHECK_2]) {
-      await user.click(button(`Keep running ${label(check)}`));
-    }
-    await user.click(button(`Delete ${label(CHECK_1)}`));
-    await user.click(button(`Delete ${label(CHECK_2)}`));
-    expect(button(`Cancel Delete ${label(CHECK_1)}`)).toHaveTextContent(strings.cancelAction);
-    expect(button(`Cancel Delete ${label(CHECK_2)}`)).toHaveTextContent(strings.cancelAction);
-    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
   });
 
   it('resume is a single click and moves focus to the row Pause trigger', async () => {
@@ -1188,6 +1194,18 @@ describe('Heartbeats pause, resume and delete', () => {
     await waitFor(() => expect(document.querySelector('tr[data-check-id="2"]')).toBeNull());
     await waitFor(() => expect(button(`Pause ${label(CHECK_3)}`)).toHaveFocus());
     expect(resultLine()).toHaveTextContent(`Deleted ${label(CHECK_2)}.`);
+  });
+
+  it('keeps Resume visible on a paused row while its Delete confirm is open', async () => {
+    const user = userEvent.setup();
+    const paused = { ...CHECK_1, paused: true };
+    renderSection(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([paused]) }));
+
+    await user.click(await screen.findByRole('button', { name: `Delete ${label(paused)}` }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(
+      within(rowOf(paused.id)).getByRole('button', { name: `Resume ${label(paused)}` }),
+    ).toBeVisible();
   });
 
   it('delete of the last row focuses the previous row, and a paused neighbour its Resume', async () => {

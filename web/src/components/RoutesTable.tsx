@@ -12,7 +12,6 @@ import type { RowMenuItem } from './RowActionsMenu';
 import { routeActionLabels } from './rowActionLabels';
 import { RouteForm } from './RouteForm';
 import type { RouteSubmission } from './RouteForm';
-import { useConfirmingRows } from './useConfirmingRows';
 import { revealFocusedControl } from './adminTableFocus';
 import './adminTable.css';
 import './RoutesTable.css';
@@ -61,7 +60,6 @@ export function RoutesTable({
   onSave,
 }: RoutesTableProps): JSX.Element {
   const compact = useCompactTable();
-  const { isSteppedAside, reportConfirming } = useConfirmingRows();
   const columns = compact ? COMPACT_COLUMNS : WIDE_COLUMNS;
   const columnCount = compact ? COMPACT_COLUMN_COUNT : WIDE_COLUMN_COUNT;
   const headers: Record<RouteColumn, JSX.Element> = {
@@ -142,6 +140,11 @@ export function RoutesTable({
                   cancelLabel: labels.cancelDelete.visible,
                   cancelAriaLabel: labels.cancelDelete.accessible,
                   notice: ownerNote ?? undefined,
+                  dialogTitle: strings.deleteRouteDialogTitle,
+                  dialogItem: {
+                    label: strings.dialogItemRoute,
+                    value: strings.routeRowLabel({ id }),
+                  },
                   onConfirm: () => onDelete(id),
                 },
               },
@@ -208,7 +211,6 @@ export function RoutesTable({
                           ref={(element) => registerControl({ key: `edit:${id}`, element })}
                           type="button"
                           className="routes__button"
-                          hidden={isSteppedAside({ rowKey: String(id) })}
                           aria-label={labels.edit.accessible}
                           aria-expanded={isEditing}
                           onClick={() => onToggleEditor(id)}
@@ -225,9 +227,11 @@ export function RoutesTable({
                           confirmNotice={ownerNote ?? undefined}
                           busy={deleteBusy}
                           busyLabel={strings.deletingRoute}
-                          onConfirmingChange={(confirming) =>
-                            reportConfirming({ rowKey: String(id), control: 'delete', confirming })
-                          }
+                          dialogTitle={strings.deleteRouteDialogTitle}
+                          dialogItem={{
+                            label: strings.dialogItemRoute,
+                            value: strings.routeRowLabel({ id }),
+                          }}
                           onConfirm={() => onDelete(id)}
                         />
                       </div>

@@ -85,8 +85,7 @@
   margin-top: var(--space-1);
 }
 
-.destination-form__button,
-.destination-form .confirm-button__cancel {
+.destination-form__button {
   min-height: 2.75rem;
   border-radius: var(--radius);
   padding: var(--space-1) var(--space-3);
@@ -136,8 +135,7 @@
   color: var(--danger);
 }
 
-.destination-form__button--ghost,
-.destination-form .confirm-button__cancel {
+.destination-form__button--ghost {
   border-color: var(--border);
   background: var(--surface);
   color: var(--text);

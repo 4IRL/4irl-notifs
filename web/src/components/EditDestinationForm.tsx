@@ -225,6 +225,8 @@ export function EditDestinationForm({
                 className="destination-form__button destination-form__button--danger"
                 busy={rotating}
                 busyLabel={strings.rotatingDestination}
+                dialogTitle={strings.rotateDestinationDialogTitle}
+                dialogItem={{ label: strings.dialogItemDestination, value: destination.name }}
                 confirmNotice={invalidatesPrevious ? strings.rotateInvalidatesPrevious : undefined}
                 onConfirm={handleRotate}
               />
