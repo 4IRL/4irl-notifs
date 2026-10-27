@@ -360,6 +360,10 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
                               dismissAriaLabel={strings.cancelActionNamed({
                                 subject: strings.replayDelivery({ id }),
                               })}
+                              dialogTitle={strings.replayDeliveryDialogTitle}
+                              dialogItem={{ label: strings.dialogItemDelivery, value: `${id}` }}
+                              tone="primary"
+                              confirmNotice={strings.replayDeliveryNotice}
                               className="delivery-log__button"
                               busy={busyIds[id] === true}
                               busyLabel={strings.replayingDelivery}

@@ -562,7 +562,7 @@ describe('App', () => {
       within(row).getByRole('button', { name: `${strings.deleteAction} alice@example.com` }),
     );
     await userEvent.click(
-      within(row).getByRole('button', {
+      screen.getByRole('button', {
         name: `${strings.confirmDeleteAction} alice@example.com`,
       }),
     );
@@ -686,7 +686,7 @@ describe('App', () => {
       within(appRow).getByRole('button', { name: `${strings.removeAction} URLs4IRL` }),
     );
     await userEvent.click(
-      within(appRow).getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+      screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
     );
 
     await waitFor(() => expect(client.deprovisionApp).toHaveBeenCalledWith({ appId: 'urls4irl' }));

@@ -470,9 +470,117 @@ test.describe('admin UI critical flows', () => {
     // "URLs4IRL" and would otherwise make this ambiguous.
     await expect(page.getByRole('cell', { name: 'URLs4IRL', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Remove URLs4IRL', exact: true }).click();
-    await page.getByRole('button', { name: 'Confirm remove URLs4IRL', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Remove app?' });
+    await expect(dialog).toContainText('URLs4IRL');
+    await dialog.getByRole('button', { name: 'Confirm remove URLs4IRL', exact: true }).click();
 
     await expect(page.getByText('No apps registered yet.')).toBeVisible();
+  });
+
+  test('re-mint dialog Escape closes only the dialog', async ({ page }) => {
+    await page.route('**/v1/users', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ users: [] }),
+      });
+    });
+    await page.route('**/people', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
+    });
+    await page.route('**/apps', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          apps: [
+            {
+              app_id: 'urls4irl',
+              display_name: 'URLs4IRL',
+              description: 'Shared URL app',
+              created_at: '2026-07-25T10:00:00Z',
+            },
+          ],
+        }),
+      });
+    });
+    let tokenCalls = 0;
+    await page.route('**/v1/provision-app', async (route) => {
+      tokenCalls += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          app_id: 'urls4irl',
+          publisher_user_id: 'urls4irl-publisher',
+          topic_pattern: 'urls4irl-*',
+          token: 'tk_remint_e2e',
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Edit URLs4IRL', exact: true }).click();
+    const trigger = page.getByRole('button', { name: 'Revoke & re-mint', exact: true });
+    await trigger.click();
+
+    const dialog = page.getByRole('dialog', { name: 'Revoke and re-mint publisher token?' });
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    await expect(dialog).toBeHidden();
+    await expect(trigger).toBeVisible();
+    await expect(trigger).toBeFocused();
+    expect(tokenCalls).toBe(0);
+  });
+
+  test('remove app dialog is full screen at 390px', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route('**/v1/users', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ users: [] }),
+      });
+    });
+    await page.route('**/people', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
+    });
+    await page.route('**/apps', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          apps: [
+            {
+              app_id: 'urls4irl',
+              display_name: 'URLs4IRL',
+              description: 'Shared URL app',
+              created_at: '2026-07-25T10:00:00Z',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Remove URLs4IRL', exact: true }).click();
+
+    const dialog = page.getByRole('dialog', { name: 'Remove app?' });
+    await expect(dialog).toBeVisible();
+    const box = await dialog.boundingBox();
+    const viewport = page.viewportSize();
+    expect(box).not.toBeNull();
+    expect(box?.x).toBe(0);
+    expect(box?.y).toBe(0);
+    expect(box?.width).toBe(viewport?.width);
+    expect(box?.height).toBe(viewport?.height);
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden');
+    for (const name of ['Confirm remove URLs4IRL', 'Cancel Remove URLs4IRL']) {
+      const button = dialog.getByRole('button', { name, exact: true });
+      const buttonBox = await button.boundingBox();
+      expect(buttonBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+    }
   });
 
   test('App-ID combobox suggests registered apps + offers unprovisioned, and ghost apps are listed', async ({
@@ -1496,7 +1604,11 @@ test.describe('admin UI Delivery tab', () => {
     await expect(log.getByText('upstream exploded')).toBeVisible();
 
     await log.getByRole('button', { name: 'Replay delivery 7', exact: true }).click();
-    await log.getByRole('button', { name: 'Confirm replay delivery 7', exact: true }).click();
+    const replayDialog = page.getByRole('dialog', { name: 'Replay delivery?' });
+    await expect(replayDialog).toContainText(/Delivery\s*7/i);
+    await replayDialog
+      .getByRole('button', { name: 'Confirm replay delivery 7', exact: true })
+      .click();
     await expect(log.getByText(/Replay queued/)).toBeVisible();
     await expect(log.getByText('No dead deliveries.')).toBeVisible();
 
@@ -1530,11 +1642,12 @@ test.describe('admin UI Delivery tab', () => {
 
     // Keep restores the trigger and sends no request.
     await trigger.click();
-    const confirm = pending.getByRole('button', {
+    // The confirm is a body-level dialog, so its buttons are found on the page.
+    const confirm = page.getByRole('button', {
       name: 'Confirm cancel send digest-1',
       exact: true,
     });
-    const keep = pending.getByRole('button', { name: 'Keep send digest-1', exact: true });
+    const keep = page.getByRole('button', { name: 'Keep send digest-1', exact: true });
     await expect(confirm).toBeVisible();
     for (const button of [confirm, keep]) {
       expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(44);
@@ -2483,9 +2596,7 @@ test.describe('admin UI Delivery tab', () => {
     expect(mock.unmocked).toEqual([]);
   });
 
-  test('pending sends: a long cancel error wraps inside the capped Actions cell', async ({
-    page,
-  }) => {
+  test('pending sends: a failed cancel shows its error in the row', async ({ page }) => {
     const mock = await mockDelivery(page, {
       scheduled: [scheduledWire({ id: 'msg-1', key: 'digest-1' })],
       cancelError: { status: 503, message: 'delivery-service-unavailable-'.repeat(12) },
@@ -2494,15 +2605,10 @@ test.describe('admin UI Delivery tab', () => {
     await page.goto('/#delivery');
     const pending = page.getByRole('region', { name: 'Pending sends' });
     await pending.getByRole('button', { name: 'Cancel send digest-1', exact: true }).click();
-    await pending
-      .getByRole('button', { name: 'Confirm cancel send digest-1', exact: true })
-      .click();
+    await page.getByRole('button', { name: 'Confirm cancel send digest-1', exact: true }).click();
 
     const rowError = pending.getByRole('alert');
     await expect(rowError).toContainText('Could not cancel: delivery-service-unavailable-');
-    // 14rem cap (224px) plus the cell padding; an uncapped cell would take the spare width.
-    const cellBox = await pending.locator('td.pending-sends__actions-cell').first().boundingBox();
-    expect(cellBox?.width ?? Infinity).toBeLessThanOrEqual(272);
     expect(mock.unmocked).toEqual([]);
   });
 
@@ -3563,14 +3669,6 @@ test.describe('admin UI Delivery tab', () => {
     expect(triggerBox?.height ?? Infinity).toBeLessThan(60);
     expect((triggerBox?.x ?? -1) + (triggerBox?.width ?? 0)).toBeLessThanOrEqual(390);
 
-    // The open confirm keeps both labels on one line too.
-    await trigger.click();
-    await expect(pending.getByRole('button', { name: /^Confirm cancel send/ })).toBeVisible();
-    // (The confirm notice is a sentence that wraps inside the capped Actions cell by design.)
-    expect(
-      await maxRenderedLines({ root: pending.locator('table'), skip: '.confirm-button__notice' }),
-    ).toBe(1);
-
     // Scrolling the wrapper to its end moves the content; the page itself stays put.
     await wrapper.evaluate((element) => {
       element.scrollLeft = element.scrollWidth;
@@ -3711,11 +3809,10 @@ test.describe('admin UI Delivery tab', () => {
     expect(triggerBox?.x).toBeGreaterThanOrEqual(0);
     expect((triggerBox?.x ?? 0) + (triggerBox?.width ?? 0)).toBeLessThanOrEqual(390);
     await trigger.click();
-    const confirmCancel = pending.getByRole('button', { name: /^Confirm cancel send digest-/ });
+    // The confirm is a body-level dialog, so the wrapper is not scrolled by opening it.
+    const confirmCancel = page.getByRole('button', { name: /^Confirm cancel send digest-/ });
     await expect(confirmCancel).toBeVisible();
     expect(await pendingWrapper.evaluate((element) => element.scrollLeft)).toBe(0);
-    const confirmBox = await confirmCancel.boundingBox();
-    expect((confirmBox?.x ?? 0) + (confirmBox?.width ?? 0)).toBeLessThanOrEqual(390);
 
     // A long server error stays inside the capped Actions cell: the cell keeps
     // its 14rem width and Cancel send stays reachable without scrolling.

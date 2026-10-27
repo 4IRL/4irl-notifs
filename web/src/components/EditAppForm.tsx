@@ -19,7 +19,7 @@ interface EditAppFormProps {
  * Inline editor for a single app: edit display_name/description metadata, plus
  * the two publisher-token controls. "Re-mint" is additive (zero-downtime — the
  * old token stays valid); "Revoke & re-mint" is a hard rotation gated behind an
- * inline confirm, because it revokes the live token and breaks the app's
+ * confirm dialog, because it revokes the live token and breaks the app's
  * publishing until it is redeployed. Both reveal the new token inline (once).
  */
 export function EditAppForm({ app, onUpdateApp, onRemintToken, onClose }: EditAppFormProps) {
@@ -106,6 +106,9 @@ export function EditAppForm({ app, onUpdateApp, onRemintToken, onClose }: EditAp
             triggerLabel={strings.rotateTokenAction}
             confirmLabel={strings.confirmRotateTokenAction}
             className="edit-app-form__button edit-app-form__button--danger"
+            dialogTitle={strings.rotateTokenDialogTitle}
+            dialogItem={{ label: strings.dialogItemApp, value: app.appId }}
+            confirmNotice={strings.rotateTokenWarning}
             onConfirm={() => mintToken(true)}
           />
           <button

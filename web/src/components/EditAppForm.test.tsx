@@ -1,5 +1,5 @@
 import type { ComponentProps } from 'react';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -85,6 +85,42 @@ describe('EditAppForm', () => {
     await user.click(screen.getByRole('button', { name: strings.confirmRotateTokenAction }));
     expect(onRemintToken).toHaveBeenCalledWith({ appId: 'urls4irl', rotate: true });
     expect(await screen.findByText('tk_fresh')).toBeInTheDocument();
+  });
+
+  it('re-mint dialog shows title, app item and warning; confirm fires once without submitting', async () => {
+    const user = userEvent.setup();
+    const { onRemintToken, onUpdateApp, onClose } = renderForm();
+
+    await user.click(screen.getByRole('button', { name: strings.rotateTokenAction }));
+
+    const dialog = within(screen.getByRole('dialog', { name: strings.rotateTokenDialogTitle }));
+    expect(dialog.getByText(strings.dialogItemApp)).toBeInTheDocument();
+    expect(dialog.getByText('urls4irl')).toBeInTheDocument();
+    expect(dialog.getByText(strings.rotateTokenWarning)).toBeInTheDocument();
+
+    await user.click(dialog.getByRole('button', { name: strings.confirmRotateTokenAction }));
+    expect(onRemintToken).toHaveBeenCalledTimes(1);
+    expect(onUpdateApp).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('Escape in the re-mint dialog closes only the dialog and keeps unsaved values', async () => {
+    const user = userEvent.setup();
+    const { onRemintToken, onUpdateApp, onClose } = renderForm();
+
+    const name = screen.getByLabelText(strings.appDisplayNameLabel);
+    await user.clear(name);
+    await user.type(name, 'Edited');
+    const trigger = screen.getByRole('button', { name: strings.rotateTokenAction });
+    await user.click(trigger);
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(strings.appDisplayNameLabel)).toHaveValue('Edited');
+    expect(trigger).toHaveFocus();
+    expect(onRemintToken).not.toHaveBeenCalled();
+    expect(onUpdateApp).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('closes when the close button is clicked', async () => {

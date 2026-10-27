@@ -88,6 +88,9 @@ export function AppsTable({
                           dismissAriaLabel={strings.cancelActionNamed({
                             subject: `${strings.removeAction} ${app.displayName}`,
                           })}
+                          dialogTitle={strings.removeAppDialogTitle}
+                          dialogItem={{ label: strings.dialogItemApp, value: app.displayName }}
+                          confirmNotice={strings.removeAppNotice}
                           className="apps-table__button apps-table__button--danger"
                           onConfirm={() => onRemoveApp({ appId: app.appId })}
                         />

@@ -312,13 +312,19 @@ describe('DeliveryLog', () => {
     await user.click(
       await screen.findByRole('button', { name: strings.replayDelivery({ id: 412 }) }),
     );
+    const dialog = screen.getByRole('dialog', { name: strings.replayDeliveryDialogTitle });
+    expect(within(dialog).getByText('412')).toBeInTheDocument();
+    expect(within(dialog).getByText(strings.replayDeliveryNotice)).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: strings.confirmReplayDelivery({ id: 412 }) }),
+      within(dialog).getByRole('button', {
+        name: strings.cancelActionNamed({ subject: strings.replayDelivery({ id: 412 }) }),
+      }),
     ).toHaveFocus();
     await user.click(
-      screen.getByRole('button', { name: strings.confirmReplayDelivery({ id: 412 }) }),
+      within(dialog).getByRole('button', { name: strings.confirmReplayDelivery({ id: 412 }) }),
     );
 
+    expect(client.replayDelivery).toHaveBeenCalledTimes(1);
     expect(client.replayDelivery).toHaveBeenCalledWith({ deliveryId: 412 });
     expect(await screen.findByRole('status')).toHaveTextContent(
       'Replay queued — next attempt 08:30:15',

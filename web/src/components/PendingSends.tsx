@@ -11,6 +11,7 @@ import { strings } from '../strings';
 import { ConfirmButton } from './ConfirmButton';
 import { formatRelativeFuture } from './formatRelative';
 import { formatMinute, formatUtc } from './formatUtc';
+import { OWNER_ROW_ATTRIBUTE, OWNER_ROW_ID } from './Modal';
 import { messageOf, withoutKey } from './rowState';
 import './PendingSends.css';
 
@@ -30,7 +31,16 @@ function isDue({ deliverAt, now }: { deliverAt: string; now: number }): boolean 
 
 /** The id of the Pending sends row containing `element`, or null. */
 function rowIdOf(element: Element | null): string | null {
-  return element?.closest(`[${ROW_ID_ATTRIBUTE}]`)?.getAttribute(ROW_ID_ATTRIBUTE) ?? null;
+  const row = element?.closest(`[${ROW_ID_ATTRIBUTE}]`)?.getAttribute(ROW_ID_ATTRIBUTE);
+  if (row !== undefined && row !== null) {
+    return row;
+  }
+  // A confirm dialog is portaled out of its row; it names its owner instead.
+  return (
+    element
+      ?.closest(`[${OWNER_ROW_ATTRIBUTE}="${ROW_ID_ATTRIBUTE}"]`)
+      ?.getAttribute(OWNER_ROW_ID) ?? null
+  );
 }
 
 /** Ids of the rows around `index`: the following rows first, then the preceding ones, nearest first. */
@@ -113,7 +123,7 @@ export function PendingSends({ client }: PendingSendsProps): JSX.Element {
   }, []);
 
   // After every render: hand focus to the first requested neighbour whose
-  // trigger is mounted (a row with an open confirm has none), else the heading.
+  // trigger is mounted (a dropped row has none), else the heading.
   useEffect(() => {
     const candidates = focusRequest.current;
     if (candidates === null) {
@@ -381,6 +391,9 @@ export function PendingSends({ client }: PendingSendsProps): JSX.Element {
                           dismissAriaLabel={strings.keepSendNamed({ key })}
                           className="pending-sends__button pending-sends__button--danger"
                           confirmNotice={strings.cancelSendNotice({ key })}
+                          dialogTitle={strings.cancelSendDialogTitle}
+                          dialogItem={{ label: strings.dialogItemSend, value: key }}
+                          ownerRow={{ attribute: ROW_ID_ATTRIBUTE, id }}
                           busy={busyIds[id] === true}
                           busyLabel={strings.cancellingSend}
                           busyAriaLabel={strings.cancellingSendNamed({ key })}
