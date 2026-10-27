@@ -52,6 +52,9 @@ var (
 	// ErrDecrypt means authentication failed: the key, the additional data or
 	// the sealed bytes are wrong. The cause is deliberately not distinguished.
 	ErrDecrypt = errors.New("sealed value could not be decrypted")
+
+	// errPreviousEqualsPrimary means the previous key is byte-equal to the primary.
+	errPreviousEqualsPrimary = errors.New("previous seal key must differ from the primary key")
 )
 
 // KeyUsed reports which key opened a value, without exposing key material.
@@ -102,7 +105,7 @@ func New(key []byte) (*Sealer, error) {
 // primary or previous. Both must be KeySize bytes and must differ.
 func NewWithPrevious(primary, previous []byte) (*Sealer, error) {
 	if len(primary) == KeySize && subtle.ConstantTimeCompare(primary, previous) == 1 {
-		return nil, errors.New("previous seal key must differ from the primary key")
+		return nil, errPreviousEqualsPrimary
 	}
 	sealer, primaryErr := New(primary)
 	if primaryErr != nil {
@@ -219,8 +222,9 @@ func FromEnv(resolveSecret func(string) (string, error)) (*Sealer, error) {
 	if previousParseErr != nil {
 		return nil, previousParseErr
 	}
-	if subtle.ConstantTimeCompare(key, previousKey) == 1 {
+	sealer, newErr := NewWithPrevious(key, previousKey)
+	if errors.Is(newErr, errPreviousEqualsPrimary) {
 		return nil, fmt.Errorf("%s must differ from %s", EnvMasterKeyPrevious, EnvMasterKey)
 	}
-	return NewWithPrevious(key, previousKey)
+	return sealer, newErr
 }

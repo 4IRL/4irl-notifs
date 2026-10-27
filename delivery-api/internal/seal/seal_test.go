@@ -313,13 +313,19 @@ func TestOpenReportingKeyReportsWhichKeyOpened(testInstance *testing.T) {
 		testInstance.Fatal("HasPrevious wrong")
 	}
 
-	oldSealed, _ := oldOnly.Seal([]byte("old"), aad)
+	oldSealed, oldSealErr := oldOnly.Seal([]byte("old"), aad)
+	if oldSealErr != nil {
+		testInstance.Fatalf("seal old: %v", oldSealErr)
+	}
 	plain, used, openErr := dual.OpenReportingKey(oldSealed, aad)
 	if openErr != nil || used != KeyPrevious || string(plain) != "old" {
 		testInstance.Errorf("previous: (%q, %v, %v)", plain, used, openErr)
 	}
 
-	newSealed, _ := newOnly.Seal([]byte("new"), aad)
+	newSealed, newSealErr := newOnly.Seal([]byte("new"), aad)
+	if newSealErr != nil {
+		testInstance.Fatalf("seal new: %v", newSealErr)
+	}
 	plain, used, openErr = dual.OpenReportingKey(newSealed, aad)
 	if openErr != nil || used != KeyPrimary || string(plain) != "new" {
 		testInstance.Errorf("primary: (%q, %v, %v)", plain, used, openErr)

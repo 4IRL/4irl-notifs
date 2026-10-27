@@ -19,6 +19,11 @@ import (
 // read) so a hang names its step instead of stalling the run.
 const rowTimeout = 10 * time.Second
 
+// readTimeout bounds the read of one whole table. It is separate from (and much
+// larger than) rowTimeout because loadRows streams every row of the table in a
+// single query.
+const readTimeout = 2 * time.Minute
+
 // Reason says why a row could not be rotated or verified.
 type Reason string
 
@@ -94,7 +99,7 @@ func reasonFor(openErr error) Reason {
 
 // loadRows reads every (key as text, sealed) pair of a table ordered by key.
 func loadRows(ctx context.Context, pool *pgxpool.Pool, table SealedTable) ([]sealedRow, error) {
-	readCtx, cancel := context.WithTimeout(ctx, rowTimeout)
+	readCtx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	query := fmt.Sprintf("SELECT %s::text, %s FROM %s ORDER BY %s",
 		pgx.Identifier{table.KeyColumn}.Sanitize(), pgx.Identifier{table.SealedColumn}.Sanitize(),
@@ -120,7 +125,10 @@ func loadRows(ctx context.Context, pool *pgxpool.Pool, table SealedTable) ([]sea
 }
 
 // updateSealed swaps the sealed value of one row only if it still equals old,
-// in its own transaction. It reports whether a row matched.
+// in its own transaction. It reports whether a row matched. The key column is
+// compared as text (`::text = $2`), which defeats the primary-key index and costs
+// a sequential scan per row; that is acceptable because the sealed tables are
+// small.
 func updateSealed(ctx context.Context, pool *pgxpool.Pool, table SealedTable, row sealedRow, resealed []byte) (bool, error) {
 	updateCtx, cancel := context.WithTimeout(ctx, rowTimeout)
 	defer cancel()
@@ -175,6 +183,14 @@ func logAbort(logger *slog.Logger, table string, rowKey string, abortErr error, 
 		"duration_ms", time.Since(started).Milliseconds())
 }
 
+// abortRotate records the table's counts so far, logs why the run stopped and
+// logs the run end with the aborted outcome.
+func abortRotate(logger *slog.Logger, report *Report, table string, rowKey string, abortErr error, counts TableCounts, tableStarted time.Time, runStarted time.Time) {
+	report.Tables[table] = counts
+	logAbort(logger, table, rowKey, abortErr, counts, tableStarted)
+	logRunEnd(logger, "key rotation end", *report, "aborted", runStarted)
+}
+
 func recordIssue(logger *slog.Logger, report *Report, counts *TableCounts, table SealedTable, rowKey string, reason Reason) {
 	counts.Failed++
 	report.Issues = append(report.Issues, RowIssue{Table: table.Table, RowKey: rowKey, Reason: reason})
@@ -209,9 +225,7 @@ func Rotate(ctx context.Context, pool *pgxpool.Pool, options Options) (Report, e
 		counts := TableCounts{}
 		rows, loadErr := loadRows(ctx, pool, table)
 		if loadErr != nil {
-			report.Tables[table.Table] = counts
-			logAbort(logger, table.Table, "", loadErr, counts, tableStarted)
-			logRunEnd(logger, "key rotation end", report, "error", runStarted)
+			abortRotate(logger, &report, table.Table, "", loadErr, counts, tableStarted, runStarted)
 			return report, loadErr
 		}
 		for _, row := range rows {
@@ -236,24 +250,18 @@ func Rotate(ctx context.Context, pool *pgxpool.Pool, options Options) (Report, e
 			}
 			resealed, sealErr := options.Sealer.Seal(plaintext, aad)
 			if sealErr != nil {
-				report.Tables[table.Table] = counts
-				logAbort(logger, table.Table, row.key, sealErr, counts, tableStarted)
-				logRunEnd(logger, "key rotation end", report, "error", runStarted)
+				abortRotate(logger, &report, table.Table, row.key, sealErr, counts, tableStarted, runStarted)
 				return report, fmt.Errorf("reseal %s row %s: %w", table.Table, row.key, sealErr)
 			}
 			if options.BeforeUpdate != nil {
 				if hookErr := options.BeforeUpdate(ctx, table, row.key); hookErr != nil {
-					report.Tables[table.Table] = counts
-					logAbort(logger, table.Table, row.key, hookErr, counts, tableStarted)
-					logRunEnd(logger, "key rotation end", report, "aborted", runStarted)
+					abortRotate(logger, &report, table.Table, row.key, hookErr, counts, tableStarted, runStarted)
 					return report, fmt.Errorf("before update %s row %s: %w", table.Table, row.key, hookErr)
 				}
 			}
 			matched, updateErr := updateSealed(ctx, pool, table, row, resealed)
 			if updateErr != nil {
-				report.Tables[table.Table] = counts
-				logAbort(logger, table.Table, row.key, updateErr, counts, tableStarted)
-				logRunEnd(logger, "key rotation end", report, "error", runStarted)
+				abortRotate(logger, &report, table.Table, row.key, updateErr, counts, tableStarted, runStarted)
 				return report, updateErr
 			}
 			if !matched {
@@ -277,6 +285,12 @@ func Rotate(ctx context.Context, pool *pgxpool.Pool, options Options) (Report, e
 // Verify proves every non-NULL sealed value opens under the sealer's primary
 // key alone, whatever previous key the sealer carries. It only reads.
 func Verify(ctx context.Context, pool *pgxpool.Pool, sealer *seal.Sealer, logger *slog.Logger) (Report, error) {
+	return verifyTables(ctx, pool, sealer, logger, Registry())
+}
+
+// verifyTables is Verify over an explicit table list, so tests can verify tables
+// outside the registry.
+func verifyTables(ctx context.Context, pool *pgxpool.Pool, sealer *seal.Sealer, logger *slog.Logger, tables []SealedTable) (Report, error) {
 	report := Report{Tables: map[string]TableCounts{}}
 	if sealer == nil {
 		return report, errors.New("key verification needs a sealer")
@@ -285,7 +299,6 @@ func Verify(ctx context.Context, pool *pgxpool.Pool, sealer *seal.Sealer, logger
 		logger = discardLogger()
 	}
 	primaryOnly := sealer.PrimaryOnly()
-	tables := Registry()
 
 	runStarted := time.Now()
 	logger.Info("key verification start", "tables", len(tables))
@@ -297,7 +310,7 @@ func Verify(ctx context.Context, pool *pgxpool.Pool, sealer *seal.Sealer, logger
 		if loadErr != nil {
 			report.Tables[table.Table] = counts
 			logAbort(logger, table.Table, "", loadErr, counts, tableStarted)
-			logRunEnd(logger, "key verification end", report, "error", runStarted)
+			logRunEnd(logger, "key verification end", report, "aborted", runStarted)
 			return report, loadErr
 		}
 		for _, row := range rows {

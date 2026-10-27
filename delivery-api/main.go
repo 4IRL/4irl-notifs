@@ -496,6 +496,13 @@ func runRotateKeys(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer pool.Close()
 
+	return rotateKeysOn(ctx, logger, pool, sealer)
+}
+
+// rotateKeysOn runs the rotation against an already-open pool; the returned error
+// (including keyrotation.ErrIncomplete) is the process exit status. It is split
+// out so tests can point the subcommand at an isolated pool.
+func rotateKeysOn(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, sealer *seal.Sealer) error {
 	_, rotateErr := keyrotation.Rotate(ctx, pool, keyrotation.Options{Sealer: sealer, Logger: logger})
 	return rotateErr
 }
@@ -514,6 +521,11 @@ func runVerifyKeys(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer pool.Close()
 
+	return verifyKeysOn(ctx, logger, pool, sealer)
+}
+
+// verifyKeysOn runs the verification against an already-open pool; see rotateKeysOn.
+func verifyKeysOn(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, sealer *seal.Sealer) error {
 	_, verifyErr := keyrotation.Verify(ctx, pool, sealer, logger)
 	return verifyErr
 }
