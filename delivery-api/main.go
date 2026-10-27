@@ -1,6 +1,9 @@
 // Command delivery-api is the generic delivery service for the 4IRL app
-// family. With no arguments it serves HTTP; the "migrate" subcommand applies
-// database migrations and exits.
+// family. With no arguments it serves HTTP. The subcommands run once and exit:
+// "migrate" applies database migrations, "rotate-keys" re-seals every stored
+// secret under DELIVERY_MASTER_KEY (opening old values with
+// DELIVERY_MASTER_KEY_PREVIOUS) and "verify-keys" checks that every stored
+// secret opens under DELIVERY_MASTER_KEY alone.
 package main
 
 import (
@@ -23,6 +26,7 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/keyrotation"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
@@ -167,6 +171,16 @@ func run(ctx context.Context, logger *slog.Logger, args []string) error {
 	switch args[0] {
 	case "migrate":
 		return runMigrate(ctx, logger)
+	case "rotate-keys", "verify-keys":
+		// Keys come only from the environment or secret files; an argument is rejected without
+		// being echoed, so a key mistakenly passed on the command line never reaches a log.
+		if len(args) > 1 {
+			return fmt.Errorf("%s takes no arguments", args[0])
+		}
+		if args[0] == "rotate-keys" {
+			return runRotateKeys(ctx, logger)
+		}
+		return runVerifyKeys(ctx, logger)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -462,6 +476,46 @@ func runMigrate(ctx context.Context, logger *slog.Logger) error {
 	}
 	logger.Info("migrations complete", "applied", applied, "schema_version", migrate.ExpectedVersion(loaded))
 	return nil
+}
+
+// runRotateKeys re-seals every stored secret under the new master key. The keys
+// are resolved before the database is opened, so a missing or bad key fails
+// without any database work.
+func runRotateKeys(ctx context.Context, logger *slog.Logger) error {
+	sealer, sealErr := seal.FromEnv(secretenv.Resolve)
+	if sealErr != nil {
+		return sealErr
+	}
+	if !sealer.HasPrevious() {
+		return errors.New("rotate-keys requires " + seal.EnvMasterKeyPrevious + " (the old key)")
+	}
+
+	pool, _, openErr := openDatabase(ctx)
+	if openErr != nil {
+		return openErr
+	}
+	defer pool.Close()
+
+	_, rotateErr := keyrotation.Rotate(ctx, pool, keyrotation.Options{Sealer: sealer, Logger: logger})
+	return rotateErr
+}
+
+// runVerifyKeys checks, read-only, that every stored secret opens under the
+// current master key alone. A previous key may be set but is never used.
+func runVerifyKeys(ctx context.Context, logger *slog.Logger) error {
+	sealer, sealErr := seal.FromEnv(secretenv.Resolve)
+	if sealErr != nil {
+		return sealErr
+	}
+
+	pool, _, openErr := openDatabase(ctx)
+	if openErr != nil {
+		return openErr
+	}
+	defer pool.Close()
+
+	_, verifyErr := keyrotation.Verify(ctx, pool, sealer, logger)
+	return verifyErr
 }
 
 // serve serves handler on listener until it fails or ctx is canceled. On

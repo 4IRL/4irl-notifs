@@ -1144,3 +1144,118 @@ func TestNewProberWiringUsesItsOwnFreshnessAndProductionDefaults(testInstance *t
 		testInstance.Fatal("run is nil, want the RunProber background entry")
 	}
 }
+
+var keyRotationSubcommands = []string{"rotate-keys", "verify-keys"}
+
+// TestRunKeySubcommandsRejectArguments verifies no key can be passed on the command line: any argument is
+// rejected before key or database work, and the error never echoes it.
+func TestRunKeySubcommandsRejectArguments(testInstance *testing.T) {
+	keyValue := strings.Repeat("cd", 32)
+	for _, subcommand := range keyRotationSubcommands {
+		for _, argument := range []string{keyValue, "--new-key=" + keyValue} {
+			testInstance.Run(subcommand+" "+argument[:6], func(subTest *testing.T) {
+				err := run(context.Background(), newTestLogger(), []string{subcommand, argument})
+				if err == nil {
+					subTest.Fatal("run returned nil, want the no-arguments error")
+				}
+				if err.Error() != subcommand+" takes no arguments" {
+					subTest.Fatalf("run error = %q, want %q", err, subcommand+" takes no arguments")
+				}
+				if strings.Contains(err.Error(), keyValue) {
+					subTest.Fatalf("run error = %q, must not contain the argument", err)
+				}
+			})
+		}
+	}
+}
+
+// TestRunKeySubcommandsResolveKeysBeforeTheDatabase verifies a missing or malformed master key fails with
+// the key error even though the database is unreachable, so key resolution precedes any database work.
+func TestRunKeySubcommandsResolveKeysBeforeTheDatabase(testInstance *testing.T) {
+	testCases := []struct {
+		name  string
+		value string
+	}{
+		{name: "missing", value: ""},
+		{name: "malformed", value: "not-hex"},
+	}
+	for _, subcommand := range keyRotationSubcommands {
+		for _, testCase := range testCases {
+			testInstance.Run(subcommand+" "+testCase.name, func(subTest *testing.T) {
+				setDatabaseEnv(subTest)
+				subTest.Setenv("DELIVERY_MASTER_KEY", testCase.value)
+				subTest.Setenv("DELIVERY_MASTER_KEY_FILE", "")
+				subTest.Setenv("DELIVERY_MASTER_KEY_PREVIOUS", "")
+				subTest.Setenv("DELIVERY_MASTER_KEY_PREVIOUS_FILE", "")
+
+				ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+				defer cancel()
+				err := run(ctx, newTestLogger(), []string{subcommand})
+
+				if err == nil {
+					subTest.Fatal("run returned nil, want a key error")
+				}
+				if !strings.Contains(err.Error(), "DELIVERY_MASTER_KEY") {
+					subTest.Fatalf("run error = %q, want the master key error", err)
+				}
+				if testCase.value != "" && strings.Contains(err.Error(), testCase.value) {
+					subTest.Fatalf("run error = %q, must not contain the key value", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRunRotateKeysRequiresPreviousKey(testInstance *testing.T) {
+	setDatabaseEnv(testInstance)
+	testInstance.Setenv("DELIVERY_MASTER_KEY", strings.Repeat("ab", 32))
+	testInstance.Setenv("DELIVERY_MASTER_KEY_FILE", "")
+	testInstance.Setenv("DELIVERY_MASTER_KEY_PREVIOUS", "")
+	testInstance.Setenv("DELIVERY_MASTER_KEY_PREVIOUS_FILE", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+	defer cancel()
+	err := run(ctx, newTestLogger(), []string{"rotate-keys"})
+
+	want := "rotate-keys requires DELIVERY_MASTER_KEY_PREVIOUS (the old key)"
+	if err == nil || err.Error() != want {
+		testInstance.Fatalf("run error = %v, want %q", err, want)
+	}
+}
+
+// TestRunKeySubcommandsAcceptKeyFiles verifies keys supplied through the _FILE variables are accepted: the run
+// gets past key resolution and fails only on the unreachable database.
+func TestRunKeySubcommandsAcceptKeyFiles(testInstance *testing.T) {
+	for _, subcommand := range keyRotationSubcommands {
+		testInstance.Run(subcommand, func(subTest *testing.T) {
+			setDatabaseEnv(subTest)
+			keyDirectory := subTest.TempDir()
+			primaryPath := filepath.Join(keyDirectory, "master-key")
+			previousPath := filepath.Join(keyDirectory, "master-key-previous")
+			if writeErr := os.WriteFile(primaryPath, []byte(strings.Repeat("ab", 32)+"\n"), 0o600); writeErr != nil {
+				subTest.Fatalf("write primary key file: %v", writeErr)
+			}
+			if writeErr := os.WriteFile(previousPath, []byte(strings.Repeat("cd", 32)+"\n"), 0o600); writeErr != nil {
+				subTest.Fatalf("write previous key file: %v", writeErr)
+			}
+			subTest.Setenv("DELIVERY_MASTER_KEY", "")
+			subTest.Setenv("DELIVERY_MASTER_KEY_FILE", primaryPath)
+			subTest.Setenv("DELIVERY_MASTER_KEY_PREVIOUS", "")
+			subTest.Setenv("DELIVERY_MASTER_KEY_PREVIOUS_FILE", previousPath)
+
+			ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+			defer cancel()
+			err := run(ctx, newTestLogger(), []string{subcommand})
+
+			if err == nil {
+				subTest.Fatal("run returned nil against an unreachable database, want an error")
+			}
+			if strings.Contains(err.Error(), "DELIVERY_MASTER_KEY") || strings.Contains(err.Error(), "requires") {
+				subTest.Fatalf("run error = %q, want the key files accepted", err)
+			}
+			if !strings.Contains(err.Error(), "read ") {
+				subTest.Fatalf("run error = %q, want the database read error from the unreachable port", err)
+			}
+		})
+	}
+}

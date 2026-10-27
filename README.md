@@ -63,7 +63,8 @@ delivery-api runtime configuration (environment):
 | `DELIVERY_DB_USER` | required | Postgres user |
 | `DELIVERY_DB_NAME` | required | Postgres database name |
 | `DELIVERY_DB_PASSWORD` or `DELIVERY_DB_PASSWORD_FILE` | one required | Postgres password, inline or read from a file |
-| `DELIVERY_MASTER_KEY` or `DELIVERY_MASTER_KEY_FILE` | one required (serve only; `migrate` ignores it) | Master key sealing destination secrets at rest: exactly 64 lowercase hex characters, inline or read from a file |
+| `DELIVERY_MASTER_KEY` or `DELIVERY_MASTER_KEY_FILE` | one required (`serve`, `rotate-keys` and `verify-keys`; `migrate` ignores it) | Master key sealing destination secrets at rest: exactly 64 lowercase hex characters, inline or read from a file |
+| `DELIVERY_MASTER_KEY_PREVIOUS` or `DELIVERY_MASTER_KEY_PREVIOUS_FILE` | optional | The old master key during a rotation window: same format, must differ from the master key; `rotate-keys` requires it |
 | `LISTEN_ADDRESS` | `:8080` | HTTP listen address |
 | `DELIVERY_NTFY_URL` | unset | Internal ntfy origin, e.g. `http://ntfy:80`; unset disables the ntfy sink and `to.recipient` delivery |
 | `DELIVERY_PROVISIONING_URL` | unset | Internal provisioning-api origin, e.g. `http://provisioning-api:8080` (the host must be exactly `provisioning-api`, any other host is a startup error so the internal credential never leaves the compose network); unset makes `POST /v1/admin/apps/{app_id}/ntfy-publisher` answer 503 |
