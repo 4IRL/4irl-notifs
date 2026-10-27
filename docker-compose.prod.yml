@@ -189,6 +189,9 @@ services:
       - DELIVERY_DB_NAME=delivery
       - DELIVERY_DB_PASSWORD_FILE=/run/secrets/DELIVERY_DB_PASSWORD
       - DELIVERY_MASTER_KEY_FILE=/run/secrets/DELIVERY_MASTER_KEY
+      # Optional old key for a rotation window; the file always exists but is empty when unset (empty
+      # means absent). LOCKSTEP: keep in sync with docker-compose.yml.
+      - DELIVERY_MASTER_KEY_PREVIOUS_FILE=/run/secrets/DELIVERY_MASTER_KEY_PREVIOUS
       # In-compose HTTP origin of the ntfy server, used by the ntfy delivery sink (the ntfy service
       # listens on :80 inside the compose network). Unset disables the ntfy sink. LOCKSTEP: keep in
       # sync with docker-compose.yml and with provisioning-api's NTFY_PUBLISH_URL.
@@ -215,6 +218,7 @@ services:
     secrets:
       - DELIVERY_DB_PASSWORD
       - DELIVERY_MASTER_KEY
+      - DELIVERY_MASTER_KEY_PREVIOUS
       - PROVISIONING_INTERNAL_CREDENTIAL
     depends_on:
       provisioning-api:
@@ -244,6 +248,7 @@ volumes:
 #
 # DELIVERY_DB_PASSWORD, DELIVERY_MASTER_KEY and PROVISIONING_INTERNAL_CREDENTIAL are the exceptions: they persist in ./secrets-persistent/ (never deleted);
 # see prod-deploy.yml for why, including the 0644 file mode.
+# The optional previous master key (rotation window) is persistent too, but its file always exists and is empty when unset.
 secrets:
   PERSON_SERVICE_ACCESS_CLIENT_ID:
     file: ./secrets/PERSON_SERVICE_ACCESS_CLIENT_ID
@@ -256,6 +261,10 @@ secrets:
   # decrypt the stored destination secrets, and losing it orphans all of them.
   DELIVERY_MASTER_KEY:
     file: ./secrets-persistent/DELIVERY_MASTER_KEY
+  # Optional: the old master key during a rotation window. Compose needs the file to exist, so the
+  # deploy writes it empty when the secret is unset; delivery-api treats empty as absent.
+  DELIVERY_MASTER_KEY_PREVIOUS:
+    file: ./secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS
   # Persistent: needed on every restart by both services (provisioning-api checks it, delivery-api
   # sends it), so it cannot be a deleted-after-up ./secrets/ file.
   PROVISIONING_INTERNAL_CREDENTIAL:
