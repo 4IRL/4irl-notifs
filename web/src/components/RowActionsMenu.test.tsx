@@ -18,8 +18,12 @@ function buildItems(overrides: { select?: () => void; confirm?: () => void } = {
       tone: 'danger',
       confirm: {
         confirmLabel: 'Confirm delete',
+        confirmAriaLabel: 'Confirm delete urls4irl/nightly',
         cancelLabel: 'Cancel',
+        cancelAriaLabel: 'Cancel delete urls4irl/nightly',
         notice: 'This cannot be undone.',
+        dialogTitle: 'Delete nightly?',
+        dialogItem: { label: 'Route', value: 'urls4irl/nightly' },
         onConfirm: overrides.confirm ?? vi.fn(),
       },
     },
@@ -284,50 +288,6 @@ describe('RowActionsMenu keyboard', () => {
 
     expect(screen.getByRole('menuitem', { name: 'Delete urls4irl/nightly' })).toHaveFocus();
   });
-
-  it('the confirm step is keyboard operable: arrows move between Confirm and Cancel, Enter confirms once', async () => {
-    const user = userEvent.setup();
-    const confirm = vi.fn();
-    render(<Harness items={buildItems({ confirm })} />);
-    await user.click(kebab());
-    await user.click(screen.getByRole('menuitem', { name: 'Delete urls4irl/nightly' }));
-    const confirmButton = screen.getByRole('button', { name: 'Confirm delete' });
-    const cancelButton = screen.getByRole('button', { name: 'Cancel' });
-    expect(confirmButton).toHaveFocus();
-
-    await user.keyboard('{ArrowRight}');
-    expect(cancelButton).toHaveFocus();
-    await user.keyboard('{ArrowDown}');
-    expect(confirmButton).toHaveFocus();
-    await user.keyboard('{ArrowLeft}');
-    expect(cancelButton).toHaveFocus();
-    await user.keyboard('{Home}');
-    expect(confirmButton).toHaveFocus();
-    await user.keyboard('{End}');
-    expect(cancelButton).toHaveFocus();
-
-    // Enter on Cancel backs out; Enter on Confirm runs the action, once.
-    await user.keyboard('{Enter}');
-    expect(screen.getByRole('menu')).toBeInTheDocument();
-    expect(confirm).not.toHaveBeenCalled();
-    await user.keyboard('{Enter}');
-    await user.keyboard('{Enter}');
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole('menu')).toBeNull();
-    expect(kebab()).toHaveFocus();
-  });
-
-  it('Tab from the confirm step closes the menu too', async () => {
-    const user = userEvent.setup();
-    render(<Harness />);
-    await user.click(kebab());
-    await user.click(screen.getByRole('menuitem', { name: 'Delete urls4irl/nightly' }));
-
-    fireEvent.keyDown(screen.getByRole('button', { name: 'Confirm delete' }), { key: 'Tab' });
-
-    expect(screen.queryByRole('group')).toBeNull();
-    expect(kebab()).toHaveFocus();
-  });
 });
 
 describe('RowActionsMenu dismissal', () => {
@@ -492,83 +452,163 @@ describe('RowActionsMenu content', () => {
   });
 });
 
-describe('RowActionsMenu confirm step', () => {
-  async function openConfirm() {
+describe('RowActionsMenu confirm dialog', () => {
+  async function openConfirm(items: RowMenuItem[] = []) {
     const user = userEvent.setup();
     const confirm = vi.fn();
-    render(<Harness items={buildItems({ confirm })} />);
+    const view = render(<Harness items={items.length > 0 ? items : buildItems({ confirm })} />);
     await user.click(kebab());
     await user.click(screen.getByRole('menuitem', { name: 'Delete urls4irl/nightly' }));
-    return { user, confirm };
+    return { user, confirm, ...view };
   }
 
-  it('swaps the list for a question, the notice, Confirm (focused) and Cancel', async () => {
+  it('closes the menu and opens a dialog with the title, item, notice and named buttons', async () => {
     const { confirm } = await openConfirm();
 
     expect(screen.queryByRole('menu')).toBeNull();
-    const group = screen.getByRole('group', { name: 'Delete urls4irl/nightly' });
-    expect(group).toHaveTextContent('Delete urls4irl/nightly?');
-    expect(group).toHaveTextContent('This cannot be undone.');
-    expect(screen.getByRole('button', { name: 'Confirm delete' })).toHaveFocus();
-    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+    expect(screen.queryByRole('group')).toBeNull();
+    const dialog = screen.getByRole('dialog', { name: 'Delete nightly?' });
+    expect(dialog).toHaveTextContent('Route');
+    expect(dialog).toHaveTextContent('urls4irl/nightly');
+    expect(dialog).toHaveTextContent('This cannot be undone.');
+    expect(screen.getByRole('button', { name: 'Confirm delete urls4irl/nightly' })).toHaveClass(
+      'modal__button--danger',
+    );
+    expect(screen.getByRole('button', { name: 'Cancel delete urls4irl/nightly' })).toHaveFocus();
     expect(confirm).not.toHaveBeenCalled();
   });
 
-  it('Cancel returns to the list with focus on the item that started it', async () => {
-    const { user, confirm } = await openConfirm();
+  it('uses the primary tone when the item asks for it', async () => {
+    const items = buildItems().map((item) =>
+      item.confirm === undefined
+        ? item
+        : { ...item, confirm: { ...item.confirm, tone: 'primary' as const } },
+    );
+    await openConfirm(items);
 
-    await user.click(screen.getByRole('button', { name: 'Cancel' }));
-
-    expect(screen.getByRole('menu')).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'Delete urls4irl/nightly' })).toHaveFocus();
-    expect(confirm).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Confirm delete urls4irl/nightly' })).toHaveClass(
+      'modal__button--primary',
+    );
   });
 
-  it('Escape cancels the confirm first, and only the next Escape closes the menu', async () => {
+  it('Confirm runs the handler once, closes the dialog and focuses the kebab', async () => {
     const { user, confirm } = await openConfirm();
 
-    await user.keyboard('{Escape}');
-    expect(screen.getByRole('menu')).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'Delete urls4irl/nightly' })).toHaveFocus();
-
-    await user.keyboard('{Escape}');
-    expect(screen.queryByRole('menu')).toBeNull();
-    expect(kebab()).toHaveFocus();
-    expect(confirm).not.toHaveBeenCalled();
-  });
-
-  it('Confirm runs the handler once, closes the menu and focuses the kebab', async () => {
-    const { user, confirm } = await openConfirm();
-
-    await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm delete urls4irl/nightly' }));
 
     expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByRole('menu')).toBeNull();
-    expect(screen.queryByRole('group')).toBeNull();
     expect(kebab()).toHaveFocus();
   });
 
-  it('falls back to the list when the item goes busy mid-confirm (no double submit)', async () => {
-    const user = userEvent.setup();
-    const confirm = vi.fn();
-    const { rerender } = render(<Harness items={buildItems({ confirm })} />);
+  it('can be opened and confirmed again: one call per confirmation', async () => {
+    const { user, confirm } = await openConfirm();
+    await user.click(screen.getByRole('button', { name: 'Confirm delete urls4irl/nightly' }));
+
     await user.click(kebab());
     await user.click(screen.getByRole('menuitem', { name: 'Delete urls4irl/nightly' }));
-    expect(screen.getByRole('group')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Confirm delete urls4irl/nightly' }));
+
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it('a double activation fires once', async () => {
+    const { confirm } = await openConfirm();
+    const confirmButton = screen.getByRole('button', { name: 'Confirm delete urls4irl/nightly' });
+
+    act(() => {
+      fireEvent.click(confirmButton);
+      fireEvent.click(confirmButton);
+    });
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel, the X and Escape fire nothing and return focus to the kebab', async () => {
+    const dismissals: Array<(user: ReturnType<typeof userEvent.setup>) => Promise<void>> = [
+      (user) => user.click(screen.getByRole('button', { name: 'Cancel delete urls4irl/nightly' })),
+      (user) => user.click(screen.getByRole('button', { name: 'Close' })),
+      (user) => user.keyboard('{Escape}'),
+    ];
+    for (const dismiss of dismissals) {
+      const { user, confirm, unmount } = await openConfirm();
+
+      await dismiss(user);
+
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(confirm).not.toHaveBeenCalled();
+      expect(kebab()).toHaveFocus();
+      unmount();
+    }
+  });
+
+  it('is not closed by the menu old focusin, scroll or pointerdown listeners', async () => {
+    await openConfirm();
+
+    fireEvent.pointerDown(screen.getByText('after'));
+    scrollTo({ element: screen.getByTestId('scroller'), top: 40 });
+    act(() => {
+      screen.getByText('after').focus();
+    });
+
+    // The menu is gone, so none of its outside-press handlers is left to close the dialog.
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Delete nightly?' })).toBeInTheDocument();
+  });
+
+  it('closes without firing when the chosen item goes busy, and focuses the kebab', async () => {
+    const { confirm, rerender } = await openConfirm();
 
     const busy = buildItems({ confirm }).map((item) =>
-      item.id === 'delete' ? { ...item, label: 'Deleting…', disabled: true } : item,
+      item.id === 'delete' ? { ...item, disabled: true } : item,
     );
     rerender(<Harness items={busy} />);
 
-    expect(screen.queryByRole('group')).toBeNull();
-    expect(screen.getByRole('menuitem', { name: 'Deleting…' })).toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(confirm).not.toHaveBeenCalled();
-    // The focused Confirm button is gone: focus is rescued into the menu, not lost to <body>.
-    expect(screen.getByRole('menuitem', { name: 'Edit' })).toHaveFocus();
+    expect(kebab()).toHaveFocus();
+  });
+
+  it('closes without firing when the chosen item disappears', async () => {
+    const { confirm, rerender } = await openConfirm();
+
+    rerender(<Harness items={buildItems({ confirm }).filter((item) => item.id !== 'delete')} />);
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(kebab()).toHaveFocus();
+  });
+
+  it('closes without firing when the menu unmounts', async () => {
+    const { confirm, unmount } = await openConfirm();
+
+    unmount();
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('reads the dialog text from the live item, not a snapshot', async () => {
+    const { confirm, rerender } = await openConfirm();
+
+    const changed = buildItems({ confirm }).map((item) =>
+      item.confirm === undefined
+        ? item
+        : {
+            ...item,
+            confirm: {
+              ...item.confirm,
+              notice: 'Changed notice.',
+              dialogItem: { label: 'Route', value: 'route 99' },
+            },
+          },
+    );
+    rerender(<Harness items={changed} />);
+
+    const dialog = screen.getByRole('dialog', { name: 'Delete nightly?' });
+    expect(dialog).toHaveTextContent('Changed notice.');
+    expect(dialog).toHaveTextContent('route 99');
   });
 
   it('describes the menu by its note and errors, and announces each error once', async () => {

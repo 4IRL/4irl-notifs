@@ -653,7 +653,7 @@ describe('AppIdentities reject', () => {
     expect(button('Reject identity request for app_1')).not.toHaveAttribute('aria-disabled');
   });
 
-  it('hides Approve while the Reject confirm is open, leaves the other request alone, restores it on Cancel and Escape, and rejects once on Confirm', async () => {
+  it('confirms in a dialog naming the app, leaves Approve and the other request alone, closes on Cancel and Escape, and rejects once on Confirm', async () => {
     const user = userEvent.setup();
     const reject = vi.fn().mockResolvedValue({ ...REQUEST_1, status: 'rejected' });
     renderSection(
@@ -665,25 +665,27 @@ describe('AppIdentities reject', () => {
     await screen.findAllByRole('table');
 
     await user.click(button('Reject identity request for app_1'));
-    expect(button('Confirm reject identity request for app_1')).toHaveFocus();
-    expect(screen.queryByRole('button', { name: 'Approve identity request for app_1' })).toBeNull();
-    // The hidden button stays mounted, so the row's focus key still resolves.
-    expect(screen.getByLabelText('Approve identity request for app_1')).toHaveAttribute('hidden');
+    const dialog = screen.getByRole('dialog', { name: strings.rejectIdentityDialogTitle });
+    expect(within(dialog).getByText(strings.dialogItemApp)).toBeInTheDocument();
+    expect(within(dialog).getByText('app_1')).toBeInTheDocument();
+    expect(within(dialog).getByText(strings.rejectIdentityNotice)).toBeInTheDocument();
+    expect(button('Cancel reject identity request for app_1')).toHaveFocus();
+    // The row's other buttons no longer step aside.
+    expect(button('Approve identity request for app_1')).toBeInTheDocument();
     expect(button('Approve identity request for app_2')).toBeVisible();
-    expect(button('Reject identity request for app_2')).toBeVisible();
 
     await user.click(button('Cancel reject identity request for app_1'));
-    expect(button('Approve identity request for app_1')).toBeVisible();
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(button('Reject identity request for app_1')).toHaveFocus();
 
     await user.click(button('Reject identity request for app_1'));
-    expect(screen.queryByRole('button', { name: 'Approve identity request for app_1' })).toBeNull();
     await user.keyboard('{Escape}');
-    expect(button('Approve identity request for app_1')).toBeVisible();
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(button('Reject identity request for app_1')).toHaveFocus();
+    expect(reject).not.toHaveBeenCalled();
 
     await user.click(button('Reject identity request for app_1'));
-    await user.click(button('Confirm reject identity request for app_1'));
+    await user.dblClick(button('Confirm reject identity request for app_1'));
     expect(reject).toHaveBeenCalledTimes(1);
     expect(reject).toHaveBeenCalledWith({ id: 1 });
   });
@@ -849,6 +851,26 @@ describe('AppIdentities bindings and keys', () => {
 
     expect(revoke).not.toHaveBeenCalled();
     expect(button('Revoke key dak_7Q2m for tasktracker')).toHaveFocus();
+  });
+
+  it('names the key and the app in the revoke dialog, and the app in the unbind dialog', async () => {
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({ listIdentityBindings: vi.fn().mockResolvedValue([BINDING_TASKTRACKER]) }),
+    );
+    await screen.findByRole('table');
+
+    await user.click(button('Revoke key dak_7Q2m for tasktracker'));
+    const revoke = screen.getByRole('dialog', { name: strings.revokeKeyDialogTitle });
+    expect(within(revoke).getByText(strings.dialogItemKey)).toBeInTheDocument();
+    expect(within(revoke).getByText('dak_7Q2m for tasktracker')).toBeInTheDocument();
+    expect(within(revoke).getByText(strings.revokeKeyNotice)).toBeInTheDocument();
+    await user.click(button('Cancel revoke key dak_7Q2m for tasktracker'));
+
+    await user.click(button('Unbind tasktracker'));
+    const unbind = screen.getByRole('dialog', { name: strings.unbindAppDialogTitle });
+    expect(within(unbind).getByText('tasktracker')).toBeInTheDocument();
+    expect(within(unbind).getByText(strings.unbindAppNotice)).toBeInTheDocument();
   });
 
   it('shows the server error on a failed revoke and keeps the key revocable', async () => {
@@ -1072,8 +1094,36 @@ describe('AppIdentities focus ownership and quiet reloads', () => {
     expect(await screen.findByText('4IRL/app_4')).toBeInTheDocument();
     expect(screen.queryByText(strings.identitiesLoading)).toBeNull();
     // A loud reload would have unmounted the tables and closed this confirm.
+    const dialog = screen.getByRole('dialog', { name: strings.rejectIdentityDialogTitle });
+    expect(within(dialog).getByText('app_2')).toBeInTheDocument();
     expect(button('Confirm reject identity request for app_2')).toBeInTheDocument();
-    expect(button('Confirm reject identity request for app_2')).toHaveFocus();
+    expect(button('Cancel reject identity request for app_2')).toHaveFocus();
+  });
+
+  it('closes an open reject dialog without firing when a reload drops the request', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<IdentityBinding>();
+    const reject = vi.fn();
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi
+          .fn()
+          .mockResolvedValueOnce([REQUEST_1, REQUEST_2])
+          .mockResolvedValue([REQUEST_1]),
+        approveIdentityRequest: vi.fn().mockReturnValue(pending.promise),
+        rejectIdentityRequest: reject,
+      }),
+    );
+    await screen.findAllByRole('table');
+
+    await user.click(button('Approve identity request for app_1'));
+    await user.click(button('Reject identity request for app_2'));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    pending.resolve(buildBinding({ appId: 'app_1' }));
+
+    await waitFor(() => expect(document.querySelector('tr[data-request-id="2"]')).toBeNull());
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(reject).not.toHaveBeenCalled();
   });
 
   it('keeps the lists and shows no alert when the reload after a mutation fails', async () => {

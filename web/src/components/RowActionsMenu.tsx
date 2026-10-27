@@ -3,17 +3,24 @@ import type { JSX, KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 
 import { strings } from '../strings';
+import { ConfirmDialog } from './ConfirmDialog';
 import './RowActionsMenu.css';
 
-/** A destructive action: choosing it swaps the menu for an inline Confirm / Cancel step. */
+/** A confirmed action: choosing it closes the menu and opens the shared confirm dialog. */
 export interface RowMenuConfirm {
   onConfirm: () => void;
   confirmLabel: string;
   confirmAriaLabel?: string;
   cancelLabel: string;
   cancelAriaLabel?: string;
-  /** Explains the consequence; shown under the question in the confirm step. */
+  /** Explains the consequence; shown in the dialog body. */
   notice?: string;
+  /** The dialog title: the action phrased as a question, e.g. "Delete destination?". */
+  dialogTitle: string;
+  /** The labelled box naming the item, e.g. `{label: 'Destination', value: 'hook1'}`. */
+  dialogItem: { label: string; value: string };
+  /** Tone of the Confirm button; defaults to `'danger'`. */
+  tone?: 'danger' | 'primary';
 }
 
 export interface RowMenuItem {
@@ -49,8 +56,7 @@ interface RowActionsMenuProps {
   registerControl: (params: { key: string; element: HTMLElement | null }) => void;
 }
 
-type FocusTarget =
-  { kind: 'first' } | { kind: 'last' } | { kind: 'item'; id: string } | { kind: 'confirm' };
+type FocusTarget = { kind: 'first' } | { kind: 'last' };
 
 const VIEWPORT_MARGIN = 8;
 const TRIGGER_GAP = 4;
@@ -83,7 +89,8 @@ function KebabGlyph(): JSX.Element {
  * table's scrolling wrapper can never clip it. It opens on click / Enter / Space (or
  * ArrowDown / ArrowUp on the button), focuses its first enabled item, and closes on Escape
  * (focus returns to the button), Tab, a press outside, a scroll, or choosing an item. A
- * destructive item swaps the menu for an inline confirm step (Escape or Cancel goes back).
+ * confirm item closes the menu and opens the shared `Modal` dialog (the menu closes first, so
+ * the two never fight over focus or scrolling); closing the dialog returns focus to the button.
  */
 export function RowActionsMenu({
   rowLabel,
@@ -94,7 +101,9 @@ export function RowActionsMenu({
   registerControl,
 }: RowActionsMenuProps): JSX.Element {
   const [open, setOpen] = useState(false);
-  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  // The chosen confirm item's id (not the item): resolved against the live items on each render.
+  const [dialogId, setDialogId] = useState<string | null>(null);
+  const firedRef = useRef(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const focusTarget = useRef<FocusTarget | null>(null);
@@ -106,7 +115,6 @@ export function RowActionsMenu({
   /** Closes the menu; `restoreFocus` puts focus back on the kebab (never after a click elsewhere). */
   const close = useCallback(({ restoreFocus }: { restoreFocus: boolean }) => {
     setOpen(false);
-    setConfirmingId(null);
     if (restoreFocus) {
       triggerRef.current?.focus({ preventScroll: true });
     }
@@ -114,7 +122,6 @@ export function RowActionsMenu({
 
   function openMenu(target: FocusTarget) {
     focusTarget.current = target;
-    setConfirmingId(null);
     setOpen(true);
   }
 
@@ -125,7 +132,6 @@ export function RowActionsMenu({
     }
     const mine = () => {
       setOpen(false);
-      setConfirmingId(null);
     };
     const previous = closeActiveMenu;
     closeActiveMenu = mine;
@@ -139,13 +145,15 @@ export function RowActionsMenu({
     };
   }, [open]);
 
-  const confirming = confirmingId === null ? undefined : items.find((it) => it.id === confirmingId);
-  // A confirm step whose item vanished or went busy (the action started elsewhere) falls back
-  // to the list rather than offering a Confirm that would double-submit.
-  const confirmStep =
-    confirming?.confirm !== undefined && confirming.disabled !== true ? confirming : undefined;
-  if (confirmingId !== null && confirmStep === undefined) {
-    setConfirmingId(null);
+  const dialogCandidate = dialogId === null ? undefined : items.find((it) => it.id === dialogId);
+  // A dialog whose item vanished or went busy (the action started elsewhere) closes without
+  // firing rather than offering a Confirm that would double-submit.
+  const dialogStep =
+    dialogCandidate?.confirm !== undefined && dialogCandidate.disabled !== true
+      ? dialogCandidate
+      : undefined;
+  if (dialogId !== null && dialogStep === undefined) {
+    setDialogId(null);
   }
 
   const position = useCallback(() => {
@@ -176,8 +184,8 @@ export function RowActionsMenu({
     popover.style.top = `${top}px`;
   }, []);
 
-  // Positioned before paint after every render while open (the content changes size when the
-  // confirm step replaces the list), and again when the viewport resizes.
+  // Positioned before paint after every render while open (the items and errors can change
+  // its size), and again when the viewport resizes.
   useLayoutEffect(() => {
     if (open) {
       position();
@@ -201,21 +209,12 @@ export function RowActionsMenu({
           [...buttons].reverse().find((b) => b.getAttribute('aria-disabled') !== 'true') ??
           buttons.at(-1);
         break;
-      case 'item':
-        element =
-          popover.querySelector<HTMLButtonElement>(`[data-item-id="${CSS.escape(target.id)}"]`) ??
-          buttons[0];
-        break;
-      default:
-        element = buttons[0];
     }
     element?.focus({ preventScroll: true });
   }, []);
 
-  // Moves focus where the last interaction asked: first/last item on open, the item that
-  // started a confirm on Cancel/Escape, Confirm when the confirm step appears. With nothing
-  // asked and focus lost to <body> (the focused button vanished when the confirm step fell
-  // back to the list, say), it lands back in the menu so the keyboard is never stranded.
+  // Moves focus where the last interaction asked: first/last item on open. With nothing asked
+  // and focus lost to <body>, it lands back in the menu so the keyboard is never stranded.
   useEffect(() => {
     if (!open || popoverRef.current === null) {
       return;
@@ -225,7 +224,7 @@ export function RowActionsMenu({
       focusTarget.current = null;
       focusInPopover(target);
     } else if (document.activeElement === null || document.activeElement === document.body) {
-      focusInPopover(confirmStep === undefined ? { kind: 'first' } : { kind: 'confirm' });
+      focusInPopover({ kind: 'first' });
     }
   });
 
@@ -302,12 +301,7 @@ export function RowActionsMenu({
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      if (confirmStep !== undefined) {
-        focusTarget.current = { kind: 'item', id: confirmStep.id };
-        setConfirmingId(null);
-      } else {
-        close({ restoreFocus: true });
-      }
+      close({ restoreFocus: true });
       return;
     }
     if (event.key === 'Tab') {
@@ -315,14 +309,9 @@ export function RowActionsMenu({
       close({ restoreFocus: true });
       return;
     }
-    // The confirm step has two buttons (Confirm, Cancel); the menu list has its items. The
-    // arrow keys move between them either way, and never scroll the page (a scroll would close
+    // The arrow keys move between the items and never scroll the page (a scroll would close
     // the menu).
-    const buttons = [
-      ...popover.querySelectorAll<HTMLButtonElement>(
-        confirmStep === undefined ? '[role="menuitem"]' : 'button',
-      ),
-    ];
+    const buttons = [...popover.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
     if (buttons.length === 0) {
       return;
     }
@@ -358,7 +347,7 @@ export function RowActionsMenu({
       const target: FocusTarget = { kind: event.key === 'ArrowDown' ? 'first' : 'last' };
       if (open) {
         // Already open (focus came back to the kebab): no render follows, so move focus now.
-        focusInPopover(confirmStep === undefined ? target : { kind: 'confirm' });
+        focusInPopover(target);
       } else {
         openMenu(target);
       }
@@ -373,8 +362,11 @@ export function RowActionsMenu({
       return;
     }
     if (item.confirm !== undefined) {
-      focusTarget.current = { kind: 'confirm' };
-      setConfirmingId(item.id);
+      // The menu closes first and without taking focus back; the dialog returns focus to the
+      // kebab when it closes.
+      firedRef.current = false;
+      setOpen(false);
+      setDialogId(item.id);
       return;
     }
     close({ restoreFocus: true });
@@ -382,7 +374,11 @@ export function RowActionsMenu({
   }
 
   function confirmChosen(item: RowMenuItem) {
-    close({ restoreFocus: true });
+    if (firedRef.current) {
+      return;
+    }
+    firedRef.current = true;
+    setDialogId(null);
     item.confirm?.onConfirm();
   }
 
@@ -432,84 +428,68 @@ export function RowActionsMenu({
             ref={popoverRef}
             id={menuId}
             className="row-menu__popover"
-            role={confirmStep === undefined ? 'menu' : 'group'}
-            aria-label={
-              confirmStep === undefined ? name : (confirmStep.ariaLabel ?? confirmStep.label)
-            }
+            role="menu"
+            aria-label={name}
             aria-describedby={
-              confirmStep === undefined
-                ? [note === null ? null : noteId, errors.length === 0 ? null : menuErrorId]
-                    .filter((id): id is string => id !== null)
-                    .join(' ') || undefined
-                : undefined
+              [note === null ? null : noteId, errors.length === 0 ? null : menuErrorId]
+                .filter((id): id is string => id !== null)
+                .join(' ') || undefined
             }
             // Focusable so a press on its padding keeps focus (and the keyboard) in the menu.
             tabIndex={-1}
             onKeyDown={onMenuKeyDown}
           >
-            {confirmStep?.confirm === undefined ? (
-              <>
-                {note !== null && (
-                  <div id={noteId} role="presentation" className="row-menu__note">
-                    {note}
-                  </div>
-                )}
-                {errors.length > 0 && (
-                  <div id={menuErrorId} role="presentation" className="row-menu__error">
-                    {errors.map((message) => (
-                      <p key={message}>{message}</p>
-                    ))}
-                  </div>
-                )}
-                {items.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    role="menuitem"
-                    tabIndex={-1}
-                    data-item-id={item.id}
-                    className={`row-menu__item row-menu__item--${item.tone ?? 'default'}`}
-                    aria-label={item.ariaLabel}
-                    aria-disabled={item.disabled === true ? 'true' : undefined}
-                    aria-expanded={item.expanded}
-                    onClick={() => choose(item)}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </>
-            ) : (
-              <>
-                <p className="row-menu__prompt">{`${confirmStep.ariaLabel ?? confirmStep.label}?`}</p>
-                {confirmStep.confirm.notice !== undefined && (
-                  <p className="row-menu__notice">{confirmStep.confirm.notice}</p>
-                )}
-                <div className="row-menu__confirm">
-                  <button
-                    type="button"
-                    className={`row-menu__item row-menu__item--${confirmStep.tone ?? 'default'} row-menu__item--solid`}
-                    aria-label={confirmStep.confirm.confirmAriaLabel}
-                    onClick={() => confirmChosen(confirmStep)}
-                  >
-                    {confirmStep.confirm.confirmLabel}
-                  </button>
-                  <button
-                    type="button"
-                    className="row-menu__item row-menu__item--default row-menu__item--solid"
-                    aria-label={confirmStep.confirm.cancelAriaLabel}
-                    onClick={() => {
-                      focusTarget.current = { kind: 'item', id: confirmStep.id };
-                      setConfirmingId(null);
-                    }}
-                  >
-                    {confirmStep.confirm.cancelLabel}
-                  </button>
-                </div>
-              </>
+            {note !== null && (
+              <div id={noteId} role="presentation" className="row-menu__note">
+                {note}
+              </div>
             )}
+            {errors.length > 0 && (
+              <div id={menuErrorId} role="presentation" className="row-menu__error">
+                {errors.map((message) => (
+                  <p key={message}>{message}</p>
+                ))}
+              </div>
+            )}
+            {items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                data-item-id={item.id}
+                className={`row-menu__item row-menu__item--${item.tone ?? 'default'}`}
+                aria-label={item.ariaLabel}
+                aria-disabled={item.disabled === true ? 'true' : undefined}
+                aria-expanded={item.expanded}
+                onClick={() => choose(item)}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>,
           document.body,
         )}
+      {dialogStep?.confirm !== undefined && (
+        <ConfirmDialog
+          open
+          title={dialogStep.confirm.dialogTitle}
+          onDismiss={() => setDialogId(null)}
+          returnFocusRef={triggerRef}
+          item={dialogStep.confirm.dialogItem}
+          notice={dialogStep.confirm.notice}
+          cancel={{
+            label: dialogStep.confirm.cancelLabel,
+            ariaLabel: dialogStep.confirm.cancelAriaLabel,
+          }}
+          confirm={{
+            label: dialogStep.confirm.confirmLabel,
+            ariaLabel: dialogStep.confirm.confirmAriaLabel,
+            tone: dialogStep.confirm.tone,
+            onClick: () => confirmChosen(dialogStep),
+          }}
+        />
+      )}
     </>
   );
 }

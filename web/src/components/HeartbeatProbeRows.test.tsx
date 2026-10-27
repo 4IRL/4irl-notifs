@@ -502,18 +502,21 @@ describe('Heartbeats probe rows: compact layout', () => {
 });
 
 describe('Heartbeats probe rows: pause notice', () => {
-  it('uses the probe notice in the wide inline confirm and keeps the push notice for push rows', async () => {
+  it('uses the probe notice in the wide confirm dialog and keeps the push notice for push rows', async () => {
     const user = userEvent.setup();
     const probeRow = buildProbeCheck({ id: 1 });
     const pushRow = buildCheck({ id: 2 });
     renderSection(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([probeRow, pushRow]) }));
 
     await user.click(await screen.findByRole('button', { name: `Pause ${APP_ID}/zq1` }));
-    expect(within(rowOf(1)).getByText(strings.pauseProbeNotice)).toBeInTheDocument();
-    expect(rowOf(1).textContent).not.toContain('Pings');
+    const probeDialog = screen.getByRole('dialog', { name: strings.pauseHeartbeatDialogTitle });
+    expect(within(probeDialog).getByText(strings.pauseProbeNotice)).toBeInTheDocument();
+    expect(probeDialog.textContent).not.toContain('Pings');
+    await user.click(screen.getByRole('button', { name: `Keep running ${APP_ID}/zq1` }));
 
     await user.click(screen.getByRole('button', { name: `Pause ${APP_ID}/zq2` }));
-    expect(within(rowOf(2)).getByText(strings.pauseHeartbeatNotice)).toBeInTheDocument();
+    const pushDialog = screen.getByRole('dialog', { name: strings.pauseHeartbeatDialogTitle });
+    expect(within(pushDialog).getByText(strings.pauseHeartbeatNotice)).toBeInTheDocument();
   });
 
   it('uses the probe notice in the compact menu confirm', async () => {
@@ -527,7 +530,7 @@ describe('Heartbeats probe rows: pause notice', () => {
     kebab.focus();
     await user.keyboard('{Enter}');
     await user.click(screen.getByRole('menuitem', { name: `Pause ${row}` }));
-    const confirm = screen.getByRole('group', { name: `Pause ${row}` });
+    const confirm = screen.getByRole('dialog', { name: strings.pauseHeartbeatDialogTitle });
     expect(confirm).toHaveTextContent(strings.pauseProbeNotice);
     expect(confirm.textContent).not.toContain('Pings');
   });

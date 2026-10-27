@@ -89,9 +89,7 @@
 }
 
 .row-menu__note,
-.row-menu__error,
-.row-menu__prompt,
-.row-menu__notice {
+.row-menu__error {
   margin: 0;
   padding: var(--space-2) var(--space-3);
   font-size: 0.8125rem;
@@ -99,8 +97,7 @@
   overflow-wrap: anywhere;
 }
 
-.row-menu__note,
-.row-menu__notice {
+.row-menu__note {
   color: var(--accent);
 }
 
@@ -108,11 +105,6 @@
   color: var(--danger);
   background: var(--danger-bg);
   border-radius: calc(var(--radius) - 2px);
-}
-
-.row-menu__prompt {
-  color: var(--text-h);
-  font-weight: 600;
 }
 
 .row-menu__item {
@@ -151,23 +143,4 @@
 .row-menu__item[aria-disabled='true'] {
   cursor: not-allowed;
   opacity: 0.6;
-}
-
-/* The two buttons of the inline confirm step. */
-.row-menu__confirm {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2) var(--space-2);
-}
-
-.row-menu__item--solid {
-  border-color: var(--border);
-  background: var(--surface);
-  text-align: center;
-}
-
-.row-menu__item--solid.row-menu__item--danger {
-  border-color: var(--danger-border);
-  background: var(--danger-bg);
 }

@@ -187,7 +187,7 @@ describe('owner column', () => {
   }
 
   function rowOf(id: number): HTMLElement {
-    // By label, not role: an open confirm hides the row's Edit button from the accessibility tree.
+    // By label, not role: an open confirm dialog makes the page behind it inert.
     const row = screen.getByLabelText(`Edit route ${id}`).closest('tr');
     if (row === null) {
       throw new Error(`row ${id} not found`);
@@ -240,18 +240,25 @@ describe('owner column', () => {
     const user = userEvent.setup();
     await renderOwned();
 
-    await user.click(button('Delete route 2'));
-    expect(within(rowOf(2)).getAllByText(managedNote)).toHaveLength(1);
+    const cases = [
+      { id: 2, note: managedNote },
+      // An unknown owner is never treated as safe: its confirm warns too.
+      { id: 3, note: strings.ownerUnknownNote },
+    ];
+    for (const { id, note } of cases) {
+      await user.click(button(`Delete route ${id}`));
+      expect(within(screen.getByRole('dialog')).getAllByText(note)).toHaveLength(1);
+      await user.click(button(strings.cancelActionNamed({ subject: `Delete route ${id}` })));
+    }
     expect(within(rowOf(2)).getAllByText(strings.ownerManagedInlineNote)).toHaveLength(1);
-
-    // An unknown owner is never treated as safe: its confirm warns too.
-    await user.click(button('Delete route 3'));
-    expect(within(rowOf(3)).getAllByText(strings.ownerUnknownNote)).toHaveLength(1);
 
     // The operator's own row confirms with no notice at all.
     await user.click(button('Delete route 1'));
-    expect(button('Confirm delete route 1')).toBeInTheDocument();
-    expect(rowOf(1).querySelector('.confirm-button__notice')).toBeNull();
+    const dialog = screen.getByRole('dialog');
+    expect(
+      within(dialog).getByRole('button', { name: 'Confirm delete route 1' }),
+    ).toBeInTheDocument();
+    expect(dialog.querySelector('.modal__notice')).toBeNull();
   });
 
   it('keeps an open editor row spanning the whole table', async () => {
@@ -478,22 +485,32 @@ describe('edit route', () => {
 });
 
 describe('delete route', () => {
-  it('gives each open delete confirm a per-row dismiss name', async () => {
+  it('confirms in a dialog naming the route, keeps the row buttons, and runs the delete once', async () => {
     const user = userEvent.setup();
     const listRoutes = vi.fn().mockResolvedValue([buildRoute({ id: 1 }), buildRoute({ id: 2 })]);
-    renderSection({ client: buildClient({ listRoutes }) });
+    const client = buildClient({ listRoutes });
+    renderSection({ client });
+    await user.click(await screen.findByRole('button', { name: 'Delete route 1' }));
 
-    const subjects = [strings.deleteRoute({ id: 1 }), strings.deleteRoute({ id: 2 })];
-    await screen.findByRole('button', { name: subjects[0] });
-    for (const subject of subjects) {
-      await user.click(button(subject));
-    }
+    const dialog = screen.getByRole('dialog', { name: strings.deleteRouteDialogTitle });
+    expect(within(dialog).getByText(strings.dialogItemRoute)).toBeInTheDocument();
+    expect(within(dialog).getByText('route 1')).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('button', {
+        name: strings.cancelActionNamed({ subject: 'Delete route 1' }),
+      }),
+    ).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Edit route 1', hidden: true })).toBeVisible();
 
-    for (const subject of subjects) {
-      const dismiss = button(strings.cancelActionNamed({ subject }));
-      expect(dismiss).toHaveTextContent(strings.cancelAction);
-    }
-    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(button('Delete route 1')).toHaveFocus();
+    expect(client.deleteRoute).not.toHaveBeenCalled();
+
+    await user.click(button('Delete route 1'));
+    await user.click(button('Confirm delete route 1'));
+    expect(client.deleteRoute).toHaveBeenCalledTimes(1);
+    expect(client.deleteRoute).toHaveBeenCalledWith({ id: 1 });
   });
 
   it('moves focus to the next row after the confirm, and a second click is a no-op', async () => {
@@ -542,37 +559,6 @@ describe('delete route', () => {
     await user.click(button('Confirm delete route 1'));
     expect((await screen.findByRole('alert')).textContent).toBe('boom');
     expect(button('Delete route 1')).toBeTruthy();
-  });
-
-  it('hides the row’s Edit while its confirm is open, leaves other rows alone, restores it on Cancel and Escape, and runs the delete once on Confirm', async () => {
-    const user = userEvent.setup();
-    const listRoutes = vi.fn().mockResolvedValue([buildRoute({ id: 1 }), buildRoute({ id: 2 })]);
-    const client = buildClient({ listRoutes });
-    renderSection({ client });
-    await user.click(await screen.findByRole('button', { name: 'Delete route 1' }));
-
-    expect(button('Confirm delete route 1')).toHaveFocus();
-    expect(screen.queryByRole('button', { name: 'Edit route 1' })).toBeNull();
-    // The hidden button stays mounted, so the row's focus key still resolves.
-    expect(screen.getByLabelText('Edit route 1')).toHaveAttribute('hidden');
-    expect(button('Edit route 2')).toBeVisible();
-    expect(button('Delete route 2')).toBeVisible();
-
-    await user.click(button(strings.cancelActionNamed({ subject: 'Delete route 1' })));
-    expect(button('Edit route 1')).toBeVisible();
-    expect(button('Delete route 1')).toHaveFocus();
-
-    await user.click(button('Delete route 1'));
-    expect(screen.queryByRole('button', { name: 'Edit route 1' })).toBeNull();
-    await user.keyboard('{Escape}');
-    expect(button('Edit route 1')).toBeVisible();
-    expect(button('Delete route 1')).toHaveFocus();
-
-    await user.click(button('Delete route 1'));
-    await user.click(button('Confirm delete route 1'));
-    expect(client.deleteRoute).toHaveBeenCalledTimes(1);
-    expect(client.deleteRoute).toHaveBeenCalledWith({ id: 1 });
-    expect(button('Edit route 2')).toBeVisible();
   });
 });
 
