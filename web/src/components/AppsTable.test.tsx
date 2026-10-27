@@ -82,7 +82,7 @@ describe('AppsTable', () => {
     expect(screen.getByRole('button', { name: strings.remintTokenAction })).toBeInTheDocument();
   });
 
-  it('gives each open remove confirm a per-row dismiss name', async () => {
+  it("names each row's own app in its remove dialog and keeps the per-row cancel name", async () => {
     const user = userEvent.setup();
     renderTable({
       apps: [
@@ -96,18 +96,19 @@ describe('AppsTable', () => {
       ],
     });
 
-    const subjects = [`${strings.removeAction} URLs4IRL`, `${strings.removeAction} Chores4IRL`];
-    for (const subject of subjects) {
+    for (const displayName of ['URLs4IRL', 'Chores4IRL']) {
+      const subject = `${strings.removeAction} ${displayName}`;
       await user.click(screen.getByRole('button', { name: subject }));
-    }
-
-    for (const subject of subjects) {
-      const dismiss = screen.getByRole('button', {
+      const dialog = screen.getByRole('dialog', { name: strings.removeAppDialogTitle });
+      expect(within(dialog).getByText(displayName)).toBeInTheDocument();
+      expect(within(dialog).getByText(strings.removeAppNotice)).toBeInTheDocument();
+      const dismiss = within(dialog).getByRole('button', {
         name: strings.cancelActionNamed({ subject }),
       });
       expect(dismiss).toHaveTextContent(strings.cancelAction);
+      await user.click(dismiss);
+      expect(screen.queryByRole('dialog')).toBeNull();
     }
-    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
   });
 
   it('removes an app only after confirmation', async () => {

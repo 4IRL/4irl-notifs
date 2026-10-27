@@ -97,6 +97,10 @@ function confirmButton(key: string): HTMLElement {
   return screen.getByRole('button', { name: strings.confirmCancelSendNamed({ key }) });
 }
 
+function keepButton(key: string): HTMLElement {
+  return screen.getByRole('button', { name: strings.keepSendNamed({ key }) });
+}
+
 function heading(): HTMLElement {
   return screen.getByRole('heading', { name: strings.pendingSendsHeading });
 }
@@ -287,10 +291,16 @@ describe('PendingSends', () => {
       await screen.findByRole('button', { name: strings.cancelSendNamed({ key: 'key-a' }) }),
     );
     expect(client.cancelScheduledMessage).not.toHaveBeenCalled();
-    expect(confirmButton('key-a')).toHaveFocus();
+    // Initial focus is the least destructive control.
+    expect(keepButton('key-a')).toHaveFocus();
     expect(confirmButton('key-a')).toHaveTextContent(strings.confirmCancelSend);
+    const dialog = screen.getByRole('dialog', { name: strings.cancelSendDialogTitle });
+    expect(within(dialog).getByText(strings.dialogItemSend)).toBeInTheDocument();
+    expect(within(dialog).getByText('key-a')).toBeInTheDocument();
     // The notice names the idempotency key.
-    expect(screen.getByText(strings.cancelSendNotice({ key: 'key-a' }))).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(strings.cancelSendNotice({ key: 'key-a' })),
+    ).toBeInTheDocument();
 
     const keep = screen.getByRole('button', { name: strings.keepSendNamed({ key: 'key-a' }) });
     expect(keep).toHaveTextContent(strings.keepSend);
@@ -299,26 +309,6 @@ describe('PendingSends', () => {
     expect(trigger('key-a')).toHaveFocus();
     expect(trigger('key-a')).toHaveTextContent(strings.cancelSend);
     expect(client.cancelScheduledMessage).not.toHaveBeenCalled();
-  });
-
-  it('gives each open cancel confirm a per-row Keep name', async () => {
-    const user = userEvent.setup();
-    const client = buildClient({
-      listScheduledMessages: vi.fn().mockResolvedValue(listOf([ROW_A, ROW_B])),
-    });
-    render(<PendingSends client={client} />);
-
-    for (const key of ['key-a', 'key-b']) {
-      await user.click(
-        await screen.findByRole('button', { name: strings.cancelSendNamed({ key }) }),
-      );
-    }
-
-    for (const key of ['key-a', 'key-b']) {
-      const keep = screen.getByRole('button', { name: strings.keepSendNamed({ key }) });
-      expect(keep).toHaveTextContent(strings.keepSend);
-    }
-    expect(screen.queryByRole('button', { name: strings.keepSend })).toBeNull();
   });
 
   it('cancels: sends the id, announces the outcome and reloads in place without the loading state', async () => {
@@ -660,7 +650,7 @@ describe('PendingSends', () => {
       await waitFor(() => expect(trigger('key-b')).toHaveFocus());
     });
 
-    it('leaves focus on another row open confirm when a concurrent cancel response arrives', async () => {
+    it('leaves focus in another row open dialog when a concurrent cancel response arrives', async () => {
       const user = userEvent.setup();
       const cancelA = deferred<CancelScheduledMessageResult>();
       const client = buildClient({
@@ -674,60 +664,16 @@ describe('PendingSends', () => {
 
       await cancelRow({ user, key: 'key-a' });
       await user.click(trigger('key-b'));
-      expect(confirmButton('key-b')).toHaveFocus();
+      expect(keepButton('key-b')).toHaveFocus();
 
       cancelA.resolve(cancelled('a'));
 
       await waitFor(() => expect(status()).toHaveTextContent('Cancelled send key-a.'));
       await waitFor(() => expect(client.listScheduledMessages).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(screen.queryByText('key-a')).toBeNull());
-      // Focus stays on B's open confirm, which also survived the reload.
-      expect(confirmButton('key-b')).toHaveFocus();
-    });
-
-    it('falls back to the next mounted neighbour when the nearest trigger is not registered', async () => {
-      const user = userEvent.setup();
-      const cancelA = deferred<CancelScheduledMessageResult>();
-      const client = buildClient({
-        listScheduledMessages: vi
-          .fn()
-          .mockResolvedValueOnce(listOf([ROW_A, ROW_B, ROW_C]))
-          .mockResolvedValue(listOf([ROW_B, ROW_C])),
-        cancelScheduledMessage: vi.fn().mockReturnValue(cancelA.promise),
-      });
-      render(<PendingSends client={client} />);
-
-      // B has an open confirm (no trigger mounted), so C is the next mounted neighbour.
-      await user.click(
-        await screen.findByRole('button', { name: strings.cancelSendNamed({ key: 'key-b' }) }),
-      );
-      await cancelRow({ user, key: 'key-a' });
-      cancelA.resolve(cancelled('a'));
-
-      await waitFor(() => expect(trigger('key-c')).toHaveFocus());
+      // Focus stays in B's open dialog, which also survived the reload.
       expect(confirmButton('key-b')).toBeInTheDocument();
-    });
-
-    it('falls back to the heading when no neighbour trigger is mounted', async () => {
-      const user = userEvent.setup();
-      const cancelA = deferred<CancelScheduledMessageResult>();
-      const client = buildClient({
-        listScheduledMessages: vi
-          .fn()
-          .mockResolvedValueOnce(listOf([ROW_A, ROW_B]))
-          .mockResolvedValue(listOf([ROW_B])),
-        cancelScheduledMessage: vi.fn().mockReturnValue(cancelA.promise),
-      });
-      render(<PendingSends client={client} />);
-
-      await user.click(
-        await screen.findByRole('button', { name: strings.cancelSendNamed({ key: 'key-b' }) }),
-      );
-      await cancelRow({ user, key: 'key-a' });
-      cancelA.resolve(cancelled('a'));
-
-      await waitFor(() => expect(heading()).toHaveFocus());
-      expect(confirmButton('key-b')).toBeInTheDocument();
+      expect(keepButton('key-b')).toHaveFocus();
     });
   });
 
@@ -842,13 +788,66 @@ describe('PendingSends', () => {
       await flush();
 
       fireEvent.click(trigger('key-a'));
-      expect(confirmButton('key-a')).toHaveFocus();
+      expect(keepButton('key-a')).toHaveFocus();
 
       await advance(60_000);
 
+      // The row owns its portaled dialog, so focus in it resolves to the dropped row.
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(client.cancelScheduledMessage).not.toHaveBeenCalled();
       expect(heading()).toHaveFocus();
       expect(status()).toHaveTextContent('Released key-a: it is no longer pending.');
       expect(screen.getByText(strings.pendingSendsEmpty)).toBeInTheDocument();
+    });
+
+    it('moves focus from an open dialog on the dropped row to the neighbour trigger', async () => {
+      setup();
+      const client = buildClient({
+        listScheduledMessages: vi
+          .fn()
+          .mockResolvedValueOnce(
+            listOf([buildScheduled({ messageId: 'a', deliverAt: '2026-10-18T14:00:45Z' }), ROW_B]),
+          )
+          .mockResolvedValue(listOf([ROW_B])),
+      });
+      render(<PendingSends client={client} />);
+      await flush();
+
+      fireEvent.click(trigger('key-a'));
+      expect(keepButton('key-a')).toHaveFocus();
+
+      await advance(60_000);
+
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(client.cancelScheduledMessage).not.toHaveBeenCalled();
+      expect(trigger('key-b')).toHaveFocus();
+      expect(status()).toHaveTextContent('Released key-a: it is no longer pending.');
+    });
+
+    it('keeps an open dialog and moves nothing when a reload keeps its row', async () => {
+      setup();
+      const client = buildClient({
+        listScheduledMessages: vi
+          .fn()
+          .mockResolvedValueOnce(
+            listOf([buildScheduled({ messageId: 'a', deliverAt: '2026-10-18T14:00:45Z' }), ROW_B]),
+          )
+          .mockResolvedValue(listOf([ROW_B])),
+      });
+      render(<PendingSends client={client} />);
+      await flush();
+
+      fireEvent.click(trigger('key-b'));
+      expect(keepButton('key-b')).toHaveFocus();
+
+      await advance(60_000);
+
+      expect(screen.queryByText('key-a')).toBeNull();
+      expect(
+        screen.getByRole('dialog', { name: strings.cancelSendDialogTitle }),
+      ).toBeInTheDocument();
+      expect(keepButton('key-b')).toHaveFocus();
+      expect(status()).toBeEmptyDOMElement();
     });
 
     it('moves no focus and writes no line when the reload drops a row while focus is elsewhere', async () => {

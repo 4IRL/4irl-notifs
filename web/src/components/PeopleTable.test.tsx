@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -73,7 +73,7 @@ describe('PeopleTable', () => {
     expect(screen.getByText('smoketest@example.com')).toBeInTheDocument();
   });
 
-  it('gives each open delete confirm a per-row dismiss name', async () => {
+  it("names each row's own person in its delete dialog and keeps the per-row cancel name", async () => {
     const user = userEvent.setup();
     const people = [
       { personHash: 'aaaa', email: 'alice@example.com', createdAt: '2026-07-19T18:12:03Z' },
@@ -81,21 +81,19 @@ describe('PeopleTable', () => {
     ];
     render(<PeopleTable people={people} loading={false} error={null} onDelete={vi.fn()} />);
 
-    const subjects = [
-      `${strings.deleteAction} alice@example.com`,
-      `${strings.deleteAction} bob@example.com`,
-    ];
-    for (const subject of subjects) {
+    for (const email of ['alice@example.com', 'bob@example.com']) {
+      const subject = `${strings.deleteAction} ${email}`;
       await user.click(screen.getByRole('button', { name: subject }));
-    }
-
-    for (const subject of subjects) {
-      const dismiss = screen.getByRole('button', {
+      const dialog = screen.getByRole('dialog', { name: strings.deletePersonDialogTitle });
+      expect(within(dialog).getByText(email)).toBeInTheDocument();
+      expect(within(dialog).getByText(strings.deletePersonNotice)).toBeInTheDocument();
+      const dismiss = within(dialog).getByRole('button', {
         name: strings.cancelActionNamed({ subject }),
       });
       expect(dismiss).toHaveTextContent(strings.cancelAction);
+      await user.click(dismiss);
+      expect(screen.queryByRole('dialog')).toBeNull();
     }
-    expect(screen.queryByRole('button', { name: strings.cancelAction })).toBeNull();
   });
 
   it('calls onDelete with the personHash after confirming a row delete', async () => {

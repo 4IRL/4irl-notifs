@@ -56,6 +56,9 @@ export function PeopleTable({ people, loading, error, onDelete }: PeopleTablePro
                     dismissAriaLabel={strings.cancelActionNamed({
                       subject: `${strings.deleteAction} ${email}`,
                     })}
+                    dialogTitle={strings.deletePersonDialogTitle}
+                    dialogItem={{ label: strings.dialogItemPerson, value: email }}
+                    confirmNotice={strings.deletePersonNotice}
                     className="people-table__button people-table__button--danger"
                     onConfirm={() => onDelete({ personHash })}
                   />

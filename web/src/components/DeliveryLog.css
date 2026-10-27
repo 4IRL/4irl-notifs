@@ -163,10 +163,6 @@
   opacity: 0.6;
 }
 
-.delivery-log .confirm-button__cancel {
-  min-height: 2.75rem;
-}
-
 .delivery-log__inset {
   border: 1px solid var(--border);
   border-radius: var(--radius);
