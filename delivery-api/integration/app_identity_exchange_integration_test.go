@@ -229,10 +229,25 @@ func bindingOf(bindings []identityBindingJSON, appID string) *identityBindingJSO
 	return nil
 }
 
-func approveIdentityRequest(testInstance *testing.T, requestID int64) {
+// approveIdentityRequest approves a pending request and returns the app id it bound. Approval also
+// registers the app in person-service, so the one chokepoint every approving test goes through
+// registers the removal of that row (idempotent, so a second approval of the same app is harmless).
+func approveIdentityRequest(testInstance *testing.T, requestID int64) string {
 	testInstance.Helper()
 	status, body := apiRequest(testInstance, "POST", fmt.Sprintf("%s/requests/%d/approve", identityAdminPath, requestID), nil)
 	requireStatus(testInstance, "approve", status, 201, body)
+	var approved struct {
+		Binding struct {
+			AppID string `json:"app_id"`
+		} `json:"binding"`
+	}
+	decodeBody(testInstance, "approve", body, &approved)
+	appID := approved.Binding.AppID
+	if appID == "" {
+		testInstance.Fatalf("approve response carried no binding app_id: %s", body)
+	}
+	testInstance.Cleanup(func() { deletePersonServiceApp(testInstance, appID) })
+	return appID
 }
 
 // bind drives a fresh app through pending and approval, leaving it bound.
