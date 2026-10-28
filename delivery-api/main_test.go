@@ -421,7 +421,7 @@ func TestBuildMinterNeedsBothOriginAndCredential(testInstance *testing.T) {
 				return testCase.value, testCase.resolveErr
 			}
 			var logOutput bytes.Buffer
-			minter, minterErr := buildMinter(testCase.url, resolver, slog.New(slog.NewTextHandler(&logOutput, nil)))
+			minter, minterErr := buildProvisionClient(testCase.url, resolver, slog.New(slog.NewTextHandler(&logOutput, nil)))
 
 			if minterErr != nil {
 				subTest.Fatalf("unexpected error: %v", minterErr)
@@ -459,6 +459,26 @@ func TestBuildProvisionClientIsNilWhenDisabled(testInstance *testing.T) {
 	enabled, enabledErr := buildProvisionClient("http://provisioning-api:8080", resolver, logger)
 	if enabledErr != nil || enabled == nil {
 		testInstance.Fatalf("enabled client = %v, err = %v; want a client", enabled, enabledErr)
+	}
+}
+
+func TestProvisionInterfaces(testInstance *testing.T) {
+	const fakeCredential = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	resolver := func(string) (string, error) { return fakeCredential, nil }
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	nilMinter, nilProvisioning := provisionInterfaces(nil)
+	if nilMinter != nil || nilProvisioning != nil {
+		testInstance.Errorf("nil client gave minter = %v, appProvisioning = %v; want untyped nils", nilMinter, nilProvisioning)
+	}
+
+	client, clientErr := buildProvisionClient("http://provisioning-api:8080", resolver, logger)
+	if clientErr != nil || client == nil {
+		testInstance.Fatalf("client = %v, err = %v; want a client", client, clientErr)
+	}
+	minter, appProvisioning := provisionInterfaces(client)
+	if minter == nil || appProvisioning == nil {
+		testInstance.Errorf("client gave minter = %v, appProvisioning = %v; want both set", minter, appProvisioning)
 	}
 }
 
@@ -574,7 +594,7 @@ func TestBuildMinterRejectsNonInternalProvisioningHosts(testInstance *testing.T)
 			resolver := func(string) (string, error) { return fakeCredential, nil }
 			var logOutput bytes.Buffer
 
-			minter, minterErr := buildMinter(testCase.url, resolver, slog.New(slog.NewTextHandler(&logOutput, nil)))
+			minter, minterErr := buildProvisionClient(testCase.url, resolver, slog.New(slog.NewTextHandler(&logOutput, nil)))
 
 			if testCase.wantAccept {
 				if minterErr != nil || minter == nil {

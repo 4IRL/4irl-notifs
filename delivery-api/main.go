@@ -86,15 +86,14 @@ func envOrDefault(key string, fallback string) string {
 	return fallback
 }
 
-// buildMinter returns the publisher minter, or nil when minting is unavailable: a thin wrapper over
-// buildProvisionClient that returns a nil interface (not a typed-nil *provisionclient.Client) when the
-// client is nil, which makes publisher.Service.Mint answer ErrMintUnavailable.
-func buildMinter(provisioningURL string, resolveSecret func(string) (string, error), logger *slog.Logger) (publisher.Minter, error) {
-	client, clientErr := buildProvisionClient(provisioningURL, resolveSecret, logger)
-	if clientErr != nil || client == nil {
-		return nil, clientErr
+// provisionInterfaces maps the provisioning client to the interfaces that consume it. Each is set only
+// when the client exists: an untyped nil (never a typed-nil *provisionclient.Client) keeps the 503 /
+// publisher.ErrMintUnavailable guards working.
+func provisionInterfaces(client *provisionclient.Client) (publisher.Minter, httpapi.AppProvisioning) {
+	if client == nil {
+		return nil, nil
 	}
-	return client, nil
+	return client, client
 }
 
 // buildProvisionClient returns the provisioning-api client, or a nil client when it is unavailable. It needs
@@ -332,14 +331,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	if provisionClientErr != nil {
 		return provisionClientErr
 	}
-	// Each interface is set only when the client exists: an untyped nil (never a typed-nil
-	// *provisionclient.Client) keeps the 503 / ErrMintUnavailable guards working.
-	var minter publisher.Minter
-	var appProvisioning httpapi.AppProvisioning
-	if provisionClient != nil {
-		minter = provisionClient
-		appProvisioning = provisionClient
-	}
+	minter, appProvisioning := provisionInterfaces(provisionClient)
 	publisherService := publisher.NewService(publisher.NewPGStore(pool), minter, sealer)
 	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil
 	// *publisher.Service) makes the worker dead-letter a recipient delivery as no_publisher instead of sending.
