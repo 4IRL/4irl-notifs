@@ -933,6 +933,72 @@ func TestProdComposeMountsTheInternalCredentialSecret(testInstance *testing.T) {
 	}
 }
 
+// TestProdComposeWiresDeliveryAPIToPersonServiceWithPersistentSecrets pins production: approval
+// registers the app in person-service (blocking), so delivery-api needs the URL and the Access
+// service-token files, and those files must live in ./secrets-persistent/ (not the ./secrets/ that
+// the deploy deletes right after `up`).
+func TestProdComposeWiresDeliveryAPIToPersonServiceWithPersistentSecrets(testInstance *testing.T) {
+	deliveryLines := composeServiceLines(testInstance, "docker-compose.prod.yml", "delivery-api")
+	provisioningLines := composeServiceLines(testInstance, "docker-compose.prod.yml", "provisioning-api")
+
+	gotURL, present := composeEnvValue(deliveryLines, "PERSON_SERVICE_URL")
+	if !present || gotURL != "${PERSON_SERVICE_URL:-https://notifs-people.4irl.app}" {
+		testInstance.Errorf("docker-compose.prod.yml delivery-api: PERSON_SERVICE_URL = %q (present=%v)", gotURL, present)
+	}
+	for _, secretName := range []string{"PERSON_SERVICE_ACCESS_CLIENT_ID", "PERSON_SERVICE_ACCESS_CLIENT_SECRET"} {
+		wantPath := "/run/secrets/" + secretName
+		gotPath, filePresent := composeEnvValue(deliveryLines, secretName+"_FILE")
+		if !filePresent || gotPath != wantPath {
+			testInstance.Errorf("docker-compose.prod.yml delivery-api: %s_FILE = %q (present=%v), want %q", secretName, gotPath, filePresent, wantPath)
+		}
+		for service, lines := range map[string][]string{"delivery-api": deliveryLines, "provisioning-api": provisioningLines} {
+			if !composeListsSecret(lines, secretName) {
+				testInstance.Errorf("docker-compose.prod.yml %s does not list the %s secret", service, secretName)
+			}
+		}
+	}
+
+	contents, readErr := os.ReadFile(filepath.Join("..", "docker-compose.prod.yml"))
+	if readErr != nil {
+		testInstance.Fatalf("read docker-compose.prod.yml: %v", readErr)
+	}
+	for _, secretName := range []string{"PERSON_SERVICE_ACCESS_CLIENT_ID", "PERSON_SERVICE_ACCESS_CLIENT_SECRET"} {
+		secretMapping := regexp.MustCompile(`(?m)^  ` + secretName + `:\n    file: \./secrets-persistent/` + secretName + `$`)
+		if !secretMapping.Match(contents) {
+			testInstance.Errorf("docker-compose.prod.yml does not map %s to ./secrets-persistent/%s", secretName, secretName)
+		}
+	}
+	if strings.Contains(string(contents), "file: ./secrets/") {
+		testInstance.Error("docker-compose.prod.yml still maps a secret to the deleted ./secrets/ directory")
+	}
+
+	deployContents, deployErr := os.ReadFile(filepath.Join("..", ".github", "workflows", "prod-deploy.yml"))
+	if deployErr != nil {
+		testInstance.Fatalf("read prod-deploy.yml: %v", deployErr)
+	}
+	deploy := string(deployContents)
+	for _, secretName := range []string{"PERSON_SERVICE_ACCESS_CLIENT_ID", "PERSON_SERVICE_ACCESS_CLIENT_SECRET"} {
+		for _, wantLine := range []string{
+			`printf "%s" "${` + secretName + `_VALUE}" > ./secrets-persistent/` + secretName + `;`,
+			`chmod 644 ./secrets-persistent/` + secretName + `;`,
+		} {
+			if !strings.Contains(deploy, wantLine) {
+				testInstance.Errorf("prod-deploy.yml does not contain %q", wantLine)
+			}
+		}
+		if strings.Contains(deploy, "./secrets/"+secretName) {
+			testInstance.Errorf("prod-deploy.yml still writes %s into the deleted ./secrets/ directory", secretName)
+		}
+		wantValueLine := secretName + `_VALUE="${{ secrets.` + secretName + ` }}";`
+		if !strings.Contains(deploy, wantValueLine) {
+			testInstance.Errorf("prod-deploy.yml does not contain %q", wantValueLine)
+		}
+	}
+	if !strings.Contains(deploy, "rm -rf ./secrets/;") {
+		testInstance.Error("prod-deploy.yml does not clear leftovers with `rm -rf ./secrets/;`")
+	}
+}
+
 // TestProdDeployWorkflowValidatesTheInternalCredentialFirst pins the deploy gate: the credential
 // is a required workflow_call secret, a validation step with the 64-hex shape runs before the SSH
 // key is installed (so nothing reaches the VPS on a bad value), the build-and-deploy workflow

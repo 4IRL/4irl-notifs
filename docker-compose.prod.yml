@@ -89,9 +89,9 @@ services:
       # credentials are secret and are delivered as Docker Compose secrets (see the top-level
       # `secrets:` block); the app reads them from the mounted /run/secrets files via the
       # <KEY>_FILE convention, so the values never enter this container's environment.
-      # prod-deploy.yml writes ./secrets/* from GitHub Actions secrets just before `up` and
-      # deletes them right after — empty secret contents leave the dual-write auth unset,
-      # which fails closed and is swallowed (core provisioning is unaffected).
+      # prod-deploy.yml writes these files to ./secrets-persistent/ (never deleted) from GitHub
+      # Actions secrets just before `up`. Empty secret contents leave the person-service auth
+      # unset, which fails closed (the person-service call is rejected, not silently allowed).
       - PERSON_SERVICE_URL=${PERSON_SERVICE_URL:-https://notifs-people.4irl.app}
       - PERSON_SERVICE_ACCESS_CLIENT_ID_FILE=/run/secrets/PERSON_SERVICE_ACCESS_CLIENT_ID
       - PERSON_SERVICE_ACCESS_CLIENT_SECRET_FILE=/run/secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET
@@ -215,11 +215,19 @@ services:
       # default must equal the code default (appidentity.DefaultAudience). LOCKSTEP: keep in sync
       # with docker-compose.yml. Tokens are always verified against GitHub's published signing keys.
       - DELIVERY_OIDC_AUDIENCE=${DELIVERY_OIDC_AUDIENCE:-notifs-delivery}
+      # person-service origin and Access service-token files, used to register an app in the people
+      # directory when the operator approves its binding (blocking). Same values as provisioning-api's
+      # block above. LOCKSTEP: keep in sync with docker-compose.yml (which points at the local service).
+      - PERSON_SERVICE_URL=${PERSON_SERVICE_URL:-https://notifs-people.4irl.app}
+      - PERSON_SERVICE_ACCESS_CLIENT_ID_FILE=/run/secrets/PERSON_SERVICE_ACCESS_CLIENT_ID
+      - PERSON_SERVICE_ACCESS_CLIENT_SECRET_FILE=/run/secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET
     secrets:
       - DELIVERY_DB_PASSWORD
       - DELIVERY_MASTER_KEY
       - DELIVERY_MASTER_KEY_PREVIOUS
       - PROVISIONING_INTERNAL_CREDENTIAL
+      - PERSON_SERVICE_ACCESS_CLIENT_ID
+      - PERSON_SERVICE_ACCESS_CLIENT_SECRET
     depends_on:
       provisioning-api:
         condition: service_healthy
@@ -240,21 +248,19 @@ volumes:
   ntfy-cache:
   delivery-pgdata:
 
-# The person-service Access Service-Token credentials, delivered to
-# provisioning-api as tmpfs files at /run/secrets/<NAME>. prod-deploy.yml writes
-# these ./secrets/* files from the GitHub Actions secrets of the same name just
-# before `docker compose up` and `rm -rf ./secrets/` immediately after, so no
-# plaintext secret persists on the host (the same pattern urls4irl uses).
-#
-# DELIVERY_DB_PASSWORD, DELIVERY_MASTER_KEY and PROVISIONING_INTERNAL_CREDENTIAL are the exceptions: they persist in ./secrets-persistent/ (never deleted);
-# see prod-deploy.yml for why, including the 0644 file mode.
+# Every secret persists in ./secrets-persistent/ (never deleted), written by prod-deploy.yml from the
+# GitHub Actions secrets of the same name; see prod-deploy.yml for why, including the 0644 file mode.
+# Nothing is mapped to ./secrets/ any more (the deploy only clears leftovers of that old layout).
+# The person-service Access Service-Token credentials (provisioning-api and delivery-api) are optional:
+# their files always exist and are empty when the GitHub secret is unset, which fails approval closed.
 # The optional previous master key (rotation window) is persistent too, but its file always exists and is empty when unset.
 secrets:
+  # Persistent: delivery-api re-reads these on every restart (operator approval blocks on person-service).
   PERSON_SERVICE_ACCESS_CLIENT_ID:
-    file: ./secrets/PERSON_SERVICE_ACCESS_CLIENT_ID
+    file: ./secrets-persistent/PERSON_SERVICE_ACCESS_CLIENT_ID
   PERSON_SERVICE_ACCESS_CLIENT_SECRET:
-    file: ./secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET
-  # Persistent (unlike ./secrets/): delivery-api needs the DB password on every restart.
+    file: ./secrets-persistent/PERSON_SERVICE_ACCESS_CLIENT_SECRET
+  # Persistent: delivery-api needs the DB password on every restart.
   DELIVERY_DB_PASSWORD:
     file: ./secrets-persistent/DELIVERY_DB_PASSWORD
   # Persistent for the same reason, and more so: the master key is needed on every restart to
