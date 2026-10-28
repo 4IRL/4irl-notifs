@@ -2,11 +2,19 @@ import { useRef } from 'react';
 import type { JSX } from 'react';
 
 import type { ResetPasswordParams, ResetPasswordResult, UserSummary } from '../api/client';
+import { useCompactTable } from '../hooks/useCompactTable';
 import { useResetPassword } from '../hooks/useResetPassword';
 import { strings } from '../strings';
+import { revealFocusedControl } from './adminTableFocus';
 import { ConfirmButton } from './ConfirmButton';
 import { ResetPasswordDialog } from './ResetPasswordDialog';
+import { RowActionsMenu } from './RowActionsMenu';
+import './adminTable.css';
 import './UsersTable.css';
+
+// Focus-registry key prefix the compact kebab registers under, so the reset dialog's focus
+// return lands on the row's kebab (the inline Reset button does not exist in that layout).
+const RESET_FOCUS_PREFIX = 'reset:';
 
 /** Identifies an app-scoped deprovision target within a user's row. */
 interface DeprovisionParams {
@@ -38,6 +46,7 @@ export function UsersTable({
   onDelete,
   onResetPassword,
 }: UsersTableProps): JSX.Element {
+  const compact = useCompactTable();
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const triggerByUserIdRef = useRef(new Map<string, HTMLButtonElement>());
   const reset = useResetPassword({
@@ -59,103 +68,210 @@ export function UsersTable({
         <p className="users-table__status">{strings.usersEmpty}</p>
       )}
       {!loading && users.length > 0 && (
-        <table className="users-table__table">
-          <thead>
-            <tr>
-              <th scope="col">{strings.columnUser}</th>
-              <th scope="col">{strings.columnApps}</th>
-              <th scope="col">{strings.columnTopicPatterns}</th>
-              <th scope="col" aria-label="Actions" />
-            </tr>
-          </thead>
-          <tbody>
-            {users.map(({ userId, apps, topicPatterns }) => {
-              const personHash = userId.startsWith('u_') ? userId.slice(2) : null;
-              const email = personHash !== null ? emailByPersonHash.get(personHash) : undefined;
-              const displayName = email ?? userId;
-              const resetTriggerLabel = strings.resetPasswordTriggerNamed({ user: displayName });
-              const isResetBusy = busyUserId === userId;
-              return (
-                <tr key={userId}>
-                  <td>{displayName}</td>
-                  <td>
-                    {apps.map((app) => (
-                      <span key={app} className="users-table__chip">
-                        {app}
-                      </span>
-                    ))}
-                  </td>
-                  <td>{topicPatterns.join(', ')}</td>
-                  <td>
-                    <div className="users-table__actions">
-                      {onResetPassword !== undefined && email !== undefined && apps.length > 0 && (
-                        <button
-                          type="button"
-                          className="users-table__button users-table__button--secondary users-table__button--tall"
-                          aria-label={
-                            isResetBusy
-                              ? strings.resetPasswordBusyNamed({ user: displayName })
-                              : resetTriggerLabel
-                          }
-                          aria-disabled={busyUserId !== null ? 'true' : undefined}
-                          ref={(element) => {
+        <div
+          className="admin-table__scroll users-table__scroll"
+          onFocus={revealFocusedControl}
+          role="group"
+          aria-label={strings.usersHeading}
+          tabIndex={0}
+        >
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th scope="col" className="admin-table__lead">
+                  {strings.columnUser}
+                </th>
+                {!compact && (
+                  <>
+                    <th scope="col">{strings.columnApps}</th>
+                    <th scope="col" className="admin-table__fill">
+                      {strings.columnTopicPatterns}
+                    </th>
+                  </>
+                )}
+                <th
+                  scope="col"
+                  className={`admin-table__actions${compact ? ' admin-table__kebab' : ''}`}
+                  aria-label={strings.columnActions}
+                />
+              </tr>
+            </thead>
+            <tbody>
+              {users.map(({ userId, apps, topicPatterns }) => {
+                const personHash = userId.startsWith('u_') ? userId.slice(2) : null;
+                const email = personHash !== null ? emailByPersonHash.get(personHash) : undefined;
+                const displayName = email ?? userId;
+                const resetTriggerLabel = strings.resetPasswordTriggerNamed({ user: displayName });
+                const isResetBusy = busyUserId === userId;
+                const canReset =
+                  onResetPassword !== undefined && email !== undefined && apps.length > 0;
+                const resetUnavailable =
+                  onResetPassword !== undefined && personHash !== null && email === undefined;
+                const resetAriaLabel = isResetBusy
+                  ? strings.resetPasswordBusyNamed({ user: displayName })
+                  : resetTriggerLabel;
+                const resetVisible = isResetBusy
+                  ? strings.resettingPasswordRowAction
+                  : strings.resetPasswordAction;
+                const deleteLabel = `${strings.deleteAction} ${displayName}`;
+                const appChips = apps.map((app) => (
+                  <span key={app} className="users-table__chip">
+                    {app}
+                  </span>
+                ));
+                return (
+                  <tr key={userId}>
+                    <td className="admin-table__lead" title={displayName}>
+                      {displayName}
+                      {compact && (
+                        <span className="admin-table__sub">
+                          {appChips}
+                          {topicPatterns.length > 0 && (
+                            <span className="users-table__patterns">
+                              {topicPatterns.join(', ')}
+                            </span>
+                          )}
+                        </span>
+                      )}
+                    </td>
+                    {!compact && (
+                      <>
+                        <td>{appChips}</td>
+                        <td className="admin-table__fill">{topicPatterns.join(', ')}</td>
+                      </>
+                    )}
+                    {compact ? (
+                      <td className="admin-table__actions admin-table__kebab">
+                        <RowActionsMenu
+                          rowLabel={displayName}
+                          note={resetUnavailable ? strings.resetPasswordUnavailable : null}
+                          focusKeys={[`${RESET_FOCUS_PREFIX}${userId}`]}
+                          registerControl={({ key, element }) => {
                             if (element === null) {
                               triggerByUserIdRef.current.delete(userId);
-                            } else {
-                              triggerByUserIdRef.current.set(userId, element);
+                            } else if (key === `${RESET_FOCUS_PREFIX}${userId}`) {
+                              triggerByUserIdRef.current.set(userId, element as HTMLButtonElement);
                             }
                           }}
-                          onClick={() => reset.open({ userId, user: displayName })}
-                        >
-                          {isResetBusy
-                            ? strings.resettingPasswordAction
-                            : strings.resetPasswordAction}
-                        </button>
-                      )}
-                      {onResetPassword !== undefined &&
-                        personHash !== null &&
-                        email === undefined && (
-                          <span className="users-table__hint">
-                            {strings.resetPasswordUnavailable}
-                          </span>
-                        )}
-                      {apps.map((app) => (
-                        <ConfirmButton
-                          key={app}
-                          triggerLabel={`${strings.deprovisionAction} ${app}`}
-                          confirmLabel={`${strings.confirmDeprovisionAction} ${app}`}
-                          dismissAriaLabel={strings.cancelActionNamed({
-                            subject: strings.deprovisionAppForUser({ app, user: displayName }),
-                          })}
-                          dialogTitle={strings.deprovisionDialogTitle}
-                          dialogItem={{
-                            label: strings.dialogItemUserApp,
-                            value: strings.dialogUserApp({ user: displayName, app }),
-                          }}
-                          confirmNotice={strings.deprovisionNotice}
-                          className="users-table__button users-table__button--secondary"
-                          onConfirm={() => onDeprovision({ userId, appId: app })}
+                          items={[
+                            ...(canReset
+                              ? [
+                                  {
+                                    id: 'reset',
+                                    label: resetVisible,
+                                    ariaLabel: resetAriaLabel,
+                                    disabled: busyUserId !== null,
+                                    onSelect: () => reset.open({ userId, user: displayName }),
+                                  },
+                                ]
+                              : []),
+                            ...apps.map((app) => ({
+                              id: `deprovision:${app}`,
+                              label: `${strings.deprovisionAction} ${app}`,
+                              ariaLabel: strings.deprovisionAppForUser({ app, user: displayName }),
+                              confirm: {
+                                confirmLabel: strings.confirmDeprovisionAction,
+                                confirmAriaLabel: `${strings.confirmDeprovisionAction} ${app}`,
+                                cancelLabel: strings.cancelAction,
+                                cancelAriaLabel: strings.cancelActionNamed({
+                                  subject: strings.deprovisionAppForUser({
+                                    app,
+                                    user: displayName,
+                                  }),
+                                }),
+                                notice: strings.deprovisionNotice,
+                                dialogTitle: strings.deprovisionDialogTitle,
+                                dialogItem: {
+                                  label: strings.dialogItemUserApp,
+                                  value: strings.dialogUserApp({ user: displayName, app }),
+                                },
+                                onConfirm: () => onDeprovision({ userId, appId: app }),
+                              },
+                            })),
+                            {
+                              id: 'delete',
+                              label: strings.deleteAction,
+                              ariaLabel: deleteLabel,
+                              tone: 'danger' as const,
+                              confirm: {
+                                confirmLabel: strings.confirmDeleteAction,
+                                confirmAriaLabel: `${strings.confirmDeleteAction} ${displayName}`,
+                                cancelLabel: strings.cancelAction,
+                                cancelAriaLabel: strings.cancelActionNamed({
+                                  subject: deleteLabel,
+                                }),
+                                notice: strings.deleteUserNotice,
+                                dialogTitle: strings.deleteUserDialogTitle,
+                                dialogItem: { label: strings.dialogItemUser, value: displayName },
+                                onConfirm: () => onDelete({ userId }),
+                              },
+                            },
+                          ]}
                         />
-                      ))}
-                      <ConfirmButton
-                        triggerLabel={`${strings.deleteAction} ${displayName}`}
-                        confirmLabel={`${strings.confirmDeleteAction} ${displayName}`}
-                        dismissAriaLabel={strings.cancelActionNamed({
-                          subject: `${strings.deleteAction} ${displayName}`,
-                        })}
-                        dialogTitle={strings.deleteUserDialogTitle}
-                        dialogItem={{ label: strings.dialogItemUser, value: displayName }}
-                        confirmNotice={strings.deleteUserNotice}
-                        className="users-table__button users-table__button--danger"
-                        onConfirm={() => onDelete({ userId })}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                      </td>
+                    ) : (
+                      <td className="admin-table__actions">
+                        <div className="users-table__actions">
+                          {canReset && (
+                            <button
+                              type="button"
+                              className="users-table__button users-table__button--secondary users-table__button--tall"
+                              aria-label={resetAriaLabel}
+                              aria-disabled={busyUserId !== null ? 'true' : undefined}
+                              ref={(element) => {
+                                if (element === null) {
+                                  triggerByUserIdRef.current.delete(userId);
+                                } else {
+                                  triggerByUserIdRef.current.set(userId, element);
+                                }
+                              }}
+                              onClick={() => reset.open({ userId, user: displayName })}
+                            >
+                              {resetVisible}
+                            </button>
+                          )}
+                          {resetUnavailable && (
+                            <span className="users-table__hint">
+                              {strings.resetPasswordUnavailable}
+                            </span>
+                          )}
+                          {apps.map((app) => (
+                            <ConfirmButton
+                              key={app}
+                              triggerLabel={`${strings.deprovisionAction} ${app}`}
+                              confirmLabel={`${strings.confirmDeprovisionAction} ${app}`}
+                              dismissAriaLabel={strings.cancelActionNamed({
+                                subject: strings.deprovisionAppForUser({ app, user: displayName }),
+                              })}
+                              dialogTitle={strings.deprovisionDialogTitle}
+                              dialogItem={{
+                                label: strings.dialogItemUserApp,
+                                value: strings.dialogUserApp({ user: displayName, app }),
+                              }}
+                              confirmNotice={strings.deprovisionNotice}
+                              className="users-table__button users-table__button--secondary"
+                              onConfirm={() => onDeprovision({ userId, appId: app })}
+                            />
+                          ))}
+                          <ConfirmButton
+                            triggerLabel={deleteLabel}
+                            confirmLabel={`${strings.confirmDeleteAction} ${displayName}`}
+                            dismissAriaLabel={strings.cancelActionNamed({ subject: deleteLabel })}
+                            dialogTitle={strings.deleteUserDialogTitle}
+                            dialogItem={{ label: strings.dialogItemUser, value: displayName }}
+                            confirmNotice={strings.deleteUserNotice}
+                            className="users-table__button users-table__button--danger"
+                            onConfirm={() => onDelete({ userId })}
+                          />
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
       {onResetPassword !== undefined && (
         <ResetPasswordDialog

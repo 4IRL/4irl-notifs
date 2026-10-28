@@ -1,6 +1,8 @@
 import type { JSX } from 'react';
 
 import { strings } from '../strings';
+import { revealFocusedControl } from './adminTableFocus';
+import './adminTable.css';
 import './UnregisteredApps.css';
 
 /** Props for UnregisteredApps. */
@@ -34,22 +36,34 @@ export function UnregisteredApps({
       ) : appIds.length === 0 ? (
         <p className="unregistered-apps__status">{strings.unregisteredAppsEmpty}</p>
       ) : (
-        <table className="unregistered-apps__table">
-          <thead>
-            <tr>
-              <th scope="col">{strings.columnAppId}</th>
-              <th scope="col">{strings.columnSubscribers}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {appIds.map((appId) => (
-              <tr key={appId}>
-                <td className="unregistered-apps__id">{appId}</td>
-                <td>{subscriberCountByApp.get(appId) ?? 0}</td>
+        <div
+          className="admin-table__scroll unregistered-apps__scroll"
+          onFocus={revealFocusedControl}
+          role="group"
+          aria-label={strings.unregisteredAppsHeading}
+          tabIndex={0}
+        >
+          <table className="admin-table unregistered-apps__table">
+            <thead>
+              <tr>
+                <th scope="col" className="admin-table__lead">
+                  {strings.columnAppId}
+                </th>
+                <th scope="col" className="admin-table__fill">
+                  {strings.columnSubscribers}
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {appIds.map((appId) => (
+                <tr key={appId}>
+                  <td className="admin-table__lead unregistered-apps__id">{appId}</td>
+                  <td className="admin-table__fill">{subscriberCountByApp.get(appId) ?? 0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

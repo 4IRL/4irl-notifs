@@ -326,8 +326,14 @@ test.describe('admin UI critical flows', () => {
         }
       }
 
-      const trigger = usersSectionOf(page).getByRole('button', {
+      // At 390px the row's actions live behind its kebab (Users and People share the email label,
+      // so the kebab is found inside the Users section); the Reset item is a 44px touch target.
+      await usersSectionOf(page)
+        .getByRole('button', { name: `Actions for ${EMAIL}`, exact: true })
+        .click();
+      const trigger = rowMenu({ page, row: EMAIL }).getByRole('menuitem', {
         name: `Reset password for ${EMAIL}`,
+        exact: true,
       });
       expect((await trigger.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
       await trigger.click();

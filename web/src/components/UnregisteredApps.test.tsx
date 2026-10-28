@@ -42,6 +42,9 @@ describe('UnregisteredApps', () => {
       />,
     );
 
+    const group = screen.getByRole('group', { name: strings.unregisteredAppsHeading });
+    expect(within(group).getByRole('table')).toBeInTheDocument();
+
     const urlsRow = screen
       .getByText('urls4irl', { selector: '.unregistered-apps__id' })
       .closest('tr');
