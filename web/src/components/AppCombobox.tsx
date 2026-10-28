@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import type { JSX } from 'react';
 
 import type { AppSummary } from '../api/personClient';
+import { useLowercaseInput } from '../hooks/useLowercaseInput';
 import { strings } from '../strings';
 import { isValidAppId } from '../validation';
 import './AppCombobox.css';
@@ -15,6 +16,8 @@ interface AppComboboxProps {
   onChange: (value: string) => void;
   apps: AppSummary[];
   placeholder?: string;
+  /** Opt in to lowercase-as-you-type (default off); only the Provision form sets it. */
+  lowercase?: boolean;
 }
 
 /** One selectable option: a registered app, or the "use this unregistered
@@ -35,7 +38,9 @@ export function AppCombobox({
   onChange,
   apps,
   placeholder,
+  lowercase = false,
 }: AppComboboxProps): JSX.Element {
+  const lowercaseInput = useLowercaseInput({ setValue: onChange });
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const listId = useId();
@@ -110,15 +115,29 @@ export function AppCombobox({
         aria-activedescendant={activeIndex >= 0 ? optionDomId(activeIndex) : undefined}
         placeholder={placeholder}
         value={value}
+        {...(lowercase
+          ? { autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false }
+          : undefined)}
         onChange={(event) => {
-          onChange(event.target.value);
+          if (lowercase) {
+            lowercaseInput.onChange(event);
+          } else {
+            onChange(event.target.value);
+          }
           setOpen(true);
           setHighlightedIndex(-1);
         }}
+        onCompositionStart={lowercase ? lowercaseInput.onCompositionStart : undefined}
+        onCompositionEnd={lowercase ? lowercaseInput.onCompositionEnd : undefined}
         onFocus={() => setOpen(true)}
         // onMouseDown(preventDefault) on options keeps focus, so a click commits
         // before this blur closes the popover.
-        onBlur={() => setOpen(false)}
+        onBlur={(event) => {
+          if (lowercase) {
+            lowercaseInput.onBlur(event);
+          }
+          setOpen(false);
+        }}
         onKeyDown={handleKeyDown}
       />
       {listboxVisible && (
