@@ -108,7 +108,9 @@ func (store *PGStore) DeleteStalePendingRequests(ctx context.Context, now time.T
 
 // ApproveRequest implements AdminStore. The request row is locked first, so two approvals
 // of one request (or an approval racing a rejection) run one after the other.
-func (store *PGStore) ApproveRequest(ctx context.Context, requestID int64, now time.Time) (Binding, error) {
+func (store *PGStore) ApproveRequest(
+	ctx context.Context, requestID int64, expectedAppID string, now time.Time,
+) (Binding, error) {
 	now = storeTime(now)
 	var binding Binding
 	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
@@ -124,6 +126,11 @@ func (store *PGStore) ApproveRequest(ctx context.Context, requestID int64, now t
 		}
 		if request.Status != RequestPending {
 			return ErrRequestNotPending
+		}
+		// The caller registered expectedAppID before this transaction; a request that now names
+		// another app must not be bound under it.
+		if request.AppID != expectedAppID {
+			return ErrRequestChanged
 		}
 
 		// An app owns the destination names that start with "<app_id>_", so an app id that is an
@@ -202,6 +209,19 @@ WHERE status = 'pending'
 		return Binding{}, txErr
 	}
 	return binding, nil
+}
+
+// GetRequest implements AdminStore. The read takes no lock.
+func (store *PGStore) GetRequest(ctx context.Context, requestID int64) (Request, error) {
+	request, scanErr := scanRequest(store.pool.QueryRow(ctx,
+		`SELECT `+requestColumns+` FROM app_registration_requests WHERE id = $1`, requestID))
+	if errors.Is(scanErr, pgx.ErrNoRows) {
+		return Request{}, ErrRequestNotFound
+	}
+	if scanErr != nil {
+		return Request{}, pgutil.WrapDBError("get identity request", scanErr)
+	}
+	return request, nil
 }
 
 // RejectRequest implements AdminStore.

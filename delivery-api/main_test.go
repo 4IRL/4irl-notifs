@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -420,7 +421,7 @@ func TestBuildMinterNeedsBothOriginAndCredential(testInstance *testing.T) {
 				return testCase.value, testCase.resolveErr
 			}
 			var logOutput bytes.Buffer
-			minter, minterErr := buildMinter(testCase.url, resolver, slog.New(slog.NewTextHandler(&logOutput, nil)))
+			minter, minterErr := buildProvisionClient(testCase.url, resolver, slog.New(slog.NewTextHandler(&logOutput, nil)))
 
 			if minterErr != nil {
 				subTest.Fatalf("unexpected error: %v", minterErr)
@@ -442,6 +443,127 @@ func TestBuildMinterNeedsBothOriginAndCredential(testInstance *testing.T) {
 				subTest.Error("log output leaks the credential")
 			}
 		})
+	}
+}
+
+func TestBuildProvisionClientIsNilWhenDisabled(testInstance *testing.T) {
+	const fakeCredential = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	resolver := func(string) (string, error) { return fakeCredential, nil }
+	var logOutput bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logOutput, nil))
+
+	disabled, disabledErr := buildProvisionClient("", resolver, logger)
+	if disabledErr != nil || disabled != nil {
+		testInstance.Fatalf("disabled client = %v, err = %v; want a nil *Client and no error", disabled, disabledErr)
+	}
+	enabled, enabledErr := buildProvisionClient("http://provisioning-api:8080", resolver, logger)
+	if enabledErr != nil || enabled == nil {
+		testInstance.Fatalf("enabled client = %v, err = %v; want a client", enabled, enabledErr)
+	}
+}
+
+func TestProvisionInterfaces(testInstance *testing.T) {
+	const fakeCredential = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	resolver := func(string) (string, error) { return fakeCredential, nil }
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	nilMinter, nilProvisioning := provisionInterfaces(nil)
+	if nilMinter != nil || nilProvisioning != nil {
+		testInstance.Errorf("nil client gave minter = %v, appProvisioning = %v; want untyped nils", nilMinter, nilProvisioning)
+	}
+
+	client, clientErr := buildProvisionClient("http://provisioning-api:8080", resolver, logger)
+	if clientErr != nil || client == nil {
+		testInstance.Fatalf("client = %v, err = %v; want a client", client, clientErr)
+	}
+	minter, appProvisioning := provisionInterfaces(client)
+	if minter == nil || appProvisioning == nil {
+		testInstance.Errorf("client gave minter = %v, appProvisioning = %v; want both set", minter, appProvisioning)
+	}
+}
+
+func TestBuildRegistrar(testInstance *testing.T) {
+	const fakeSecret = "fake-access-secret-value"
+	const resolverErrorText = "read secret file for PERSON_SERVICE_ACCESS_CLIENT_SECRET: no such file"
+	resolverFor := func(values map[string]string, failName string) func(string) (string, error) {
+		return func(name string) (string, error) {
+			if name == failName {
+				return "", errors.New(resolverErrorText)
+			}
+			return values[name], nil
+		}
+	}
+	testCases := []struct {
+		name       string
+		url        string
+		values     map[string]string
+		failName   string
+		wantNil    bool
+		wantWarn   string // text the WARN must carry; empty means no log output
+		wantNoText string // text the log must not carry
+	}{
+		{name: "url empty", url: "", wantNil: true, wantWarn: personServiceURLEnv},
+		{name: "url blank", url: "  \n", wantNil: true, wantWarn: personServiceURLEnv},
+		{name: "http without credentials", url: "http://person-service:8787"},
+		{
+			name: "https with empty secret", url: "https://people.example.test",
+			values:   map[string]string{personServiceAccessIDEnv: "id-1"},
+			wantWarn: personServiceAccessSecretEnv, wantNoText: fakeSecret,
+		},
+		{
+			name: "resolver error", url: "https://people.example.test",
+			values:   map[string]string{personServiceAccessIDEnv: "id-1", personServiceAccessSecretEnv: fakeSecret},
+			failName: personServiceAccessSecretEnv, wantWarn: resolverErrorText, wantNoText: fakeSecret,
+		},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			var logOutput bytes.Buffer
+			registrar := buildRegistrar(testCase.url, resolverFor(testCase.values, testCase.failName),
+				slog.New(slog.NewTextHandler(&logOutput, nil)))
+
+			if (registrar == nil) != testCase.wantNil {
+				subTest.Fatalf("registrar nil = %v, want %v", registrar == nil, testCase.wantNil)
+			}
+			if testCase.wantWarn == "" {
+				if logOutput.Len() != 0 {
+					subTest.Errorf("unexpected log output %q", logOutput.String())
+				}
+			} else if !strings.Contains(logOutput.String(), testCase.wantWarn) || !strings.Contains(logOutput.String(), "level=WARN") {
+				subTest.Errorf("want a WARN carrying %q, log = %q", testCase.wantWarn, logOutput.String())
+			}
+			if testCase.wantNoText != "" && strings.Contains(logOutput.String(), testCase.wantNoText) {
+				subTest.Errorf("log leaks %q: %q", testCase.wantNoText, logOutput.String())
+			}
+		})
+	}
+}
+
+func TestBuildRegistrarTrimsCredentialsAndSendsThemAsHeaders(testInstance *testing.T) {
+	headers := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		headers <- request.Header.Clone()
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	resolver := func(name string) (string, error) {
+		return map[string]string{
+			personServiceAccessIDEnv:     " id-1\n",
+			personServiceAccessSecretEnv: "\tsecret-1 \n",
+		}[name], nil
+	}
+
+	registrar := buildRegistrar(" "+server.URL+" ", resolver, newTestLogger())
+	if registrar == nil {
+		testInstance.Fatal("registrar is nil, want a client for the trimmed URL")
+	}
+	if createErr := registrar.CreateApp(context.Background(), "app-1", "app-1"); createErr != nil {
+		testInstance.Fatalf("CreateApp: %v", createErr)
+	}
+	got := <-headers
+	if got.Get("CF-Access-Client-Id") != "id-1" || got.Get("CF-Access-Client-Secret") != "secret-1" {
+		testInstance.Errorf("access headers = %q / %q, want the trimmed values",
+			got.Get("CF-Access-Client-Id"), got.Get("CF-Access-Client-Secret"))
 	}
 }
 
@@ -472,7 +594,7 @@ func TestBuildMinterRejectsNonInternalProvisioningHosts(testInstance *testing.T)
 			resolver := func(string) (string, error) { return fakeCredential, nil }
 			var logOutput bytes.Buffer
 
-			minter, minterErr := buildMinter(testCase.url, resolver, slog.New(slog.NewTextHandler(&logOutput, nil)))
+			minter, minterErr := buildProvisionClient(testCase.url, resolver, slog.New(slog.NewTextHandler(&logOutput, nil)))
 
 			if testCase.wantAccept {
 				if minterErr != nil || minter == nil {
@@ -720,6 +842,34 @@ func composeListsSecret(lines []string, secretName string) bool {
 	return false
 }
 
+// TestLocalComposeWiresDeliveryAPIToPersonService pins the local wiring that operator approval needs:
+// approval registers the app in person-service (blocking), so delivery-api must know its origin and
+// wait for it to be healthy, or every integration test that approves a binding fails.
+func TestLocalComposeWiresDeliveryAPIToPersonService(testInstance *testing.T) {
+	deliveryLines := composeServiceLines(testInstance, "docker-compose.yml", "delivery-api")
+
+	gotURL, present := composeEnvValue(deliveryLines, "PERSON_SERVICE_URL")
+	if !present || gotURL != "http://person-service:8787" {
+		testInstance.Errorf("docker-compose.yml delivery-api: PERSON_SERVICE_URL = %q (present=%v), want http://person-service:8787", gotURL, present)
+	}
+	// Lines are trimmed, so track having passed the depends_on: key; the entry must come after it.
+	underDependsOn := false
+	dependsOnPersonServiceHealthy := false
+	for index, line := range deliveryLines {
+		if line == "depends_on:" {
+			underDependsOn = true
+		}
+		if underDependsOn && line == "person-service:" && index+1 < len(deliveryLines) &&
+			deliveryLines[index+1] == "condition: service_healthy" {
+			dependsOnPersonServiceHealthy = true
+			break
+		}
+	}
+	if !dependsOnPersonServiceHealthy {
+		testInstance.Error("docker-compose.yml delivery-api must depend_on person-service with condition: service_healthy")
+	}
+}
+
 // TestLocalComposeWiresTheInternalCredentialAndModes pins the local stack: provisioning-api and
 // delivery-api carry the same obviously-fake dev credential, the credential check is log-only and
 // the grant check is enforce (so the integration suite exercises the real grant check).
@@ -816,6 +966,72 @@ func TestProdComposeMountsTheInternalCredentialSecret(testInstance *testing.T) {
 	}
 	if regexp.MustCompile(`[0-9a-f]{64}`).Match(contents) {
 		testInstance.Error("docker-compose.prod.yml contains a 64-hex literal; no credential value may be committed there")
+	}
+}
+
+// TestProdComposeWiresDeliveryAPIToPersonServiceWithPersistentSecrets pins production: approval
+// registers the app in person-service (blocking), so delivery-api needs the URL and the Access
+// service-token files, and those files must live in ./secrets-persistent/ (not the ./secrets/ that
+// the deploy deletes right after `up`).
+func TestProdComposeWiresDeliveryAPIToPersonServiceWithPersistentSecrets(testInstance *testing.T) {
+	deliveryLines := composeServiceLines(testInstance, "docker-compose.prod.yml", "delivery-api")
+	provisioningLines := composeServiceLines(testInstance, "docker-compose.prod.yml", "provisioning-api")
+
+	gotURL, present := composeEnvValue(deliveryLines, "PERSON_SERVICE_URL")
+	if !present || gotURL != "${PERSON_SERVICE_URL:-https://notifs-people.4irl.app}" {
+		testInstance.Errorf("docker-compose.prod.yml delivery-api: PERSON_SERVICE_URL = %q (present=%v)", gotURL, present)
+	}
+	for _, secretName := range []string{"PERSON_SERVICE_ACCESS_CLIENT_ID", "PERSON_SERVICE_ACCESS_CLIENT_SECRET"} {
+		wantPath := "/run/secrets/" + secretName
+		gotPath, filePresent := composeEnvValue(deliveryLines, secretName+"_FILE")
+		if !filePresent || gotPath != wantPath {
+			testInstance.Errorf("docker-compose.prod.yml delivery-api: %s_FILE = %q (present=%v), want %q", secretName, gotPath, filePresent, wantPath)
+		}
+		for service, lines := range map[string][]string{"delivery-api": deliveryLines, "provisioning-api": provisioningLines} {
+			if !composeListsSecret(lines, secretName) {
+				testInstance.Errorf("docker-compose.prod.yml %s does not list the %s secret", service, secretName)
+			}
+		}
+	}
+
+	contents, readErr := os.ReadFile(filepath.Join("..", "docker-compose.prod.yml"))
+	if readErr != nil {
+		testInstance.Fatalf("read docker-compose.prod.yml: %v", readErr)
+	}
+	for _, secretName := range []string{"PERSON_SERVICE_ACCESS_CLIENT_ID", "PERSON_SERVICE_ACCESS_CLIENT_SECRET"} {
+		secretMapping := regexp.MustCompile(`(?m)^  ` + secretName + `:\n    file: \./secrets-persistent/` + secretName + `$`)
+		if !secretMapping.Match(contents) {
+			testInstance.Errorf("docker-compose.prod.yml does not map %s to ./secrets-persistent/%s", secretName, secretName)
+		}
+	}
+	if strings.Contains(string(contents), "file: ./secrets/") {
+		testInstance.Error("docker-compose.prod.yml still maps a secret to the deleted ./secrets/ directory")
+	}
+
+	deployContents, deployErr := os.ReadFile(filepath.Join("..", ".github", "workflows", "prod-deploy.yml"))
+	if deployErr != nil {
+		testInstance.Fatalf("read prod-deploy.yml: %v", deployErr)
+	}
+	deploy := string(deployContents)
+	for _, secretName := range []string{"PERSON_SERVICE_ACCESS_CLIENT_ID", "PERSON_SERVICE_ACCESS_CLIENT_SECRET"} {
+		for _, wantLine := range []string{
+			`printf "%s" "${` + secretName + `_VALUE}" > ./secrets-persistent/` + secretName + `;`,
+			`chmod 644 ./secrets-persistent/` + secretName + `;`,
+		} {
+			if !strings.Contains(deploy, wantLine) {
+				testInstance.Errorf("prod-deploy.yml does not contain %q", wantLine)
+			}
+		}
+		if strings.Contains(deploy, "./secrets/"+secretName) {
+			testInstance.Errorf("prod-deploy.yml still writes %s into the deleted ./secrets/ directory", secretName)
+		}
+		wantValueLine := secretName + `_VALUE="${{ secrets.` + secretName + ` }}";`
+		if !strings.Contains(deploy, wantValueLine) {
+			testInstance.Errorf("prod-deploy.yml does not contain %q", wantValueLine)
+		}
+	}
+	if !strings.Contains(deploy, "rm -rf ./secrets/;") {
+		testInstance.Error("prod-deploy.yml does not clear leftovers with `rm -rf ./secrets/;`")
 	}
 }
 

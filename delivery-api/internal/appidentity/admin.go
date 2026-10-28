@@ -37,6 +37,17 @@ var (
 	// ("a_b" next to "a"), or the reverse. Destination names only need the prefix "<app_id>_",
 	// so the two apps' name spaces would overlap and one could squat names in the other's.
 	ErrAppIDOverlap = errors.New("app id overlaps an approved app id")
+	// ErrRequestChanged means the request's app_id differs from the one the caller read before
+	// registering the app, so the approval is refused and nothing is written.
+	ErrRequestChanged = errors.New("registration request changed during approval")
+	// ErrAppRegistryUnavailable means the app could not be registered in the people directory
+	// (person-service). The approval writes nothing and can be retried.
+	ErrAppRegistryUnavailable = errors.New("app registry unavailable")
+	// ErrAppRegistryNotConfigured means no app registrar is configured, so no approval can run.
+	ErrAppRegistryNotConfigured = errors.New("app registry is not configured")
+	// ErrAppIDReserved means the request's app_id is reserved by the people directory and can
+	// never be approved; the operator rejects the request.
+	ErrAppIDReserved = errors.New("app id is reserved")
 	// ErrKeyNotFound means no app key has the given id.
 	ErrKeyNotFound = errors.New("app key does not exist")
 )
@@ -137,9 +148,14 @@ type AdminStore interface {
 	// ApproveRequest creates the binding from the pending request's claims and deletes the
 	// request, in one transaction, along with every other pending request for the same app id
 	// or the same workflow identity (they can never be approved now). Rejected requests stay.
-	// It returns ErrRequestNotFound, ErrRequestNotPending, ErrAppIDOverlap,
+	// expectedAppID is the app_id the caller read (and registered) before calling; the locked
+	// request must still carry it.
+	// It returns ErrRequestNotFound, ErrRequestNotPending, ErrRequestChanged, ErrAppIDOverlap,
 	// ErrAppAlreadyBound or ErrWorkflowIdentityBound, and changes nothing in those cases.
-	ApproveRequest(ctx context.Context, requestID int64, now time.Time) (Binding, error)
+	ApproveRequest(ctx context.Context, requestID int64, expectedAppID string, now time.Time) (Binding, error)
+
+	// GetRequest reads one request without locking it. ErrRequestNotFound for an unknown id.
+	GetRequest(ctx context.Context, requestID int64) (Request, error)
 
 	// RejectRequest marks a pending request rejected at now. A request that is already
 	// rejected is returned unchanged. ErrRequestNotFound for an unknown id.

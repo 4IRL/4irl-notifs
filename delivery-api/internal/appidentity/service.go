@@ -19,6 +19,13 @@ const (
 
 	// maxLoggedReasonChars bounds an attacker-influenced rejection reason in a log line.
 	maxLoggedReasonChars = 300
+
+	// reservedAppID is the app id the people directory reserves for itself and refuses to register.
+	reservedAppID = "everyone"
+	// registerTimeout bounds one people-directory registration during an approval. It is a backstop
+	// over the registrar client's own (shorter) timeout, so with the default client it is not the
+	// binding limit.
+	registerTimeout = 10 * time.Second
 )
 
 var (
@@ -45,6 +52,17 @@ func ValidateAppID(appID string) error {
 	return nil
 }
 
+// validateExchangeAppID rejects the people directory's reserved app id at the exchange only, so
+// no request that could never be approved is filed. ValidateAppID stays the plain slug rule
+// (Unbind uses it), because a binding for the reserved id may predate this check and must
+// remain removable.
+func validateExchangeAppID(appID string) error {
+	if appID == reservedAppID {
+		return &ValidationError{Message: "invalid app_id"}
+	}
+	return nil
+}
+
 // TokenVerifier checks a GitHub Actions OIDC token. *Verifier satisfies it.
 type TokenVerifier interface {
 	Verify(ctx context.Context, rawToken string, replay ReplayRecorder) (Claims, error)
@@ -62,11 +80,20 @@ type ExchangeResult struct {
 	RequestID int64
 }
 
+// AppRegistrar registers an app in the people directory. *personsvc.Client satisfies it. A
+// CreateApp for an app that already exists succeeds.
+type AppRegistrar interface {
+	CreateApp(ctx context.Context, appID string, displayName string) error
+}
+
 // ServiceConfig configures a Service. Store, Admin and Verifier are required.
 type ServiceConfig struct {
 	Store    Store
 	Admin    AdminStore
 	Verifier TokenVerifier
+	// Registrar registers an approved app in the people directory. Nil makes ApproveRequest
+	// answer ErrAppRegistryNotConfigured (fail closed).
+	Registrar AppRegistrar
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
 	// Now is the clock; defaults to time.Now. Tests set it.
@@ -76,21 +103,23 @@ type ServiceConfig struct {
 // Service is the app identity use cases: the token exchange an app's deploy calls, and the
 // operator's approval queue, key revocation and unbinding.
 type Service struct {
-	store    Store
-	admin    AdminStore
-	verifier TokenVerifier
-	logger   *slog.Logger
-	now      func() time.Time
+	store     Store
+	admin     AdminStore
+	verifier  TokenVerifier
+	registrar AppRegistrar
+	logger    *slog.Logger
+	now       func() time.Time
 }
 
 // NewService builds a Service from config.
 func NewService(config ServiceConfig) *Service {
 	service := &Service{
-		store:    config.Store,
-		admin:    config.Admin,
-		verifier: config.Verifier,
-		logger:   config.Logger,
-		now:      config.Now,
+		store:     config.Store,
+		admin:     config.Admin,
+		verifier:  config.Verifier,
+		registrar: config.Registrar,
+		logger:    config.Logger,
+		now:       config.Now,
 	}
 	if service.logger == nil {
 		service.logger = slog.Default()
@@ -128,6 +157,9 @@ func (service *Service) Exchange(ctx context.Context, appID string, token string
 	started := time.Now()
 	if validateErr := ValidateAppID(appID); validateErr != nil {
 		return ExchangeResult{}, validateErr
+	}
+	if reservedErr := validateExchangeAppID(appID); reservedErr != nil {
+		return ExchangeResult{}, reservedErr
 	}
 	if token == "" {
 		return ExchangeResult{}, &ValidationError{Message: "token is required"}
@@ -282,8 +314,42 @@ func (service *Service) ListRequests(ctx context.Context) ([]Request, error) {
 }
 
 // ApproveRequest turns a pending request into the app's binding.
+//
+// The app is registered in the people directory first, outside the binding transaction and its
+// advisory lock, so a slow or failing registry never holds a database lock. A failed
+// registration returns ErrAppRegistryUnavailable and writes nothing. The store re-checks under
+// its row lock that the request still names the app that was registered.
 func (service *Service) ApproveRequest(ctx context.Context, requestID int64) (Binding, error) {
-	binding, approveErr := service.admin.ApproveRequest(ctx, requestID, service.now())
+	if service.registrar == nil {
+		return Binding{}, ErrAppRegistryNotConfigured
+	}
+	request, getErr := service.admin.GetRequest(ctx, requestID)
+	if getErr != nil {
+		return Binding{}, getErr
+	}
+	if request.Status != RequestPending {
+		return Binding{}, ErrRequestNotPending
+	}
+	if request.AppID == reservedAppID {
+		return Binding{}, ErrAppIDReserved
+	}
+
+	registerCtx, cancel := context.WithTimeout(ctx, registerTimeout)
+	defer cancel()
+	registerStarted := time.Now()
+	if registerErr := service.registrar.CreateApp(registerCtx, request.AppID, request.AppID); registerErr != nil {
+		// The caller went away (parent context only, so the registerTimeout still maps to
+		// ErrAppRegistryUnavailable): not a registry fault, so no WARN.
+		if ctx.Err() != nil {
+			return Binding{}, ctx.Err()
+		}
+		service.logger.WarnContext(ctx, "app registry registration failed",
+			"request_id", requestID, "app_id", request.AppID,
+			"duration", time.Since(registerStarted).String(), "error", loggedReason(registerErr))
+		return Binding{}, fmt.Errorf("%w: %w", ErrAppRegistryUnavailable, registerErr)
+	}
+
+	binding, approveErr := service.admin.ApproveRequest(ctx, requestID, request.AppID, service.now())
 	if approveErr != nil {
 		return Binding{}, approveErr
 	}

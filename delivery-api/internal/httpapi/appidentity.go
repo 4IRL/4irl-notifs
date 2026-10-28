@@ -27,6 +27,9 @@ const (
 	errMsgAppAlreadyBound        = "app already bound"
 	errMsgWorkflowAlreadyBound   = "workflow identity already bound"
 	errMsgAppIDOverlap           = "app id overlaps an approved app id"
+	errMsgRequestChanged         = "registration request changed during approval"
+	errMsgAppRegistryUnavailable = "app registry unavailable"
+	errMsgAppIDReserved          = "app id is reserved"
 )
 
 // AppIdentity is the app identity surface the exchange, the /v1/admin/app-identity endpoints and
@@ -341,6 +344,15 @@ func (server *Server) writeIdentityError(responseWriter http.ResponseWriter, req
 		writeError(responseWriter, http.StatusConflict, errMsgWorkflowAlreadyBound)
 	case errors.Is(err, appidentity.ErrAppIDOverlap):
 		writeError(responseWriter, http.StatusConflict, errMsgAppIDOverlap)
+	case errors.Is(err, appidentity.ErrRequestChanged):
+		writeError(responseWriter, http.StatusConflict, errMsgRequestChanged)
+	case errors.Is(err, appidentity.ErrAppIDReserved):
+		writeError(responseWriter, http.StatusConflict, errMsgAppIDReserved)
+	// The registry cases precede the context cases: a registry failure may wrap a deadline.
+	case errors.Is(err, appidentity.ErrAppRegistryUnavailable):
+		writeError(responseWriter, http.StatusBadGateway, errMsgAppRegistryUnavailable)
+	case errors.Is(err, appidentity.ErrAppRegistryNotConfigured):
+		writeError(responseWriter, http.StatusServiceUnavailable, errMsgAppRegistryUnavailable)
 	case errors.Is(err, context.Canceled):
 		// The client went away: not a server fault, and a client that can disconnect at will
 		// must not be able to flood the error log. The response is moot, but stays the generic 500.

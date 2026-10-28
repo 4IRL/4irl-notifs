@@ -11,8 +11,11 @@ import './AddAppForm.css';
 /** Props for AddAppForm. onAddApp registers the app and mints its publisher
  *  token, returning the reveal-once result. */
 interface AddAppFormProps {
-  onAddApp: (params: CreateAppParams) => Promise<ProvisionAppResult>;
+  onAddApp: (params: CreateAppParams) => Promise<AddAppResult>;
 }
+
+/** ProvisionAppResult plus a flag set when the app row already existed. */
+export type AddAppResult = ProvisionAppResult & { alreadyRegistered?: boolean };
 
 /**
  * Form for registering a new app. On success it reveals the app's publisher
@@ -27,7 +30,7 @@ export function AddAppForm({ onAddApp }: AddAppFormProps) {
   const [description, setDescription] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [result, setResult] = useState<ProvisionAppResult | null>(null);
+  const [result, setResult] = useState<AddAppResult | null>(null);
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -109,6 +112,11 @@ export function AddAppForm({ onAddApp }: AddAppFormProps) {
             {error}
           </p>
         )}
+
+        {/* Always mounted so screen readers announce the text when it is filled. */}
+        <p role="status" className="add-app-form__status">
+          {result?.alreadyRegistered === true ? strings.appAlreadyRegisteredNote : ''}
+        </p>
 
         {result !== null && (
           <div className="add-app-form__token-reveal">

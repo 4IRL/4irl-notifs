@@ -189,7 +189,9 @@ app. The per-app identity runbook (approve, revoke, unbind) is in `docs/app-inte
 ### App identity
 
 An app proves which app it is with a delivery key it gets from its own GitHub Actions deploy, independent
-of its Access token.
+of its Access token. With that key an app can also provision and remove its own users:
+`POST /v1/apps/{app_id}/provision` (`{email}`) and `POST /v1/apps/{app_id}/deprovision` (`{email}` or
+`{person_hash}`) relay provisioning-api's answer (upstream 401/403/3xx become a fixed 502).
 
 1. The app's deploy workflow requests a GitHub OIDC token (audience `DELIVERY_OIDC_AUDIENCE`, default
    `notifs-delivery`) and posts `{"app_id","token"}` to `POST /v1/app-identity/exchange` (behind the Access
@@ -205,10 +207,12 @@ of its Access token.
    `/v1/admin/app-identity/requests/{id}/approve|reject`. Approval creates the **binding**
    `app_id` ← (repository id, owner id, workflow path, ref, environment) and deletes the request
    together with every other pending request for that app id or workflow identity (they can never
-   be approved now, and would otherwise hold pending-cap slots);
-   a rejected request stays in the list for 30 days (the periodic cleanup, which also sweeps the
-   OIDC replay ledger and the stale pending requests above, then deletes it), and a later exchange with the same claims files a fresh
-   pending request.
+   be approved now, and would otherwise hold pending-cap slots). Approval first creates the
+   person-service app row (a blocking call made before the binding transaction; a 409 there means it
+   is already registered, and any other failure fails the approval with nothing written: 502 if
+   person-service fails, 503 if not configured); a rejected request stays in the list for 30 days
+   (the periodic cleanup, which also sweeps the OIDC replay ledger and the stale pending requests
+   above, then deletes it), and a later exchange with the same claims files a fresh pending request.
 4. With a binding, an exchange whose claims all match issues a **new key** (`200 {"status":"issued","app_id","key","key_id"}`,
    the plaintext only here, once), marks the app's other live keys superseded in the same transaction, and
    the superseded key keeps working for 24 h. Claims that differ from the binding in any of the five fields
@@ -798,7 +802,8 @@ graph TD
   Compose secrets (`PERSON_SERVICE_ACCESS_CLIENT_*`), never a plaintext `.env`.
 - **`DELIVERY_DB_PASSWORD` (required repo secret)**: the delivery-api Postgres password, 32+ lowercase
   hex characters (`openssl rand -hex 32`); the deploy fails before touching the VPS if it is missing or
-  malformed, so set it before the first merge. Unlike the secrets above it is written to
+  malformed, so set it before the first merge. Unlike the optional `PERSON_SERVICE_ACCESS_CLIENT_*` secrets above (which also live in
+  `secrets-persistent/` and are written empty when unset), it is required, and it is written to
   `secrets-persistent/` on every deploy and never deleted (delivery-api reads it on every start).
   Postgres fixes the password into the `delivery-pgdata` volume at initdb, so **rotating** the GitHub
   secret first needs `ALTER ROLE delivery PASSWORD '<new value>'` run inside `delivery-postgres`;

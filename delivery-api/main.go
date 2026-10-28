@@ -29,6 +29,7 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/keyrotation"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personsvc"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/readiness"
@@ -51,6 +52,12 @@ const (
 	// provisioningCredentialEnv names the secret holding the internal credential provisioning-api requires
 	// (resolved through secretenv, so DELIVERY_PROVISIONING_CREDENTIAL_FILE works in production).
 	provisioningCredentialEnv = "DELIVERY_PROVISIONING_CREDENTIAL"
+	// personServiceURLEnv names the env var holding the person-service origin used to register an approved app.
+	personServiceURLEnv = "PERSON_SERVICE_URL"
+	// personServiceAccessIDEnv and personServiceAccessSecretEnv name the Cloudflare Access service token secrets
+	// (resolved through secretenv, so the _FILE forms work in production).
+	personServiceAccessIDEnv     = "PERSON_SERVICE_ACCESS_CLIENT_ID"
+	personServiceAccessSecretEnv = "PERSON_SERVICE_ACCESS_CLIENT_SECRET"
 
 	defaultListenAddress = ":8080"
 	readHeaderTimeout    = 10 * time.Second
@@ -79,13 +86,22 @@ func envOrDefault(key string, fallback string) string {
 	return fallback
 }
 
-// buildMinter returns the publisher minter, or nil when minting is unavailable. It needs both the
-// provisioning-api origin and the internal credential: with either missing it returns a nil interface (not a
-// typed-nil *provisionclient.Client), which makes publisher.Service.Mint answer ErrMintUnavailable, and logs one
-// WARN naming the missing variable. A set URL whose host is not the compose service name of
+// provisionInterfaces maps the provisioning client to the interfaces that consume it. Each is set only
+// when the client exists: an untyped nil (never a typed-nil *provisionclient.Client) keeps the 503 /
+// publisher.ErrMintUnavailable guards working.
+func provisionInterfaces(client *provisionclient.Client) (publisher.Minter, httpapi.AppProvisioning) {
+	if client == nil {
+		return nil, nil
+	}
+	return client, client
+}
+
+// buildProvisionClient returns the provisioning-api client, or a nil client when it is unavailable. It needs
+// both the provisioning-api origin and the internal credential: with either missing it returns nil and logs
+// one WARN naming the missing variable. A set URL whose host is not the compose service name of
 // provisioning-api (internalProvisioningHost) is a startup error, so the credential is never sent to
 // another origin. The credential value is never logged.
-func buildMinter(provisioningURL string, resolveSecret func(string) (string, error), logger *slog.Logger) (publisher.Minter, error) {
+func buildProvisionClient(provisioningURL string, resolveSecret func(string) (string, error), logger *slog.Logger) (*provisionclient.Client, error) {
 	if provisioningURL == "" {
 		logger.Warn("publisher minting disabled: " + provisioningURLEnv + " unset")
 		return nil, nil
@@ -108,6 +124,40 @@ func buildMinter(provisioningURL string, resolveSecret func(string) (string, err
 	}
 	return provisionclient.New(provisionclient.Config{BaseURL: provisioningURL, Credential: credential}), nil
 }
+
+// buildRegistrar returns the people-directory registrar used when the operator approves an app, or a nil
+// interface (never a typed-nil *personsvc.Client, which would bypass the fail-closed nil guard) when
+// PERSON_SERVICE_URL is unset. Approval then answers 503. One WARN names each missing or unreadable
+// variable, never its value.
+func buildRegistrar(personServiceURL string, resolveSecret func(string) (string, error), logger *slog.Logger) appidentity.AppRegistrar {
+	personServiceURL = strings.TrimSpace(personServiceURL)
+	if personServiceURL == "" {
+		logger.Warn("app registration on approval disabled: " + personServiceURLEnv + " unset")
+		return nil
+	}
+	resolve := func(name string) string {
+		raw, resolveErr := resolveSecret(name)
+		if resolveErr != nil {
+			// The resolver error names the variable and the file path, never the secret value.
+			logger.Warn("person-service access credential unreadable: "+name, "error", resolveErr)
+			return ""
+		}
+		return strings.TrimSpace(raw)
+	}
+	accessID := resolve(personServiceAccessIDEnv)
+	accessSecret := resolve(personServiceAccessSecretEnv)
+	if strings.HasPrefix(personServiceURL, "https://") && (accessID == "" || accessSecret == "") {
+		logger.Warn("person-service URL is https but a Cloudflare Access credential is empty: " +
+			personServiceAccessIDEnv + " / " + personServiceAccessSecretEnv)
+	}
+	client := personsvc.NewClient(personsvc.Config{
+		BaseURL: personServiceURL, AccessClientID: accessID, AccessClientSecret: accessSecret, Logger: logger,
+	})
+	return client
+}
+
+// Compile-time check that the production client satisfies the approval registrar.
+var _ appidentity.AppRegistrar = (*personsvc.Client)(nil)
 
 // checkInternalProvisioningURL accepts only an http(s) URL, without userinfo, whose host is the compose
 // service name of provisioning-api. Plain http is allowed because the origin is on the compose network.
@@ -260,7 +310,9 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Store:    appIdentityStore,
 		Admin:    appIdentityStore,
 		Verifier: oidcVerifier,
-		Logger:   logger,
+		// A nil interface when unconfigured: approval fails closed with 503.
+		Registrar: buildRegistrar(os.Getenv(personServiceURLEnv), secretenv.Resolve, logger),
+		Logger:    logger,
 	})
 
 	checker := readiness.NewChecker(pool, migrate.NewPGStore(pool), migrate.ExpectedVersion(loaded))
@@ -275,10 +327,11 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	guardedClient := transport.New(transport.Config{})
 	messageStore := message.NewPGStore(pool)
 	sinks, supportedTypes := buildSinks(guardedClient, envOrDefault(ntfyURLEnv, ""), logger)
-	minter, minterErr := buildMinter(envOrDefault(provisioningURLEnv, ""), secretenv.Resolve, logger)
-	if minterErr != nil {
-		return minterErr
+	provisionClient, provisionClientErr := buildProvisionClient(envOrDefault(provisioningURLEnv, ""), secretenv.Resolve, logger)
+	if provisionClientErr != nil {
+		return provisionClientErr
 	}
+	minter, appProvisioning := provisionInterfaces(provisionClient)
 	publisherService := publisher.NewService(publisher.NewPGStore(pool), minter, sealer)
 	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil
 	// *publisher.Service) makes the worker dead-letter a recipient delivery as no_publisher instead of sending.
@@ -324,6 +377,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Publishers:       publisherService,
 		Heartbeats:       heartbeatService,
 		AppHeartbeats:    heartbeatService,
+		AppProvisioning:  appProvisioning,
 		AppIdentity:      appIdentityService,
 	}).Handler()
 

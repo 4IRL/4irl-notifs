@@ -20,8 +20,9 @@ on:
       CF_ACCESS_CLIENT_SECRET:
         required: true
       # Wave-2 person-service dual-write Access Service-Token credentials. Optional:
-      # when unset they resolve to empty, written as empty ./secrets/* files, leaving
-      # the dual-write auth unset (fails closed, swallowed — core provisioning unaffected).
+      # when unset they resolve to empty, written as empty ./secrets-persistent/* files, leaving
+      # the person-service auth unset (fails closed: operator approval returns an error and
+      # writes no binding, and provisioning-api's person-service calls are rejected).
       PERSON_SERVICE_ACCESS_CLIENT_ID:
         required: false
       PERSON_SERVICE_ACCESS_CLIENT_SECRET:
@@ -29,8 +30,8 @@ on:
       # ntfy iOS-bridge upstream poll rate-limit token for ntfy.sh. Optional: when the repo
       # secret is unset it resolves to empty, leaving the upstream bridge on ntfy.sh's
       # free/anonymous per-IP poll limit (fails open — iOS push still works, just rate-limited
-      # under bulk/periodic sends). Unlike the PERSON_SERVICE_* Docker secrets above (delivered
-      # as /run/secrets/*_FILE), ntfy needs this as a real ENV VAR, so it is exported into the
+      # under bulk/periodic sends). Unlike the PERSON_SERVICE_* Docker secrets above (written to
+      # ./secrets-persistent/ and delivered as /run/secrets/*_FILE), ntfy needs this as a real ENV VAR, so it is exported into the
       # deploy shell just before `docker compose up` rather than written to a secrets file.
       NTFY_UPSTREAM_ACCESS_TOKEN:
         required: false
@@ -154,20 +155,22 @@ jobs:
           scp -T -q -o StrictHostKeyChecking=no ntfy/server.yml ${{ secrets.PROD_SSH_HOST }}:/home/4irl-notifs/ntfy/
 
       # Pull updated images, recreate only what changed, run as daemon, and prune old images.
-      # Secret handling mirrors urls4irl: the person-service Access Service-Token credentials
-      # are delivered as Docker Compose secrets. The step below writes ./secrets/* from the
-      # GitHub Actions secrets of the same name just before `up` (so compose can mount them at
-      # /run/secrets), then `rm -rf ./secrets/` immediately after — no plaintext secret persists
-      # on the host, and none enters the container environment. The ntfy iOS-bridge upstream
+      # The person-service Access Service-Token credentials are delivered as Docker Compose
+      # secrets from ./secrets-persistent/ (see below): delivery-api re-reads them on every
+      # restart because operator approval now blocks on person-service. The legacy ./secrets/
+      # directory is no longer written; the `rm -rf ./secrets/` after `up` only clears leftovers
+      # of the old layout. No secret enters the container environment. The ntfy iOS-bridge upstream
       # token (NTFY_UPSTREAM_ACCESS_TOKEN) is the exception: ntfy reads it as a real ENV VAR,
       # not a /run/secrets/*_FILE, so it is `export`ed into this deploy shell just before `up`
       # (empty when the repo secret is unset — fails open to the free bridge; never echoed, and
       # not written to disk). Non-secret hostnames (NTFY_BASE_URL, PERSON_SERVICE_URL) stay
       # baked into the compose file's defaults.
       #
-      # The delivery DB password, master key and internal credential are the exceptions: they live in
-      # ./secrets-persistent/ and are never deleted, because delivery-api (and, for the password,
-      # delivery-migrate; for the credential, provisioning-api too) read them on every start. The file is
+      # The delivery DB password, master key, internal credential and person-service Access
+      # credentials live in ./secrets-persistent/ and are never deleted, because delivery-api (and, for
+      # the password, delivery-migrate; for the credential and person-service ones, provisioning-api
+      # too) read them on every start. The person-service ones are optional (written empty when the
+      # GitHub secret is unset, so the compose mounts never fail on a missing path). The file is
       # 0644, not 0600: the deploy user (uid 1001) owns it but those containers run as uid 1000
       # and must read the bind mount; the 0700 directory is the real access boundary.
       #
@@ -187,15 +190,16 @@ jobs:
           DELIVERY_MASTER_KEY_VALUE="${{ secrets.DELIVERY_MASTER_KEY }}";
           DELIVERY_MASTER_KEY_PREVIOUS_VALUE="${{ secrets.DELIVERY_MASTER_KEY_PREVIOUS }}";
           PROVISIONING_INTERNAL_CREDENTIAL_VALUE="${{ secrets.PROVISIONING_INTERNAL_CREDENTIAL }}";
+          PERSON_SERVICE_ACCESS_CLIENT_ID_VALUE="${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_ID }}";
+          PERSON_SERVICE_ACCESS_CLIENT_SECRET_VALUE="${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_SECRET }}";
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
-
-          mkdir -p ./secrets/;
-          chmod 700 ./secrets/;
-          echo "${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_ID }}" > ./secrets/PERSON_SERVICE_ACCESS_CLIENT_ID;
-          echo "${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_SECRET }}" > ./secrets/PERSON_SERVICE_ACCESS_CLIENT_SECRET;
 
           mkdir -p ./secrets-persistent/;
           chmod 700 ./secrets-persistent/;
+          printf "%s" "${PERSON_SERVICE_ACCESS_CLIENT_ID_VALUE}" > ./secrets-persistent/PERSON_SERVICE_ACCESS_CLIENT_ID;
+          chmod 644 ./secrets-persistent/PERSON_SERVICE_ACCESS_CLIENT_ID;
+          printf "%s" "${PERSON_SERVICE_ACCESS_CLIENT_SECRET_VALUE}" > ./secrets-persistent/PERSON_SERVICE_ACCESS_CLIENT_SECRET;
+          chmod 644 ./secrets-persistent/PERSON_SERVICE_ACCESS_CLIENT_SECRET;
           printf "%s" "${DELIVERY_DB_PASSWORD_VALUE}" > ./secrets-persistent/DELIVERY_DB_PASSWORD;
           chmod 644 ./secrets-persistent/DELIVERY_DB_PASSWORD;
           [ -s ./secrets-persistent/DELIVERY_DB_PASSWORD ] || { echo "DELIVERY_DB_PASSWORD file is empty after write; aborting"; exit 1; };

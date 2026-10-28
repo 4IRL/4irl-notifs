@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -612,6 +613,53 @@ type fakeAdminStore struct {
 	key     Key
 	deleted bool
 	unbound string
+
+	// getErr is what GetRequest returns; approveErr is what ApproveRequest returns (err when nil).
+	getErr     error
+	approveErr error
+	// calls records the order of GetRequest and ApproveRequest; approvedAppID is the
+	// expectedAppID the store was asked to approve under.
+	calls         *[]string
+	approvedAppID string
+}
+
+func (fake *fakeAdminStore) record(call string) {
+	if fake.calls != nil {
+		*fake.calls = append(*fake.calls, call)
+	}
+}
+
+func (fake *fakeAdminStore) GetRequest(_ context.Context, _ int64) (Request, error) {
+	fake.record("get")
+	if fake.getErr != nil {
+		return Request{}, fake.getErr
+	}
+	request := fake.request
+	if request.Status == "" {
+		request.Status = RequestPending
+	}
+	return request, nil
+}
+
+// fakeRegistrar is a scripted AppRegistrar that records each call.
+type fakeRegistrar struct {
+	err         error
+	appIDs      []string
+	displayName []string
+	calls       *[]string
+	// deadline and hasDeadline are the deadline of the context the last CreateApp received.
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (fake *fakeRegistrar) CreateApp(ctx context.Context, appID string, displayName string) error {
+	if fake.calls != nil {
+		*fake.calls = append(*fake.calls, "register")
+	}
+	fake.deadline, fake.hasDeadline = ctx.Deadline()
+	fake.appIDs = append(fake.appIDs, appID)
+	fake.displayName = append(fake.displayName, displayName)
+	return fake.err
 }
 
 func (fake *fakeAdminStore) ListRequests(_ context.Context, now time.Time) ([]Request, error) {
@@ -619,8 +667,13 @@ func (fake *fakeAdminStore) ListRequests(_ context.Context, now time.Time) ([]Re
 	return []Request{fake.request}, fake.err
 }
 
-func (fake *fakeAdminStore) ApproveRequest(_ context.Context, _ int64, now time.Time) (Binding, error) {
+func (fake *fakeAdminStore) ApproveRequest(_ context.Context, _ int64, expectedAppID string, now time.Time) (Binding, error) {
+	fake.record("approve")
 	fake.now = now
+	fake.approvedAppID = expectedAppID
+	if fake.approveErr != nil {
+		return fake.binding, fake.approveErr
+	}
 	return fake.binding, fake.err
 }
 
@@ -650,7 +703,9 @@ func TestAdminUseCasesPassTheServiceClockAndLogTheDecision(testInstance *testing
 		binding: matchingBinding(), request: Request{ID: 3, AppID: "urls4irl"},
 		key: Key{ID: 4, AppID: "urls4irl", Hint: "dak_abcd", State: KeyRevoked}, deleted: true,
 	}
-	service := NewService(ServiceConfig{Admin: admin, Logger: textLogger(logs), Now: func() time.Time { return testNow }})
+	service := NewService(ServiceConfig{
+		Admin: admin, Registrar: &fakeRegistrar{}, Logger: textLogger(logs), Now: func() time.Time { return testNow },
+	})
 	ctx := context.Background()
 
 	// The fake keeps one shared "now", so each call's time is checked and cleared before the next.
@@ -694,8 +749,12 @@ func TestAdminUseCasesPassTheServiceClockAndLogTheDecision(testInstance *testing
 
 func TestAdminUseCasesReturnStoreErrorsAndLogNothing(testInstance *testing.T) {
 	logs := &syncBuffer{}
-	admin := &fakeAdminStore{err: ErrRequestNotFound}
-	service := NewService(ServiceConfig{Admin: admin, Logger: textLogger(logs), Now: func() time.Time { return testNow }})
+	// getErr makes ApproveRequest fail at GetRequest, before the registrar and the store's
+	// ApproveRequest; the store-level ErrRequestNotFound path has its own "vanished under lock" row.
+	admin := &fakeAdminStore{err: ErrRequestNotFound, getErr: ErrRequestNotFound}
+	service := NewService(ServiceConfig{
+		Admin: admin, Registrar: &fakeRegistrar{}, Logger: textLogger(logs), Now: func() time.Time { return testNow },
+	})
 	ctx := context.Background()
 
 	if _, err := service.ApproveRequest(ctx, 1); !errors.Is(err, ErrRequestNotFound) {
@@ -715,18 +774,146 @@ func TestAdminUseCasesReturnStoreErrorsAndLogNothing(testInstance *testing.T) {
 	}
 }
 
-func TestApproveRequestReturnsAnAppIDOverlapAndLogsNoApproval(testInstance *testing.T) {
+func TestApproveRequestRegistersTheStoredAppBeforeTheStoreApproves(testInstance *testing.T) {
 	logs := &syncBuffer{}
-	admin := &fakeAdminStore{err: fmt.Errorf("approve: %w", ErrAppIDOverlap)}
-	service := NewService(ServiceConfig{Admin: admin, Logger: textLogger(logs), Now: func() time.Time { return testNow }})
-
-	_, err := service.ApproveRequest(context.Background(), 1)
-
-	if !errors.Is(err, ErrAppIDOverlap) {
-		testInstance.Errorf("ApproveRequest err = %v, want ErrAppIDOverlap", err)
+	var calls []string
+	admin := &fakeAdminStore{
+		binding: matchingBinding(), request: Request{ID: 3, AppID: "urls4irl"}, calls: &calls,
 	}
-	if logs.String() != "" {
-		testInstance.Errorf("a refused approval must not be logged as a success:\n%s", logs.String())
+	registrar := &fakeRegistrar{calls: &calls}
+	service := NewService(ServiceConfig{
+		Admin: admin, Registrar: registrar, Logger: textLogger(logs), Now: func() time.Time { return testNow },
+	})
+
+	binding, err := service.ApproveRequest(context.Background(), 3)
+
+	if err != nil || binding.AppID != "urls4irl" {
+		testInstance.Fatalf("ApproveRequest = %+v, %v", binding, err)
+	}
+	if got := strings.Join(calls, ","); got != "get,register,approve" {
+		testInstance.Errorf("call order = %s, want get,register,approve", got)
+	}
+	if len(registrar.appIDs) != 1 || registrar.appIDs[0] != "urls4irl" || registrar.displayName[0] != "urls4irl" {
+		testInstance.Errorf("registrar saw %v / %v, want the stored app_id as id and display name", registrar.appIDs, registrar.displayName)
+	}
+	if admin.approvedAppID != "urls4irl" {
+		testInstance.Errorf("store approved under %q, want the stored app_id", admin.approvedAppID)
+	}
+	if !strings.Contains(logs.String(), "app identity request approved") {
+		testInstance.Errorf("log is missing the approval:\n%s", logs.String())
+	}
+}
+
+func TestApproveRequestRefusals(testInstance *testing.T) {
+	deadline := fmt.Errorf("post: %w", context.DeadlineExceeded)
+	for _, testCase := range []struct {
+		name         string
+		admin        *fakeAdminStore
+		registrarErr error
+		noRegistrar  bool
+		canceled     bool
+		wantErr      error
+		wantCalls    []string
+	}{
+		{"registrar fails", &fakeAdminStore{request: Request{AppID: "urls4irl"}}, errors.New("status 500"), false, false,
+			ErrAppRegistryUnavailable, []string{"get", "register"}},
+		{"registrar times out", &fakeAdminStore{request: Request{AppID: "urls4irl"}}, deadline, false, false,
+			ErrAppRegistryUnavailable, []string{"get", "register"}},
+		{"caller canceled", &fakeAdminStore{request: Request{AppID: "urls4irl"}}, context.Canceled, false, true,
+			context.Canceled, []string{"get", "register"}},
+		{"reserved app id", &fakeAdminStore{request: Request{AppID: "everyone"}}, nil, false, false,
+			ErrAppIDReserved, []string{"get"}},
+		{"unknown request", &fakeAdminStore{getErr: ErrRequestNotFound}, nil, false, false,
+			ErrRequestNotFound, []string{"get"}},
+		{"rejected request", &fakeAdminStore{request: Request{AppID: "urls4irl", Status: RequestRejected}}, nil, false, false,
+			ErrRequestNotPending, []string{"get"}},
+		{"no registrar", &fakeAdminStore{request: Request{AppID: "urls4irl"}}, nil, true, false,
+			ErrAppRegistryNotConfigured, nil},
+		{"overlap after registering", &fakeAdminStore{request: Request{AppID: "urls4irl"}, approveErr: ErrAppIDOverlap}, nil, false, false,
+			ErrAppIDOverlap, []string{"get", "register", "approve"}},
+		{"request changed under lock", &fakeAdminStore{request: Request{AppID: "urls4irl"}, approveErr: ErrRequestChanged}, nil, false, false,
+			ErrRequestChanged, []string{"get", "register", "approve"}},
+		{"request vanished under lock", &fakeAdminStore{request: Request{AppID: "urls4irl"}, approveErr: ErrRequestNotFound}, nil, false, false,
+			ErrRequestNotFound, []string{"get", "register", "approve"}},
+		{"request decided under lock", &fakeAdminStore{request: Request{AppID: "urls4irl"}, approveErr: ErrRequestNotPending}, nil, false, false,
+			ErrRequestNotPending, []string{"get", "register", "approve"}},
+	} {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			logs := &syncBuffer{}
+			var calls []string
+			testCase.admin.calls = &calls
+			registrar := &fakeRegistrar{err: testCase.registrarErr, calls: &calls}
+			config := ServiceConfig{Admin: testCase.admin, Logger: textLogger(logs), Now: func() time.Time { return testNow }}
+			if !testCase.noRegistrar {
+				config.Registrar = registrar
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if testCase.canceled {
+				cancel()
+			}
+
+			_, err := NewService(config).ApproveRequest(ctx, 1)
+
+			if !errors.Is(err, testCase.wantErr) {
+				subTest.Errorf("err = %v, want %v", err, testCase.wantErr)
+			}
+			if !slices.Equal(calls, testCase.wantCalls) {
+				subTest.Errorf("calls = %v, want %v", calls, testCase.wantCalls)
+			}
+			if strings.Contains(logs.String(), "app identity request approved") {
+				subTest.Errorf("a refused approval must not be logged as a success:\n%s", logs.String())
+			}
+			if testCase.wantErr == ErrAppRegistryUnavailable {
+				for _, want := range []string{"request_id=1", "app_id=urls4irl", "duration=", testCase.registrarErr.Error()} {
+					if !strings.Contains(logs.String(), want) {
+						subTest.Errorf("registration failure WARN is missing %q:\n%s", want, logs.String())
+					}
+				}
+				if !registrar.hasDeadline || time.Until(registrar.deadline) > registerTimeout {
+					subTest.Errorf("registrar deadline set=%v remaining=%v, want set and <= %v",
+						registrar.hasDeadline, time.Until(registrar.deadline), registerTimeout)
+				}
+			}
+			if testCase.wantErr == ErrAppRegistryUnavailable && testCase.registrarErr == deadline &&
+				!errors.Is(err, context.DeadlineExceeded) {
+				subTest.Errorf("err = %v, want it to also wrap context.DeadlineExceeded", err)
+			}
+			if testCase.canceled && strings.Contains(logs.String(), "registration failed") {
+				subTest.Errorf("a canceled caller must not log a registry WARN:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+func TestExchangeRejectsTheReservedAppIDBeforeAnyStoreCall(testInstance *testing.T) {
+	fixture := newExchangeFixture()
+
+	_, err := fixture.service.Exchange(context.Background(), "everyone", "token")
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Message != "invalid app_id" {
+		testInstance.Fatalf("err = %v, want the invalid app_id ValidationError", err)
+	}
+	if fixture.store.runs != 0 || fixture.verifier.calls != 0 || len(fixture.tx.calls) != 0 {
+		testInstance.Errorf("the reserved id reached the verifier or store (runs %d, calls %v)", fixture.store.runs, fixture.tx.calls)
+	}
+}
+
+func TestReservedAppIDRuleAppliesToTheExchangeOnly(testInstance *testing.T) {
+	if validateExchangeAppID("everyone") == nil {
+		testInstance.Errorf("validateExchangeAppID(everyone) = nil, want an error")
+	}
+	if err := validateExchangeAppID("urls4irl"); err != nil {
+		testInstance.Errorf("validateExchangeAppID(urls4irl) = %v", err)
+	}
+	if err := ValidateAppID("everyone"); err != nil {
+		testInstance.Errorf("ValidateAppID(everyone) = %v, want nil so an existing binding stays removable", err)
+	}
+	admin := &fakeAdminStore{deleted: true}
+	service := NewService(ServiceConfig{Admin: admin, Logger: textLogger(&syncBuffer{})})
+	if deleted, err := service.Unbind(context.Background(), "everyone"); err != nil || !deleted || admin.unbound != "everyone" {
+		testInstance.Errorf("Unbind(everyone) = %v, %v (store saw %q), want it to reach the store", deleted, err, admin.unbound)
 	}
 }
 
