@@ -45,7 +45,7 @@ describe('destinationActionLabels', () => {
 
 describe('routeActionLabels', () => {
   it('shows the bare verb and keeps the route in the accessible name', () => {
-    const labels = routeActionLabels({ id: 7, editing: false });
+    const labels = routeActionLabels({ id: 7 });
 
     expect(labels.edit).toEqual({ visible: 'Edit', accessible: 'Edit route 7' });
     expect(labels.delete).toEqual({ visible: 'Delete', accessible: 'Delete route 7' });
@@ -54,14 +54,9 @@ describe('routeActionLabels', () => {
       accessible: 'Confirm delete route 7',
     });
     expect(labels.cancelDelete).toEqual({ visible: 'Cancel', accessible: 'Cancel Delete route 7' });
-    expect(routeActionLabels({ id: 7, editing: true }).edit).toEqual({
-      visible: 'Close',
-      accessible: 'Close route 7',
-    });
   });
 
   it('keeps every visible text inside its accessible name', () => {
-    expect(violations(routeActionLabels({ id: 7, editing: false }))).toEqual([]);
-    expect(violations(routeActionLabels({ id: 7, editing: true }))).toEqual([]);
+    expect(violations(routeActionLabels({ id: 7 }))).toEqual([]);
   });
 });

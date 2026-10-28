@@ -28,7 +28,6 @@ export interface DestinationActionLabels {
 
 /** The labels of a route row's actions. */
 export interface RouteActionLabels {
-  /** "Edit", or "Close" while this row's editor is open. */
   edit: ActionLabel;
   delete: ActionLabel;
   confirmDelete: ActionLabel;
@@ -71,18 +70,10 @@ export function destinationActionLabels({
   };
 }
 
-export function routeActionLabels({
-  id,
-  editing,
-}: {
-  id: number;
-  editing: boolean;
-}): RouteActionLabels {
+export function routeActionLabels({ id }: { id: number }): RouteActionLabels {
   const deleteName = strings.deleteRoute({ id });
   return {
-    edit: editing
-      ? { visible: strings.rowActionClose, accessible: strings.closeRoute({ id }) }
-      : { visible: strings.rowActionEdit, accessible: strings.editRoute({ id }) },
+    edit: { visible: strings.rowActionEdit, accessible: strings.editRoute({ id }) },
     delete: { visible: strings.rowActionDelete, accessible: deleteName },
     confirmDelete: {
       visible: strings.rowActionConfirmDelete,

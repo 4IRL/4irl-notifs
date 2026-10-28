@@ -489,10 +489,11 @@ describe('Routes table, narrow layout', () => {
 
     await openMenu({ user, row: 'route 1' });
     await chooseItem({ user, name: 'Edit route 1' });
+    expect(screen.getByRole('dialog', { name: strings.editRoute({ id: 1 }) })).toBeInTheDocument();
     expect(document.activeElement).toBe(screen.getByLabelText(strings.routeAppLabel));
 
-    // Closing the editor hands focus back to the kebab.
-    await user.click(screen.getByRole('button', { name: 'Close' }));
+    // Closing the dialog hands focus back to the kebab.
+    await user.keyboard('{Escape}');
     await waitFor(() => expect(kebab('route 1')).toHaveFocus());
 
     await openMenu({ user, row: 'route 1' });
@@ -1065,10 +1066,12 @@ describe('Row action labels, roomy layout', () => {
     expect(idle.names).toEqual(['Edit route 1', 'Delete route 1']);
 
     await user.click(screen.getByRole('button', { name: 'Edit route 1' }));
-    const editing = rowButtons(rowOfButton('Close route 1'));
-    expect(editing.visible[0]).toBe('Close');
-    expect(editing.names[0]).toBe('Close route 1');
-    await user.click(screen.getByRole('button', { name: 'Close route 1' }));
+    // Edit opens a dialog: the row's buttons are unchanged, never a Close toggle.
+    expect(screen.getByRole('dialog', { name: 'Edit route 1' })).toBeInTheDocument();
+    const editing = rowButtons(rowOfButton('Edit route 1'));
+    expect(editing.visible[0]).toBe('Edit');
+    expect(editing.names[0]).toBe('Edit route 1');
+    await user.keyboard('{Escape}');
 
     // The dialog's buttons keep the short verb and the route in their names.
     await user.click(screen.getByRole('button', { name: 'Delete route 1' }));
@@ -1360,14 +1363,13 @@ describe('Owner badge, narrow layout', () => {
     expect(columnTitles()).toHaveLength(5);
   });
 
-  it('the Routes editor row spans every column of the narrow table', async () => {
+  it('the Routes edit dialog adds no editor row to the narrow table', async () => {
     const user = userEvent.setup();
     renderRoutes(buildClient({ listRoutes: vi.fn().mockResolvedValue([buildRoute({ id: 1 })]) }));
     await screen.findByRole('button', { name: 'Actions for route 1' });
     await openMenu({ user, row: 'route 1' });
     await chooseItem({ user, name: 'Edit route 1' });
-    const cell = document.querySelector('.admin-table__editor-cell') as HTMLTableCellElement;
-    expect(cell.colSpan).toBe(columnTitles().length);
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(columnTitles()).toHaveLength(5);
   });
 
@@ -1455,7 +1457,7 @@ describe('Owner badge, roomy layout', () => {
       buildClient({ listRoutes: vi.fn().mockResolvedValue([buildRoute({ id: 1 })]) }),
     );
     await user.click(await screen.findByRole('button', { name: 'Edit route 1' }));
-    expect(editorColSpan()).toBe(columnTitles().length);
+    expect(screen.getByRole('dialog', { name: 'Edit route 1' })).toBeInTheDocument();
     expect(columnTitles()).toHaveLength(6);
     routes.unmount();
 
