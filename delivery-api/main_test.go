@@ -446,6 +446,22 @@ func TestBuildMinterNeedsBothOriginAndCredential(testInstance *testing.T) {
 	}
 }
 
+func TestBuildProvisionClientIsNilWhenDisabled(testInstance *testing.T) {
+	const fakeCredential = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	resolver := func(string) (string, error) { return fakeCredential, nil }
+	var logOutput bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logOutput, nil))
+
+	disabled, disabledErr := buildProvisionClient("", resolver, logger)
+	if disabledErr != nil || disabled != nil {
+		testInstance.Fatalf("disabled client = %v, err = %v; want a nil *Client and no error", disabled, disabledErr)
+	}
+	enabled, enabledErr := buildProvisionClient("http://provisioning-api:8080", resolver, logger)
+	if enabledErr != nil || enabled == nil {
+		testInstance.Fatalf("enabled client = %v, err = %v; want a client", enabled, enabledErr)
+	}
+}
+
 func TestBuildRegistrar(testInstance *testing.T) {
 	const fakeSecret = "fake-access-secret-value"
 	const resolverErrorText = "read secret file for PERSON_SERVICE_ACCESS_CLIENT_SECRET: no such file"

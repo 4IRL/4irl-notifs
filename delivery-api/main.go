@@ -86,13 +86,23 @@ func envOrDefault(key string, fallback string) string {
 	return fallback
 }
 
-// buildMinter returns the publisher minter, or nil when minting is unavailable. It needs both the
-// provisioning-api origin and the internal credential: with either missing it returns a nil interface (not a
-// typed-nil *provisionclient.Client), which makes publisher.Service.Mint answer ErrMintUnavailable, and logs one
-// WARN naming the missing variable. A set URL whose host is not the compose service name of
+// buildMinter returns the publisher minter, or nil when minting is unavailable: a thin wrapper over
+// buildProvisionClient that returns a nil interface (not a typed-nil *provisionclient.Client) when the
+// client is nil, which makes publisher.Service.Mint answer ErrMintUnavailable.
+func buildMinter(provisioningURL string, resolveSecret func(string) (string, error), logger *slog.Logger) (publisher.Minter, error) {
+	client, clientErr := buildProvisionClient(provisioningURL, resolveSecret, logger)
+	if clientErr != nil || client == nil {
+		return nil, clientErr
+	}
+	return client, nil
+}
+
+// buildProvisionClient returns the provisioning-api client, or a nil client when it is unavailable. It needs
+// both the provisioning-api origin and the internal credential: with either missing it returns nil and logs
+// one WARN naming the missing variable. A set URL whose host is not the compose service name of
 // provisioning-api (internalProvisioningHost) is a startup error, so the credential is never sent to
 // another origin. The credential value is never logged.
-func buildMinter(provisioningURL string, resolveSecret func(string) (string, error), logger *slog.Logger) (publisher.Minter, error) {
+func buildProvisionClient(provisioningURL string, resolveSecret func(string) (string, error), logger *slog.Logger) (*provisionclient.Client, error) {
 	if provisioningURL == "" {
 		logger.Warn("publisher minting disabled: " + provisioningURLEnv + " unset")
 		return nil, nil
@@ -321,9 +331,17 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	guardedClient := transport.New(transport.Config{})
 	messageStore := message.NewPGStore(pool)
 	sinks, supportedTypes := buildSinks(guardedClient, envOrDefault(ntfyURLEnv, ""), logger)
-	minter, minterErr := buildMinter(envOrDefault(provisioningURLEnv, ""), secretenv.Resolve, logger)
-	if minterErr != nil {
-		return minterErr
+	provisionClient, provisionClientErr := buildProvisionClient(envOrDefault(provisioningURLEnv, ""), secretenv.Resolve, logger)
+	if provisionClientErr != nil {
+		return provisionClientErr
+	}
+	// Each interface is set only when the client exists: an untyped nil (never a typed-nil
+	// *provisionclient.Client) keeps the 503 / ErrMintUnavailable guards working.
+	var minter publisher.Minter
+	var appProvisioning httpapi.AppProvisioning
+	if provisionClient != nil {
+		minter = provisionClient
+		appProvisioning = provisionClient
 	}
 	publisherService := publisher.NewService(publisher.NewPGStore(pool), minter, sealer)
 	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil
@@ -370,6 +388,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Publishers:       publisherService,
 		Heartbeats:       heartbeatService,
 		AppHeartbeats:    heartbeatService,
+		AppProvisioning:  appProvisioning,
 		AppIdentity:      appIdentityService,
 	}).Handler()
 

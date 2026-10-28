@@ -114,6 +114,11 @@ type ServerConfig struct {
 	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
 	// caveat as Registry applies.
 	AppHeartbeats AppHeartbeats
+	// AppProvisioning backs the app-scoped /v1/apps/{app_id}/provision and /deprovision
+	// endpoints. When nil, both answer 503 (fail closed). Callers must leave this an
+	// untyped nil when no client exists: a typed-nil pointer stored here is a non-nil
+	// interface and would bypass that guard.
+	AppProvisioning AppProvisioning
 	// Messages backs the /v1/messages and /v1/admin/deliveries endpoints. When
 	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
 	// caveat as Registry applies.
@@ -147,12 +152,14 @@ type Server struct {
 	appRegistry AppRegistry
 	// appHeartbeats backs the app-scoped heartbeat check endpoints.
 	appHeartbeats AppHeartbeats
-	messages      Messages
-	publishers    Publishers
-	heartbeats    Heartbeats
-	appIdentity   AppIdentity
-	now           func() time.Time
-	mux           *http.ServeMux
+	// appProvisioning backs the app-scoped provision and deprovision endpoints.
+	appProvisioning AppProvisioning
+	messages        Messages
+	publishers      Publishers
+	heartbeats      Heartbeats
+	appIdentity     AppIdentity
+	now             func() time.Time
+	mux             *http.ServeMux
 }
 
 // readinessResponseBody is the /readyz JSON body when the database answered.
@@ -197,19 +204,20 @@ func NewServer(config ServerConfig) *Server {
 	}
 
 	server := &Server{
-		logger:        logger,
-		readiness:     config.Readiness,
-		checker:       config.HeartbeatChecker,
-		prober:        config.HeartbeatProber,
-		registry:      config.Registry,
-		appRegistry:   config.AppRegistry,
-		appHeartbeats: config.AppHeartbeats,
-		messages:      config.Messages,
-		publishers:    config.Publishers,
-		heartbeats:    config.Heartbeats,
-		appIdentity:   config.AppIdentity,
-		now:           config.Now,
-		mux:           http.NewServeMux(),
+		logger:          logger,
+		readiness:       config.Readiness,
+		checker:         config.HeartbeatChecker,
+		prober:          config.HeartbeatProber,
+		registry:        config.Registry,
+		appRegistry:     config.AppRegistry,
+		appHeartbeats:   config.AppHeartbeats,
+		appProvisioning: config.AppProvisioning,
+		messages:        config.Messages,
+		publishers:      config.Publishers,
+		heartbeats:      config.Heartbeats,
+		appIdentity:     config.AppIdentity,
+		now:             config.Now,
+		mux:             http.NewServeMux(),
 	}
 	if server.now == nil {
 		server.now = time.Now
@@ -266,6 +274,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("DELETE /v1/apps/{app_id}/heartbeats/{id}", server.appHeartbeatScoped(server.handleAppDeleteCheck))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/heartbeats/{id}/pause", server.appHeartbeatScoped(server.handleAppPauseCheck))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/heartbeats/{id}/resume", server.appHeartbeatScoped(server.handleAppResumeCheck))
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/provision", server.appProvisioningScoped(server.handleAppProvision))
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/deprovision", server.appProvisioningScoped(server.handleAppDeprovision))
 
 	server.mux.HandleFunc("POST /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleMintPublisher))
 	server.mux.HandleFunc("GET /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleGetPublisher))

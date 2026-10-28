@@ -189,7 +189,9 @@ app. The per-app identity runbook (approve, revoke, unbind) is in `docs/app-inte
 ### App identity
 
 An app proves which app it is with a delivery key it gets from its own GitHub Actions deploy, independent
-of its Access token.
+of its Access token. With that key an app can also provision and remove its own users:
+`POST /v1/apps/{app_id}/provision` (`{email}`) and `POST /v1/apps/{app_id}/deprovision` (`{email}` or
+`{person_hash}`) relay provisioning-api's answer (upstream 401/403/3xx become a fixed 502).
 
 1. The app's deploy workflow requests a GitHub OIDC token (audience `DELIVERY_OIDC_AUDIENCE`, default
    `notifs-delivery`) and posts `{"app_id","token"}` to `POST /v1/app-identity/exchange` (behind the Access

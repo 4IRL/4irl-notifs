@@ -16,6 +16,7 @@ import (
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/appidentity"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
 )
 
 const (
@@ -82,6 +83,9 @@ func (route appKeyRoute) body(appID string) string {
 	if route.bodyFormat == "" {
 		return ""
 	}
+	if !strings.Contains(route.bodyFormat, "%s") {
+		return route.bodyFormat
+	}
 	return fmt.Sprintf(route.bodyFormat, appID)
 }
 
@@ -97,6 +101,14 @@ func appKeyRoutes() []appKeyRoute {
 		{name: "cancel by key", method: http.MethodDelete, pathFormat: "/v1/messages?app_id=%s&idempotency_key=k", source: "query"},
 		{name: "ping", method: http.MethodPost, pathFormat: "/v1/heartbeats/%s/nightly_backup", source: "path"},
 		{name: "fail ping", method: http.MethodPost, pathFormat: "/v1/heartbeats/%s/nightly_backup/fail", source: "path"},
+		{
+			name: "provision", method: http.MethodPost, pathFormat: "/v1/apps/%s/provision", source: "path",
+			bodyFormat: `{"email":"person@example.com"}`,
+		},
+		{
+			name: "deprovision", method: http.MethodPost, pathFormat: "/v1/apps/%s/deprovision", source: "path",
+			bodyFormat: `{"email":"person@example.com"}`,
+		},
 	}
 }
 
@@ -104,6 +116,7 @@ func appKeyRoutes() []appKeyRoute {
 type appKeyRig struct {
 	messages   *fakeMessages
 	heartbeats *fakeHeartbeats
+	provision  *fakeAppProvisioning
 	identity   *fakeAppIdentity
 	logs       *bytes.Buffer
 	server     *Server
@@ -115,6 +128,7 @@ func newAppKeyRig() *appKeyRig {
 	rig := &appKeyRig{
 		messages:   &fakeMessages{submitResult: sampleStoredMessage(), getResult: sampleStoredMessage(), getByKeyResult: sampleStoredMessage()},
 		heartbeats: allResults(sampleCheck()),
+		provision:  &fakeAppProvisioning{answer: provisionclient.Passthrough{Status: http.StatusOK, Body: []byte("{}")}},
 		identity:   &fakeAppIdentity{resolved: appidentity.ResolvedKey{ID: 4, AppID: keyApp, Hint: "dak_abcd"}},
 		logs:       &bytes.Buffer{},
 	}
@@ -128,7 +142,7 @@ func (rig *appKeyRig) rebuild() {
 		identity = rig.identity
 	}
 	rig.server = NewServer(ServerConfig{
-		Messages: rig.messages, Heartbeats: rig.heartbeats, AppIdentity: identity,
+		Messages: rig.messages, Heartbeats: rig.heartbeats, AppIdentity: identity, AppProvisioning: rig.provision,
 		Logger: slog.New(slog.NewTextHandler(rig.logs, nil)),
 	})
 }
@@ -144,7 +158,7 @@ func (rig *appKeyRig) serve(method string, path string, body string, authorizati
 }
 
 func (rig *appKeyRig) handlerCalls() int {
-	return rig.messages.totalCalls() + rig.heartbeats.totalCalls()
+	return rig.messages.totalCalls() + rig.heartbeats.totalCalls() + rig.provision.totalCalls()
 }
 
 func (rig *appKeyRig) assertNoHandlerCall(testInstance *testing.T) {
