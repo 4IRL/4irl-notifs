@@ -40,6 +40,7 @@
 }
 
 .edit-app-form__button {
+  min-height: 2.75rem;
   border-radius: var(--radius);
   padding: var(--space-1) var(--space-2);
   font-size: 0.8125rem;

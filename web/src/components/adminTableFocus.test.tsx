@@ -19,7 +19,7 @@ function renderWrapper(): HTMLElement {
             </td>
           </tr>
           <tr>
-            <td className="admin-table__editor-cell">
+            <td className="destinations__reveal-cell">
               <input aria-label="Name" />
             </td>
           </tr>

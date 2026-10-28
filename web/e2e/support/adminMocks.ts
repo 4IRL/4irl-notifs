@@ -369,41 +369,6 @@ export async function expectNoPageOverflow(page: Page): Promise<void> {
   expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth);
 }
 
-/** Scrolls a table wrapper as far right as it goes and returns where it landed. */
-export async function scrollWrapperToEnd(wrapper: Locator): Promise<number> {
-  return wrapper.evaluate(async (element) => {
-    element.scrollLeft = element.scrollWidth;
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    return element.scrollLeft;
-  });
-}
-
-/**
- * Asserts an open inline editor spans the whole table yet stays in view: it sits at the
- * wrapper's start edge, no wider than the wrapper, even with the wrapper scrolled to its end.
- */
-export async function expectEditorInView({
-  wrapper,
-  form,
-}: {
-  wrapper: Locator;
-  form: Locator;
-}): Promise<void> {
-  expect(await scrollWrapperToEnd(wrapper)).toBeGreaterThan(0);
-  const formBox = await form.boundingBox();
-  const wrapperBox = await wrapper.boundingBox();
-  const cellBox = await form.locator('xpath=ancestor::td[1]').boundingBox();
-  const tableBox = await wrapper.locator('table').boundingBox();
-  if (formBox === null || wrapperBox === null || cellBox === null || tableBox === null) {
-    throw new Error('editor, wrapper, cell or table has no bounding box');
-  }
-  // The cell spans the whole (scrolling) table ...
-  expect(cellBox.width).toBeGreaterThanOrEqual(tableBox.width - 1);
-  // ... while the form itself stays inside the visible part of the wrapper.
-  expect(formBox.x).toBeGreaterThanOrEqual(wrapperBox.x - 1);
-  expect(formBox.x + formBox.width).toBeLessThanOrEqual(wrapperBox.x + wrapperBox.width + 1);
-}
-
 /**
  * Asserts the open dialog sits wholly inside the viewport (a small tolerance for rounding) and
  * that the document does not scroll sideways.
