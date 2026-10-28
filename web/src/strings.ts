@@ -239,6 +239,9 @@ export const strings = {
   publisherTokenRevealLead: ({ appId }: { appId: string }): string =>
     `Publisher token for ${appId} (copy now — shown once):`,
 
+  appAlreadyRegisteredNote:
+    'already registered; display name updated (description too if provided)',
+
   invalidDisplayName: 'Display name is required.',
 
   // App-ID combobox (Provision form).

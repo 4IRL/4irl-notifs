@@ -60,6 +60,34 @@ describe('AddAppForm', () => {
     expect(await screen.findByText('tk_publisher')).toBeInTheDocument();
   });
 
+  it('shows the already-registered note in the status region when flagged', async () => {
+    const user = userEvent.setup();
+    const onAddApp = vi.fn().mockResolvedValue({ ...publisherResult, alreadyRegistered: true });
+    render(<AddAppForm onAddApp={onAddApp} />);
+
+    await user.type(screen.getByLabelText(strings.appIdLabel), 'tasktracker');
+    await user.type(screen.getByLabelText(strings.appDisplayNameLabel), 'Task Tracker');
+    await user.click(screen.getByRole('button', { name: strings.addAppAction }));
+
+    await screen.findByText('tk_publisher');
+    expect(screen.getByRole('status')).toHaveTextContent(strings.appAlreadyRegisteredNote);
+  });
+
+  it('renders an empty status region on a normal create', async () => {
+    const user = userEvent.setup();
+    const onAddApp = vi.fn().mockResolvedValue(publisherResult);
+    render(<AddAppForm onAddApp={onAddApp} />);
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+
+    await user.type(screen.getByLabelText(strings.appIdLabel), 'tasktracker');
+    await user.type(screen.getByLabelText(strings.appDisplayNameLabel), 'Task Tracker');
+    await user.click(screen.getByRole('button', { name: strings.addAppAction }));
+
+    await screen.findByText('tk_publisher');
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+    expect(screen.queryByText(strings.appAlreadyRegisteredNote)).not.toBeInTheDocument();
+  });
+
   it('shows the server error message when registration fails', async () => {
     const user = userEvent.setup();
     const onAddApp = vi

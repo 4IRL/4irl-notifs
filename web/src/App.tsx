@@ -31,7 +31,7 @@ import { ProvisionForm } from './components/ProvisionForm';
 import { SendTestNotification } from './components/SendTestNotification';
 import { UsersTable } from './components/UsersTable';
 import { PeopleTable } from './components/PeopleTable';
-import { AddAppForm } from './components/AddAppForm';
+import { AddAppForm, type AddAppResult } from './components/AddAppForm';
 import { AppsTable } from './components/AppsTable';
 import { UnregisteredApps } from './components/UnregisteredApps';
 import { strings } from './strings';
@@ -269,19 +269,33 @@ function App({
     [client, refreshUsers, refreshPeople],
   );
 
-  // Add app = registry-first: register metadata, then mint the publisher token.
+  // Add app = registry-first: register metadata (on a 409, the row already
+  // exists from approval, so update it instead), then mint the publisher token.
   // A failure after registration leaves a visible registry row with no token,
   // recoverable via Re-mint. Returns the token result for the form's reveal.
   const handleAddApp = useCallback(
-    async ({ appId, displayName, description }: CreateAppParams): Promise<ProvisionAppResult> => {
+    async ({ appId, displayName, description }: CreateAppParams): Promise<AddAppResult> => {
       if (personClient === undefined) {
         throw new Error('person service not configured');
       }
-      await personClient.createApp({ appId, displayName, description });
+      let alreadyRegistered = false;
       try {
+        await personClient.createApp({ appId, displayName, description });
+      } catch (rejection: unknown) {
+        // 409: approval already created the row. Apply the operator's values
+        // below (inside the try/finally so the apps list still refreshes).
+        if (!(rejection instanceof ApiError && rejection.status === 409)) {
+          throw rejection;
+        }
+        alreadyRegistered = true;
+      }
+      try {
+        if (alreadyRegistered) {
+          await personClient.updateApp({ appId, displayName, description });
+        }
         const result = await client.provisionApp({ appId });
         await refreshUsers();
-        return result;
+        return alreadyRegistered ? { ...result, alreadyRegistered: true } : result;
       } finally {
         // Refresh the registry even if minting the publisher token throws, so
         // the just-registered app still appears in the table (and is thus

@@ -662,6 +662,87 @@ describe('App', () => {
     );
     expect(client.provisionApp).toHaveBeenCalledWith({ appId: 'tasktracker' });
     expect(await screen.findByText('tk_publisher')).toBeInTheDocument();
+    expect(screen.queryByText(strings.appAlreadyRegisteredNote)).not.toBeInTheDocument();
+  });
+
+  async function submitAddApp(): Promise<void> {
+    const addSection = screen
+      .getByRole('heading', { name: strings.addAppHeading })
+      .closest('section');
+    if (addSection === null) {
+      throw new Error('add-app section not found');
+    }
+    const form = within(addSection);
+    await userEvent.type(form.getByLabelText(strings.appIdLabel), 'tasktracker');
+    await userEvent.type(form.getByLabelText(strings.appDisplayNameLabel), 'Task Tracker');
+    await userEvent.click(form.getByRole('button', { name: strings.addAppAction }));
+  }
+
+  it('add app on an already-registered app: updates it, mints, and shows the note', async () => {
+    const client = buildFakeClient();
+    const personClient = buildFakePersonClient({
+      createApp: vi
+        .fn()
+        .mockRejectedValue(new ApiError({ status: 409, message: 'app already exists' })),
+    });
+    render(<App client={client} personClient={personClient} appsEnabled />);
+
+    await submitAddApp();
+
+    expect(await screen.findByText('tk_publisher')).toBeInTheDocument();
+    expect(personClient.updateApp).toHaveBeenCalledWith({
+      appId: 'tasktracker',
+      displayName: 'Task Tracker',
+      description: undefined,
+    });
+    expect(client.provisionApp).toHaveBeenCalledWith({ appId: 'tasktracker' });
+    const addSection = screen
+      .getByRole('heading', { name: strings.addAppHeading })
+      .closest('section');
+    if (addSection === null) {
+      throw new Error('add-app section not found');
+    }
+    expect(within(addSection).getByRole('status')).toHaveTextContent(
+      strings.appAlreadyRegisteredNote,
+    );
+    expect(within(addSection).queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('add app with a non-409 createApp failure shows the error and never mints', async () => {
+    const client = buildFakeClient();
+    const personClient = buildFakePersonClient({
+      createApp: vi.fn().mockRejectedValue(new ApiError({ status: 500, message: 'registry down' })),
+    });
+    render(<App client={client} personClient={personClient} appsEnabled />);
+
+    await submitAddApp();
+
+    expect(await screen.findByText('registry down')).toBeInTheDocument();
+    expect(personClient.updateApp).not.toHaveBeenCalled();
+    expect(client.provisionApp).not.toHaveBeenCalled();
+  });
+
+  it('add app 409 then updateApp failure shows the error, never mints, and refreshes apps', async () => {
+    const client = buildFakeClient();
+    const personClient = buildFakePersonClient({
+      createApp: vi
+        .fn()
+        .mockRejectedValue(new ApiError({ status: 409, message: 'app already exists' })),
+      updateApp: vi.fn().mockRejectedValue(new ApiError({ status: 500, message: 'update failed' })),
+    });
+    render(<App client={client} personClient={personClient} appsEnabled />);
+    await waitFor(() => expect(personClient.listApps).toHaveBeenCalled());
+    const listAppsCallsBefore = vi.mocked(personClient.listApps).mock.calls.length;
+
+    await submitAddApp();
+
+    expect(await screen.findByText('update failed')).toBeInTheDocument();
+    expect(client.provisionApp).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(vi.mocked(personClient.listApps).mock.calls.length).toBeGreaterThan(
+        listAppsCallsBefore,
+      ),
+    );
   });
 
   it('removes an app via the cascade after confirming', async () => {
