@@ -587,8 +587,8 @@ export const strings = {
   // Heartbeats section.
   heartbeatsHeading: 'Heartbeats',
   heartbeatsRefresh: 'Refresh heartbeats',
-  heartbeatsHint:
-    'Push checks: apps ping POST /v1/heartbeats/{app_id}/{name}. A check is late after its period and down after period + grace, which sends one down alert, then one recovery alert on the next ping. Probe checks: delivery-api requests an HTTPS URL on an interval and alerts after repeated failures in a row. Times are UTC.',
+  heartbeatsHint: ({ zone }: { zone: string }): string =>
+    `Push checks: apps ping POST /v1/heartbeats/{app_id}/{name}. A check is late after its period and down after period + grace, which sends one down alert, then one recovery alert on the next ping. Probe checks: delivery-api requests an HTTPS URL on an interval and alerts after repeated failures in a row. ${strings.timesLocalHint({ zone })}`,
   heartbeatsLoading: 'Loading heartbeat checks…',
   heartbeatsLoadError: 'Could not load heartbeat checks.',
   heartbeatsEmpty: 'No heartbeat checks yet.',

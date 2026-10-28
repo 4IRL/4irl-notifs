@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client';
 import type { DeliveryApiClient, DestinationSummary, HeartbeatCheck } from '../api/deliveryClient';
 import { strings } from '../strings';
+import { useTimeZone } from '../test-timezone';
 import { Heartbeats } from './Heartbeats';
+import { rowIdOf } from './heartbeatRowId';
 import type { DestinationsLoadState } from './RoutesSection';
 
 afterEach(() => {
@@ -221,15 +223,24 @@ describe('Heartbeats list states', () => {
 
   it('a stale overlapping load never overwrites a newer one', async () => {
     const user = userEvent.setup();
+    // The Refresh button ignores clicks while a load runs, so the overlap is a Refresh started
+    // while a pause is in flight: the pause's quiet reload (newer) lands before the slow
+    // Refresh load (older), which must then be dropped.
     const first = deferred<HeartbeatCheck[]>();
     const second = deferred<HeartbeatCheck[]>();
+    const pausing = deferred<HeartbeatCheck>();
     const listHeartbeats = vi
       .fn()
+      .mockResolvedValueOnce([CHECK_1])
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
-    renderSection(buildClient({ listHeartbeats }));
+    const pauseHeartbeat = vi.fn().mockReturnValue(pausing.promise);
+    renderSection(buildClient({ listHeartbeats, pauseHeartbeat }));
 
+    await user.click(await screen.findByRole('button', { name: `Pause ${label(CHECK_1)}` }));
+    await user.click(button(`Confirm pause ${label(CHECK_1)}`));
     await user.click(button(strings.heartbeatsRefresh));
+    pausing.resolve({ ...CHECK_1, paused: true });
     second.resolve([buildCheck({ id: 2, name: 'newer' })]);
     await screen.findByText('newer');
 
@@ -345,8 +356,9 @@ describe('Heartbeats row rendering', () => {
     await renderAtNow([UP, DOWN_FAIL]);
 
     const time = rowOf(1).querySelector('time');
-    expect(time).toHaveAttribute('datetime', '2026-10-18T08:01:00Z');
-    expect(time).toHaveTextContent('2026-10-18 08:01');
+    expect(time).toHaveAttribute('datetime', '2026-10-18T08:01:00.000Z');
+    expect(time).toHaveAttribute('title', '2026-10-18T08:01:00.000Z');
+    expect(time).toHaveTextContent('2026-10-18 08:01 UTC');
     expect(within(rowOf(1)).getByText('5 h ago')).toBeInTheDocument();
 
     const fail = within(rowOf(4)).getByText('fail ping · 1 min ago');
@@ -359,7 +371,32 @@ describe('Heartbeats row rendering', () => {
     const row = rowOf(6);
     expect(row.querySelector('time')).toBeNull();
     expect(within(row).getByText(strings.noValue)).toBeInTheDocument();
-    expect(within(row).getByText('down if none by 2026-10-19 16:00')).toBeInTheDocument();
+    expect(within(row).getByText('down if none by 2026-10-19 16:00 UTC')).toBeInTheDocument();
+  });
+
+  describe('in a non-UTC zone', () => {
+    useTimeZone('America/Los_Angeles');
+
+    it('shows date-times with the PDT abbreviation and time-of-day prints without one', async () => {
+      await renderAtNow([UP, DOWN_MISSED, WAITING]);
+
+      const lastPing = rowOf(1).querySelector('time');
+      expect(lastPing).toHaveTextContent('2026-10-18 01:01 PDT');
+      expect(lastPing).toHaveAttribute('title', '2026-10-18T08:01:00.000Z');
+      expect(
+        within(rowOf(6)).getByText('down if none by 2026-10-19 09:00 PDT'),
+      ).toBeInTheDocument();
+      // Down-since is time of day only: local value, no zone abbreviation.
+      expect(within(rowOf(3)).getByText('since 05:00')).toBeInTheDocument();
+    });
+
+    it('names the IANA zone in the section hint', async () => {
+      await renderAtNow([UP]);
+
+      expect(
+        screen.getByText(/Times are shown in your local time zone \(America\/Los_Angeles\)/),
+      ).toBeInTheDocument();
+    });
   });
 
   it('does not promise a down deadline for a paused never-pinged check', async () => {
@@ -556,18 +593,18 @@ describe('Heartbeats owner column', () => {
     expect(screen.getByRole('dialog').querySelector('.modal__notice')).toBeNull();
   });
 
-  it('keeps an open editor row spanning the whole table', async () => {
+  it('edits an owned row in a dialog, leaving no editor row in the table', async () => {
     const user = userEvent.setup();
     await renderOwned();
 
     await user.click(button(`Edit ${label(APP_OWNED)}`));
 
-    const headerCount = screen.getAllByRole('columnheader').length;
-    const editorCell = screen.getByRole('form', { name: /^Edit / }).closest('td');
-    expect(editorCell).toHaveAttribute('colspan', String(headerCount));
-    // The form sits in the pinned wrapper, so it fits the scroll wrapper and wraps normally.
-    expect(editorCell).toHaveClass('admin-table__editor-cell');
-    expect(editorCell?.querySelector('.admin-table__editor')).not.toBeNull();
+    expect(screen.getByRole('dialog', { name: /^Edit / })).toBeInTheDocument();
+    // Every body row is a data row of the table.
+    const rows = [...document.querySelectorAll('tbody tr')];
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.hasAttribute('data-check-id'))).toBe(true);
+    expect(screen.queryByRole('form', { name: /^Edit / })).toBeNull();
   });
 });
 
@@ -1251,9 +1288,8 @@ describe('Heartbeats pause, resume and delete', () => {
     expect(rowOf(1)).toBeInTheDocument();
   });
 
-  it('closes the editor of a row that is deleted', async () => {
+  it('a closed editor does not re-open when its row comes back on a later load', async () => {
     const user = userEvent.setup();
-    // The row comes back on a later load: a stale editingId would re-open its editor.
     const listHeartbeats = vi
       .fn()
       .mockResolvedValueOnce([CHECK_1, CHECK_2])
@@ -1262,17 +1298,14 @@ describe('Heartbeats pause, resume and delete', () => {
     renderSection(buildClient({ listHeartbeats }), FULL_DESTINATIONS);
 
     await user.click(await screen.findByRole('button', { name: `Edit ${label(CHECK_1)}` }));
-    expect(screen.getByRole('form', { name: `Edit ${label(CHECK_1)}` })).toBeInTheDocument();
-    await user.click(button(`Delete ${label(CHECK_1)}`));
-    await user.click(button(`Confirm delete ${label(CHECK_1)}`));
-
+    expect(screen.getByRole('dialog', { name: `Edit ${label(CHECK_1)}` })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await user.click(button(strings.heartbeatsRefresh));
     await waitFor(() => expect(document.querySelector('tr[data-check-id="1"]')).toBeNull());
-    expect(screen.queryByRole('form', { name: /^Edit / })).toBeNull();
 
     await user.click(button(strings.heartbeatsRefresh));
     await waitFor(() => expect(rowOf(1)).toBeInTheDocument());
-    expect(screen.queryByRole('form', { name: /^Edit / })).toBeNull();
-    expect(button(`Edit ${label(CHECK_1)}`)).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });
 
@@ -1801,19 +1834,36 @@ describe('Heartbeats edit check', () => {
     return { user, client: built };
   }
 
+  // The edit form lives in the dialog titled with the check's name.
   function editForm(target: HeartbeatCheck = EDITED): HTMLElement {
-    return screen.getByRole('form', { name: `Edit ${label(target)}` });
+    return screen.getByRole('dialog', { name: `Edit ${label(target)}` });
   }
 
-  it('opens inline in a colSpan row focused on Period, with read-only ids and pre-selected units', async () => {
+  function editDialog(): HTMLElement | null {
+    return screen.queryByRole('dialog');
+  }
+
+  // The form's own Close button and the dialog's X share the accessible name "Close".
+  function formClose(): HTMLElement {
+    const found = editForm().querySelector<HTMLElement>('.destination-form__button--ghost');
+    if (found === null) throw new Error('form Close button not found');
+    return found;
+  }
+
+  function dialogX(): HTMLElement {
+    const found = editForm().querySelector<HTMLElement>('.modal__close');
+    if (found === null) throw new Error('dialog X not found');
+    return found;
+  }
+
+  it('opens one dialog focused on Period, with read-only ids and pre-selected units, and no editor row', async () => {
     await openEditor();
 
     const form = editForm();
-    // The editor spans every column: State, Check, Owner, Last ping, Schedule, Alerts to, Actions.
-    expect(screen.getAllByRole('columnheader')).toHaveLength(7);
-    expect(form.closest('td')).toHaveAttribute('colspan', '7');
-    expect(form.closest('tr')).not.toHaveAttribute('data-check-id');
-    expect(screen.getByLabelText(strings.heartbeatPeriodLabel)).toHaveFocus();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    // No editor row is rendered in the table any more: the columns are the row's own.
+    expect(form.closest('tr')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByLabelText(strings.heartbeatPeriodLabel));
     // 86400 s is shown as 24 hours (days start at two), and 24 hours converts back to 86400 s.
     expect(screen.getByLabelText(strings.heartbeatPeriodLabel)).toHaveValue(24);
     expect(screen.getByLabelText(strings.heartbeatPeriodUnitLabel)).toHaveValue('hours');
@@ -1826,7 +1876,19 @@ describe('Heartbeats edit check', () => {
     expect(screen.queryByLabelText(strings.heartbeatNameLabel)).toBeNull();
     expect(checkbox('ops_discord')).toBeChecked();
     expect(checkbox('family_ntfy')).not.toBeChecked();
-    expect(button(`Close ${label(EDITED)}`)).toHaveAttribute('aria-expanded', 'true');
+    // The Edit button only opens: it never toggles into a Close.
+    expect(button(`Edit ${label(EDITED)}`)).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(screen.queryByRole('button', { name: `Close ${label(EDITED)}` })).toBeNull();
+  });
+
+  it('stamps the dialog with its row and resolves focus inside it to that row', async () => {
+    await openEditor({ checks: [EDITED, CHECK_2], target: EDITED });
+
+    const dialog = editForm();
+    expect(dialog).toHaveAttribute('data-owner-row-attribute', 'data-check-id');
+    expect(dialog).toHaveAttribute('data-owner-row-id', '1');
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(rowIdOf(document.activeElement)).toBe('1');
   });
 
   it('sends only the changed field, then closes, shows the saved row and refocuses the Edit trigger', async () => {
@@ -1849,9 +1911,74 @@ describe('Heartbeats edit check', () => {
     expect(body.graceSeconds).toBe(10_800);
     expect(body.periodSeconds).toBeUndefined();
     expect(body.destinations).toBeUndefined();
-    await waitFor(() => expect(screen.queryByRole('form', { name: /^Edit / })).toBeNull());
-    expect(resultLine()).toHaveTextContent(`Saved ${label(EDITED)}.`);
+    await waitFor(() => expect(editDialog()).toBeNull());
+    await waitFor(() => expect(resultLine()).toHaveTextContent(`Saved ${label(EDITED)}.`));
     await waitFor(() => expect(button(`Edit ${label(EDITED)}`)).toHaveFocus());
+  });
+
+  it('closes the dialog first and announces the saved result only after it has closed', async () => {
+    const updated = { ...EDITED, graceSeconds: 10_800 };
+    const saving = deferred<HeartbeatCheck>();
+    const updateHeartbeat = vi.fn().mockReturnValue(saving.promise);
+    const { user } = await openEditor({ client: { updateHeartbeat } });
+    // Records whether the dialog was still open each time the result line changed.
+    const dialogOpenAtWrite: boolean[] = [];
+    const observer = new MutationObserver(() => {
+      if (resultLine().textContent !== '') {
+        dialogOpenAtWrite.push(editDialog() !== null);
+      }
+    });
+    observer.observe(resultLine(), { childList: true, characterData: true, subtree: true });
+
+    await setDuration({
+      user,
+      label: strings.heartbeatGraceLabel,
+      unitLabel: strings.heartbeatGraceUnitLabel,
+      value: '3',
+      unit: 'hours',
+    });
+    await user.click(button(strings.saveHeartbeat));
+    expect(resultLine()).toHaveTextContent('');
+    await act(async () => {
+      saving.resolve(updated);
+      await saving.promise;
+    });
+
+    await waitFor(() => expect(resultLine()).toHaveTextContent(`Saved ${label(EDITED)}.`));
+    observer.disconnect();
+    expect(editDialog()).toBeNull();
+    expect(dialogOpenAtWrite).toEqual([false]);
+  });
+
+  it('keeps the saved result when a toggle result lands after the close', async () => {
+    const updated = { ...EDITED, graceSeconds: 10_800 };
+    const pausing = deferred<HeartbeatCheck>();
+    const pauseHeartbeat = vi.fn().mockReturnValue(pausing.promise);
+    const updateHeartbeat = vi.fn().mockResolvedValue(updated);
+    const { user } = await openEditor({
+      checks: [EDITED, CHECK_2],
+      client: { updateHeartbeat, pauseHeartbeat },
+    });
+
+    await setDuration({
+      user,
+      label: strings.heartbeatGraceLabel,
+      unitLabel: strings.heartbeatGraceUnitLabel,
+      value: '3',
+      unit: 'hours',
+    });
+    await user.click(button(strings.saveHeartbeat));
+    await waitFor(() => expect(editDialog()).toBeNull());
+    // The announcement is flushed in the commit that closed the dialog, so it is already there.
+    expect(resultLine()).toHaveTextContent(`Saved ${label(EDITED)}.`);
+    await user.click(button(`Pause ${label(CHECK_2)}`));
+    await user.click(button(`Confirm pause ${label(CHECK_2)}`));
+    await act(async () => {
+      pausing.resolve({ ...CHECK_2, paused: true });
+      await pausing.promise;
+    });
+    // A later action's result then replaces it, as any result does.
+    await waitFor(() => expect(resultLine()).toHaveTextContent(`Paused ${label(CHECK_2)}`));
   });
 
   it('sends the full destination set when it changed', async () => {
@@ -1875,26 +2002,125 @@ describe('Heartbeats edit check', () => {
     await user.click(button(strings.saveHeartbeat));
 
     expect(updateHeartbeat).not.toHaveBeenCalled();
-    expect(screen.queryByRole('form', { name: /^Edit / })).toBeNull();
+    expect(editDialog()).toBeNull();
     await waitFor(() => expect(button(`Edit ${label(EDITED)}`)).toHaveFocus());
   });
 
-  it('Close without saving closes the row and refocuses the Edit trigger', async () => {
+  it('Close without saving closes the dialog and refocuses the Edit trigger', async () => {
     const { user } = await openEditor();
 
-    await user.click(button(strings.closeEditAction));
+    await user.click(formClose());
 
-    expect(screen.queryByRole('form', { name: /^Edit / })).toBeNull();
+    expect(editDialog()).toBeNull();
     await waitFor(() => expect(button(`Edit ${label(EDITED)}`)).toHaveFocus());
   });
 
-  it('the row trigger toggles the editor closed again', async () => {
+  it('Escape on a clean dialog closes it with no guard', async () => {
     const { user } = await openEditor();
 
-    await user.click(button(`Close ${label(EDITED)}`));
+    await user.keyboard('{Escape}');
 
-    expect(screen.queryByRole('form', { name: /^Edit / })).toBeNull();
-    expect(button(`Edit ${label(EDITED)}`)).toHaveAttribute('aria-expanded', 'false');
+    expect(editDialog()).toBeNull();
+    await waitFor(() => expect(button(`Edit ${label(EDITED)}`)).toHaveFocus());
+  });
+
+  it.each([
+    ['Close', () => formClose()],
+    ['the X', () => dialogX()],
+  ])(
+    'a dirty dialog shows the discard guard on %s; Keep editing returns, Discard closes',
+    async (_name, trigger) => {
+      const { user } = await openEditor();
+      await user.click(checkbox('family_ntfy'));
+
+      await user.click(trigger());
+      expect(screen.getByText(strings.discardChangesMessage)).toBeInTheDocument();
+      expect(editForm()).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: strings.keepEditing }));
+      expect(screen.queryByText(strings.discardChangesMessage)).toBeNull();
+      expect(checkbox('family_ntfy')).toBeChecked();
+
+      await user.keyboard('{Escape}');
+      expect(screen.getByText(strings.discardChangesMessage)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: strings.discardChanges }));
+      expect(editDialog()).toBeNull();
+      await waitFor(() => expect(button(`Edit ${label(EDITED)}`)).toHaveFocus());
+    },
+  );
+
+  it('editing a field and reverting it to the baseline makes the dialog clean again', async () => {
+    const { user } = await openEditor();
+
+    await setDuration({
+      user,
+      label: strings.heartbeatGraceLabel,
+      unitLabel: strings.heartbeatGraceUnitLabel,
+      value: '3',
+      unit: 'hours',
+    });
+    await user.click(checkbox('family_ntfy'));
+    await user.click(checkbox('family_ntfy'));
+    await setDuration({
+      user,
+      label: strings.heartbeatGraceLabel,
+      unitLabel: strings.heartbeatGraceUnitLabel,
+      value: '2',
+      unit: 'hours',
+    });
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByText(strings.discardChangesMessage)).toBeNull();
+    expect(editDialog()).toBeNull();
+  });
+
+  it('after a save the next dialog opens clean: open A dirty, save, open B, Escape closes', async () => {
+    const updateHeartbeat = vi.fn().mockResolvedValue({ ...EDITED, graceSeconds: 10_800 });
+    const { user } = await openEditor({ checks: [EDITED, CHECK_2], client: { updateHeartbeat } });
+
+    await setDuration({
+      user,
+      label: strings.heartbeatGraceLabel,
+      unitLabel: strings.heartbeatGraceUnitLabel,
+      value: '3',
+      unit: 'hours',
+    });
+    await user.click(button(strings.saveHeartbeat));
+    await waitFor(() => expect(editDialog()).toBeNull());
+
+    await user.click(button(`Edit ${label(CHECK_2)}`));
+    expect(editForm(CHECK_2)).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByText(strings.discardChangesMessage)).toBeNull();
+    expect(editDialog()).toBeNull();
+  });
+
+  it('keeps the dialog open with a notice and Save disabled when a refresh drops the edited row', async () => {
+    const pauseHeartbeat = vi.fn().mockResolvedValue({ ...CHECK_2, paused: true });
+    const listHeartbeats = vi
+      .fn()
+      .mockResolvedValueOnce([EDITED, CHECK_2])
+      .mockResolvedValue([{ ...CHECK_2, paused: true }]);
+    const { user } = await openEditor({
+      checks: [EDITED, CHECK_2],
+      client: { listHeartbeats, pauseHeartbeat },
+    });
+    await user.click(checkbox('family_ntfy'));
+
+    // Pausing the other row reloads the list quietly; the edited row is not in it any more.
+    await user.click(button(`Pause ${label(CHECK_2)}`));
+    await user.click(button(`Confirm pause ${label(CHECK_2)}`));
+
+    const dialog = editForm();
+    expect(await within(dialog).findByText(strings.editRowGone)).toBeInTheDocument();
+    expect(button(strings.saveHeartbeat)).toBeDisabled();
+    expect(checkbox('family_ntfy')).toBeChecked();
+
+    // Dirty, so dismissal goes through the guard; the dialog is never closed over typed data.
+    await user.click(within(dialog).getByRole('button', { name: strings.closeAction }));
+    expect(screen.getByText(strings.discardChangesMessage)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: strings.discardChanges }));
+    expect(editDialog()).toBeNull();
   });
 
   it('round-trips an untouched duration back to the exact stored seconds', async () => {
@@ -2064,6 +2290,7 @@ describe('Heartbeats edit check', () => {
 
     expect(await within(editForm()).findByRole('alert')).toHaveTextContent('unknown destination');
     expect(editForm()).toBeInTheDocument();
+    expect(checkbox('family_ntfy')).toBeChecked();
   });
 
   it('guards a save in flight: one request, a busy Save, and no way to leave or swap the editor', async () => {
@@ -2089,52 +2316,80 @@ describe('Heartbeats edit check', () => {
       'aria-disabled',
       'true',
     );
-    await user.click(button(strings.closeEditAction));
+    // The dialog cannot be dismissed mid-save: no X, the form's own Close does nothing.
+    expect(editForm().querySelector('.modal__close')).toBeNull();
+    await user.click(formClose());
     await user.click(button(`Edit ${label(CHECK_2)}`));
     await user.click(button(strings.addHeartbeatAction));
     expect(editForm()).toBeInTheDocument();
-    expect(screen.getAllByRole('form')).toHaveLength(1);
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.queryByRole('form', { name: strings.addHeartbeatHeading })).toBeNull();
 
     await act(async () => {
       saving.resolve({ ...EDITED, graceSeconds: 10_800 });
       await saving.promise;
     });
-    await waitFor(() => expect(screen.queryByRole('form', { name: /^Edit / })).toBeNull());
+    await waitFor(() => expect(editDialog()).toBeNull());
     await waitFor(() => expect(button(`Edit ${label(EDITED)}`)).toHaveFocus());
   });
 
-  it('a save that lands after the editor was swapped does not close the new editor', async () => {
-    // The row's editor is closed by a delete of that row; a late save for it must
-    // not close or refocus an editor opened since.
+  it('a save that lands after the row was deleted in flight neither closes the dialog nor announces', async () => {
+    const saving = deferred<HeartbeatCheck>();
+    const updateHeartbeat = vi.fn().mockReturnValue(saving.promise);
+    // A Down row makes the 30 s tick reload the list quietly; that reload no longer has the
+    // edited row. Only the interval and Date are faked, so user-event keeps its real timers.
+    const DOWN_2 = buildCheck({ id: 2, state: 'down' });
+    const listHeartbeats = vi
+      .fn()
+      .mockResolvedValueOnce([EDITED, DOWN_2])
+      .mockResolvedValue([DOWN_2]);
+    // Faked before the render, so the section's own interval is the fake one.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    try {
+      const { user } = await openEditor({
+        checks: [EDITED, DOWN_2],
+        client: { updateHeartbeat, listHeartbeats },
+      });
+      await user.click(checkbox('family_ntfy'));
+      await user.click(button(strings.saveHeartbeat));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(listHeartbeats).toHaveBeenCalledTimes(2);
+      expect(screen.getByText(strings.editRowGone)).toBeInTheDocument();
+
+      await act(async () => {
+        saving.resolve({ ...EDITED, destinations: [] });
+        await saving.promise;
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // The dialog stays (with the removed-row notice) and nothing was announced as saved.
+    expect(editForm()).toBeInTheDocument();
+    expect(screen.getByText(strings.editRowGone)).toBeInTheDocument();
+    expect(resultLine()).not.toHaveTextContent(`Saved ${label(EDITED)}`);
+  });
+
+  it('a failed reload with a save in flight does not claim the row is gone', async () => {
     const saving = deferred<HeartbeatCheck>();
     const updateHeartbeat = vi.fn().mockReturnValue(saving.promise);
     const listHeartbeats = vi
       .fn()
-      .mockResolvedValueOnce([EDITED, CHECK_2])
-      .mockResolvedValue([CHECK_2]);
-    const { user } = await openEditor({
-      client: {
-        updateHeartbeat,
-        listHeartbeats,
-        deleteHeartbeat: vi.fn().mockResolvedValue(undefined),
-      },
-    });
-
+      .mockResolvedValueOnce([EDITED])
+      .mockRejectedValue(new ApiError({ message: 'boom', status: 502 }));
+    const { user } = await openEditor({ client: { updateHeartbeat, listHeartbeats } });
     await user.click(checkbox('family_ntfy'));
     await user.click(button(strings.saveHeartbeat));
-    await user.click(button(`Delete ${label(EDITED)}`));
-    await user.click(button(`Confirm delete ${label(EDITED)}`));
-    await waitFor(() => expect(document.querySelector('tr[data-check-id="1"]')).toBeNull());
-    await user.click(button(`Edit ${label(CHECK_2)}`));
-    expect(screen.getByRole('form', { name: `Edit ${label(CHECK_2)}` })).toBeInTheDocument();
 
-    await act(async () => {
-      saving.resolve({ ...EDITED, destinations: [] });
-      await saving.promise;
-    });
+    // The dialog makes the page behind it inert, so the Refresh button is found by hidden role.
+    fireEvent.click(screen.getByRole('button', { name: strings.heartbeatsRefresh, hidden: true }));
+    await waitFor(() => expect(listHeartbeats).toHaveBeenCalledTimes(2));
+    await screen.findByText('boom');
 
-    expect(screen.getByRole('form', { name: `Edit ${label(CHECK_2)}` })).toBeInTheDocument();
-    expect(resultLine()).not.toHaveTextContent(`Saved ${label(EDITED)}`);
+    expect(screen.queryByText(strings.editRowGone)).toBeNull();
+    expect(editForm()).toBeInTheDocument();
   });
 
   it('keeps the typed values and the original baseline across a quiet reload of the list', async () => {
@@ -2181,11 +2436,10 @@ describe('Heartbeats edit check', () => {
     await user.click(button(strings.heartbeatsRefresh));
 
     await waitFor(() => expect(button(`Edit ${label(EDITED)}`)).toBeInTheDocument());
-    expect(screen.queryByRole('form', { name: /^Edit / })).toBeNull();
-    expect(button(`Edit ${label(EDITED)}`)).toHaveAttribute('aria-expanded', 'false');
+    expect(editDialog()).toBeNull();
   });
 
-  it('opening edit on one row closes the add card and any other open editor', async () => {
+  it('opening edit closes the add card and drops what was typed in it, exactly as before', async () => {
     const user = userEvent.setup();
     renderSection(
       buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1, CHECK_2]) }),
@@ -2193,15 +2447,31 @@ describe('Heartbeats edit check', () => {
     );
 
     await user.click(button(strings.addHeartbeatAction));
-    expect(addForm()).toBeInTheDocument();
+    await user.type(screen.getByLabelText(strings.heartbeatAppIdLabel), 'typed_app');
     await user.click(await screen.findByRole('button', { name: `Edit ${label(CHECK_1)}` }));
     expect(screen.queryByRole('form', { name: strings.addHeartbeatHeading })).toBeNull();
-    expect(screen.getByRole('form', { name: `Edit ${label(CHECK_1)}` })).toBeInTheDocument();
+    expect(editForm(CHECK_1)).toBeInTheDocument();
 
+    await user.keyboard('{Escape}');
+    await user.click(button(strings.addHeartbeatAction));
+    expect(screen.getByLabelText(strings.heartbeatAppIdLabel)).toHaveValue('');
+  });
+
+  it('opens one dialog at a time: a second Edit after closing the first shows only the second', async () => {
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1, CHECK_2]) }),
+      FULL_DESTINATIONS,
+    );
+
+    await user.click(await screen.findByRole('button', { name: `Edit ${label(CHECK_1)}` }));
+    expect(editForm(CHECK_1)).toBeInTheDocument();
+    await user.keyboard('{Escape}');
     await user.click(button(`Edit ${label(CHECK_2)}`));
-    expect(screen.queryByRole('form', { name: `Edit ${label(CHECK_1)}` })).toBeNull();
-    expect(screen.getByRole('form', { name: `Edit ${label(CHECK_2)}` })).toBeInTheDocument();
-    expect(screen.getAllByRole('form')).toHaveLength(1);
+
+    expect(screen.queryByRole('dialog', { name: `Edit ${label(CHECK_1)}` })).toBeNull();
+    expect(editForm(CHECK_2)).toBeInTheDocument();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
   });
 
   it('opening the add card closes an open editor', async () => {
@@ -2210,7 +2480,7 @@ describe('Heartbeats edit check', () => {
 
     await user.click(button(strings.addHeartbeatAction));
 
-    expect(screen.queryByRole('form', { name: /^Edit / })).toBeNull();
+    expect(editDialog()).toBeNull();
     expect(addForm()).toBeInTheDocument();
     expect(screen.getAllByRole('form')).toHaveLength(1);
   });
