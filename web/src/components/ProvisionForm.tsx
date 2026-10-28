@@ -19,7 +19,7 @@ interface ProvisionFormProps {
 
 /** Form for provisioning a user into an app, with inline validation and a token reveal on success. */
 export function ProvisionForm({ onProvision, apps = [] }: ProvisionFormProps) {
-  const [appId, setAppId] = useState('');
+  const [rawAppId, setAppId] = useState('');
   const [email, setEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -35,6 +35,11 @@ export function ProvisionForm({ onProvision, apps = [] }: ProvisionFormProps) {
     setResult(null);
     clearCopyStatus();
 
+    // Enter/Save mid-composition: submit what the field will show.
+    const appId = rawAppId.toLowerCase();
+    if (appId !== rawAppId) {
+      setAppId(appId);
+    }
     if (!isValidAppId(appId)) {
       setError(strings.invalidAppId);
       return;
@@ -67,10 +72,11 @@ export function ProvisionForm({ onProvision, apps = [] }: ProvisionFormProps) {
         <label htmlFor="provision-app-id">{strings.appIdLabel}</label>
         <AppCombobox
           id="provision-app-id"
-          value={appId}
+          value={rawAppId}
           onChange={setAppId}
           apps={apps}
           placeholder={strings.appIdPlaceholder}
+          lowercase
         />
 
         <label htmlFor="provision-email">{strings.emailLabel}</label>

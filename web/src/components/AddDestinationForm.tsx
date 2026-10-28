@@ -3,6 +3,7 @@ import type { FormEvent, JSX } from 'react';
 
 import { ApiError } from '../api/client';
 import type { CreateDestinationParams, DestinationType } from '../api/deliveryClient';
+import { useLowercaseInput } from '../hooks/useLowercaseInput';
 import { strings } from '../strings';
 import { isValidDestinationName } from '../validation';
 import { fieldsFor, generateSigningSecret, validateField } from './destinationFields';
@@ -30,7 +31,8 @@ interface AddDestinationFormProps {
  * parent collapses the form on success and renders any reveal outside it.
  */
 export function AddDestinationForm({ onAdd, onCancel }: AddDestinationFormProps): JSX.Element {
-  const [name, setName] = useState('');
+  const [rawName, setName] = useState('');
+  const nameInput = useLowercaseInput({ setValue: setName });
   const [type, setType] = useState<DestinationType>('ntfy');
   const [values, setValues] = useState<Record<string, string>>({});
   const [generatedSecret, setGeneratedSecret] = useState<string | null>(null);
@@ -61,7 +63,11 @@ export function AddDestinationForm({ onAdd, onCancel }: AddDestinationFormProps)
     if (submitting) {
       return;
     }
-    const trimmedName = name.trim();
+    // Enter/Save mid-composition: submit what the field will show.
+    const trimmedName = rawName.toLowerCase().trim();
+    if (rawName.toLowerCase() !== rawName) {
+      setName(rawName.toLowerCase());
+    }
     if (!isValidDestinationName(trimmedName)) {
       setError(strings.invalidDestinationName);
       return;
@@ -113,8 +119,11 @@ export function AddDestinationForm({ onAdd, onCancel }: AddDestinationFormProps)
               id="add-dest-name"
               type="text"
               placeholder={strings.destNamePlaceholder}
-              value={name}
-              onChange={(event) => setName(event.target.value)}
+              value={rawName}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              {...nameInput}
             />
           </div>
           <div className="destination-form__field">
