@@ -10,6 +10,7 @@ import type {
   IdentityRequest,
 } from '../api/deliveryClient';
 import { strings } from '../strings';
+import { useTimeZone } from '../test-timezone';
 import { AppIdentities } from './AppIdentities';
 
 afterEach(() => {
@@ -321,7 +322,10 @@ describe('AppIdentities requests', () => {
     expect(
       within(row).getByText('refs/heads/main · environment production · run 14022'),
     ).toBeInTheDocument();
-    expect(within(row).getByText('2026-10-21 18:04 UTC')).toBeInTheDocument();
+    const requested = within(row).getByText('2026-10-21 18:04 UTC');
+    expect(requested.tagName).toBe('TIME');
+    expect(requested).toHaveAttribute('datetime', '2026-10-21T18:04:00.000Z');
+    expect(requested).toHaveAttribute('title', '2026-10-21T18:04:00.000Z');
   });
 
   it('uses the singular summary for exactly one request', async () => {
@@ -737,12 +741,12 @@ describe('AppIdentities bindings and keys', () => {
     expect(within(row).getByText('Superseded')).toBeInTheDocument();
     expect(within(row).getByText('Revoked')).toBeInTheDocument();
     expect(within(row).getByText('dak_7Q2m…')).toBeInTheDocument();
-    expect(within(row).getByText(/^issued 2026-10-21 16:40 · last used /)).toBeInTheDocument();
+    expect(within(row).getByText(/^issued 2026-10-21 16:40 UTC · last used /)).toBeInTheDocument();
     // The superseded key stops working 24 h after it was superseded.
     expect(
-      within(row).getByText('stops working 2026-10-22 16:40 · never used'),
+      within(row).getByText('stops working 2026-10-22 16:40 UTC · never used'),
     ).toBeInTheDocument();
-    expect(within(row).getByText('revoked 2026-10-20 09:00 by operator')).toBeInTheDocument();
+    expect(within(row).getByText('revoked 2026-10-20 09:00 UTC by operator')).toBeInTheDocument();
   });
 
   it('never shows a full key, even one smuggled onto a key object', async () => {
@@ -1169,11 +1173,11 @@ describe('AppIdentities key and request text', () => {
   }
 
   it.each([
-    ['operator', 'revoked 2026-10-20 09:00 by operator'],
-    ['unbound', 'revoked 2026-10-20 09:00 when unbound'],
-    ['superseded', 'revoked 2026-10-20 09:00 after its 24 h grace period'],
-    ['made-up-reason', 'revoked 2026-10-20 09:00 made-up-reason'],
-    [null, 'revoked 2026-10-20 09:00'],
+    ['operator', 'revoked 2026-10-20 09:00 UTC by operator'],
+    ['unbound', 'revoked 2026-10-20 09:00 UTC when unbound'],
+    ['superseded', 'revoked 2026-10-20 09:00 UTC after its 24 h grace period'],
+    ['made-up-reason', 'revoked 2026-10-20 09:00 UTC made-up-reason'],
+    [null, 'revoked 2026-10-20 09:00 UTC'],
   ])('words a key revoked for %s', async (reason, expected) => {
     renderKey({ state: 'revoked', revokedAt: '2026-10-20T09:00:00Z', revokedReason: reason });
 
@@ -1183,7 +1187,7 @@ describe('AppIdentities key and request text', () => {
   it('falls back to the issue time for a revoked key without a revoke time', async () => {
     renderKey({ state: 'revoked', revokedAt: null, revokedReason: 'operator' });
 
-    expect(await screen.findByText('revoked 2026-10-21 16:40 by operator')).toBeInTheDocument();
+    expect(await screen.findByText('revoked 2026-10-21 16:40 UTC by operator')).toBeInTheDocument();
   });
 
   it.each([null, 'not-a-date'])(
@@ -1191,7 +1195,9 @@ describe('AppIdentities key and request text', () => {
     async (supersededAt) => {
       renderKey({ state: 'superseded', supersededAt });
 
-      expect(await screen.findByText('issued 2026-10-21 16:40 · never used')).toBeInTheDocument();
+      expect(
+        await screen.findByText('issued 2026-10-21 16:40 UTC · never used'),
+      ).toBeInTheDocument();
     },
   );
 
@@ -1203,7 +1209,7 @@ describe('AppIdentities key and request text', () => {
 
       expect(
         await screen.findByText(
-          `issued 2026-10-21 16:40 · last used ${strings.relativeMinutesAgo({ minutes: 2 })}`,
+          `issued 2026-10-21 16:40 UTC · last used ${strings.relativeMinutesAgo({ minutes: 2 })}`,
         ),
       ).toBeInTheDocument();
     } finally {
@@ -1310,5 +1316,39 @@ describe('AppIdentities action races', () => {
 
     await waitFor(() => expect(resultLine()).toBeEmptyDOMElement());
     await screen.findByText(strings.identitiesRequestsEmpty);
+  });
+});
+
+describe('AppIdentities times in a non-UTC zone', () => {
+  useTimeZone('America/Los_Angeles');
+
+  it('shows the request row time in the local zone with the UTC instant as its title', async () => {
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi
+          .fn()
+          .mockResolvedValue([buildRequest({ id: 1, createdAt: '2026-10-21T18:04:00Z' })]),
+      }),
+    );
+
+    const requested = await screen.findByText('2026-10-21 11:04 PDT');
+    expect(requested.tagName).toBe('TIME');
+    expect(requested).toHaveAttribute('datetime', '2026-10-21T18:04:00.000Z');
+    expect(requested).toHaveAttribute('title', '2026-10-21T18:04:00.000Z');
+  });
+
+  it('shows the approved time and every key sub-line time with the PDT abbreviation', async () => {
+    renderSection(
+      buildClient({ listIdentityBindings: vi.fn().mockResolvedValue([BINDING_TASKTRACKER]) }),
+    );
+
+    await screen.findByRole('table');
+    const row = bindingRow('tasktracker');
+    expect(within(row).getByText('approved 2026-10-19 02:12 PDT')).toBeInTheDocument();
+    expect(within(row).getByText(/^issued 2026-10-21 09:40 PDT · last used /)).toBeInTheDocument();
+    expect(
+      within(row).getByText('stops working 2026-10-22 09:40 PDT · never used'),
+    ).toBeInTheDocument();
+    expect(within(row).getByText('revoked 2026-10-20 02:00 PDT by operator')).toBeInTheDocument();
   });
 });

@@ -5,6 +5,8 @@ export interface FocusRegistry {
   registerControl: (args: { key: string; element: HTMLElement | null }) => void;
   /** Asks for focus to move to the control registered under `key` once it is mounted. */
   requestFocus: (key: string) => void;
+  /** The control currently registered under `key`, or null. */
+  getControl: (key: string) => HTMLElement | null;
 }
 
 /**
@@ -50,5 +52,7 @@ export function useFocusRegistry(): FocusRegistry {
     setFocusTick((tick) => tick + 1);
   }, []);
 
-  return { registerControl, requestFocus };
+  const getControl = useCallback((key: string) => controls.current.get(key) ?? null, []);
+
+  return { registerControl, requestFocus, getControl };
 }

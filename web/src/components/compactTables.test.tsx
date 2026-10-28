@@ -1,3 +1,4 @@
+import type { ComponentProps } from 'react';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
@@ -17,10 +18,13 @@ import { strings } from '../strings';
 import { accessibleNameOf, labelInNameViolations } from '../test-labels';
 import { setCompactViewport } from '../test-viewport';
 import { AppIdentities } from './AppIdentities';
+import { AppsTable } from './AppsTable';
 import { DestinationsSection } from './DestinationsSection';
 import { Heartbeats } from './Heartbeats';
+import { PeopleTable } from './PeopleTable';
 import { RoutesSection } from './RoutesSection';
 import type { DestinationsLoadState } from './RoutesSection';
+import { UsersTable } from './UsersTable';
 
 // The narrow layout (viewport <= 30rem) swaps every admin table row's inline buttons for one
 // kebab menu. These tests drive each of the four tables through its menu, by keyboard where
@@ -357,7 +361,7 @@ describe('Destinations table, narrow layout', () => {
     expect(menu).toHaveTextContent('delete blew up');
   });
 
-  it('Edit opens the inline editor and moves focus into it', async () => {
+  it('Edit opens the dialog and moves focus into it; the menu keeps offering Edit', async () => {
     const user = userEvent.setup();
     renderDestinations(
       buildClient({
@@ -369,15 +373,9 @@ describe('Destinations table, narrow layout', () => {
     await openMenu({ user, row: 'family_ntfy' });
     await chooseItem({ user, name: 'Edit family_ntfy' });
 
-    const editor = document.querySelector('.admin-table__editor') as HTMLElement;
-    expect(editor).not.toBeNull();
-    expect(editor).toContainElement(document.activeElement as HTMLElement);
-    // Reopening the menu offers Close.
-    await openMenu({ user, row: 'family_ntfy' });
-    expect(screen.getByRole('menuitem', { name: 'Close family_ntfy' })).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
+    const dialog = screen.getByRole('dialog', { name: 'Edit destination family_ntfy' });
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    expect(dialog.closest('tr')).toBeNull();
   });
 });
 
@@ -489,10 +487,11 @@ describe('Routes table, narrow layout', () => {
 
     await openMenu({ user, row: 'route 1' });
     await chooseItem({ user, name: 'Edit route 1' });
+    expect(screen.getByRole('dialog', { name: strings.editRoute({ id: 1 }) })).toBeInTheDocument();
     expect(document.activeElement).toBe(screen.getByLabelText(strings.routeAppLabel));
 
-    // Closing the editor hands focus back to the kebab.
-    await user.click(screen.getByRole('button', { name: 'Close' }));
+    // Closing the dialog hands focus back to the kebab.
+    await user.keyboard('{Escape}');
     await waitFor(() => expect(kebab('route 1')).toHaveFocus());
 
     await openMenu({ user, row: 'route 1' });
@@ -673,7 +672,7 @@ describe('Heartbeats table, narrow layout', () => {
     expect(screen.getByRole('dialog', { name: 'Delete check?' })).toHaveTextContent(note);
   });
 
-  it('Edit opens the inline editor with focus in it', async () => {
+  it('Edit opens the dialog with focus in it and returns focus to the kebab on close', async () => {
     const user = userEvent.setup();
     renderHeartbeats(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1]) }));
     await screen.findByRole('button', { name: `Actions for ${ROW_1}` });
@@ -681,9 +680,10 @@ describe('Heartbeats table, narrow layout', () => {
     await openMenu({ user, row: ROW_1 });
     await chooseItem({ user, name: `Edit ${ROW_1}` });
 
-    const editor = document.querySelector('.admin-table__editor') as HTMLElement;
-    expect(editor).not.toBeNull();
-    expect(editor).toContainElement(document.activeElement as HTMLElement);
+    const dialog = screen.getByRole('dialog', { name: `Edit ${ROW_1}` });
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(kebab(ROW_1)).toHaveFocus());
   });
 
   it('a failed pause puts the server error on the kebab and in the menu', async () => {
@@ -1027,12 +1027,10 @@ describe('Row action labels, roomy layout', () => {
     ]);
     expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
 
-    // The open editor turns Edit into Close.
+    // The open dialog leaves the row's Edit label alone; closing returns to the row.
     await user.click(screen.getByRole('button', { name: 'Edit family_ntfy' }));
-    const editing = rowButtons(rowOfButton('Close family_ntfy'));
-    expect(editing.visible[1]).toBe('Close');
-    expect(editing.names[1]).toBe('Close family_ntfy');
-    await user.click(screen.getByRole('button', { name: 'Close family_ntfy' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
 
     // Each confirm dialog: the verb is still short and the name still carries the destination.
     for (const verb of ['Disable', 'Delete']) {
@@ -1064,10 +1062,12 @@ describe('Row action labels, roomy layout', () => {
     expect(idle.names).toEqual(['Edit route 1', 'Delete route 1']);
 
     await user.click(screen.getByRole('button', { name: 'Edit route 1' }));
-    const editing = rowButtons(rowOfButton('Close route 1'));
-    expect(editing.visible[0]).toBe('Close');
-    expect(editing.names[0]).toBe('Close route 1');
-    await user.click(screen.getByRole('button', { name: 'Close route 1' }));
+    // Edit opens a dialog: the row's buttons are unchanged, never a Close toggle.
+    expect(screen.getByRole('dialog', { name: 'Edit route 1' })).toBeInTheDocument();
+    const editing = rowButtons(rowOfButton('Edit route 1'));
+    expect(editing.visible[0]).toBe('Edit');
+    expect(editing.names[0]).toBe('Edit route 1');
+    await user.keyboard('{Escape}');
 
     // The dialog's buttons keep the short verb and the route in their names.
     await user.click(screen.getByRole('button', { name: 'Delete route 1' }));
@@ -1344,7 +1344,7 @@ describe('Owner badge, narrow layout', () => {
     });
   });
 
-  it('the Destinations editor row spans every column of the narrow table', async () => {
+  it('the Destinations edit dialog adds no editor row to the narrow table', async () => {
     const user = userEvent.setup();
     renderDestinations(
       buildClient({
@@ -1354,30 +1354,28 @@ describe('Owner badge, narrow layout', () => {
     await screen.findByRole('button', { name: 'Actions for row_a' });
     await openMenu({ user, row: 'row_a' });
     await chooseItem({ user, name: 'Edit row_a' });
-    const cell = document.querySelector('.admin-table__editor-cell') as HTMLTableCellElement;
-    expect(cell.colSpan).toBe(columnTitles().length);
+    expect(screen.getByRole('dialog', { name: 'Edit destination row_a' })).toBeInTheDocument();
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(columnTitles()).toHaveLength(5);
   });
 
-  it('the Routes editor row spans every column of the narrow table', async () => {
+  it('the Routes edit dialog adds no editor row to the narrow table', async () => {
     const user = userEvent.setup();
     renderRoutes(buildClient({ listRoutes: vi.fn().mockResolvedValue([buildRoute({ id: 1 })]) }));
     await screen.findByRole('button', { name: 'Actions for route 1' });
     await openMenu({ user, row: 'route 1' });
     await chooseItem({ user, name: 'Edit route 1' });
-    const cell = document.querySelector('.admin-table__editor-cell') as HTMLTableCellElement;
-    expect(cell.colSpan).toBe(columnTitles().length);
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(columnTitles()).toHaveLength(5);
   });
 
-  it('the Heartbeats editor row spans every column of the narrow table', async () => {
+  it('the Heartbeats edit dialog adds no editor row to the narrow table', async () => {
     const user = userEvent.setup();
     renderHeartbeats(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1]) }));
     await screen.findByRole('button', { name: `Actions for ${ROW_1}` });
     await openMenu({ user, row: ROW_1 });
     await chooseItem({ user, name: `Edit ${ROW_1}` });
-    const cell = document.querySelector('.admin-table__editor-cell') as HTMLTableCellElement;
-    expect(cell.colSpan).toBe(columnTitles().length);
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(columnTitles()).toHaveLength(6);
   });
 });
@@ -1436,10 +1434,8 @@ describe('Owner badge, roomy layout', () => {
     });
   });
 
-  it('editor rows span every column of the roomy tables, Owner included', async () => {
+  it('Destinations, Routes and Heartbeats all edit in dialogs without an extra table row', async () => {
     const user = userEvent.setup();
-    const editorColSpan = (): number =>
-      (document.querySelector('.admin-table__editor-cell') as HTMLTableCellElement).colSpan;
 
     const destinations = renderDestinations(
       buildClient({
@@ -1447,7 +1443,8 @@ describe('Owner badge, roomy layout', () => {
       }),
     );
     await user.click(await screen.findByRole('button', { name: 'Edit row_a' }));
-    expect(editorColSpan()).toBe(columnTitles().length);
+    expect(screen.getByRole('dialog', { name: 'Edit destination row_a' })).toBeInTheDocument();
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(columnTitles()).toHaveLength(6);
     destinations.unmount();
 
@@ -1455,13 +1452,13 @@ describe('Owner badge, roomy layout', () => {
       buildClient({ listRoutes: vi.fn().mockResolvedValue([buildRoute({ id: 1 })]) }),
     );
     await user.click(await screen.findByRole('button', { name: 'Edit route 1' }));
-    expect(editorColSpan()).toBe(columnTitles().length);
+    expect(screen.getByRole('dialog', { name: 'Edit route 1' })).toBeInTheDocument();
     expect(columnTitles()).toHaveLength(6);
     routes.unmount();
 
     renderHeartbeats(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1]) }));
     await user.click(await screen.findByRole('button', { name: `Edit ${ROW_1}` }));
-    expect(editorColSpan()).toBe(columnTitles().length);
+    expect(screen.getByRole('dialog', { name: `Edit ${ROW_1}` })).toBeInTheDocument();
     expect(columnTitles()).toHaveLength(7);
   });
 
@@ -1475,5 +1472,292 @@ describe('Owner badge, roomy layout', () => {
     await screen.findByRole('button', { name: `Pause ${ROW_1}` });
     expect(document.querySelectorAll('.owner-badge')).toHaveLength(1);
     expect(document.querySelectorAll('.admin-table__owner-line')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Provisioning tables (Apps, People, Users) on the same primitives as the Delivery tables
+// ---------------------------------------------------------------------------------------
+
+const PROVISIONING_APP = {
+  appId: 'urls4irl',
+  displayName: 'URLs4IRL',
+  description: 'Shared URL app',
+  createdAt: '2026-07-25T10:00:00Z',
+};
+
+function renderApps(overrides: Partial<ComponentProps<typeof AppsTable>> = {}) {
+  const props: ComponentProps<typeof AppsTable> = {
+    apps: [PROVISIONING_APP],
+    subscriberCountByApp: new Map([['urls4irl', 3]]),
+    loading: false,
+    error: null,
+    onUpdateApp: vi.fn().mockResolvedValue(undefined),
+    onRemintToken: vi.fn(),
+    onRemoveApp: vi.fn(),
+    ...overrides,
+  };
+  render(<AppsTable {...props} />);
+  return props;
+}
+
+const PERSON = {
+  personHash: '76gzqgp4byjl6dje',
+  email: 'alice@example.com',
+  createdAt: '2026-07-19T18:12:03Z',
+};
+
+function renderPeople(overrides: Partial<ComponentProps<typeof PeopleTable>> = {}) {
+  const props: ComponentProps<typeof PeopleTable> = {
+    people: [PERSON],
+    loading: false,
+    error: null,
+    onDelete: vi.fn(),
+    ...overrides,
+  };
+  render(<PeopleTable {...props} />);
+  return props;
+}
+
+const PROVISIONING_USER = {
+  userId: 'u_76gzqgp4byjl6dje',
+  apps: ['urls4irl', 'chores4irl'],
+  topicPatterns: ['u4i-*', 'c4i-*'],
+};
+
+function renderUsers(overrides: Partial<ComponentProps<typeof UsersTable>> = {}) {
+  const props: ComponentProps<typeof UsersTable> = {
+    users: [PROVISIONING_USER],
+    loading: false,
+    emailByPersonHash: new Map([['76gzqgp4byjl6dje', 'alice@example.com']]),
+    onDeprovision: vi.fn(),
+    onDelete: vi.fn(),
+    onResetPassword: vi.fn(),
+    ...overrides,
+  };
+  render(<UsersTable {...props} />);
+  return props;
+}
+
+function expectScrollWrapped() {
+  const table = screen.getByRole('table');
+  expect(table).toHaveClass('admin-table');
+  expect(table.parentElement).toHaveClass('admin-table__scroll');
+}
+
+describe('Provisioning tables, narrow layout', () => {
+  beforeEach(() => {
+    setCompactViewport(true);
+  });
+
+  it('Apps: App (lead, name under it) / Created / actions, one kebab and no inline buttons', async () => {
+    const user = userEvent.setup();
+    const props = renderApps();
+
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([strings.columnApp, strings.columnCreated, 'Actions']);
+    const row = kebab('URLs4IRL').closest('tr') as HTMLElement;
+    const [lead] = within(row).getAllByRole('cell');
+    expect(lead).toHaveClass('admin-table__lead');
+    expect(lead).toHaveTextContent('urls4irl');
+    expect(lead).toHaveTextContent('URLs4IRL');
+    expect(within(row).getAllByRole('cell')).toHaveLength(3);
+    expect(allKebabs()).toHaveLength(1);
+    expect(screen.queryAllByRole('button', { name: /^(Edit|Remove) / })).toHaveLength(0);
+    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+
+    await openMenu({ user, row: 'URLs4IRL' });
+    expect(screen.getAllByRole('menuitem').map((item) => accessibleNameOf(item))).toEqual([
+      'Edit URLs4IRL',
+      'Remove URLs4IRL',
+    ]);
+    await chooseItem({ user, name: 'Remove URLs4IRL' });
+    expect(props.onRemoveApp).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Confirm remove URLs4IRL' }));
+    expect(props.onRemoveApp).toHaveBeenCalledWith({ appId: 'urls4irl' });
+  });
+
+  it('Apps: Edit from the menu opens the dialog', async () => {
+    const user = userEvent.setup();
+    renderApps();
+    await openMenu({ user, row: 'URLs4IRL' });
+    await chooseItem({ user, name: 'Edit URLs4IRL' });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('People: Person (lead) / Created / actions, Delete from the menu', async () => {
+    const user = userEvent.setup();
+    const props = renderPeople();
+
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([strings.columnPerson, strings.columnCreated, 'Actions']);
+    const row = kebab(PERSON.email).closest('tr') as HTMLElement;
+    const [lead] = within(row).getAllByRole('cell');
+    expect(lead).toHaveClass('admin-table__lead');
+    expect(lead).toHaveTextContent(PERSON.email);
+    expect(lead).toHaveTextContent(PERSON.personHash);
+    expect(within(row).getAllByRole('cell')).toHaveLength(3);
+    expect(screen.queryAllByRole('button', { name: /^Delete / })).toHaveLength(0);
+    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+
+    await openMenu({ user, row: PERSON.email });
+    await chooseItem({ user, name: `Delete ${PERSON.email}` });
+    await user.click(screen.getByRole('button', { name: `Confirm delete ${PERSON.email}` }));
+    expect(props.onDelete).toHaveBeenCalledWith({ personHash: PERSON.personHash });
+  });
+
+  it('Users: User (lead with apps and topic patterns) / actions; menu holds every action', async () => {
+    const user = userEvent.setup();
+    const props = renderUsers();
+
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([strings.columnUser, 'Actions']);
+    const row = kebab('alice@example.com').closest('tr') as HTMLElement;
+    const cells = within(row).getAllByRole('cell');
+    expect(cells).toHaveLength(2);
+    expect(cells[0]).toHaveClass('admin-table__lead');
+    expect(cells[0]).toHaveTextContent('alice@example.com');
+    expect(cells[0]).toHaveTextContent('urls4irl');
+    expect(cells[0]).toHaveTextContent('chores4irl');
+    expect(cells[0]).toHaveTextContent('u4i-*, c4i-*');
+    expect(screen.queryAllByRole('button', { name: /^(Reset|Deprovision|Delete)/ })).toHaveLength(
+      0,
+    );
+    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+
+    await openMenu({ user, row: 'alice@example.com' });
+    expect(screen.getAllByRole('menuitem').map((item) => accessibleNameOf(item))).toEqual([
+      'Reset password for alice@example.com',
+      'Deprovision urls4irl for alice@example.com',
+      'Deprovision chores4irl for alice@example.com',
+      'Delete alice@example.com',
+    ]);
+    await chooseItem({ user, name: 'Deprovision chores4irl for alice@example.com' });
+    await user.click(screen.getByRole('button', { name: 'Confirm deprovision chores4irl' }));
+    expect(props.onDeprovision).toHaveBeenCalledWith({
+      userId: PROVISIONING_USER.userId,
+      appId: 'chores4irl',
+    });
+  });
+
+  it('Users: Reset password from the menu opens the dialog and returns focus to the kebab', async () => {
+    const user = userEvent.setup();
+    const onResetPassword = vi.fn().mockResolvedValue({ password: 'pw-1' });
+    renderUsers({ onResetPassword });
+    await openMenu({ user, row: 'alice@example.com' });
+    await chooseItem({ user, name: 'Reset password for alice@example.com' });
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(kebab('alice@example.com')).toHaveFocus());
+  });
+
+  it('Users: no Reset item without the handler, and none for a user with no apps', async () => {
+    const user = userEvent.setup();
+    renderUsers({ onResetPassword: undefined });
+    await openMenu({ user, row: 'alice@example.com' });
+    expect(screen.queryByRole('menuitem', { name: /^Reset password/ })).toBeNull();
+    expect(screen.getByRole('menu')).not.toHaveTextContent(strings.resetPasswordUnavailable);
+  });
+
+  it('Users: a user with an empty apps list gets no Reset item', async () => {
+    const user = userEvent.setup();
+    renderUsers({ users: [{ ...PROVISIONING_USER, apps: [] }] });
+    await openMenu({ user, row: 'alice@example.com' });
+    expect(screen.queryByRole('menuitem', { name: /^Reset password/ })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Delete alice@example.com' })).toBeInTheDocument();
+  });
+
+  it('Apps: closing the Edit dialog returns focus to the row kebab', async () => {
+    const user = userEvent.setup();
+    renderApps();
+    await openMenu({ user, row: 'URLs4IRL' });
+    await chooseItem({ user, name: 'Edit URLs4IRL' });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(kebab('URLs4IRL')).toHaveFocus());
+  });
+
+  it('Apps and People: cancelling a destructive confirm fires nothing and refocuses the kebab', async () => {
+    const user = userEvent.setup();
+    const apps = renderApps();
+    await openMenu({ user, row: 'URLs4IRL' });
+    await chooseItem({ user, name: 'Remove URLs4IRL' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(kebab('URLs4IRL')).toHaveFocus());
+    expect(apps.onRemoveApp).not.toHaveBeenCalled();
+  });
+
+  it('People: cancelling the delete confirm fires nothing and refocuses the kebab', async () => {
+    const user = userEvent.setup();
+    const props = renderPeople();
+    await openMenu({ user, row: PERSON.email });
+    await chooseItem({ user, name: `Delete ${PERSON.email}` });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(kebab(PERSON.email)).toHaveFocus());
+    expect(props.onDelete).not.toHaveBeenCalled();
+  });
+
+  it('Users: a user without a known email explains the missing reset in the menu note', async () => {
+    const user = userEvent.setup();
+    renderUsers({ emailByPersonHash: new Map() });
+    await openMenu({ user, row: PROVISIONING_USER.userId });
+    expect(screen.getByRole('menu')).toHaveTextContent(strings.resetPasswordUnavailable);
+    expect(screen.queryByRole('menuitem', { name: /^Reset password/ })).toBeNull();
+  });
+});
+
+describe('Provisioning tables, roomy layout', () => {
+  it('Apps keeps every column and the inline Edit and Remove buttons, with no kebab', () => {
+    renderApps();
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([
+      strings.columnAppName,
+      strings.columnAppId,
+      strings.columnAppDescription,
+      strings.columnSubscribers,
+      strings.columnCreated,
+      'Actions',
+    ]);
+    expect(screen.getByRole('button', { name: 'Edit URLs4IRL' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Remove URLs4IRL' })).toBeVisible();
+    expect(allKebabs()).toHaveLength(0);
+  });
+
+  it('People keeps every column and the inline Delete button, with no kebab', () => {
+    renderPeople();
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([
+      strings.columnPersonHash,
+      strings.columnEmail,
+      strings.columnCreated,
+      'Actions',
+    ]);
+    expect(screen.getByRole('button', { name: `Delete ${PERSON.email}` })).toBeVisible();
+    expect(allKebabs()).toHaveLength(0);
+  });
+
+  it('Users keeps every column and the inline buttons in order, with no kebab', () => {
+    renderUsers();
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([
+      strings.columnUser,
+      strings.columnApps,
+      strings.columnTopicPatterns,
+      'Actions',
+    ]);
+    const row = screen.getByRole('button', { name: 'Delete alice@example.com' }).closest('tr');
+    expect(
+      within(row as HTMLElement)
+        .getAllByRole('button')
+        .map((button) => accessibleNameOf(button)),
+    ).toEqual([
+      'Reset password for alice@example.com',
+      'Deprovision urls4irl',
+      'Deprovision chores4irl',
+      'Delete alice@example.com',
+    ]);
+    expect(allKebabs()).toHaveLength(0);
+    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
   });
 });

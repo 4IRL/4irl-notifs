@@ -51,6 +51,19 @@ export const strings = {
 
   // Confirm dialogs (shared Modal shell).
   closeDialog: 'Close',
+  closeAction: 'Close dialog',
+  discardChangesMessage: 'Discard unsaved changes?',
+  discardChanges: 'Discard changes',
+  keepEditing: 'Keep editing',
+  editRowGone: 'This item was removed. Close this dialog to continue.',
+  // Edit dialog title; editDestination is the shorter trigger label on the row.
+  editDestinationNamed: ({ name }: { name: string }): string => `Edit destination ${name}`,
+  editRouteTitle: 'Edit route',
+  editAppNamed: ({ appId }: { appId: string }): string => `Edit app ${appId}`,
+  tokenShownOnceGuard: 'This token is shown once. Close without copying it?',
+  closeAnyway: 'Close anyway',
+  keepOpen: 'Keep open',
+  appSavedResult: ({ appId }: { appId: string }): string => `Saved ${appId}.`,
   dialogItemUser: 'User',
   dialogItemUserApp: 'User · app',
   dialogUserApp: ({ user, app }: { user: string; app: string }): string => `${user} · ${app}`,
@@ -124,6 +137,8 @@ export const strings = {
   resetPasswordAction: 'Reset password',
   confirmResetPasswordAction: 'Confirm reset',
   resettingPasswordAction: 'Resetting…',
+  // Row trigger/menu-item text while a reset is in flight; sits inside resetPasswordBusyNamed.
+  resettingPasswordRowAction: 'Resetting password',
   resetPasswordNotice: 'Resetting replaces the current password immediately.',
   resetPasswordUnavailable: 'Reset unavailable: email not loaded.',
   resetPasswordDone: 'Done',
@@ -210,6 +225,8 @@ export const strings = {
   appsLoading: 'Loading apps…',
   appsEmpty: 'No apps registered yet.',
   appsLoadError: 'Could not load apps.',
+  columnApp: 'App',
+  columnPerson: 'Person',
   columnAppName: 'Name',
   columnAppId: 'App ID',
   columnAppDescription: 'Description',
@@ -272,6 +289,7 @@ export const strings = {
   deliveryStatusMigrationLabel: 'Last migration failure',
   deliveryStatusNone: 'none',
   noValue: '—',
+  columnActions: 'Actions',
   separator: ' · ',
   adminTestDeliveryTitle: 'Test from 4IRL admin',
   adminTestDeliveryBody: ({ destination }: { destination: string }): string =>
@@ -311,7 +329,6 @@ export const strings = {
   // text (WCAG 2.5.3 Label in Name).
   rowActionTest: 'Test',
   rowActionEdit: 'Edit',
-  rowActionClose: 'Close',
   rowActionDisable: 'Disable',
   rowActionConfirmDisable: 'Confirm disable',
   rowActionEnable: 'Enable',
@@ -358,7 +375,6 @@ export const strings = {
   testNoDelivery: 'No delivery was created.',
   testHttpStatus: ({ code }: { code: number }): string => `HTTP ${code}`,
   editDestination: ({ name }: { name: string }): string => `Edit ${name}`,
-  closeDestination: ({ name }: { name: string }): string => `Close ${name}`,
   disableDestination: ({ name }: { name: string }): string => `Disable ${name}`,
   confirmDisableDestination: ({ name }: { name: string }): string => `Confirm disable ${name}`,
   disablingDestination: 'Disabling…',
@@ -436,7 +452,6 @@ export const strings = {
   addRouteHintEmpty: 'Add a destination first',
   routeRowLabel: ({ id }: { id: number }): string => `route ${id}`,
   editRoute: ({ id }: { id: number }): string => `Edit route ${id}`,
-  closeRoute: ({ id }: { id: number }): string => `Close route ${id}`,
   deleteRoute: ({ id }: { id: number }): string => `Delete route ${id}`,
   confirmDeleteRoute: ({ id }: { id: number }): string => `Confirm delete route ${id}`,
   deletingRoute: 'Deleting…',
@@ -460,6 +475,7 @@ export const strings = {
   deliveryLogFilterDead: 'Dead',
   deliveryLogFilterPending: 'Pending',
   deliveryLogFilterDelivered: 'Delivered',
+  deliveryLogFiltersMenu: 'Filter deliveries',
   deliveryLogRefresh: 'Refresh log',
   deliveryLogHint: ({ state }: { state: string }): string =>
     `Showing the newest 50 ${state} deliveries.`,
@@ -501,8 +517,10 @@ export const strings = {
   // Pending sends section.
   pendingSendsHeading: 'Pending sends',
   pendingSendsRefresh: 'Refresh pending sends',
-  pendingSendsHint: ({ limit }: { limit: number }): string =>
-    `Messages scheduled with deliver_at, soonest first (up to ${limit} shown). Times are UTC. Once released they leave this list and appear in the Delivery log.`,
+  timesLocalHint: ({ zone }: { zone: string }): string =>
+    `Times are shown in your local time zone (${zone}); the abbreviations on each time follow daylight saving.`,
+  pendingSendsHint: ({ limit, zone }: { limit: number; zone: string }): string =>
+    `Messages scheduled with deliver_at, soonest first (up to ${limit} shown). ${strings.timesLocalHint({ zone })} Once released they leave this list and appear in the Delivery log.`,
   pendingSendsTruncated: ({ shown, total }: { shown: number; total: number }): string =>
     `Showing the ${shown} soonest of ${total} pending sends.`,
   pendingSendsLoading: 'Loading pending sends…',
@@ -569,8 +587,8 @@ export const strings = {
   // Heartbeats section.
   heartbeatsHeading: 'Heartbeats',
   heartbeatsRefresh: 'Refresh heartbeats',
-  heartbeatsHint:
-    'Push checks: apps ping POST /v1/heartbeats/{app_id}/{name}. A check is late after its period and down after period + grace, which sends one down alert, then one recovery alert on the next ping. Probe checks: delivery-api requests an HTTPS URL on an interval and alerts after repeated failures in a row. Times are UTC.',
+  heartbeatsHint: ({ zone }: { zone: string }): string =>
+    `Push checks: apps ping POST /v1/heartbeats/{app_id}/{name}. A check is late after its period and down after period + grace, which sends one down alert, then one recovery alert on the next ping. Probe checks: delivery-api requests an HTTPS URL on an interval and alerts after repeated failures in a row. ${strings.timesLocalHint({ zone })}`,
   heartbeatsLoading: 'Loading heartbeat checks…',
   heartbeatsLoadError: 'Could not load heartbeat checks.',
   heartbeatsEmpty: 'No heartbeat checks yet.',
@@ -673,9 +691,7 @@ export const strings = {
   addHeartbeatHintError: 'Could not load destinations.',
   addHeartbeatHintEmpty: 'Add a destination first. Checks alert through registered destinations.',
   editHeartbeatNamed: ({ check }: { check: string }): string => `Edit ${check}`,
-  closeHeartbeatNamed: ({ check }: { check: string }): string => `Close ${check}`,
   editHeartbeatTrigger: 'Edit',
-  closeHeartbeatTrigger: 'Close',
   saveHeartbeat: 'Save',
   savingHeartbeat: 'Saving…',
   heartbeatEditingNotice: ({ check }: { check: string }): string =>

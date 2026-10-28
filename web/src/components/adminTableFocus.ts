@@ -11,8 +11,8 @@ import type { FocusEvent } from 'react';
  * column can cover, so a control just clear of a narrower column may still be nudged). Only
  * keyboard and programmatic-after-keyboard focus (`:focus-visible`) is handled: the focus a
  * mouse press gives must not move the control out from under the pointer before the click
- * lands. The inline editor rows are left to the browser: their form is pinned to the visible
- * width already, and so is the narrow layout's kebab column.
+ * lands. The secret reveal row is left to the browser: it is pinned to the visible width
+ * already, and so is the narrow layout's kebab column.
  */
 export function revealFocusedControl(event: FocusEvent<HTMLElement>): void {
   const { target, currentTarget } = event;
@@ -23,7 +23,7 @@ export function revealFocusedControl(event: FocusEvent<HTMLElement>): void {
   if (
     target === currentTarget ||
     !currentTarget.contains(target) ||
-    target.closest('.admin-table__editor-cell, .admin-table__kebab') !== null
+    target.closest('.destinations__reveal-cell, .admin-table__kebab') !== null
   ) {
     return;
   }

@@ -5,6 +5,7 @@ import { DurationField } from './DurationField';
 import { describedBy, fieldErrorId } from './fieldErrors';
 import type { FieldErrors } from './fieldErrors';
 import type { DurationInput } from './heartbeatDuration';
+import { withHttpsScheme } from './probeUrl';
 import './DestinationForm.css';
 import './RouteForm.css';
 
@@ -36,6 +37,8 @@ interface HeartbeatProbeFieldsProps {
   refs: ProbeFieldRefs;
   onChange: (next: Partial<ProbeFieldValues>) => void;
   intervalHint: string;
+  /** Normalises the URL on blur; the form supplies one that leaves an untouched saved URL alone. */
+  normaliseUrl?: (url: string) => string;
 }
 
 interface TextFieldProps {
@@ -47,6 +50,7 @@ interface TextFieldProps {
   error: string | undefined;
   inputRef: Ref<HTMLInputElement>;
   onChange: (value: string) => void;
+  onBlur?: () => void;
   type: 'url' | 'text' | 'number';
   fullWidth?: boolean;
 }
@@ -67,6 +71,7 @@ function ProbeTextField({
   error,
   inputRef,
   onChange,
+  onBlur,
   type,
   fullWidth = false,
 }: TextFieldProps): JSX.Element {
@@ -84,6 +89,7 @@ function ProbeTextField({
         aria-invalid={error ? 'true' : undefined}
         aria-describedby={describedBy({ fieldId: id, hasHint: true, error })}
         onChange={(event) => onChange(event.target.value)}
+        onBlur={onBlur}
       />
       <span id={`${id}-hint`} className="destination-form__hint">
         {hint}
@@ -105,6 +111,7 @@ export function HeartbeatProbeFields({
   refs,
   onChange,
   intervalHint,
+  normaliseUrl = withHttpsScheme,
 }: HeartbeatProbeFieldsProps): JSX.Element {
   return (
     <fieldset className="route-form__fieldset heartbeat-form__probe">
@@ -119,6 +126,12 @@ export function HeartbeatProbeFields({
           error={errors.url}
           inputRef={refs.url}
           onChange={(url) => onChange({ url })}
+          onBlur={() => {
+            const normalised = normaliseUrl(values.url);
+            if (normalised !== values.url) {
+              onChange({ url: normalised });
+            }
+          }}
           type="url"
           fullWidth
         />

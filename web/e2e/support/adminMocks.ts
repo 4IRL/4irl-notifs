@@ -369,39 +369,28 @@ export async function expectNoPageOverflow(page: Page): Promise<void> {
   expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth);
 }
 
-/** Scrolls a table wrapper as far right as it goes and returns where it landed. */
-export async function scrollWrapperToEnd(wrapper: Locator): Promise<number> {
-  return wrapper.evaluate(async (element) => {
-    element.scrollLeft = element.scrollWidth;
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    return element.scrollLeft;
-  });
-}
-
 /**
- * Asserts an open inline editor spans the whole table yet stays in view: it sits at the
- * wrapper's start edge, no wider than the wrapper, even with the wrapper scrolled to its end.
+ * Asserts the open dialog sits wholly inside the viewport (a small tolerance for rounding) and
+ * that the document does not scroll sideways.
  */
-export async function expectEditorInView({
-  wrapper,
-  form,
-}: {
-  wrapper: Locator;
-  form: Locator;
-}): Promise<void> {
-  expect(await scrollWrapperToEnd(wrapper)).toBeGreaterThan(0);
-  const formBox = await form.boundingBox();
-  const wrapperBox = await wrapper.boundingBox();
-  const cellBox = await form.locator('xpath=ancestor::td[1]').boundingBox();
-  const tableBox = await wrapper.locator('table').boundingBox();
-  if (formBox === null || wrapperBox === null || cellBox === null || tableBox === null) {
-    throw new Error('editor, wrapper, cell or table has no bounding box');
+export async function expectDialogInViewport(
+  page: Page,
+  { pageOverflow = true }: { pageOverflow?: boolean } = {},
+): Promise<void> {
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  const box = await dialog.boundingBox();
+  const viewport = page.viewportSize();
+  if (box === null || viewport === null) {
+    throw new Error('dialog or viewport has no size');
   }
-  // The cell spans the whole (scrolling) table ...
-  expect(cellBox.width).toBeGreaterThanOrEqual(tableBox.width - 1);
-  // ... while the form itself stays inside the visible part of the wrapper.
-  expect(formBox.x).toBeGreaterThanOrEqual(wrapperBox.x - 1);
-  expect(formBox.x + formBox.width).toBeLessThanOrEqual(wrapperBox.x + wrapperBox.width + 1);
+  expect(box.x).toBeGreaterThanOrEqual(-1);
+  expect(box.y).toBeGreaterThanOrEqual(-1);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height + 1);
+  if (pageOverflow) {
+    await expectNoPageOverflow(page);
+  }
 }
 
 /** Asserts a touch control is at least 44x44. */
@@ -409,6 +398,43 @@ export async function expectTouchTarget(locator: Locator): Promise<void> {
   const box = await locator.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
   expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
+}
+
+/**
+ * Asserts every cell of the table row `row` has its content centred vertically on the row (each
+ * cell's content-box centre within 2px of the row centre). A cell with no content is skipped.
+ */
+export async function expectCellsCenteredInRow({ row }: { row: Locator }): Promise<void> {
+  await expect(row).toBeVisible();
+  const cells = await row.evaluate((element) => {
+    const rowBox = element.getBoundingClientRect();
+    const rowCentre = rowBox.top + rowBox.height / 2;
+    return Array.from(element.querySelectorAll(':scope > td, :scope > th'), (cell) => {
+      // A block wrapper (put back at once) measures the cell's line boxes, not a text node's
+      // font box, whose centre is skewed by the font's ascent/descent (monospace ids).
+      const wrapper = document.createElement('div');
+      while (cell.firstChild !== null) {
+        wrapper.appendChild(cell.firstChild);
+      }
+      cell.appendChild(wrapper);
+      const box = wrapper.getBoundingClientRect();
+      while (wrapper.firstChild !== null) {
+        cell.insertBefore(wrapper.firstChild, wrapper);
+      }
+      cell.removeChild(wrapper);
+      return {
+        text: (cell.textContent ?? '').trim().slice(0, 30),
+        empty: box.height === 0,
+        offset: Math.abs(box.top + box.height / 2 - rowCentre),
+      };
+    });
+  });
+  expect(cells.length).toBeGreaterThan(0);
+  for (const cell of cells) {
+    if (!cell.empty) {
+      expect(cell.offset, `cell "${cell.text}" is off the row centre`).toBeLessThanOrEqual(2);
+    }
+  }
 }
 
 /** The Actions kebab of the row named `row` (narrow layout only). */
@@ -429,16 +455,190 @@ export async function openRowMenu({ page, row }: { page: Page; row: string }): P
   return menu;
 }
 
-export async function mockProvisioning(page: Page): Promise<void> {
-  await page.route('**/v1/users', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"users":[]}' });
-  });
-  await page.route('**/people', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
-  });
-  await page.route('**/apps', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: '{"apps":[]}' });
-  });
+/** Seed for the stateful provisioning mock, in the wire shapes the two APIs return. */
+export interface ProvisioningSeed {
+  /** `{ user_id, apps, topic_patterns }` rows of `GET /v1/users`. */
+  users?: Json[];
+  /** `{ person_hash, email, created_at }` rows of `GET /people`. */
+  people?: Json[];
+  /** `{ app_id, display_name, description, created_at }` rows of `GET /apps`. */
+  apps?: Json[];
+}
+
+/** A request log like `DeliveryMock`'s, plus the live seeded state (mutated by the handlers). */
+export interface ProvisioningMock extends DeliveryMock {
+  users: Json[];
+  people: Json[];
+  apps: Json[];
+}
+
+export function appWire({
+  appId,
+  displayName,
+  description = null,
+}: {
+  appId: string;
+  displayName: string;
+  description?: string | null;
+}): Json {
+  return {
+    app_id: appId,
+    display_name: displayName,
+    description,
+    created_at: '2026-07-25T10:00:00Z',
+  };
+}
+
+/** The reveal-once publisher token every mint and re-mint returns. */
+export const MINTED_TOKEN = 'tk_pub_e2e_minted_token';
+
+const PROVISIONING_PATH =
+  /^\/(?:v1\/(?:users|provision|provision-app|deprovision|deprovision-app|reset-password)|people|apps)(?:\/([^/]+))?$/;
+
+/**
+ * A stateful fake of the provisioning API and the person service: list, edit and delete users,
+ * people and apps, mint and re-mint tokens, deprovision and reset passwords. Every non-GET is
+ * recorded in `mutations`; a request with no handler lands in `unmocked`. With no seed every
+ * list is empty, so a one-argument call stays valid.
+ */
+export async function mockProvisioning(
+  page: Page,
+  seed: ProvisioningSeed = {},
+): Promise<ProvisioningMock> {
+  const mock: ProvisioningMock = {
+    mutations: [],
+    reads: [],
+    unmocked: [],
+    users: [...(seed.users ?? [])],
+    people: [...(seed.people ?? [])],
+    apps: [...(seed.apps ?? [])],
+  };
+
+  async function reply({
+    route,
+    status = 200,
+    body,
+  }: {
+    route: Route;
+    status?: number;
+    body: unknown;
+  }) {
+    await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+  }
+
+  await page.route(
+    (url) => PROVISIONING_PATH.test(url.pathname),
+    async (route) => {
+      const request = route.request();
+      // Page navigations and assets under these paths are not API calls.
+      if (request.resourceType() !== 'fetch' && request.resourceType() !== 'xhr') {
+        await route.fallback();
+        return;
+      }
+      const url = new URL(request.url());
+      const method = request.method();
+      const raw = request.postData();
+      const recorded: RecordedRequest = {
+        method,
+        pathname: url.pathname,
+        search: url.search,
+        body: raw === null ? null : (JSON.parse(raw) as unknown),
+      };
+      if (method === 'GET') {
+        mock.reads.push(recorded);
+      } else {
+        mock.mutations.push(recorded);
+      }
+      const body = (recorded.body ?? {}) as Json;
+      const match = PROVISIONING_PATH.exec(url.pathname);
+      const id = match?.[1] === undefined ? undefined : decodeURIComponent(match[1]);
+
+      if (method === 'GET' && url.pathname === '/v1/users') {
+        await reply({ route, body: { users: mock.users } });
+        return;
+      }
+      if (method === 'GET' && url.pathname === '/people') {
+        await reply({ route, body: { people: mock.people } });
+        return;
+      }
+      if (method === 'GET' && url.pathname === '/apps') {
+        await reply({ route, body: { apps: mock.apps } });
+        return;
+      }
+      if (method === 'POST' && url.pathname === '/apps') {
+        const created = appWire({
+          appId: body.app_id as string,
+          displayName: body.display_name as string,
+          description: (body.description as string | null | undefined) ?? null,
+        });
+        mock.apps.push(created);
+        await reply({ route, status: 201, body: created });
+        return;
+      }
+      if (url.pathname.startsWith('/apps/') && id !== undefined) {
+        const target = mock.apps.find((candidate) => candidate.app_id === id);
+        if (target === undefined) {
+          await reply({ route, status: 404, body: { error: 'app not found' } });
+          return;
+        }
+        if (method === 'PATCH') {
+          // An omitted field is left unchanged; `description: null` clears it.
+          if (body.display_name !== undefined) target.display_name = body.display_name;
+          if (body.description !== undefined) target.description = body.description;
+          await reply({ route, body: target });
+          return;
+        }
+        if (method === 'DELETE') {
+          mock.apps = mock.apps.filter((candidate) => candidate !== target);
+          await reply({ route, body: {} });
+          return;
+        }
+      }
+      if (method === 'DELETE' && url.pathname.startsWith('/people/') && id !== undefined) {
+        mock.people = mock.people.filter((candidate) => candidate.person_hash !== id);
+        await reply({ route, body: {} });
+        return;
+      }
+      if (method === 'DELETE' && url.pathname.startsWith('/v1/users/') && id !== undefined) {
+        mock.users = mock.users.filter((candidate) => candidate.user_id !== id);
+        await reply({ route, body: {} });
+        return;
+      }
+      if (method === 'POST' && url.pathname === '/v1/provision-app') {
+        await reply({
+          route,
+          body: {
+            app_id: body.app_id,
+            publisher_user_id: `${body.app_id as string}-publisher`,
+            topic_pattern: `${body.app_id as string}-*`,
+            token: MINTED_TOKEN,
+          },
+        });
+        return;
+      }
+      if (method === 'POST' && url.pathname === '/v1/deprovision-app') {
+        mock.apps = mock.apps.filter((candidate) => candidate.app_id !== body.app_id);
+        await reply({ route, body: { app_id: body.app_id, removed: true } });
+        return;
+      }
+      if (method === 'POST' && url.pathname === '/v1/deprovision') {
+        mock.users = mock.users.filter((candidate) => candidate.user_id !== body.user_id);
+        await reply({ route, body: { app_id: body.app_id, user_id: body.user_id, removed: true } });
+        return;
+      }
+      if (method === 'POST' && url.pathname === '/v1/reset-password') {
+        await reply({
+          route,
+          body: { user_id: 'u_reset', app_id: body.app_id, password: 'reset-password-e2e-0123' },
+        });
+        return;
+      }
+
+      mock.unmocked.push(`${method} ${url.pathname}${url.search}`);
+      await reply({ route, status: 404, body: { error: 'unmocked' } });
+    },
+  );
+  return mock;
 }
 
 export async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Promise<DeliveryMock> {
@@ -558,6 +758,16 @@ export async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Pro
           target.enabled = body.enabled;
           target.disabled_reason = body.enabled ? null : 'disabled by an operator';
         }
+        // Config edits merge into the stored config; typed secrets stay masked on the wire.
+        if (body.config !== undefined) {
+          target.config = { ...(target.config as Json), ...(body.config as Json) };
+        }
+        if (body.secrets !== undefined) {
+          target.secrets = {
+            ...(target.secrets as Json),
+            ...Object.fromEntries(Object.keys(body.secrets as Json).map((key) => [key, '****'])),
+          };
+        }
         await reply({ route, body: { destination: target } });
         return;
       }
@@ -593,6 +803,17 @@ export async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Pro
       }
     }
     const routeMatch = /^\/delivery\/v1\/admin\/routes\/(\d+)$/.exec(pathname);
+    if (method === 'PATCH' && routeMatch !== null) {
+      const target = routes.find((candidate) => candidate.id === Number(routeMatch[1]));
+      if (target === undefined) {
+        await reply({ route, status: 404, body: { error: 'route does not exist' } });
+        return;
+      }
+      // An omitted field is left unchanged, as on the real endpoint.
+      Object.assign(target, recorded.body as Json, { updated_at: TIMESTAMP });
+      await reply({ route, body: { route: target } });
+      return;
+    }
     if (method === 'DELETE' && routeMatch !== null) {
       const index = routes.findIndex((candidate) => candidate.id === Number(routeMatch[1]));
       if (index === -1) {

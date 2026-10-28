@@ -261,18 +261,15 @@ describe('owner column', () => {
     expect(dialog.querySelector('.modal__notice')).toBeNull();
   });
 
-  it('keeps an open editor row spanning the whole table', async () => {
+  it('edits in a dialog and leaves no editor row in the table', async () => {
     const user = userEvent.setup();
     await renderOwned();
 
     await user.click(button('Edit route 2'));
 
-    const headerCount = screen.getAllByRole('columnheader').length;
-    const editorCell = screen.getByLabelText(strings.routeAppLabel).closest('td');
-    expect(editorCell).toHaveAttribute('colspan', String(headerCount));
-    // The form sits in the pinned wrapper, so it fits the scroll wrapper and wraps normally.
-    expect(editorCell).toHaveClass('admin-table__editor-cell');
-    expect(editorCell?.querySelector('.admin-table__editor')).not.toBeNull();
+    const dialog = screen.getByRole('dialog', { name: strings.editRoute({ id: 2 }) });
+    expect(within(dialog).getByLabelText(strings.routeAppLabel)).toBeInTheDocument();
+    expect(dialog.closest('tr')).toBeNull();
   });
 
   it('pins the App column in the header and in every row, never the Actions cell', async () => {
@@ -398,7 +395,11 @@ describe('edit route', () => {
     });
     const user = await openEditor(client);
     expect(document.activeElement).toBe(screen.getByLabelText(strings.routeAppLabel));
-    await user.click(button('Close'));
+    const formClose = screen
+      .getByRole('dialog')
+      .querySelector<HTMLElement>('.destination-form__button--ghost');
+    expect(formClose).not.toBeNull();
+    await user.click(formClose as HTMLElement);
     await waitFor(() => expect(document.activeElement).toBe(button('Edit route 1')));
   });
 
@@ -481,6 +482,213 @@ describe('edit route', () => {
     await waitFor(() => expect(listRoutes).toHaveBeenCalledTimes(2));
     await screen.findByText('server_changed');
     expect((screen.getByLabelText(strings.routeAppLabel) as HTMLInputElement).value).toBe('*x');
+  });
+
+  it('opens one dialog with no form aria-label, stamped with its row', async () => {
+    const client = buildClient({
+      listRoutes: vi.fn().mockResolvedValue([buildRoute({ id: 1 })]),
+    });
+    await openEditor(client);
+
+    const dialog = screen.getByRole('dialog', { name: strings.editRoute({ id: 1 }) });
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(dialog).toHaveAttribute('data-owner-row-attribute', 'data-route-id');
+    expect(dialog).toHaveAttribute('data-owner-row-id', '1');
+    expect(screen.queryByRole('form', { name: strings.editRoute({ id: 1 }) })).toBeNull();
+  });
+
+  it('Escape on a clean dialog closes it without the guard and returns focus to Edit', async () => {
+    const client = buildClient({
+      listRoutes: vi.fn().mockResolvedValue([buildRoute({ id: 1 })]),
+    });
+    const user = await openEditor(client);
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText(strings.discardChangesMessage)).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(button('Edit route 1')));
+  });
+
+  it('a dirty dialog shows the discard guard; Keep editing returns, Discard closes', async () => {
+    const client = buildClient({
+      listRoutes: vi.fn().mockResolvedValue([buildRoute({ id: 1 })]),
+    });
+    const user = await openEditor(client);
+    await user.click(screen.getByLabelText('family_ntfy'));
+
+    await user.keyboard('{Escape}');
+    expect(screen.getByText(strings.discardChangesMessage)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: strings.keepEditing }));
+    expect(screen.getByLabelText('family_ntfy')).toBeChecked();
+
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: strings.discardChanges }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('reverting every edit to the baseline makes the dialog clean again', async () => {
+    const client = buildClient({
+      listRoutes: vi.fn().mockResolvedValue([buildRoute({ id: 1 })]),
+    });
+    const user = await openEditor(client);
+    const app = screen.getByLabelText(strings.routeAppLabel);
+    await user.type(app, 'x');
+    await user.click(screen.getByLabelText('family_ntfy'));
+    await user.click(screen.getByLabelText(/Enabled/));
+    await user.clear(app);
+    await user.type(app, '*');
+    await user.click(screen.getByLabelText('family_ntfy'));
+    await user.click(screen.getByLabelText(/Enabled/));
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByText(strings.discardChangesMessage)).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('keeps the dialog open with a notice and Save disabled when a refresh drops the route', async () => {
+    const listRoutes = vi.fn().mockResolvedValue([buildRoute({ id: 1 })]);
+    const client = buildClient({ listRoutes });
+    const user = userEvent.setup();
+    const view = render(
+      <RoutesSection client={client} destinationsState={READY_DESTINATIONS} refreshSignal={0} />,
+    );
+    await user.click(await screen.findByRole('button', { name: 'Edit route 1' }));
+    await user.click(screen.getByLabelText('family_ntfy'));
+    listRoutes.mockResolvedValue([]);
+    view.rerender(
+      <RoutesSection client={client} destinationsState={READY_DESTINATIONS} refreshSignal={1} />,
+    );
+
+    expect(await screen.findByText(strings.editRowGone)).toBeInTheDocument();
+    expect(button('Save route 1')).toBeDisabled();
+    expect(screen.getByLabelText('family_ntfy')).toBeChecked();
+  });
+
+  it('opening Edit drops the Add form and what was typed in it', async () => {
+    const client = buildClient({
+      listRoutes: vi.fn().mockResolvedValue([buildRoute({ id: 1 })]),
+    });
+    const user = userEvent.setup();
+    renderSection({ client });
+    await user.click(await screen.findByRole('button', { name: strings.addRouteAction }));
+    await user.type(screen.getByLabelText(strings.routeAppLabel), 'typed');
+
+    await user.click(button('Edit route 1'));
+
+    expect(screen.queryByRole('form', { name: strings.addRouteHeading })).toBeNull();
+    expect(screen.getAllByLabelText(strings.routeAppLabel)).toHaveLength(1);
+  });
+
+  it('a save whose own refresh was superseded still judges the newest list: row dropped, no close', async () => {
+    const stale = deferred<RouteSummary[]>();
+    const listRoutes = vi
+      .fn()
+      .mockResolvedValueOnce([buildRoute({ id: 1 })])
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue([]);
+    const updateRoute = vi.fn().mockResolvedValue(buildRoute({ id: 1 }));
+    const client = buildClient({ listRoutes, updateRoute });
+    const user = userEvent.setup();
+    const view = render(
+      <RoutesSection client={client} destinationsState={READY_DESTINATIONS} refreshSignal={0} />,
+    );
+    await user.click(await screen.findByRole('button', { name: 'Edit route 1' }));
+    await user.click(screen.getByLabelText('family_ntfy'));
+    await user.click(button('Save route 1'));
+    // The save's refresh (second call) hangs; a newer one lands first and drops the row.
+    await waitFor(() => expect(listRoutes).toHaveBeenCalledTimes(2));
+    view.rerender(
+      <RoutesSection client={client} destinationsState={READY_DESTINATIONS} refreshSignal={1} />,
+    );
+    await waitFor(() => expect(listRoutes).toHaveBeenCalledTimes(3));
+    stale.resolve([buildRoute({ id: 1 })]);
+
+    expect(await screen.findByText(strings.editRowGone)).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: strings.editRoute({ id: 1 }) })).toBeInTheDocument();
+  });
+
+  it('a save that lands after the row was dropped by a refresh does not close the dialog', async () => {
+    const pending = deferred<RouteSummary>();
+    const listRoutes = vi.fn().mockResolvedValue([buildRoute({ id: 1 })]);
+    const updateRoute = vi.fn().mockReturnValue(pending.promise);
+    const client = buildClient({ listRoutes, updateRoute });
+    const user = userEvent.setup();
+    const view = render(
+      <RoutesSection client={client} destinationsState={READY_DESTINATIONS} refreshSignal={0} />,
+    );
+    await user.click(await screen.findByRole('button', { name: 'Edit route 1' }));
+    await user.click(screen.getByLabelText('family_ntfy'));
+    await user.click(button('Save route 1'));
+    listRoutes.mockResolvedValue([]);
+    view.rerender(
+      <RoutesSection client={client} destinationsState={READY_DESTINATIONS} refreshSignal={1} />,
+    );
+    expect(await screen.findByText(strings.editRowGone)).toBeInTheDocument();
+
+    pending.resolve(buildRoute({ id: 1 }));
+    await waitFor(() => expect(updateRoute).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listRoutes).toHaveBeenCalledTimes(3));
+
+    expect(screen.getByRole('dialog', { name: strings.editRoute({ id: 1 }) })).toBeInTheDocument();
+    expect(screen.getByText(strings.editRowGone)).toBeInTheDocument();
+  });
+
+  it('a save that lands after the dialog moved to another route does not close that dialog', async () => {
+    const pending = deferred<RouteSummary>();
+    const listRoutes = vi.fn().mockResolvedValue([buildRoute({ id: 1 }), buildRoute({ id: 2 })]);
+    const updateRoute = vi.fn().mockReturnValue(pending.promise);
+    const client = buildClient({ listRoutes, updateRoute });
+    const user = userEvent.setup();
+    renderSection({ client });
+    await user.click(await screen.findByRole('button', { name: 'Edit route 1' }));
+    await user.click(screen.getByLabelText('family_ntfy'));
+    await user.click(button('Save route 1'));
+    // Production keeps the page behind the dialog inert; jsdom does not, so this stands in for
+    // any path that moves the section to another route while the save is in flight.
+    await user.click(button('Edit route 2'));
+    expect(screen.getByRole('dialog', { name: strings.editRoute({ id: 2 }) })).toBeInTheDocument();
+
+    pending.resolve(buildRoute({ id: 1 }));
+    await waitFor(() => expect(listRoutes).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole('dialog', { name: strings.editRoute({ id: 2 }) })).toBeInTheDocument();
+  });
+
+  it('after a save the next dialog opens clean: open 1 dirty, save, open 2, Escape closes', async () => {
+    const listRoutes = vi.fn().mockResolvedValue([buildRoute({ id: 1 }), buildRoute({ id: 2 })]);
+    const updateRoute = vi.fn().mockResolvedValue(buildRoute({ id: 1 }));
+    const client = buildClient({ listRoutes, updateRoute });
+    const user = userEvent.setup();
+    renderSection({ client });
+    await user.click(await screen.findByRole('button', { name: 'Edit route 1' }));
+    await user.click(screen.getByLabelText('family_ntfy'));
+    await user.click(button('Save route 1'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await user.click(button('Edit route 2'));
+    expect(screen.getByRole('dialog', { name: strings.editRoute({ id: 2 }) })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByText(strings.discardChangesMessage)).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('a failed save keeps the dialog open with the error and the typed values', async () => {
+    const updateRoute = vi.fn().mockRejectedValue(new Error('boom'));
+    const client = buildClient({
+      listRoutes: vi.fn().mockResolvedValue([buildRoute({ id: 1 })]),
+      updateRoute,
+    });
+    const user = await openEditor(client);
+    await user.click(screen.getByLabelText('family_ntfy'));
+    await user.click(button('Save route 1'));
+
+    await waitFor(() => expect(updateRoute).toHaveBeenCalled());
+    const dialog = screen.getByRole('dialog', { name: strings.editRoute({ id: 1 }) });
+    expect(await within(dialog).findByRole('alert')).toBeInTheDocument();
+    expect(screen.getByLabelText('family_ntfy')).toBeChecked();
   });
 });
 

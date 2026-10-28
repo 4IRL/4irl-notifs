@@ -56,6 +56,7 @@
 }
 
 .app__forms > * {
-  flex: 1 1 22rem;
+  /* `min(.., 100%)`: on a phone the basis is the container, so a form never outgrows the page. */
+  flex: 1 1 min(22rem, 100%);
   max-width: 24rem;
 }

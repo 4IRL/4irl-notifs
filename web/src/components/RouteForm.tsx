@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import type { FormEvent, JSX } from 'react';
+import type { ChangeEvent, FormEvent, JSX, RefObject } from 'react';
 
 import { ApiError } from '../api/client';
 import type { DestinationSummary, RouteSummary } from '../api/deliveryClient';
+import { useLowercaseInput } from '../hooks/useLowercaseInput';
 import { strings } from '../strings';
 import { isValidRouteAppPattern, isValidRouteChannelPattern } from '../validation';
 import './DestinationForm.css';
@@ -28,6 +29,10 @@ interface RouteFormProps {
   onSubmit: (submission: RouteSubmission) => Promise<void>;
   /** Cancel (add) or Close (edit, and an untouched Save). */
   onClose: () => void;
+  /** Edit only: reports whether any field differs from the baseline (false again on unmount). */
+  onDirtyChange?: (dirty: boolean) => void;
+  /** Receives the first field; the owner's dialog focuses it. Defaults to a private ref. */
+  firstFieldRef?: RefObject<HTMLInputElement | null>;
 }
 
 interface DestinationOption {
@@ -52,6 +57,8 @@ export function RouteForm({
   saving = false,
   onSubmit,
   onClose,
+  onDirtyChange,
+  firstFieldRef: firstFieldRefProp,
 }: RouteFormProps): JSX.Element {
   const isEdit = route !== undefined;
   const idSuffix = isEdit ? String(route.id) : 'new';
@@ -63,15 +70,43 @@ export function RouteForm({
   }));
   const [appPattern, setAppPattern] = useState(baseline.appPattern);
   const [channelPattern, setChannelPattern] = useState(baseline.channelPattern);
+  const appPatternInput = useLowercaseInput({ setValue: setAppPattern });
+  const channelPatternInput = useLowercaseInput({ setValue: setChannelPattern });
   const [selected, setSelected] = useState<string[]>(baseline.destinations);
   const [enabled, setEnabled] = useState(baseline.enabled);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const firstFieldRef = useRef<HTMLInputElement | null>(null);
+  const localFirstFieldRef = useRef<HTMLInputElement | null>(null);
+  const firstFieldRef = firstFieldRefProp ?? localFirstFieldRef;
 
+  // Add focuses its first field on mount; an edit's dialog focuses it through `initialFocusRef`.
   useEffect(() => {
-    firstFieldRef.current?.focus();
+    if (!isEdit) {
+      firstFieldRef.current?.focus();
+    }
+    // Mount-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const dirty =
+    isEdit &&
+    (appPattern.trim() !== baseline.appPattern ||
+      channelPattern.trim() !== baseline.channelPattern ||
+      !sameSet({ left: selected, right: baseline.destinations }) ||
+      enabled !== baseline.enabled);
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  useEffect(() => {
+    onDirtyChangeRef.current = onDirtyChange;
+  });
+  useEffect(() => {
+    onDirtyChangeRef.current?.(dirty);
+  }, [dirty]);
+  useEffect(
+    () => () => {
+      onDirtyChangeRef.current?.(false);
+    },
+    [],
+  );
 
   // Loaded destinations first, then any selected name the list does not know
   // (e.g. a stale reference) so it stays visible and can be unticked.
@@ -96,8 +131,17 @@ export function RouteForm({
     if (submitting || saving) {
       return;
     }
-    const app = appPattern.trim();
-    const channel = channelPattern.trim();
+    // Add mode, Enter/Save mid-composition: submit what the fields will show.
+    const app = isEdit ? appPattern.trim() : appPattern.toLowerCase().trim();
+    const channel = isEdit ? channelPattern.trim() : channelPattern.toLowerCase().trim();
+    if (!isEdit) {
+      if (appPattern.toLowerCase() !== appPattern) {
+        setAppPattern(appPattern.toLowerCase());
+      }
+      if (channelPattern.toLowerCase() !== channelPattern) {
+        setChannelPattern(channelPattern.toLowerCase());
+      }
+    }
     if (!isValidRouteAppPattern(app)) {
       setError(strings.invalidRouteAppPattern);
       return;
@@ -166,7 +210,7 @@ export function RouteForm({
 
   const form = (
     <form
-      aria-label={isEdit ? strings.editRoute({ id: route.id }) : strings.addRouteHeading}
+      aria-label={isEdit ? undefined : strings.addRouteHeading}
       onSubmit={handleSubmit}
       noValidate
     >
@@ -179,7 +223,17 @@ export function RouteForm({
             type="text"
             autoComplete="off"
             value={appPattern}
-            onChange={(event) => setAppPattern(event.target.value)}
+            {...(isEdit
+              ? {
+                  onChange: (event: ChangeEvent<HTMLInputElement>) =>
+                    setAppPattern(event.target.value),
+                }
+              : {
+                  autoCapitalize: 'none',
+                  autoCorrect: 'off',
+                  spellCheck: false,
+                  ...appPatternInput,
+                })}
           />
         </div>
         <div className="destination-form__field">
@@ -189,7 +243,17 @@ export function RouteForm({
             type="text"
             autoComplete="off"
             value={channelPattern}
-            onChange={(event) => setChannelPattern(event.target.value)}
+            {...(isEdit
+              ? {
+                  onChange: (event: ChangeEvent<HTMLInputElement>) =>
+                    setChannelPattern(event.target.value),
+                }
+              : {
+                  autoCapitalize: 'none',
+                  autoCorrect: 'off',
+                  spellCheck: false,
+                  ...channelPatternInput,
+                })}
           />
         </div>
       </div>

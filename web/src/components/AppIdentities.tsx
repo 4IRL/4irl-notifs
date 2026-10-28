@@ -14,7 +14,9 @@ import { useLatestRequest } from '../hooks/useLatestRequest';
 import { strings } from '../strings';
 import { ConfirmButton } from './ConfirmButton';
 import { formatRelativePast } from './formatRelative';
-import { formatMinute, formatUtc } from './formatUtc';
+import { formatDateTimeZone } from './formatLocalTime';
+import { LocalTime } from './LocalTime';
+import { RefreshButton } from './RefreshButton';
 import { RowActionsMenu } from './RowActionsMenu';
 import type { RowMenuItem } from './RowActionsMenu';
 import { messageOf, withoutKey } from './rowState';
@@ -103,7 +105,7 @@ function lastUsedText({ identityKey, now }: { identityKey: IdentityKey; now: num
 }
 
 function keySubText({ identityKey, now }: { identityKey: IdentityKey; now: number }): string {
-  const issued = formatMinute(identityKey.createdAt);
+  const issued = formatDateTimeZone({ timestamp: identityKey.createdAt });
   const lastUsed = lastUsedText({ identityKey, now });
   switch (identityKey.state) {
     case 'active':
@@ -115,11 +117,14 @@ function keySubText({ identityKey, now }: { identityKey: IdentityKey; now: numbe
         return strings.identityKeyIssued({ time: issued, lastUsed });
       }
       const stopsAt = new Date(supersededMs + SUPERSEDED_GRACE_MS).toISOString();
-      return strings.identityKeySupersededSub({ time: formatMinute(stopsAt), lastUsed });
+      return strings.identityKeySupersededSub({
+        time: formatDateTimeZone({ timestamp: stopsAt }),
+        lastUsed,
+      });
     }
     case 'revoked':
       return strings.identityKeyRevokedSub({
-        time: formatMinute(identityKey.revokedAt ?? identityKey.createdAt),
+        time: formatDateTimeZone({ timestamp: identityKey.revokedAt ?? identityKey.createdAt }),
         reason: revokedReasonText(identityKey.revokedReason),
       });
     default:
@@ -619,13 +624,12 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
     <section className="app-identities" aria-labelledby="app-identities-heading">
       <div className="app-identities__head">
         <h2 id="app-identities-heading">{strings.identitiesHeading}</h2>
-        <button
-          type="button"
+        <RefreshButton
+          label={strings.identitiesRefresh}
           className="app-identities__button app-identities__button--ghost"
+          busy={loading}
           onClick={startRefresh}
-        >
-          {strings.identitiesRefresh}
-        </button>
+        />
       </div>
       <p className="app-identities__hint">{strings.identitiesHint}</p>
       {/* Both live regions are always rendered so they exist before their first
@@ -733,7 +737,7 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
                         </span>
                       </td>
                       <td>
-                        <time dateTime={request.createdAt}>{formatUtc(request.createdAt)}</time>
+                        <LocalTime timestamp={request.createdAt} />
                       </td>
                       <td
                         className={`admin-table__actions app-identities__actions-cell${compact ? ' admin-table__kebab' : ''}`}
@@ -856,7 +860,9 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
                         <td className="admin-table__lead" title={appId}>
                           <span className="app-identities__mono">{appId}</span>
                           <span className="app-identities__sub">
-                            {strings.identityApprovedSub({ time: formatUtc(binding.approvedAt) })}
+                            {strings.identityApprovedSub({
+                              time: formatDateTimeZone({ timestamp: binding.approvedAt }),
+                            })}
                           </span>
                         </td>
                         <td>

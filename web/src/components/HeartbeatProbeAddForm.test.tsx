@@ -270,6 +270,59 @@ describe('add form: check type', () => {
   });
 });
 
+describe('add form: https scheme', () => {
+  it('prepends https:// on blur and sends the prefixed URL', async () => {
+    const client = buildClient();
+    const { user, form } = await openAddForm(client);
+    await chooseProbe({ user, form });
+    await fillCommon({ user, form });
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    await user.type(url, 'example.com');
+    await user.tab();
+    expect(url.value).toBe('https://example.com');
+    await user.click(submit(form));
+    await waitFor(() => expect(client.createHeartbeat).toHaveBeenCalledTimes(1));
+    expect(lastCreate(client)).toMatchObject({ probe: { url: 'https://example.com' } });
+  });
+
+  it('keeps an explicit http:// on blur and flags it at submit', async () => {
+    const client = buildClient();
+    const { user, form } = await openAddForm(client);
+    await chooseProbe({ user, form });
+    await fillCommon({ user, form });
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    await user.type(url, 'http://x');
+    await user.tab();
+    expect(url.value).toBe('http://x');
+    await user.click(submit(form));
+    expect(client.createHeartbeat).not.toHaveBeenCalled();
+    expect(form).toHaveTextContent(strings.invalidProbeUrlScheme);
+  });
+
+  it('adds nothing on a blank blur', async () => {
+    const client = buildClient();
+    const { user, form } = await openAddForm(client);
+    await chooseProbe({ user, form });
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    await user.click(url);
+    await user.tab();
+    expect(url.value).toBe('');
+  });
+
+  it('Enter in the URL field normalises at submit without a blur', async () => {
+    const client = buildClient();
+    const { user, form } = await openAddForm(client);
+    await chooseProbe({ user, form });
+    await fillCommon({ user, form });
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    await user.type(url, 'example.com{Enter}');
+    await waitFor(() => expect(client.createHeartbeat).toHaveBeenCalledTimes(1));
+    expect(form).not.toHaveTextContent(strings.invalidProbeUrlScheme);
+    expect(lastCreate(client)).toMatchObject({ probe: { url: 'https://example.com' } });
+    expect(url.value).toBe('https://example.com');
+  });
+});
+
 describe('add form: validation', () => {
   it('shows each invalid probe field error wired to its input and focuses the first', async () => {
     const client = buildClient();

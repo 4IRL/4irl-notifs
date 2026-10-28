@@ -10,7 +10,7 @@
          <thead><tr><th class="admin-table__lead">...</th><th class="admin-table__fill">...</th></tr></thead>
          <tbody>
            <tr><td class="admin-table__lead">...</td>...</tr>
-           <tr><td colspan="N" class="admin-table__editor-cell"><div class="admin-table__editor">...</div></td></tr>
+           <tr><td colspan="N" class="destinations__reveal-cell"><div class="destinations__reveal-row">...</div></td></tr>
          </tbody>
        </table>
      </div>
@@ -19,7 +19,7 @@
 
 /* The scrollport. `max-height` is what makes the sticky header useful: with no height
    bound the wrapper would never scroll vertically and the header would pin to nothing.
-   `container-type` lets the inline editor size itself to the visible width (100cqw), so
+   `container-type` lets the pinned reveal row size itself to the visible width (100cqw), so
    it neither widens the max-content table nor needs horizontal scrolling. */
 .admin-table__scroll {
   /* The widest the pinned first column may get (it is as wide as its content up to this).
@@ -145,15 +145,15 @@
   overflow-wrap: normal;
 }
 
-/* The inline edit row (and the one-time secret reveal): a full-width cell whose content
-   is pinned to the visible width of the wrapper, so the form wraps normally, never sits
-   under a pinned cell (this row has none) and never needs horizontal scrolling. */
-.admin-table td.admin-table__editor-cell {
+/* The one-time secret reveal row (Destinations): a full-width cell whose content is pinned
+   to the visible width of the wrapper, so the text wraps normally, never sits under a
+   pinned cell (this row has none) and never needs horizontal scrolling. */
+.admin-table td.destinations__reveal-cell {
   white-space: normal;
   padding-inline: 0;
 }
 
-.admin-table__editor {
+.destinations__reveal-row {
   position: sticky;
   inset-inline-start: 0;
   box-sizing: border-box;
@@ -191,6 +191,18 @@
 .admin-table__owner-line {
   display: block;
   margin-top: 0.25rem;
+}
+
+/* A secondary line under the identifying value of a lead cell (an app's display name, a person's
+   hash, a user's app chips and topic patterns). Its own block line; text may wrap here so a long
+   list never widens the nowrap table. */
+.admin-table__sub {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  font-weight: normal;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* The narrow layout (the same breakpoint as `useCompactTable`, which swaps each row's inline

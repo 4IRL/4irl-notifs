@@ -3,10 +3,37 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { strings } from '../strings';
+import { useTimeZone } from '../test-timezone';
+import { setCompactViewport } from '../test-viewport';
 import { PeopleTable } from './PeopleTable';
 
 afterEach(() => {
   cleanup();
+});
+
+describe('PeopleTable created time in a non-UTC zone', () => {
+  useTimeZone('Asia/Kolkata');
+
+  it('shows createdAt in the viewer zone with its abbreviation', () => {
+    const people = [
+      { personHash: 'aaaa', email: 'alice@example.com', createdAt: '2026-07-19T18:12:03Z' },
+    ];
+    render(<PeopleTable people={people} loading={false} error={null} onDelete={vi.fn()} />);
+
+    const created = screen.getByText('2026-07-19 23:42 GMT+5:30');
+    expect(created.tagName).toBe('TIME');
+    expect(created).toHaveAttribute('title', '2026-07-19T18:12:03.000Z');
+  });
+
+  it('shows the same local time element in the compact layout', () => {
+    setCompactViewport(true);
+    const people = [
+      { personHash: 'aaaa', email: 'alice@example.com', createdAt: '2026-07-19T18:12:03Z' },
+    ];
+    render(<PeopleTable people={people} loading={false} error={null} onDelete={vi.fn()} />);
+
+    expect(screen.getByText('2026-07-19 23:42 GMT+5:30').tagName).toBe('TIME');
+  });
 });
 
 describe('PeopleTable', () => {
@@ -69,7 +96,10 @@ describe('PeopleTable', () => {
       screen.getByText('76gzqgp4byjl6dje', { selector: '.people-table__hash' }),
     ).toBeInTheDocument();
     expect(screen.getByText('alice@example.com')).toBeInTheDocument();
-    expect(screen.getByText('2026-07-19T18:12:03Z')).toBeInTheDocument();
+    const created = screen.getByText('2026-07-19 18:12 UTC');
+    expect(created.tagName).toBe('TIME');
+    expect(created).toHaveAttribute('datetime', '2026-07-19T18:12:03.000Z');
+    expect(created).toHaveAttribute('title', '2026-07-19T18:12:03.000Z');
     expect(screen.getByText('smoketest@example.com')).toBeInTheDocument();
   });
 

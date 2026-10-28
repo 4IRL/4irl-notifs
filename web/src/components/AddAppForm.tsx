@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { ProvisionAppResult } from '../api/client';
 import { ApiError } from '../api/client';
 import type { CreateAppParams } from '../api/personClient';
+import { useLowercaseInput } from '../hooks/useLowercaseInput';
 import { strings } from '../strings';
 import { isValidAppId } from '../validation';
 import './AddAppForm.css';
@@ -23,7 +24,8 @@ export type AddAppResult = ProvisionAppResult & { alreadyRegistered?: boolean };
  * publisher identity (see App.handleAddApp).
  */
 export function AddAppForm({ onAddApp }: AddAppFormProps) {
-  const [appId, setAppId] = useState('');
+  const [rawAppId, setAppId] = useState('');
+  const appIdInput = useLowercaseInput({ setValue: setAppId });
   const [displayName, setDisplayName] = useState('');
   const [description, setDescription] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +35,11 @@ export function AddAppForm({ onAddApp }: AddAppFormProps) {
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    // Enter/Save mid-composition: submit what the field will show.
+    const appId = rawAppId.toLowerCase();
+    if (appId !== rawAppId) {
+      setAppId(appId);
+    }
     if (!isValidAppId(appId)) {
       setError(strings.invalidAppId);
       return;
@@ -71,8 +78,11 @@ export function AddAppForm({ onAddApp }: AddAppFormProps) {
           id="add-app-id"
           type="text"
           placeholder={strings.appIdPlaceholder}
-          value={appId}
-          onChange={(event) => setAppId(event.target.value)}
+          value={rawAppId}
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          {...appIdInput}
         />
 
         <label htmlFor="add-app-display-name">{strings.appDisplayNameLabel}</label>

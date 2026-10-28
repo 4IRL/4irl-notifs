@@ -179,6 +179,18 @@ describe('strings module', () => {
     ).toBe('id VkT2p9wQ · urls4irl-hash-all');
   });
 
+  it('words the local-time hints with the viewer zone and no longer claims UTC', () => {
+    const hint =
+      'Times are shown in your local time zone (Asia/Kolkata); the abbreviations on each time follow daylight saving.';
+    expect(strings.timesLocalHint({ zone: 'Asia/Kolkata' })).toBe(hint);
+    expect(strings.pendingSendsHint({ limit: 50, zone: 'Asia/Kolkata' })).toContain(hint);
+    expect(strings.heartbeatsHint({ zone: 'Asia/Kolkata' })).toContain(hint);
+    expect(strings.pendingSendsHint({ limit: 50, zone: 'Asia/Kolkata' })).not.toContain(
+      'Times are UTC',
+    );
+    expect(strings.heartbeatsHint({ zone: 'Asia/Kolkata' })).not.toContain('Times are UTC');
+  });
+
   it('exposes the tab and delivery status card copy', () => {
     expect(strings.tabProvisioning).toBe('Provisioning');
     expect(strings.tabDelivery).toBe('Delivery');
@@ -196,6 +208,21 @@ describe('strings module', () => {
   it('names a row in the narrow-layout kebab menu', () => {
     expect(strings.rowActionsFor({ row: 'urls4irl/nightly' })).toBe('Actions for urls4irl/nightly');
     expect(strings.routeRowLabel({ id: 7 })).toBe('route 7');
+  });
+
+  it('exposes the edit dialog copy', () => {
+    expect(strings.discardChangesMessage).toBe('Discard unsaved changes?');
+    expect(strings.discardChanges).toBe('Discard changes');
+    expect(strings.keepEditing).toBe('Keep editing');
+    expect(strings.editRowGone).toBe('This item was removed. Close this dialog to continue.');
+    expect(strings.closeAction).toBe('Close dialog');
+    expect(strings.editDestinationNamed({ name: 'ops' })).toBe('Edit destination ops');
+    expect(strings.editRouteTitle).toBe('Edit route');
+    expect(strings.editAppNamed({ appId: 'u4i' })).toBe('Edit app u4i');
+    expect(strings.tokenShownOnceGuard).toBe('This token is shown once. Close without copying it?');
+    expect(strings.closeAnyway).toBe('Close anyway');
+    expect(strings.keepOpen).toBe('Keep open');
+    expect(strings.appSavedResult({ appId: 'u4i' })).toBe('Saved u4i.');
   });
 
   it('exposes the people section heading, status copy, and column headers', () => {

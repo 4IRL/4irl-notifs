@@ -37,6 +37,24 @@
   background: var(--danger);
 }
 
+/* A non-default filter is collapsed in a ChoiceMenu: an accent dot on the funnel. */
+.row-menu__trigger[data-filter-active='true']::after {
+  content: '';
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* The current choice of a ChoiceMenu (also announced through aria-checked). */
+.row-menu__item[aria-checked='true'] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .row-menu__glyph {
   width: 1.25rem;
   height: 1.25rem;

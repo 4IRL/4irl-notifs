@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, renderHook, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
@@ -81,6 +81,33 @@ describe('useFocusRegistry', () => {
     await user.click(screen.getByText('go edit'));
 
     expect(screen.getByText('confirm')).toHaveFocus();
+  });
+
+  describe('getControl', () => {
+    it('returns the registered element', () => {
+      const { result } = renderHook(() => useFocusRegistry());
+      const element = document.createElement('button');
+
+      result.current.registerControl({ key: 'a', element });
+
+      expect(result.current.getControl('a')).toBe(element);
+    });
+
+    it('returns null after the control unregisters', () => {
+      const { result } = renderHook(() => useFocusRegistry());
+      const element = document.createElement('button');
+      result.current.registerControl({ key: 'a', element });
+
+      result.current.registerControl({ key: 'a', element: null });
+
+      expect(result.current.getControl('a')).toBeNull();
+    });
+
+    it('returns null for an unknown key', () => {
+      const { result } = renderHook(() => useFocusRegistry());
+
+      expect(result.current.getControl('missing')).toBeNull();
+    });
   });
 
   it('forgets an unmounted control', async () => {

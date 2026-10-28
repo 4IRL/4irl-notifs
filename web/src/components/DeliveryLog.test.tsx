@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client';
 import type { AttemptSummary, DeliveryApiClient, DeliverySummary } from '../api/deliveryClient';
 import { strings } from '../strings';
+import { useTimeZone } from '../test-timezone';
+import { setCompactViewport } from '../test-viewport';
 import { DeliveryLog } from './DeliveryLog';
 
 afterEach(() => {
@@ -104,7 +106,11 @@ describe('DeliveryLog', () => {
       'true',
     );
     expect(screen.getAllByText('budget exhausted')).toHaveLength(2);
-    expect(screen.getAllByText('2026-10-17 08:12')).toHaveLength(2);
+    const updated = screen.getAllByText('2026-10-17 08:12 UTC');
+    expect(updated).toHaveLength(2);
+    expect(updated[0].tagName).toBe('TIME');
+    expect(updated[0]).toHaveAttribute('datetime', '2026-10-17T08:12:44.000Z');
+    expect(updated[0]).toHaveAttribute('title', '2026-10-17T08:12:44.000Z');
     expect(screen.getAllByText('503').length).toBeGreaterThan(0);
   });
 
@@ -196,6 +202,8 @@ describe('DeliveryLog', () => {
     expect(attempts.querySelector('script')).toBeNull();
     expect(within(attempts).getByText('timeout awaiting headers')).toBeInTheDocument();
     expect(within(attempts).getAllByText('1,204 ms')).toHaveLength(2);
+    // Attempt times keep their seconds.
+    expect(within(attempts).getAllByText('07:40:02')).toHaveLength(2);
 
     await user.click(screen.getByRole('button', { name: strings.deliveryLogRefresh }));
     await screen.findByRole('button', { name: strings.showAttempts({ id: 412 }) });
@@ -449,5 +457,157 @@ describe('DeliveryLog', () => {
     expect(
       screen.getByRole('button', { name: strings.replayDelivery({ id: 412 }) }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('DeliveryLog times in a non-UTC zone', () => {
+  useTimeZone('America/Los_Angeles');
+
+  it('shows the updated time in the viewer zone and attempt times without a zone', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDeliveries: vi.fn().mockResolvedValue([buildDelivery({ id: 412 })]),
+      listAttempts: vi.fn().mockResolvedValue([buildAttempt({ attemptNumber: 1 })]),
+    });
+    render(<DeliveryLog client={client} />);
+
+    const updated = await screen.findByText('2026-10-17 01:12 PDT');
+    expect(updated.tagName).toBe('TIME');
+    expect(updated).toHaveAttribute('datetime', '2026-10-17T08:12:44.000Z');
+    expect(updated).toHaveAttribute('title', '2026-10-17T08:12:44.000Z');
+
+    await user.click(screen.getByRole('button', { name: strings.showAttempts({ id: 412 }) }));
+    const attempts = await screen.findByRole('table', {
+      name: strings.attemptsTableLabel({ id: 412 }),
+    });
+    const attemptTime = within(attempts).getByText('00:40:02');
+    expect(attemptTime.tagName).toBe('TIME');
+    expect(attemptTime).toHaveAttribute('title', '2026-10-17T07:40:02.000Z');
+  });
+});
+
+describe('DeliveryLog filter menu', () => {
+  const FUNNEL = { name: strings.deliveryLogFiltersMenu };
+
+  it('roomy: keeps the three aria-pressed buttons and no funnel', async () => {
+    render(<DeliveryLog client={buildClient()} />);
+
+    await screen.findByText('No dead deliveries.');
+    expect(screen.getAllByRole('button', { pressed: true })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: strings.deliveryLogFilterPending })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    expect(screen.queryByRole('button', FUNNEL)).toBeNull();
+  });
+
+  it('compact: shows no filter buttons until the funnel is activated', async () => {
+    const user = userEvent.setup();
+    setCompactViewport(true);
+    render(<DeliveryLog client={buildClient()} />);
+
+    await screen.findByText('No dead deliveries.');
+    expect(screen.queryByRole('button', { name: strings.deliveryLogFilterPending })).toBeNull();
+    const funnel = screen.getByRole('button', FUNNEL);
+    expect(funnel).toHaveAttribute('aria-haspopup', 'menu');
+    expect(funnel).toHaveAttribute('aria-expanded', 'false');
+    expect(funnel.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.queryByRole('menu')).toBeNull();
+
+    await user.click(funnel);
+
+    expect(funnel).toHaveAttribute('aria-expanded', 'true');
+    const items = within(screen.getByRole('menu')).getAllByRole('menuitemradio');
+    expect(items.map((item) => item.textContent)).toEqual([
+      strings.deliveryLogFilterDead,
+      strings.deliveryLogFilterPending,
+      strings.deliveryLogFilterDelivered,
+    ]);
+    expect(items.map((item) => item.getAttribute('aria-checked'))).toEqual([
+      'true',
+      'false',
+      'false',
+    ]);
+  });
+
+  it('compact: selecting reloads with that state, closes and refocuses the funnel', async () => {
+    const user = userEvent.setup();
+    setCompactViewport(true);
+    const client = buildClient();
+    render(<DeliveryLog client={client} />);
+
+    await screen.findByText('No dead deliveries.');
+    await user.click(screen.getByRole('button', FUNNEL));
+    await user.click(screen.getByRole('menuitemradio', { name: strings.deliveryLogFilterPending }));
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', FUNNEL)).toHaveFocus();
+    expect(await screen.findByText('No pending deliveries.')).toBeInTheDocument();
+    expect(client.listDeliveries).toHaveBeenLastCalledWith({ state: 'pending' });
+    expect(screen.getByText(strings.deliveryLogHint({ state: 'pending' }))).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', FUNNEL));
+    expect(
+      screen.getByRole('menuitemradio', { name: strings.deliveryLogFilterPending }),
+    ).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('compact: the keyboard opens, moves, selects and escapes', async () => {
+    const user = userEvent.setup();
+    setCompactViewport(true);
+    const client = buildClient();
+    render(<DeliveryLog client={client} />);
+
+    await screen.findByText('No dead deliveries.');
+    const funnel = screen.getByRole('button', FUNNEL);
+    funnel.focus();
+    await user.keyboard('{Enter}');
+    expect(
+      screen.getByRole('menuitemradio', { name: strings.deliveryLogFilterDead }),
+    ).toHaveFocus();
+
+    await user.keyboard('{ArrowDown}');
+    expect(
+      screen.getByRole('menuitemradio', { name: strings.deliveryLogFilterPending }),
+    ).toHaveFocus();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(funnel).toHaveFocus();
+
+    // The first ArrowDown opens the menu on the current choice (Dead); two more reach Delivered.
+    await user.keyboard('{ArrowDown}');
+    await user.keyboard('{ArrowDown}{ArrowDown}{Enter}');
+    expect(await screen.findByText('No delivered deliveries.')).toBeInTheDocument();
+    expect(client.listDeliveries).toHaveBeenLastCalledWith({ state: 'delivered' });
+    expect(funnel).toHaveFocus();
+  });
+
+  it('compact: flags a non-default filter on the funnel and describes it with the hint', async () => {
+    const user = userEvent.setup();
+    setCompactViewport(true);
+    render(<DeliveryLog client={buildClient()} />);
+
+    await screen.findByText('No dead deliveries.');
+    const funnel = screen.getByRole('button', FUNNEL);
+    expect(funnel).not.toHaveAttribute('data-filter-active');
+    expect(funnel).not.toHaveAttribute('aria-describedby');
+
+    await user.click(funnel);
+    await user.click(
+      screen.getByRole('menuitemradio', { name: strings.deliveryLogFilterDelivered }),
+    );
+
+    await screen.findByText('No delivered deliveries.');
+    expect(funnel).toHaveAttribute('data-filter-active', 'true');
+    const hint = screen.getByText(strings.deliveryLogHint({ state: 'delivered' }));
+    expect(hint.id).not.toBe('');
+    expect(funnel).toHaveAttribute('aria-describedby', hint.id);
+
+    await user.click(funnel);
+    await user.click(screen.getByRole('menuitemradio', { name: strings.deliveryLogFilterDead }));
+    await screen.findByText('No dead deliveries.');
+    expect(funnel).not.toHaveAttribute('data-filter-active');
+    expect(funnel).not.toHaveAttribute('aria-describedby');
   });
 });

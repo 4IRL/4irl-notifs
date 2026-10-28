@@ -285,6 +285,11 @@ describe('UsersTable operator password reset', () => {
       })[0];
 
       expect(rowTrigger).toHaveAttribute('aria-disabled', 'true');
+      // Label in name: the visible busy text sits inside the accessible name.
+      expect(rowTrigger).toHaveTextContent(strings.resettingPasswordRowAction);
+      expect(strings.resetPasswordBusyNamed({ user: ALICE })).toContain(
+        strings.resettingPasswordRowAction,
+      );
       expect(resetTrigger(BOB)).toHaveAttribute('aria-disabled', 'true');
       await act(async () => {
         resetTrigger(BOB).click();

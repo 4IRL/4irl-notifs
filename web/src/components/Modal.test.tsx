@@ -280,6 +280,23 @@ describe('Modal', () => {
     expect(document.activeElement).toBe(lastReal);
   });
 
+  it('skips controls inside an inert wrapper when wrapping Tab', () => {
+    render(
+      <Modal title="t" open onDismiss={() => {}} actions={<button type="button">live last</button>}>
+        <div inert>
+          <button type="button">inert one</button>
+        </div>
+      </Modal>,
+    );
+    const close = screen.getByRole('button', { name: strings.closeDialog });
+    const liveLast = screen.getByRole('button', { name: 'live last' });
+    act(() => liveLast.focus());
+    fireEvent.keyDown(liveLast, { key: 'Tab' });
+    expect(document.activeElement).toBe(close);
+    fireEvent.keyDown(close, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(liveLast);
+  });
+
   it('keeps focus on the dialog when Tab is pressed with nothing focusable', () => {
     render(
       <Modal title="t" open dismissible={false} onDismiss={() => {}} actions={null}>
@@ -625,6 +642,83 @@ describe('Modal', () => {
     render(<Harness />);
     await openDialog(user);
     expect(dialog().hasAttribute('data-owner-row-attribute')).toBe(false);
+  });
+
+  it('adds the wide modifier class only for size="wide"', () => {
+    const actions = <button type="button">a</button>;
+    const { rerender } = render(
+      <Modal title="t" open onDismiss={() => {}} actions={actions}>
+        body
+      </Modal>,
+    );
+    expect(dialog().classList.contains('modal--wide')).toBe(false);
+    rerender(
+      <Modal title="t" open size="wide" onDismiss={() => {}} actions={actions}>
+        body
+      </Modal>,
+    );
+    expect(dialog().classList.contains('modal--wide')).toBe(true);
+  });
+
+  describe('restoreFocus', () => {
+    const actions = <button type="button">a</button>;
+    const openers: HTMLElement[] = [];
+    afterEach(() => {
+      openers.splice(0).forEach((node) => node.remove());
+    });
+    const setup = () => {
+      const opener = document.createElement('button');
+      openers.push(opener);
+      document.body.appendChild(opener);
+      opener.focus();
+      const focusSpy = vi.spyOn(opener, 'focus');
+      return { opener, focusSpy };
+    };
+
+    it('restores focus to the opener on close by default', () => {
+      const { focusSpy } = setup();
+      const { rerender } = render(
+        <Modal title="t" open onDismiss={() => {}} actions={actions}>
+          body
+        </Modal>,
+      );
+      rerender(
+        <Modal title="t" open={false} onDismiss={() => {}} actions={actions}>
+          body
+        </Modal>,
+      );
+      expect(focusSpy).toHaveBeenCalled();
+    });
+
+    it('skips the return-focus write when restoreFocus is false', () => {
+      const { focusSpy } = setup();
+      const { rerender } = render(
+        <Modal title="t" open restoreFocus={false} onDismiss={() => {}} actions={actions}>
+          body
+        </Modal>,
+      );
+      rerender(
+        <Modal title="t" open={false} restoreFocus={false} onDismiss={() => {}} actions={actions}>
+          body
+        </Modal>,
+      );
+      expect(focusSpy).not.toHaveBeenCalled();
+    });
+
+    it('skips it when restoreFocus flips to false in the rerender that closes', () => {
+      const { focusSpy } = setup();
+      const { rerender } = render(
+        <Modal title="t" open onDismiss={() => {}} actions={actions}>
+          body
+        </Modal>,
+      );
+      rerender(
+        <Modal title="t" open={false} restoreFocus={false} onDismiss={() => {}} actions={actions}>
+          body
+        </Modal>,
+      );
+      expect(focusSpy).not.toHaveBeenCalled();
+    });
   });
 
   it('sets aria-busy only when busy', () => {

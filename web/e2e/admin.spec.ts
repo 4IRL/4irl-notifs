@@ -6,7 +6,7 @@ import {
   TIMESTAMP,
   deliveryWire,
   destinationWire,
-  expectEditorInView,
+  expectDialogInViewport,
   expectNoPageOverflow,
   expectTouchTarget,
   heartbeatWire,
@@ -326,8 +326,14 @@ test.describe('admin UI critical flows', () => {
         }
       }
 
-      const trigger = usersSectionOf(page).getByRole('button', {
+      // At 390px the row's actions live behind its kebab (Users and People share the email label,
+      // so the kebab is found inside the Users section); the Reset item is a 44px touch target.
+      await usersSectionOf(page)
+        .getByRole('button', { name: `Actions for ${EMAIL}`, exact: true })
+        .click();
+      const trigger = rowMenu({ page, row: EMAIL }).getByRole('menuitem', {
         name: `Reset password for ${EMAIL}`,
+        exact: true,
       });
       expect((await trigger.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
       await trigger.click();
@@ -538,12 +544,16 @@ test.describe('admin UI critical flows', () => {
     const trigger = page.getByRole('button', { name: 'Revoke & re-mint', exact: true });
     await trigger.click();
 
-    const dialog = page.getByRole('dialog', { name: 'Revoke and re-mint publisher token?' });
-    await expect(dialog).toBeVisible();
+    // The confirm step lives inside the edit dialog: no second dialog is stacked on it.
+    const dialog = page.getByRole('dialog', { name: 'Edit app urls4irl' });
+    const confirm = dialog.getByRole('button', { name: 'Confirm revoke & re-mint', exact: true });
+    await expect(confirm).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(1);
     await page.keyboard.press('Escape');
 
-    await expect(dialog).toBeHidden();
-    await expect(trigger).toBeVisible();
+    // Escape cancels only the confirm step; the edit dialog stays open.
+    await expect(confirm).toBeHidden();
+    await expect(dialog).toBeVisible();
     await expect(trigger).toBeFocused();
     expect(tokenCalls).toBe(0);
   });
@@ -578,7 +588,9 @@ test.describe('admin UI critical flows', () => {
     });
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Remove URLs4IRL', exact: true }).click();
+    // At 390px Remove lives behind the row's kebab.
+    const menu = await openRowMenu({ page, row: 'URLs4IRL' });
+    await menu.getByRole('menuitem', { name: 'Remove URLs4IRL', exact: true }).click();
 
     const dialog = page.getByRole('dialog', { name: 'Remove app?' });
     await expect(dialog).toBeVisible();
@@ -803,7 +815,7 @@ async function expectReachableByScrolling({
 }
 
 /** The Actions cell of every ordinary row: its last cell (inline-editor rows have none). */
-const ACTIONS_CELL = 'tbody tr:not(:has(.admin-table__editor-cell)) > td:last-child';
+const ACTIONS_CELL = 'tbody tr:not(:has(.destinations__reveal-cell)) > td:last-child';
 
 /** What an Actions cell offers that must never be left under the pinned column. */
 const ACTIONS_ITEM = 'button, [class*="pill"]';
@@ -1078,7 +1090,7 @@ async function focusedDescription(page: Page): Promise<string> {
  * Needs enough rows to overflow vertically. Leaves the wrapper scrolled.
  */
 async function expectCompactTable({ wrapper }: { wrapper: Locator }): Promise<void> {
-  expect(await maxRenderedLines({ root: wrapper, skip: '.admin-table__editor-cell' })).toBe(1);
+  expect(await maxRenderedLines({ root: wrapper, skip: '.destinations__reveal-cell' })).toBe(1);
 
   const report = await wrapper.evaluate(async (element) => {
     element.scrollIntoView({ block: 'start' });
@@ -1180,7 +1192,7 @@ async function expectCompactTable({ wrapper }: { wrapper: Locator }): Promise<vo
         .filter((button) => !button.classList.contains('row-menu__trigger'))
         .map((button) => (button.textContent ?? '').trim()),
       // No cell may wrap (the editor row aside).
-      wrappingCells: Array.from(element.querySelectorAll('th, td:not(.admin-table__editor-cell)'))
+      wrappingCells: Array.from(element.querySelectorAll('th, td:not(.destinations__reveal-cell)'))
         .filter((cell) => getComputedStyle(cell).whiteSpace !== 'nowrap')
         .map((cell) => cell.className || cell.tagName),
     };
@@ -1246,7 +1258,7 @@ async function expectCompactTable({ wrapper }: { wrapper: Locator }): Promise<vo
  */
 async function expectPinnedTable({ wrapper }: { wrapper: Locator }): Promise<void> {
   // No wrapped text anywhere in the table (the editor row wraps by design).
-  expect(await maxRenderedLines({ root: wrapper, skip: '.admin-table__editor-cell' })).toBe(1);
+  expect(await maxRenderedLines({ root: wrapper, skip: '.destinations__reveal-cell' })).toBe(1);
 
   const report = await wrapper.evaluate(async (element) => {
     element.scrollIntoView({ block: 'start' });
@@ -1301,7 +1313,7 @@ async function expectPinnedTable({ wrapper }: { wrapper: Locator }): Promise<voi
       });
       return hit === null ? null : hit.closest('th') === header;
     });
-    const cells = Array.from(element.querySelectorAll('th, td:not(.admin-table__editor-cell)'));
+    const cells = Array.from(element.querySelectorAll('th, td:not(.destinations__reveal-cell)'));
     const buttonRows = Array.from(element.querySelectorAll('tbody td'))
       .map((cell) => Array.from(cell.querySelectorAll(':scope > div > button')))
       .filter((buttons) => buttons.length > 1);
@@ -1340,7 +1352,9 @@ async function expectPinnedTable({ wrapper }: { wrapper: Locator }): Promise<voi
       }),
       // Every body cell that scrolls (not pinned) is a different, non-sticky cell.
       scrollingCellsAreNotSticky: Array.from(
-        element.querySelectorAll('tbody td:not(.admin-table__lead):not(.admin-table__editor-cell)'),
+        element.querySelectorAll(
+          'tbody td:not(.admin-table__lead):not(.destinations__reveal-cell)',
+        ),
       ).every((cell) => getComputedStyle(cell).position === 'static'),
       // No cell may wrap: computed white-space is nowrap everywhere (the editor row aside).
       wrappingCells: cells
@@ -1558,9 +1572,11 @@ test.describe('admin UI Delivery tab', () => {
     await page.getByRole('button', { name: 'Edit hook1', exact: true }).click();
     await page.getByRole('button', { name: 'Rotate hook1', exact: true }).click();
     await page
-      .getByRole('dialog', { name: 'Rotate signing secret?' })
+      .getByRole('dialog', { name: 'Edit destination hook1' })
       .getByRole('button', { name: 'Confirm rotate hook1', exact: true })
       .click();
+    // A clean rotate closes the dialog and the secret appears in the row.
+    await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByText('rotated_signing_secret_e2e_0123456789abcdef')).toBeVisible();
     const rotate = mock.mutations.find((request) => request.pathname.endsWith('/rotate-secret'));
     expect(rotate?.method).toBe('POST');
@@ -1987,7 +2003,10 @@ test.describe('admin UI Delivery tab', () => {
     });
     await edit.click();
 
-    const form = section.getByRole('form', { name: 'Edit urls4irl/nightly_backup' });
+    // The edit form lives in the shared dialog, portalled outside the section.
+    const form = page
+      .getByRole('dialog', { name: 'Edit urls4irl/nightly_backup', exact: true })
+      .locator('form');
     await expect(form.getByLabel('Period', { exact: true })).toBeFocused();
     await expect(form.getByLabel('Period', { exact: true })).toHaveValue('24');
     await expect(form.getByLabel('Period unit')).toHaveValue('hours');
@@ -1998,11 +2017,6 @@ test.describe('admin UI Delivery tab', () => {
     await expect(stale).toBeChecked();
     await expect(stale).toBeVisible();
     await expect(form.locator('label', { hasText: 'old_hook' })).toContainText('(not found)');
-
-    // One editor at a time: opening another row's editor closes this one.
-    await section.getByRole('button', { name: 'Edit urls4irl/reaper', exact: true }).click();
-    await expect(form).toHaveCount(0);
-    await edit.click();
 
     // Changing only the grace sends only the grace.
     await form.getByLabel('Grace', { exact: true }).fill('3');
@@ -2030,6 +2044,7 @@ test.describe('admin UI Delivery tab', () => {
     // Close without saving sends nothing and refocuses the trigger.
     await edit.click();
     await form.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(form).toHaveCount(0);
     await expect(edit).toBeFocused();
     expect(mock.mutations.filter((request) => request.method === 'PATCH')).toHaveLength(3);
     expect(mock.unmocked).toEqual([]);
@@ -2145,16 +2160,17 @@ test.describe('admin UI Delivery tab', () => {
       expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
     }
 
-    // The inline editor, opened from the menu, spans the table but is sized to the visible
-    // width, takes focus, and neither scrolls the page nor sits under anything, wherever the
-    // wrapper is scrolled.
+    // The edit dialog, opened from the menu, takes focus and fits the viewport without
+    // scrolling the page.
     menu = await openRowMenu({ page, row: 'urls4irl/nightly_backup' });
     await menu.getByRole('menuitem', { name: 'Edit urls4irl/nightly_backup', exact: true }).click();
-    const editForm = section.getByRole('form', { name: 'Edit urls4irl/nightly_backup' });
+    const editForm = page
+      .getByRole('dialog', { name: 'Edit urls4irl/nightly_backup', exact: true })
+      .locator('form');
     await expect(editForm).toBeVisible();
     await expect(editForm.locator(':focus')).toHaveCount(1);
     await expectNoPageOverflow(page);
-    await expectEditorInView({ wrapper, form: editForm });
+    await expectDialogInViewport(page);
     const editBox = await editForm.boundingBox();
     expect(editBox?.x ?? -1).toBeGreaterThanOrEqual(0);
     expect((editBox?.x ?? 0) + (editBox?.width ?? 0)).toBeLessThanOrEqual(390);
@@ -2868,11 +2884,12 @@ test.describe('admin UI Delivery tab', () => {
     await expect(page.getByRole('dialog').locator('.modal__notice')).toHaveText(managed);
     await page.getByRole('button', { name: 'Cancel Delete route 2', exact: true }).click();
 
-    // An open editor row spans every column, Owner included.
+    // Editing opens the shared dialog and inserts no editor row into the table.
     await page.getByRole('button', { name: 'Edit chores4irl_hook', exact: true }).click();
-    const headerCount = await page.locator('.destinations__table thead th').count();
-    const editorCell = page.locator('.destinations__table tbody td[colspan]');
-    await expect(editorCell).toHaveAttribute('colspan', String(headerCount));
+    await expect(
+      page.getByRole('dialog', { name: 'Edit destination chores4irl_hook' }),
+    ).toBeVisible();
+    await expect(page.locator('.destinations__table tbody td[colspan]')).toHaveCount(0);
     expect(mock.unmocked).toEqual([]);
   });
 
@@ -3024,40 +3041,40 @@ test.describe('admin UI Delivery tab', () => {
       }
     }
 
-    // An open editor row spans every column of the narrow table (the kebab's included) and
-    // stays inside the visible width.
-    for (const { row, editName, table, scroll, columns } of [
+    // Editing opens the shared dialog inside the viewport and leaves the narrow table's columns
+    // alone (no editor row spans them any more).
+    for (const { row, editName, dialogName, table, columns } of [
       {
         row: 'chores4irl_hook',
         editName: 'Edit chores4irl_hook',
+        dialogName: 'Edit destination chores4irl_hook',
         table: '.destinations__table',
-        scroll: '.destinations__scroll',
         columns: 5,
       },
       {
         row: 'route 2',
         editName: 'Edit route 2',
+        dialogName: 'Edit route 2',
         table: '.routes__table',
-        scroll: '.routes__scroll',
         columns: 5,
       },
       {
         row: 'chores4irl/daily',
         editName: 'Edit chores4irl/daily',
+        dialogName: 'Edit chores4irl/daily',
         table: '.heartbeats__table',
-        scroll: '.heartbeats__scroll',
         columns: 6,
       },
     ]) {
       const menu = await openRowMenu({ page, row });
       await menu.getByRole('menuitem', { name: editName, exact: true }).click();
-      const editorCell = page.locator(`${table} tbody td[colspan]`);
-      await expect(editorCell).toHaveAttribute('colspan', String(columns));
+      const dialog = page.getByRole('dialog', { name: dialogName, exact: true });
+      await expect(dialog).toBeVisible();
+      await expect(page.locator(`${table} tbody td[colspan]`)).toHaveCount(0);
       await expect(page.locator(`${table} thead th`)).toHaveCount(columns);
-      await expectEditorInView({
-        wrapper: page.locator(scroll),
-        form: editorCell.locator('form'),
-      });
+      await expectDialogInViewport(page);
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
     }
 
     // App identities (no Owner column): the "approved ... UTC" sub-line under the app id is
@@ -3603,7 +3620,8 @@ test.describe('admin UI Delivery tab', () => {
 
     await page.setViewportSize({ width: 480, height: 900 });
     await page.goto('/#delivery');
-    await expect(page.locator('.row-menu__trigger')).toHaveCount(4);
+    // Four row kebabs; the fifth `.row-menu__trigger` is the delivery-log filter funnel.
+    await expect(page.locator('tbody .row-menu__trigger')).toHaveCount(4);
     await expect(
       page.locator(
         ':is(.destinations__table, .routes__table, .heartbeats__table, .app-identities__table) tbody button:not(.row-menu__trigger)',
@@ -3633,9 +3651,7 @@ test.describe('admin UI Delivery tab', () => {
     expect(mock.unmocked).toEqual([]);
   });
 
-  test('destinations and routes: the inline editors span the table and stay in view at 390px', async ({
-    page,
-  }) => {
+  test('destinations and routes: the edit dialogs fit the viewport at 390px', async ({ page }) => {
     const mock = await mockDelivery(page, {
       destinations: [
         destinationWire({
@@ -3651,22 +3667,16 @@ test.describe('admin UI Delivery tab', () => {
     await page.goto('/#delivery');
 
     // The destination editor.
-    const destinationWrapper = page.locator('.destinations__scroll');
     const destinationMenu = await openRowMenu({ page, row: 'hook1' });
     await destinationMenu.getByRole('menuitem', { name: 'Edit hook1', exact: true }).click();
     await expect(destinationMenu).toBeHidden();
-    const destinationForm = destinationWrapper.locator('.admin-table__editor form');
+    const destinationDialog = page.getByRole('dialog', { name: 'Edit destination hook1' });
+    const destinationForm = destinationDialog.getByRole('form', { name: 'Edit hook1' });
     await expect(destinationForm).toBeVisible();
-    // Opened from the menu, the editor takes focus and is in view.
+    // Opened from the menu, the editor takes focus and fits the viewport.
     await expect(destinationForm.locator(':focus')).toHaveCount(1);
-    await expectEditorInView({ wrapper: destinationWrapper, form: destinationForm });
-    // It wraps like a form (no cell-wide single line) and never scrolls the page.
+    await expectDialogInViewport(page);
     await expectNoPageOverflow(page);
-    const destinationFormBox = await destinationForm.boundingBox();
-    expect(destinationFormBox?.x ?? -1).toBeGreaterThanOrEqual(0);
-    expect((destinationFormBox?.x ?? 0) + (destinationFormBox?.width ?? 0)).toBeLessThanOrEqual(
-      390,
-    );
     for (const control of [
       destinationForm.getByRole('button', { name: 'Save hook1', exact: true }),
       destinationForm.getByRole('button', { name: 'Close', exact: true }),
@@ -3676,22 +3686,18 @@ test.describe('admin UI Delivery tab', () => {
       expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
     }
     await destinationForm.getByRole('button', { name: 'Close', exact: true }).click();
-    await expect(destinationForm).toBeHidden();
+    await expect(destinationDialog).toBeHidden();
     // Closing hands focus back to the row's kebab.
     await expect(rowKebab({ page, row: 'hook1' })).toBeFocused();
 
     // The route editor.
-    const routeWrapper = page.locator('.routes__scroll');
     const routeMenu = await openRowMenu({ page, row: 'route 1' });
     await routeMenu.getByRole('menuitem', { name: 'Edit route 1', exact: true }).click();
-    const routeForm = routeWrapper.locator('.admin-table__editor form');
-    await expect(routeForm).toBeVisible();
-    await expect(routeForm.locator(':focus')).toHaveCount(1);
-    await expectEditorInView({ wrapper: routeWrapper, form: routeForm });
+    const routeDialog = page.getByRole('dialog', { name: 'Edit route 1' });
+    await expect(routeDialog).toBeVisible();
+    await expect(routeDialog.locator(':focus')).toHaveCount(1);
+    await expectDialogInViewport(page);
     await expectNoPageOverflow(page);
-    const routeFormBox = await routeForm.boundingBox();
-    expect(routeFormBox?.x ?? -1).toBeGreaterThanOrEqual(0);
-    expect((routeFormBox?.x ?? 0) + (routeFormBox?.width ?? 0)).toBeLessThanOrEqual(390);
     expect(mock.unmocked).toEqual([]);
   });
 

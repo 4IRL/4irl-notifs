@@ -115,7 +115,7 @@ test.describe('website probe checks', () => {
     await expect(createdRow.getByText('Late', { exact: true })).toHaveCount(0);
 
     await section.getByRole('button', { name: 'Edit minecrafting/site_up', exact: true }).click();
-    const editForm = section.getByRole('form', { name: 'Edit minecrafting/site_up' });
+    const editForm = page.getByRole('dialog', { name: 'Edit minecrafting/site_up', exact: true });
     await expect(editForm.getByText('Access credentials set')).toBeVisible();
     expect(mock.unmocked).toEqual([]);
   });
@@ -309,7 +309,7 @@ test.describe('website probe checks', () => {
     });
 
     const edit = section.getByRole('button', { name: 'Edit urls4irl/guarded', exact: true });
-    const form = section.getByRole('form', { name: 'Edit urls4irl/guarded' });
+    const form = page.getByRole('dialog', { name: 'Edit urls4irl/guarded', exact: true });
     const replace = form.getByRole('button', { name: 'Replace', exact: true });
     const clear = form.getByRole('button', { name: 'Clear', exact: true });
     const patches = () => mock.mutations.filter((request) => request.method === 'PATCH');
@@ -421,7 +421,7 @@ test.describe('website probe checks at 390px', () => {
   test('the config hint shows in the edit form for stored and missing credentials', async ({
     page,
   }) => {
-    const { mock, section } = await openHeartbeats({
+    const { mock } = await openHeartbeats({
       page,
       viewport: MOBILE,
       seed: {
@@ -460,7 +460,7 @@ test.describe('website probe checks at 390px', () => {
 
     let menu = await openRowMenu({ page, row: 'urls4irl/cfg_stored' });
     await menu.getByRole('menuitem', { name: 'Edit urls4irl/cfg_stored', exact: true }).click();
-    const stored = section.getByRole('form', { name: 'Edit urls4irl/cfg_stored' });
+    const stored = page.getByRole('dialog', { name: 'Edit urls4irl/cfg_stored', exact: true });
     await expect(
       stored.getByText(
         'The last probe could not use these credentials. Use Replace to enter new ones.',
@@ -470,10 +470,13 @@ test.describe('website probe checks at 390px', () => {
     await expect(stored.getByRole('button', { name: 'Replace', exact: true })).toBeVisible();
     await expectNoPageOverflow(page);
 
-    // Opening the other row's editor replaces this one; its variant points at the inputs below.
+    // The other row's editor opens once this dialog is closed; its variant points at the
+    // inputs below.
+    await page.keyboard.press('Escape');
+    await expect(stored).toHaveCount(0);
     menu = await openRowMenu({ page, row: 'urls4irl/cfg_missing' });
     await menu.getByRole('menuitem', { name: 'Edit urls4irl/cfg_missing', exact: true }).click();
-    const missing = section.getByRole('form', { name: 'Edit urls4irl/cfg_missing' });
+    const missing = page.getByRole('dialog', { name: 'Edit urls4irl/cfg_missing', exact: true });
     await expect(
       missing.getByText(
         'The last probe could not use the stored credentials. Enter new ones below.',
@@ -635,7 +638,7 @@ test.describe('website probe checks at 390px', () => {
     // The edit form's credential controls are touch sized in every staged state.
     const menu = await openRowMenu({ page, row: 'urls4irl/guarded' });
     await menu.getByRole('menuitem', { name: 'Edit urls4irl/guarded', exact: true }).click();
-    const editForm = section.getByRole('form', { name: 'Edit urls4irl/guarded' });
+    const editForm = page.getByRole('dialog', { name: 'Edit urls4irl/guarded', exact: true });
     await expect(editForm).toBeVisible();
     await expectTouchTarget(editForm.getByRole('button', { name: 'Replace', exact: true }));
     await expectTouchTarget(editForm.getByRole('button', { name: 'Clear', exact: true }));
