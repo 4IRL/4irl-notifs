@@ -24,7 +24,7 @@ func TestFilePendingRequestAfterAnApprovalCommittedReportsTheBinding(testInstanc
 		if _, found, lockErr := tx.LockBinding(ctx, "urls4irl"); lockErr != nil || found {
 			return fmt.Errorf("LockBinding found = %v, err = %v, want no binding yet", found, lockErr)
 		}
-		if _, approveErr := store.ApproveRequest(ctx, requestID, testNow); approveErr != nil {
+		if _, approveErr := store.ApproveRequest(ctx, requestID, "urls4irl", testNow); approveErr != nil {
 			return fmt.Errorf("ApproveRequest: %w", approveErr)
 		}
 		_, fileErr = tx.FilePendingRequest(ctx, "urls4irl", claims, testNow)
@@ -54,7 +54,7 @@ func TestApprovalRacingAnExchangeNeverLeavesAPendingRequestForABoundApp(testInst
 		go func() {
 			defer group.Done()
 			<-start
-			_, approveErr = store.ApproveRequest(ctx, requestID, testNow)
+			_, approveErr = store.ApproveRequest(ctx, requestID, appID, testNow)
 		}()
 		go func() {
 			defer group.Done()
@@ -100,7 +100,7 @@ func TestApprovalRacingARejectionHasExactlyOneOutcome(testInstance *testing.T) {
 		go func() {
 			defer group.Done()
 			<-start
-			_, approveErr = store.ApproveRequest(ctx, requestID, testNow)
+			_, approveErr = store.ApproveRequest(ctx, requestID, appID, testNow)
 		}()
 		go func() {
 			defer group.Done()

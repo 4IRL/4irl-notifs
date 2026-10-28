@@ -230,7 +230,7 @@ func TestApproveRequestCreatesTheBindingAndDeletesTheRequest(testInstance *testi
 	withEnvironmentID := insertRequest(ctx, testInstance, pool, "urls4irl", withEnvironment, RequestPending, testNow)
 	withoutEnvironmentID := insertRequest(ctx, testInstance, pool, "chores4irl", withoutEnvironment, RequestPending, testNow)
 
-	binding, err := store.ApproveRequest(ctx, withEnvironmentID, testNow)
+	binding, err := store.ApproveRequest(ctx, withEnvironmentID, "urls4irl", testNow)
 	if err != nil {
 		testInstance.Fatalf("ApproveRequest: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestApproveRequestCreatesTheBindingAndDeletesTheRequest(testInstance *testi
 		binding.Environment != "production" || !binding.ApprovedAt.Equal(testNow) {
 		testInstance.Errorf("binding = %+v", binding)
 	}
-	if _, err := store.ApproveRequest(ctx, withoutEnvironmentID, testNow); err != nil {
+	if _, err := store.ApproveRequest(ctx, withoutEnvironmentID, "chores4irl", testNow); err != nil {
 		testInstance.Fatalf("ApproveRequest (no environment): %v", err)
 	}
 
@@ -288,6 +288,47 @@ func remainingRequestIDs(ctx context.Context, testInstance *testing.T, pool *pgx
 	return ids
 }
 
+func TestGetRequestReadsOneRequestWithoutLockingIt(testInstance *testing.T) {
+	ctx, store, pool := newTestStore(testInstance)
+	requestID := insertRequest(ctx, testInstance, pool, "urls4irl", testClaims(1, "production"), RequestPending, testNow)
+
+	request, err := store.GetRequest(ctx, requestID)
+
+	if err != nil || request.ID != requestID || request.AppID != "urls4irl" || request.Status != RequestPending || request.Environment != "production" {
+		testInstance.Fatalf("GetRequest = %+v, %v", request, err)
+	}
+	if _, err := store.GetRequest(ctx, 987654); !errors.Is(err, ErrRequestNotFound) {
+		testInstance.Errorf("GetRequest(unknown) err = %v, want ErrRequestNotFound", err)
+	}
+}
+
+func TestApproveRequestRefusesARequestDeletedOrDecidedAfterItWasRead(testInstance *testing.T) {
+	ctx, store, pool := newTestStore(testInstance)
+	deleted := insertRequest(ctx, testInstance, pool, "gone", testClaims(1, ""), RequestPending, testNow)
+	decided := insertRequest(ctx, testInstance, pool, "decided", testClaims(2, ""), RequestPending, testNow)
+	for _, requestID := range []int64{deleted, decided} {
+		if _, err := store.GetRequest(ctx, requestID); err != nil {
+			testInstance.Fatalf("GetRequest(%d): %v", requestID, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM app_registration_requests WHERE id = $1`, deleted); err != nil {
+		testInstance.Fatalf("delete request: %v", err)
+	}
+	if _, err := store.RejectRequest(ctx, decided, testNow); err != nil {
+		testInstance.Fatalf("RejectRequest: %v", err)
+	}
+
+	if _, err := store.ApproveRequest(ctx, deleted, "gone", testNow); !errors.Is(err, ErrRequestNotFound) {
+		testInstance.Errorf("deleted request err = %v, want ErrRequestNotFound", err)
+	}
+	if _, err := store.ApproveRequest(ctx, decided, "decided", testNow); !errors.Is(err, ErrRequestNotPending) {
+		testInstance.Errorf("decided request err = %v, want ErrRequestNotPending", err)
+	}
+	if bindings := countRows(ctx, testInstance, pool, `SELECT count(*) FROM app_bindings`); bindings != 0 {
+		testInstance.Errorf("bindings = %d, want 0", bindings)
+	}
+}
+
 func TestApproveRequestDeletesSiblingPendingRequestsAndKeepsUnrelatedOnes(testInstance *testing.T) {
 	ctx, store, pool := newTestStore(testInstance)
 	approved := insertRequest(ctx, testInstance, pool, "urls4irl", testClaims(1, ""), RequestPending, testNow)
@@ -302,7 +343,7 @@ func TestApproveRequestDeletesSiblingPendingRequestsAndKeepsUnrelatedOnes(testIn
 	rejectedSameAppID := insertRequest(ctx, testInstance, pool, "urls4irl", testClaims(7, ""), RequestRejected, testNow)
 	rejectedSameWorkflow := insertRequest(ctx, testInstance, pool, "old", testClaims(1, ""), RequestRejected, testNow)
 
-	if _, err := store.ApproveRequest(ctx, approved, testNow); err != nil {
+	if _, err := store.ApproveRequest(ctx, approved, "urls4irl", testNow); err != nil {
 		testInstance.Fatalf("ApproveRequest: %v", err)
 	}
 
@@ -325,7 +366,7 @@ func TestApproveRequestSiblingDeleteMatchesTheEnvironmentExactly(testInstance *t
 	sameWorkflow := insertRequest(ctx, testInstance, pool, "chores4irl", testClaims(1, "production"), RequestPending, testNow)
 	noEnvironment := insertRequest(ctx, testInstance, pool, "staging", testClaims(1, ""), RequestPending, testNow)
 
-	if _, err := store.ApproveRequest(ctx, approved, testNow); err != nil {
+	if _, err := store.ApproveRequest(ctx, approved, "urls4irl", testNow); err != nil {
 		testInstance.Fatalf("ApproveRequest: %v", err)
 	}
 
@@ -347,15 +388,17 @@ func TestApproveRequestRefusesWithoutChangingAnything(testInstance *testing.T) {
 	for _, testCase := range []struct {
 		name      string
 		requestID int64
+		appID     string
 		want      error
 	}{
-		{"app already bound", sameApp, ErrAppAlreadyBound},
-		{"workflow identity bound to another app", sameWorkflow, ErrWorkflowIdentityBound},
-		{"already rejected", rejected, ErrRequestNotPending},
-		{"unknown id", 987654, ErrRequestNotFound},
+		{"app already bound", sameApp, "urls4irl", ErrAppAlreadyBound},
+		{"workflow identity bound to another app", sameWorkflow, "chores4irl", ErrWorkflowIdentityBound},
+		{"already rejected", rejected, "later", ErrRequestNotPending},
+		{"unknown id", 987654, "urls4irl", ErrRequestNotFound},
+		{"app id differs under lock", sameApp, "someone_else", ErrRequestChanged},
 	} {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
-			_, err := store.ApproveRequest(ctx, testCase.requestID, testNow)
+			_, err := store.ApproveRequest(ctx, testCase.requestID, testCase.appID, testNow)
 
 			if !errors.Is(err, testCase.want) {
 				subTest.Fatalf("err = %v, want %v", err, testCase.want)
@@ -367,6 +410,23 @@ func TestApproveRequestRefusesWithoutChangingAnything(testInstance *testing.T) {
 				subTest.Errorf("requests = %d, want all 3 kept", requests)
 			}
 		})
+	}
+}
+
+func TestApproveRequestRefusesAMismatchedAppIDOnAFreshRequestWithNoCompetingBinding(testInstance *testing.T) {
+	ctx, store, pool := newTestStore(testInstance)
+	requestID := insertRequest(ctx, testInstance, pool, "urls4irl", testClaims(1, ""), RequestPending, testNow)
+
+	if _, err := store.ApproveRequest(ctx, requestID, "someone_else", testNow); !errors.Is(err, ErrRequestChanged) {
+		testInstance.Fatalf("err = %v, want ErrRequestChanged", err)
+	}
+
+	request, getErr := store.GetRequest(ctx, requestID)
+	if getErr != nil || request.Status != RequestPending {
+		testInstance.Errorf("request = %+v, %v, want it still pending", request, getErr)
+	}
+	if bindings := countRows(ctx, testInstance, pool, `SELECT count(*) FROM app_bindings`); bindings != 0 {
+		testInstance.Errorf("bindings = %d, want 0", bindings)
 	}
 }
 
@@ -392,7 +452,7 @@ func TestApproveRequestRefusesAnAppIDThatOverlapsABoundOneByAnUnderscoreExtensio
 			insertTestBinding(ctx, subTest, pool, testCase.bound, testClaims(1, ""))
 			requestID := insertRequest(ctx, subTest, pool, testCase.approved, testClaims(2, ""), RequestPending, testNow)
 
-			binding, err := store.ApproveRequest(ctx, requestID, testNow)
+			binding, err := store.ApproveRequest(ctx, requestID, testCase.approved, testNow)
 
 			if testCase.want == nil {
 				if err != nil || binding.AppID != testCase.approved {
@@ -423,7 +483,7 @@ func TestApproveRequestSiblingDeleteAndAppIDOverlapHoldTogether(testInstance *te
 	overlapping := insertRequest(ctx, testInstance, pool, "urls_beta", testClaims(2, ""), RequestPending, testNow)
 	overlappingSibling := insertRequest(ctx, testInstance, pool, "urls_beta", testClaims(6, ""), RequestPending, testNow)
 
-	if _, err := store.ApproveRequest(ctx, approved, testNow); err != nil {
+	if _, err := store.ApproveRequest(ctx, approved, "urls", testNow); err != nil {
 		testInstance.Fatalf("ApproveRequest(urls): %v", err)
 	}
 	// Siblings of the approved app are gone; the other app id's requests are untouched.
@@ -435,7 +495,7 @@ func TestApproveRequestSiblingDeleteAndAppIDOverlapHoldTogether(testInstance *te
 
 	// urls_beta now overlaps the bound urls, so approving it is refused and deletes nothing, not
 	// even its own sibling.
-	if _, err := store.ApproveRequest(ctx, overlapping, testNow); !errors.Is(err, ErrAppIDOverlap) {
+	if _, err := store.ApproveRequest(ctx, overlapping, "urls_beta", testNow); !errors.Is(err, ErrAppIDOverlap) {
 		testInstance.Fatalf("ApproveRequest(urls_beta) err = %v, want ErrAppIDOverlap", err)
 	}
 	got = remainingRequestIDs(ctx, testInstance, pool)
@@ -453,6 +513,7 @@ func TestConcurrentApprovalsOfOverlappingAppIDsHaveExactlyOneWinner(testInstance
 		insertRequest(ctx, testInstance, pool, "urls", testClaims(1, ""), RequestPending, testNow),
 		insertRequest(ctx, testInstance, pool, "urls_beta", testClaims(2, ""), RequestPending, testNow),
 	}
+	appIDs := []string{"urls", "urls_beta"}
 
 	results := make([]error, len(requestIDs))
 	var group sync.WaitGroup
@@ -460,7 +521,7 @@ func TestConcurrentApprovalsOfOverlappingAppIDsHaveExactlyOneWinner(testInstance
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			_, results[index] = store.ApproveRequest(ctx, requestID, testNow)
+			_, results[index] = store.ApproveRequest(ctx, requestID, appIDs[index], testNow)
 		}()
 	}
 	group.Wait()
@@ -495,7 +556,7 @@ func TestConcurrentApprovalsOfOneRequestHaveExactlyOneWinner(testInstance *testi
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			_, results[index] = store.ApproveRequest(ctx, requestID, testNow)
+			_, results[index] = store.ApproveRequest(ctx, requestID, "urls4irl", testNow)
 		}()
 	}
 	group.Wait()

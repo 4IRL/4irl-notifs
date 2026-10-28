@@ -208,6 +208,9 @@ services:
       # TestProdComposeSetsNeitherOIDCDevVariable fails if it does.
       - DELIVERY_OIDC_DEV_MODE=1
       - DELIVERY_OIDC_JWKS_FILE=/run/dev-oidc/jwks.json
+      # Local person-service Worker: operator approval of an app registers it here (blocking). No Access
+      # client id/secret locally; the client omits empty headers. Prod wiring is docker-compose.prod.yml.
+      - PERSON_SERVICE_URL=http://person-service:8787
     volumes:
       # Long form with create_host_path: false, so a raw `docker compose up` before the key set
       # exists fails loudly instead of Docker creating a root-owned directory at the source.
@@ -218,6 +221,8 @@ services:
         bind:
           create_host_path: false
     depends_on:
+      person-service:
+        condition: service_healthy
       provisioning-api:
         condition: service_healthy
       delivery-postgres:

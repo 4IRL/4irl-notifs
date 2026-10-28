@@ -205,10 +205,12 @@ of its Access token.
    `/v1/admin/app-identity/requests/{id}/approve|reject`. Approval creates the **binding**
    `app_id` ← (repository id, owner id, workflow path, ref, environment) and deletes the request
    together with every other pending request for that app id or workflow identity (they can never
-   be approved now, and would otherwise hold pending-cap slots);
-   a rejected request stays in the list for 30 days (the periodic cleanup, which also sweeps the
-   OIDC replay ledger and the stale pending requests above, then deletes it), and a later exchange with the same claims files a fresh
-   pending request.
+   be approved now, and would otherwise hold pending-cap slots). Approval first creates the
+   person-service app row (a blocking call made before the binding transaction; a 409 there means it
+   is already registered, and any other failure fails the approval with nothing written: 502 if
+   person-service fails, 503 if not configured); a rejected request stays in the list for 30 days
+   (the periodic cleanup, which also sweeps the OIDC replay ledger and the stale pending requests
+   above, then deletes it), and a later exchange with the same claims files a fresh pending request.
 4. With a binding, an exchange whose claims all match issues a **new key** (`200 {"status":"issued","app_id","key","key_id"}`,
    the plaintext only here, once), marks the app's other live keys superseded in the same transaction, and
    the superseded key keeps working for 24 h. Claims that differ from the binding in any of the five fields

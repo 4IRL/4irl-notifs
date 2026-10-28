@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,15 +25,19 @@ func newBufferLogger(buffer *bytes.Buffer) *slog.Logger {
 }
 
 func TestCreateAppRequestShape(t *testing.T) {
-	var gotMethod, gotPath, gotContentType, gotID, gotSecret, gotBody string
+	type capturedRequest struct{ method, path, contentType, id, secret, body string }
+	// Buffered so the handler goroutine hands the data over with a happens-before edge.
+	captured := make(chan capturedRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		gotMethod = request.Method
-		gotPath = request.URL.Path
-		gotContentType = request.Header.Get("Content-Type")
-		gotID = request.Header.Get("CF-Access-Client-Id")
-		gotSecret = request.Header.Get("CF-Access-Client-Secret")
 		raw, _ := io.ReadAll(request.Body)
-		gotBody = string(raw)
+		captured <- capturedRequest{
+			method:      request.Method,
+			path:        request.URL.Path,
+			contentType: request.Header.Get("Content-Type"),
+			id:          request.Header.Get("CF-Access-Client-Id"),
+			secret:      request.Header.Get("CF-Access-Client-Secret"),
+			body:        string(raw),
+		}
 		writer.WriteHeader(http.StatusCreated)
 	}))
 	defer server.Close()
@@ -43,6 +48,9 @@ func TestCreateAppRequestShape(t *testing.T) {
 	if createErr := client.CreateApp(context.Background(), "my-app", "My App"); createErr != nil {
 		t.Fatalf("CreateApp: %v", createErr)
 	}
+	got := <-captured
+	gotMethod, gotPath, gotContentType, gotID, gotSecret, gotBody :=
+		got.method, got.path, got.contentType, got.id, got.secret, got.body
 	if gotMethod != http.MethodPost || gotPath != "/apps" {
 		t.Fatalf("got %s %s", gotMethod, gotPath)
 	}
@@ -69,9 +77,9 @@ func TestCreateAppAccessHeadersOnlyWhenConfigured(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			var header http.Header
+			headers := make(chan http.Header, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				header = request.Header.Clone()
+				headers <- request.Header.Clone()
 				writer.WriteHeader(http.StatusCreated)
 			}))
 			defer server.Close()
@@ -81,6 +89,7 @@ func TestCreateAppAccessHeadersOnlyWhenConfigured(t *testing.T) {
 			if createErr := client.CreateApp(context.Background(), "a", "A"); createErr != nil {
 				t.Fatal(createErr)
 			}
+			header := <-headers
 			_, hasID := header["Cf-Access-Client-Id"]
 			_, hasSecret := header["Cf-Access-Client-Secret"]
 			if hasID != testCase.wantID || hasSecret != testCase.wantSec {
@@ -132,14 +141,23 @@ func TestCreateAppStatuses(t *testing.T) {
 
 func TestCreateAppTimeout(t *testing.T) {
 	release := make(chan struct{})
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
 		<-release
 	}))
 	defer server.Close()
 	defer close(release)
 	client := NewClient(Config{BaseURL: server.URL, Timeout: 50 * time.Millisecond})
-	if createErr := client.CreateApp(context.Background(), "a", "A"); createErr == nil {
+	createErr := client.CreateApp(context.Background(), "a", "A")
+	if createErr == nil {
 		t.Fatal("want timeout error")
+	}
+	if !errors.Is(createErr, context.DeadlineExceeded) && !os.IsTimeout(createErr) {
+		t.Fatalf("want a timeout error, got %v", createErr)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls=%d", calls.Load())
 	}
 }
 

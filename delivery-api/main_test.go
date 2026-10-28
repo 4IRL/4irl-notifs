@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -445,6 +446,91 @@ func TestBuildMinterNeedsBothOriginAndCredential(testInstance *testing.T) {
 	}
 }
 
+func TestBuildRegistrar(testInstance *testing.T) {
+	const fakeSecret = "fake-access-secret-value"
+	const resolverErrorText = "read secret file for PERSON_SERVICE_ACCESS_CLIENT_SECRET: no such file"
+	resolverFor := func(values map[string]string, failName string) func(string) (string, error) {
+		return func(name string) (string, error) {
+			if name == failName {
+				return "", errors.New(resolverErrorText)
+			}
+			return values[name], nil
+		}
+	}
+	testCases := []struct {
+		name       string
+		url        string
+		values     map[string]string
+		failName   string
+		wantNil    bool
+		wantWarn   string // text the WARN must carry; empty means no log output
+		wantNoText string // text the log must not carry
+	}{
+		{name: "url empty", url: "", wantNil: true, wantWarn: personServiceURLEnv},
+		{name: "url blank", url: "  \n", wantNil: true, wantWarn: personServiceURLEnv},
+		{name: "http without credentials", url: "http://person-service:8787"},
+		{
+			name: "https with empty secret", url: "https://people.example.test",
+			values:   map[string]string{personServiceAccessIDEnv: "id-1"},
+			wantWarn: personServiceAccessSecretEnv, wantNoText: fakeSecret,
+		},
+		{
+			name: "resolver error", url: "https://people.example.test",
+			values:   map[string]string{personServiceAccessIDEnv: "id-1", personServiceAccessSecretEnv: fakeSecret},
+			failName: personServiceAccessSecretEnv, wantWarn: resolverErrorText, wantNoText: fakeSecret,
+		},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			var logOutput bytes.Buffer
+			registrar := buildRegistrar(testCase.url, resolverFor(testCase.values, testCase.failName),
+				slog.New(slog.NewTextHandler(&logOutput, nil)))
+
+			if (registrar == nil) != testCase.wantNil {
+				subTest.Fatalf("registrar nil = %v, want %v", registrar == nil, testCase.wantNil)
+			}
+			if testCase.wantWarn == "" {
+				if logOutput.Len() != 0 {
+					subTest.Errorf("unexpected log output %q", logOutput.String())
+				}
+			} else if !strings.Contains(logOutput.String(), testCase.wantWarn) || !strings.Contains(logOutput.String(), "level=WARN") {
+				subTest.Errorf("want a WARN carrying %q, log = %q", testCase.wantWarn, logOutput.String())
+			}
+			if testCase.wantNoText != "" && strings.Contains(logOutput.String(), testCase.wantNoText) {
+				subTest.Errorf("log leaks %q: %q", testCase.wantNoText, logOutput.String())
+			}
+		})
+	}
+}
+
+func TestBuildRegistrarTrimsCredentialsAndSendsThemAsHeaders(testInstance *testing.T) {
+	headers := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		headers <- request.Header.Clone()
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	resolver := func(name string) (string, error) {
+		return map[string]string{
+			personServiceAccessIDEnv:     " id-1\n",
+			personServiceAccessSecretEnv: "\tsecret-1 \n",
+		}[name], nil
+	}
+
+	registrar := buildRegistrar(" "+server.URL+" ", resolver, newTestLogger())
+	if registrar == nil {
+		testInstance.Fatal("registrar is nil, want a client for the trimmed URL")
+	}
+	if createErr := registrar.CreateApp(context.Background(), "app-1", "app-1"); createErr != nil {
+		testInstance.Fatalf("CreateApp: %v", createErr)
+	}
+	got := <-headers
+	if got.Get("CF-Access-Client-Id") != "id-1" || got.Get("CF-Access-Client-Secret") != "secret-1" {
+		testInstance.Errorf("access headers = %q / %q, want the trimmed values",
+			got.Get("CF-Access-Client-Id"), got.Get("CF-Access-Client-Secret"))
+	}
+}
+
 func TestBuildMinterRejectsNonInternalProvisioningHosts(testInstance *testing.T) {
 	const fakeCredential = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	testCases := []struct {
@@ -718,6 +804,34 @@ func composeListsSecret(lines []string, secretName string) bool {
 		}
 	}
 	return false
+}
+
+// TestLocalComposeWiresDeliveryAPIToPersonService pins the local wiring that operator approval needs:
+// approval registers the app in person-service (blocking), so delivery-api must know its origin and
+// wait for it to be healthy, or every integration test that approves a binding fails.
+func TestLocalComposeWiresDeliveryAPIToPersonService(testInstance *testing.T) {
+	deliveryLines := composeServiceLines(testInstance, "docker-compose.yml", "delivery-api")
+
+	gotURL, present := composeEnvValue(deliveryLines, "PERSON_SERVICE_URL")
+	if !present || gotURL != "http://person-service:8787" {
+		testInstance.Errorf("docker-compose.yml delivery-api: PERSON_SERVICE_URL = %q (present=%v), want http://person-service:8787", gotURL, present)
+	}
+	// Lines are trimmed, so track having passed the depends_on: key; the entry must come after it.
+	underDependsOn := false
+	dependsOnPersonServiceHealthy := false
+	for index, line := range deliveryLines {
+		if line == "depends_on:" {
+			underDependsOn = true
+		}
+		if underDependsOn && line == "person-service:" && index+1 < len(deliveryLines) &&
+			deliveryLines[index+1] == "condition: service_healthy" {
+			dependsOnPersonServiceHealthy = true
+			break
+		}
+	}
+	if !dependsOnPersonServiceHealthy {
+		testInstance.Error("docker-compose.yml delivery-api must depend_on person-service with condition: service_healthy")
+	}
 }
 
 // TestLocalComposeWiresTheInternalCredentialAndModes pins the local stack: provisioning-api and

@@ -46,7 +46,8 @@ type Config struct {
 	AccessClientID     string
 	AccessClientSecret string
 	// HTTPClient is optional; when nil a client with Timeout and no redirect
-	// following is built.
+	// following is built. A supplied client is used as is: the caller owns its
+	// redirect policy and timeout (a followed redirect would re-POST the body).
 	HTTPClient *http.Client
 	// Timeout bounds each request. Optional; defaults to 5 seconds.
 	Timeout time.Duration

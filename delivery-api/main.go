@@ -29,6 +29,7 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/keyrotation"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personsvc"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/readiness"
@@ -51,6 +52,12 @@ const (
 	// provisioningCredentialEnv names the secret holding the internal credential provisioning-api requires
 	// (resolved through secretenv, so DELIVERY_PROVISIONING_CREDENTIAL_FILE works in production).
 	provisioningCredentialEnv = "DELIVERY_PROVISIONING_CREDENTIAL"
+	// personServiceURLEnv names the env var holding the person-service origin used to register an approved app.
+	personServiceURLEnv = "PERSON_SERVICE_URL"
+	// personServiceAccessIDEnv and personServiceAccessSecretEnv name the Cloudflare Access service token secrets
+	// (resolved through secretenv, so the _FILE forms work in production).
+	personServiceAccessIDEnv     = "PERSON_SERVICE_ACCESS_CLIENT_ID"
+	personServiceAccessSecretEnv = "PERSON_SERVICE_ACCESS_CLIENT_SECRET"
 
 	defaultListenAddress = ":8080"
 	readHeaderTimeout    = 10 * time.Second
@@ -108,6 +115,43 @@ func buildMinter(provisioningURL string, resolveSecret func(string) (string, err
 	}
 	return provisionclient.New(provisionclient.Config{BaseURL: provisioningURL, Credential: credential}), nil
 }
+
+// buildRegistrar returns the people-directory registrar used when the operator approves an app, or a nil
+// interface (never a typed-nil *personsvc.Client, which would bypass the fail-closed nil guard) when
+// PERSON_SERVICE_URL is unset. Approval then answers 503. One WARN names each missing or unreadable
+// variable, never its value.
+func buildRegistrar(personServiceURL string, resolveSecret func(string) (string, error), logger *slog.Logger) appidentity.AppRegistrar {
+	personServiceURL = strings.TrimSpace(personServiceURL)
+	if personServiceURL == "" {
+		logger.Warn("app registration on approval disabled: " + personServiceURLEnv + " unset")
+		return nil
+	}
+	resolve := func(name string) string {
+		raw, resolveErr := resolveSecret(name)
+		if resolveErr != nil {
+			// The resolver error names the variable and the file path, never the secret value.
+			logger.Warn("person-service access credential unreadable: "+name, "error", resolveErr)
+			return ""
+		}
+		return strings.TrimSpace(raw)
+	}
+	accessID := resolve(personServiceAccessIDEnv)
+	accessSecret := resolve(personServiceAccessSecretEnv)
+	if strings.HasPrefix(personServiceURL, "https://") && (accessID == "" || accessSecret == "") {
+		logger.Warn("person-service URL is https but a Cloudflare Access credential is empty: " +
+			personServiceAccessIDEnv + " / " + personServiceAccessSecretEnv)
+	}
+	client := personsvc.NewClient(personsvc.Config{
+		BaseURL: personServiceURL, AccessClientID: accessID, AccessClientSecret: accessSecret, Logger: logger,
+	})
+	if !client.Configured() {
+		return nil
+	}
+	return client
+}
+
+// Compile-time check that the production client satisfies the approval registrar.
+var _ appidentity.AppRegistrar = (*personsvc.Client)(nil)
 
 // checkInternalProvisioningURL accepts only an http(s) URL, without userinfo, whose host is the compose
 // service name of provisioning-api. Plain http is allowed because the origin is on the compose network.
@@ -260,7 +304,9 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Store:    appIdentityStore,
 		Admin:    appIdentityStore,
 		Verifier: oidcVerifier,
-		Logger:   logger,
+		// A nil interface when unconfigured: approval fails closed with 503.
+		Registrar: buildRegistrar(os.Getenv(personServiceURLEnv), secretenv.Resolve, logger),
+		Logger:    logger,
 	})
 
 	checker := readiness.NewChecker(pool, migrate.NewPGStore(pool), migrate.ExpectedVersion(loaded))
