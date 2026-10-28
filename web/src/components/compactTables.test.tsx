@@ -21,8 +21,10 @@ import { AppIdentities } from './AppIdentities';
 import { AppsTable } from './AppsTable';
 import { DestinationsSection } from './DestinationsSection';
 import { Heartbeats } from './Heartbeats';
+import { PeopleTable } from './PeopleTable';
 import { RoutesSection } from './RoutesSection';
 import type { DestinationsLoadState } from './RoutesSection';
+import { UsersTable } from './UsersTable';
 
 // The narrow layout (viewport <= 30rem) swaps every admin table row's inline buttons for one
 // kebab menu. These tests drive each of the four tables through its menu, by keyboard where
@@ -1499,6 +1501,44 @@ function renderApps(overrides: Partial<ComponentProps<typeof AppsTable>> = {}) {
   return props;
 }
 
+const PERSON = {
+  personHash: '76gzqgp4byjl6dje',
+  email: 'alice@example.com',
+  createdAt: '2026-07-19T18:12:03Z',
+};
+
+function renderPeople(overrides: Partial<ComponentProps<typeof PeopleTable>> = {}) {
+  const props: ComponentProps<typeof PeopleTable> = {
+    people: [PERSON],
+    loading: false,
+    error: null,
+    onDelete: vi.fn(),
+    ...overrides,
+  };
+  render(<PeopleTable {...props} />);
+  return props;
+}
+
+const PROVISIONING_USER = {
+  userId: 'u_76gzqgp4byjl6dje',
+  apps: ['urls4irl', 'chores4irl'],
+  topicPatterns: ['u4i-*', 'c4i-*'],
+};
+
+function renderUsers(overrides: Partial<ComponentProps<typeof UsersTable>> = {}) {
+  const props: ComponentProps<typeof UsersTable> = {
+    users: [PROVISIONING_USER],
+    loading: false,
+    emailByPersonHash: new Map([['76gzqgp4byjl6dje', 'alice@example.com']]),
+    onDeprovision: vi.fn(),
+    onDelete: vi.fn(),
+    onResetPassword: vi.fn(),
+    ...overrides,
+  };
+  render(<UsersTable {...props} />);
+  return props;
+}
+
 function expectScrollWrapped() {
   const table = screen.getByRole('table');
   expect(table).toHaveClass('admin-table');
@@ -1545,6 +1585,89 @@ describe('Provisioning tables, narrow layout', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 
+  it('People: Person (lead) / Created / actions, Delete from the menu', async () => {
+    const user = userEvent.setup();
+    const props = renderPeople();
+
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([strings.columnPerson, strings.columnCreated, 'Actions']);
+    const row = kebab(PERSON.email).closest('tr') as HTMLElement;
+    const [lead] = within(row).getAllByRole('cell');
+    expect(lead).toHaveClass('admin-table__lead');
+    expect(lead).toHaveTextContent(PERSON.email);
+    expect(lead).toHaveTextContent(PERSON.personHash);
+    expect(within(row).getAllByRole('cell')).toHaveLength(3);
+    expect(screen.queryAllByRole('button', { name: /^Delete / })).toHaveLength(0);
+    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+
+    await openMenu({ user, row: PERSON.email });
+    await chooseItem({ user, name: `Delete ${PERSON.email}` });
+    await user.click(screen.getByRole('button', { name: `Confirm delete ${PERSON.email}` }));
+    expect(props.onDelete).toHaveBeenCalledWith({ personHash: PERSON.personHash });
+  });
+
+  it('Users: User (lead with apps and topic patterns) / actions; menu holds every action', async () => {
+    const user = userEvent.setup();
+    const props = renderUsers();
+
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([strings.columnUser, 'Actions']);
+    const row = kebab('alice@example.com').closest('tr') as HTMLElement;
+    const cells = within(row).getAllByRole('cell');
+    expect(cells).toHaveLength(2);
+    expect(cells[0]).toHaveClass('admin-table__lead');
+    expect(cells[0]).toHaveTextContent('alice@example.com');
+    expect(cells[0]).toHaveTextContent('urls4irl');
+    expect(cells[0]).toHaveTextContent('chores4irl');
+    expect(cells[0]).toHaveTextContent('u4i-*, c4i-*');
+    expect(screen.queryAllByRole('button', { name: /^(Reset|Deprovision|Delete)/ })).toHaveLength(
+      0,
+    );
+    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+
+    await openMenu({ user, row: 'alice@example.com' });
+    expect(screen.getAllByRole('menuitem').map((item) => accessibleNameOf(item))).toEqual([
+      'Reset password for alice@example.com',
+      'Deprovision urls4irl for alice@example.com',
+      'Deprovision chores4irl for alice@example.com',
+      'Delete alice@example.com',
+    ]);
+    await chooseItem({ user, name: 'Deprovision chores4irl for alice@example.com' });
+    await user.click(screen.getByRole('button', { name: 'Confirm deprovision chores4irl' }));
+    expect(props.onDeprovision).toHaveBeenCalledWith({
+      userId: PROVISIONING_USER.userId,
+      appId: 'chores4irl',
+    });
+  });
+
+  it('Users: Reset password from the menu opens the dialog and returns focus to the kebab', async () => {
+    const user = userEvent.setup();
+    const onResetPassword = vi.fn().mockResolvedValue({ password: 'pw-1' });
+    renderUsers({ onResetPassword });
+    await openMenu({ user, row: 'alice@example.com' });
+    await chooseItem({ user, name: 'Reset password for alice@example.com' });
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(kebab('alice@example.com')).toHaveFocus());
+  });
+
+  it('Users: no Reset item without the handler, and none for a user with no apps', async () => {
+    const user = userEvent.setup();
+    renderUsers({ onResetPassword: undefined });
+    await openMenu({ user, row: 'alice@example.com' });
+    expect(screen.queryByRole('menuitem', { name: /^Reset password/ })).toBeNull();
+    expect(screen.getByRole('menu')).not.toHaveTextContent(strings.resetPasswordUnavailable);
+  });
+
+  it('Users: a user with an empty apps list gets no Reset item', async () => {
+    const user = userEvent.setup();
+    renderUsers({ users: [{ ...PROVISIONING_USER, apps: [] }] });
+    await openMenu({ user, row: 'alice@example.com' });
+    expect(screen.queryByRole('menuitem', { name: /^Reset password/ })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Delete alice@example.com' })).toBeInTheDocument();
+  });
+
   it('Apps: closing the Edit dialog returns focus to the row kebab', async () => {
     const user = userEvent.setup();
     renderApps();
@@ -1564,6 +1687,24 @@ describe('Provisioning tables, narrow layout', () => {
     await waitFor(() => expect(kebab('URLs4IRL')).toHaveFocus());
     expect(apps.onRemoveApp).not.toHaveBeenCalled();
   });
+
+  it('People: cancelling the delete confirm fires nothing and refocuses the kebab', async () => {
+    const user = userEvent.setup();
+    const props = renderPeople();
+    await openMenu({ user, row: PERSON.email });
+    await chooseItem({ user, name: `Delete ${PERSON.email}` });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(kebab(PERSON.email)).toHaveFocus());
+    expect(props.onDelete).not.toHaveBeenCalled();
+  });
+
+  it('Users: a user without a known email explains the missing reset in the menu note', async () => {
+    const user = userEvent.setup();
+    renderUsers({ emailByPersonHash: new Map() });
+    await openMenu({ user, row: PROVISIONING_USER.userId });
+    expect(screen.getByRole('menu')).toHaveTextContent(strings.resetPasswordUnavailable);
+    expect(screen.queryByRole('menuitem', { name: /^Reset password/ })).toBeNull();
+  });
 });
 
 describe('Provisioning tables, roomy layout', () => {
@@ -1581,5 +1722,42 @@ describe('Provisioning tables, roomy layout', () => {
     expect(screen.getByRole('button', { name: 'Edit URLs4IRL' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Remove URLs4IRL' })).toBeVisible();
     expect(allKebabs()).toHaveLength(0);
+  });
+
+  it('People keeps every column and the inline Delete button, with no kebab', () => {
+    renderPeople();
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([
+      strings.columnPersonHash,
+      strings.columnEmail,
+      strings.columnCreated,
+      'Actions',
+    ]);
+    expect(screen.getByRole('button', { name: `Delete ${PERSON.email}` })).toBeVisible();
+    expect(allKebabs()).toHaveLength(0);
+  });
+
+  it('Users keeps every column and the inline buttons in order, with no kebab', () => {
+    renderUsers();
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([
+      strings.columnUser,
+      strings.columnApps,
+      strings.columnTopicPatterns,
+      'Actions',
+    ]);
+    const row = screen.getByRole('button', { name: 'Delete alice@example.com' }).closest('tr');
+    expect(
+      within(row as HTMLElement)
+        .getAllByRole('button')
+        .map((button) => accessibleNameOf(button)),
+    ).toEqual([
+      'Reset password for alice@example.com',
+      'Deprovision urls4irl',
+      'Deprovision chores4irl',
+      'Delete alice@example.com',
+    ]);
+    expect(allKebabs()).toHaveLength(0);
+    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
   });
 });
