@@ -1,5 +1,5 @@
 import type { ComponentProps } from 'react';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -32,6 +32,7 @@ function renderForm(overrides: Partial<ComponentProps<typeof EditAppForm>> = {})
     onUpdateApp: vi.fn().mockResolvedValue(undefined),
     onRemintToken: vi.fn().mockResolvedValue(publisherResult),
     onClose: vi.fn(),
+    onRequestConfirm: vi.fn(),
     ...overrides,
   };
   render(<EditAppForm {...props} />);
@@ -75,52 +76,132 @@ describe('EditAppForm', () => {
     expect(await screen.findByText('tk_fresh')).toBeInTheDocument();
   });
 
-  it('revoke & re-mint requires confirmation, then fires with rotate=true', async () => {
+  it('revoke & re-mint asks the dialog for a confirm step, then fires with rotate=true', async () => {
     const user = userEvent.setup();
-    const { onRemintToken } = renderForm();
+    const { onRemintToken, onRequestConfirm, onUpdateApp, onClose } = renderForm();
 
     await user.click(screen.getByRole('button', { name: strings.rotateTokenAction }));
     expect(onRemintToken).not.toHaveBeenCalled();
+    expect(onRequestConfirm).toHaveBeenCalledTimes(1);
+    const step = vi.mocked(onRequestConfirm).mock.calls[0][0];
+    expect(step.message).toBe(strings.rotateTokenWarning);
+    expect(step.confirmLabel).toBe(strings.confirmRotateTokenAction);
+    expect(step.cancelLabel).toBe(strings.cancelAction);
+    // No second Modal is opened by the form itself.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: strings.confirmRotateTokenAction }));
+    step.onConfirm();
+    expect(onRemintToken).toHaveBeenCalledTimes(1);
     expect(onRemintToken).toHaveBeenCalledWith({ appId: 'urls4irl', rotate: true });
     expect(await screen.findByText('tk_fresh')).toBeInTheDocument();
-  });
-
-  it('re-mint dialog shows title, app item and warning; confirm fires once without submitting', async () => {
-    const user = userEvent.setup();
-    const { onRemintToken, onUpdateApp, onClose } = renderForm();
-
-    await user.click(screen.getByRole('button', { name: strings.rotateTokenAction }));
-
-    const dialog = within(screen.getByRole('dialog', { name: strings.rotateTokenDialogTitle }));
-    expect(dialog.getByText(strings.dialogItemApp)).toBeInTheDocument();
-    expect(dialog.getByText('urls4irl')).toBeInTheDocument();
-    expect(dialog.getByText(strings.rotateTokenWarning)).toBeInTheDocument();
-
-    await user.click(dialog.getByRole('button', { name: strings.confirmRotateTokenAction }));
-    expect(onRemintToken).toHaveBeenCalledTimes(1);
     expect(onUpdateApp).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('Escape in the re-mint dialog closes only the dialog and keeps unsaved values', async () => {
+  it('reports the token as shown, and as cleared when a new mint starts and on unmount', async () => {
     const user = userEvent.setup();
-    const { onRemintToken, onUpdateApp, onClose } = renderForm();
+    const onTokenShownChange = vi.fn();
+    renderForm({ onTokenShownChange });
+
+    await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
+    await screen.findByText('tk_fresh');
+    expect(onTokenShownChange).toHaveBeenLastCalledWith(true);
+
+    cleanup();
+    expect(onTokenShownChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('closes without a request or a result when Save is pressed on an untouched form', async () => {
+    const user = userEvent.setup();
+    const { onUpdateApp, onClose } = renderForm();
+
+    await user.click(screen.getByRole('button', { name: strings.saveAction }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onUpdateApp).not.toHaveBeenCalled();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('treats whitespace-only and empty-description differences as untouched', async () => {
+    const user = userEvent.setup();
+    const onDirtyChange = vi.fn();
+    const { onUpdateApp, onClose } = renderForm({
+      app: { ...app, description: null },
+      onDirtyChange,
+    });
+
+    await user.type(screen.getByLabelText(strings.appDescriptionLabel), '   ');
+    await user.click(screen.getByRole('button', { name: strings.saveAction }));
+
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+    expect(onUpdateApp).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports dirty, back to clean on revert, and busy while saving', async () => {
+    const user = userEvent.setup();
+    const save = (() => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    })();
+    const onDirtyChange = vi.fn();
+    const onBusyChange = vi.fn();
+    renderForm({ onDirtyChange, onBusyChange, onUpdateApp: vi.fn().mockReturnValue(save.promise) });
 
     const name = screen.getByLabelText(strings.appDisplayNameLabel);
-    await user.clear(name);
-    await user.type(name, 'Edited');
-    const trigger = screen.getByRole('button', { name: strings.rotateTokenAction });
-    await user.click(trigger);
-    await user.keyboard('{Escape}');
+    await user.type(name, 'x');
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    await user.type(name, '{Backspace}');
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
 
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getByLabelText(strings.appDisplayNameLabel)).toHaveValue('Edited');
-    expect(trigger).toHaveFocus();
-    expect(onRemintToken).not.toHaveBeenCalled();
+    await user.type(name, 'y');
+    await user.click(screen.getByRole('button', { name: strings.saveAction }));
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+    expect(screen.getByRole('button', { name: strings.savingApp })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+
+    save.resolve();
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
+    // The saved values are the new baseline: the form is clean again.
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('ignores Save while a re-mint is in flight, so the minted token cannot be lost', async () => {
+    const user = userEvent.setup();
+    const pending = new Promise<never>(() => undefined);
+    const { onUpdateApp } = renderForm({ onRemintToken: vi.fn().mockReturnValue(pending) });
+
+    await user.type(screen.getByLabelText(strings.appDisplayNameLabel), '2');
+    await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
+    await user.click(screen.getByRole('button', { name: strings.saveAction }));
+
     expect(onUpdateApp).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('announces a save inside the form only while a token is shown', async () => {
+    const user = userEvent.setup();
+    renderForm();
+
+    await user.type(screen.getByLabelText(strings.appDisplayNameLabel), '2');
+    await user.click(screen.getByRole('button', { name: strings.saveAction }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: strings.saveAction })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
+    await screen.findByText('tk_fresh');
+    await user.type(screen.getByLabelText(strings.appDisplayNameLabel), '3');
+    await user.click(screen.getByRole('button', { name: strings.saveAction }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      strings.appSavedResult({ appId: 'urls4irl' }),
+    );
   });
 
   it('closes when the close button is clicked', async () => {
@@ -140,6 +221,7 @@ describe('EditAppForm', () => {
         .mockRejectedValue(new ApiError({ status: 404, message: 'app not found' })),
     });
 
+    await user.type(screen.getByLabelText(strings.appDisplayNameLabel), '2');
     await user.click(screen.getByRole('button', { name: strings.saveAction }));
 
     expect(await screen.findByText('app not found')).toBeInTheDocument();

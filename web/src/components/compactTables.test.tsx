@@ -1,3 +1,4 @@
+import type { ComponentProps } from 'react';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
@@ -17,6 +18,7 @@ import { strings } from '../strings';
 import { accessibleNameOf, labelInNameViolations } from '../test-labels';
 import { setCompactViewport } from '../test-viewport';
 import { AppIdentities } from './AppIdentities';
+import { AppsTable } from './AppsTable';
 import { DestinationsSection } from './DestinationsSection';
 import { Heartbeats } from './Heartbeats';
 import { RoutesSection } from './RoutesSection';
@@ -1468,5 +1470,116 @@ describe('Owner badge, roomy layout', () => {
     await screen.findByRole('button', { name: `Pause ${ROW_1}` });
     expect(document.querySelectorAll('.owner-badge')).toHaveLength(1);
     expect(document.querySelectorAll('.admin-table__owner-line')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Provisioning tables (Apps, People, Users) on the same primitives as the Delivery tables
+// ---------------------------------------------------------------------------------------
+
+const PROVISIONING_APP = {
+  appId: 'urls4irl',
+  displayName: 'URLs4IRL',
+  description: 'Shared URL app',
+  createdAt: '2026-07-25T10:00:00Z',
+};
+
+function renderApps(overrides: Partial<ComponentProps<typeof AppsTable>> = {}) {
+  const props: ComponentProps<typeof AppsTable> = {
+    apps: [PROVISIONING_APP],
+    subscriberCountByApp: new Map([['urls4irl', 3]]),
+    loading: false,
+    error: null,
+    onUpdateApp: vi.fn().mockResolvedValue(undefined),
+    onRemintToken: vi.fn(),
+    onRemoveApp: vi.fn(),
+    ...overrides,
+  };
+  render(<AppsTable {...props} />);
+  return props;
+}
+
+function expectScrollWrapped() {
+  const table = screen.getByRole('table');
+  expect(table).toHaveClass('admin-table');
+  expect(table.parentElement).toHaveClass('admin-table__scroll');
+}
+
+describe('Provisioning tables, narrow layout', () => {
+  beforeEach(() => {
+    setCompactViewport(true);
+  });
+
+  it('Apps: App (lead, name under it) / Created / actions, one kebab and no inline buttons', async () => {
+    const user = userEvent.setup();
+    const props = renderApps();
+
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([strings.columnApp, strings.columnCreated, 'Actions']);
+    const row = kebab('URLs4IRL').closest('tr') as HTMLElement;
+    const [lead] = within(row).getAllByRole('cell');
+    expect(lead).toHaveClass('admin-table__lead');
+    expect(lead).toHaveTextContent('urls4irl');
+    expect(lead).toHaveTextContent('URLs4IRL');
+    expect(within(row).getAllByRole('cell')).toHaveLength(3);
+    expect(allKebabs()).toHaveLength(1);
+    expect(screen.queryAllByRole('button', { name: /^(Edit|Remove) / })).toHaveLength(0);
+    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+
+    await openMenu({ user, row: 'URLs4IRL' });
+    expect(screen.getAllByRole('menuitem').map((item) => accessibleNameOf(item))).toEqual([
+      'Edit URLs4IRL',
+      'Remove URLs4IRL',
+    ]);
+    await chooseItem({ user, name: 'Remove URLs4IRL' });
+    expect(props.onRemoveApp).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Confirm remove URLs4IRL' }));
+    expect(props.onRemoveApp).toHaveBeenCalledWith({ appId: 'urls4irl' });
+  });
+
+  it('Apps: Edit from the menu opens the dialog', async () => {
+    const user = userEvent.setup();
+    renderApps();
+    await openMenu({ user, row: 'URLs4IRL' });
+    await chooseItem({ user, name: 'Edit URLs4IRL' });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('Apps: closing the Edit dialog returns focus to the row kebab', async () => {
+    const user = userEvent.setup();
+    renderApps();
+    await openMenu({ user, row: 'URLs4IRL' });
+    await chooseItem({ user, name: 'Edit URLs4IRL' });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(kebab('URLs4IRL')).toHaveFocus());
+  });
+
+  it('Apps and People: cancelling a destructive confirm fires nothing and refocuses the kebab', async () => {
+    const user = userEvent.setup();
+    const apps = renderApps();
+    await openMenu({ user, row: 'URLs4IRL' });
+    await chooseItem({ user, name: 'Remove URLs4IRL' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(kebab('URLs4IRL')).toHaveFocus());
+    expect(apps.onRemoveApp).not.toHaveBeenCalled();
+  });
+});
+
+describe('Provisioning tables, roomy layout', () => {
+  it('Apps keeps every column and the inline Edit and Remove buttons, with no kebab', () => {
+    renderApps();
+    expectScrollWrapped();
+    expect(columnTitles()).toEqual([
+      strings.columnAppName,
+      strings.columnAppId,
+      strings.columnAppDescription,
+      strings.columnSubscribers,
+      strings.columnCreated,
+      'Actions',
+    ]);
+    expect(screen.getByRole('button', { name: 'Edit URLs4IRL' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Remove URLs4IRL' })).toBeVisible();
+    expect(allKebabs()).toHaveLength(0);
   });
 });

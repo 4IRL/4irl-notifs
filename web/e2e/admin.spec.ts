@@ -538,12 +538,16 @@ test.describe('admin UI critical flows', () => {
     const trigger = page.getByRole('button', { name: 'Revoke & re-mint', exact: true });
     await trigger.click();
 
-    const dialog = page.getByRole('dialog', { name: 'Revoke and re-mint publisher token?' });
-    await expect(dialog).toBeVisible();
+    // The confirm step lives inside the edit dialog: no second dialog is stacked on it.
+    const dialog = page.getByRole('dialog', { name: 'Edit app urls4irl' });
+    const confirm = dialog.getByRole('button', { name: 'Confirm revoke & re-mint', exact: true });
+    await expect(confirm).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(1);
     await page.keyboard.press('Escape');
 
-    await expect(dialog).toBeHidden();
-    await expect(trigger).toBeVisible();
+    // Escape cancels only the confirm step; the edit dialog stays open.
+    await expect(confirm).toBeHidden();
+    await expect(dialog).toBeVisible();
     await expect(trigger).toBeFocused();
     expect(tokenCalls).toBe(0);
   });
@@ -578,7 +582,9 @@ test.describe('admin UI critical flows', () => {
     });
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Remove URLs4IRL', exact: true }).click();
+    // At 390px Remove lives behind the row's kebab.
+    const menu = await openRowMenu({ page, row: 'URLs4IRL' });
+    await menu.getByRole('menuitem', { name: 'Remove URLs4IRL', exact: true }).click();
 
     const dialog = page.getByRole('dialog', { name: 'Remove app?' });
     await expect(dialog).toBeVisible();

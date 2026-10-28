@@ -10,7 +10,7 @@
          <thead><tr><th class="admin-table__lead">...</th><th class="admin-table__fill">...</th></tr></thead>
          <tbody>
            <tr><td class="admin-table__lead">...</td>...</tr>
-           <tr><td colspan="N" class="admin-table__editor-cell"><div class="admin-table__editor">...</div></td></tr>
+           <tr><td colspan="N" class="destinations__reveal-cell"><div class="destinations__reveal-row">...</div></td></tr>
          </tbody>
        </table>
      </div>
@@ -19,7 +19,7 @@
 
 /* The scrollport. `max-height` is what makes the sticky header useful: with no height
    bound the wrapper would never scroll vertically and the header would pin to nothing.
-   `container-type` lets the inline editor size itself to the visible width (100cqw), so
+   `container-type` lets the pinned reveal row size itself to the visible width (100cqw), so
    it neither widens the max-content table nor needs horizontal scrolling. */
 .admin-table__scroll {
   /* The widest the pinned first column may get (it is as wide as its content up to this).
@@ -143,22 +143,6 @@
   min-width: 0;
   white-space: nowrap;
   overflow-wrap: normal;
-}
-
-/* The inline edit row (and the one-time secret reveal): a full-width cell whose content
-   is pinned to the visible width of the wrapper, so the form wraps normally, never sits
-   under a pinned cell (this row has none) and never needs horizontal scrolling. */
-.admin-table td.admin-table__editor-cell {
-  white-space: normal;
-  padding-inline: 0;
-}
-
-.admin-table__editor {
-  position: sticky;
-  inset-inline-start: 0;
-  box-sizing: border-box;
-  width: 100%;
-  width: 100cqw;
 }
 
 /* The one-time secret reveal row (Destinations): a full-width cell whose content is pinned

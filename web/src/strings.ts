@@ -326,7 +326,6 @@ export const strings = {
   // text (WCAG 2.5.3 Label in Name).
   rowActionTest: 'Test',
   rowActionEdit: 'Edit',
-  rowActionClose: 'Close',
   rowActionDisable: 'Disable',
   rowActionConfirmDisable: 'Confirm disable',
   rowActionEnable: 'Enable',
@@ -373,7 +372,6 @@ export const strings = {
   testNoDelivery: 'No delivery was created.',
   testHttpStatus: ({ code }: { code: number }): string => `HTTP ${code}`,
   editDestination: ({ name }: { name: string }): string => `Edit ${name}`,
-  closeDestination: ({ name }: { name: string }): string => `Close ${name}`,
   disableDestination: ({ name }: { name: string }): string => `Disable ${name}`,
   confirmDisableDestination: ({ name }: { name: string }): string => `Confirm disable ${name}`,
   disablingDestination: 'Disabling…',
@@ -451,7 +449,6 @@ export const strings = {
   addRouteHintEmpty: 'Add a destination first',
   routeRowLabel: ({ id }: { id: number }): string => `route ${id}`,
   editRoute: ({ id }: { id: number }): string => `Edit route ${id}`,
-  closeRoute: ({ id }: { id: number }): string => `Close route ${id}`,
   deleteRoute: ({ id }: { id: number }): string => `Delete route ${id}`,
   confirmDeleteRoute: ({ id }: { id: number }): string => `Confirm delete route ${id}`,
   deletingRoute: 'Deleting…',
@@ -691,9 +688,7 @@ export const strings = {
   addHeartbeatHintError: 'Could not load destinations.',
   addHeartbeatHintEmpty: 'Add a destination first. Checks alert through registered destinations.',
   editHeartbeatNamed: ({ check }: { check: string }): string => `Edit ${check}`,
-  closeHeartbeatNamed: ({ check }: { check: string }): string => `Close ${check}`,
   editHeartbeatTrigger: 'Edit',
-  closeHeartbeatTrigger: 'Close',
   saveHeartbeat: 'Save',
   savingHeartbeat: 'Saving…',
   heartbeatEditingNotice: ({ check }: { check: string }): string =>
