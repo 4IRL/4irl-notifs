@@ -1,14 +1,12 @@
 import { Fragment, useEffect, useRef } from 'react';
 import type { JSX } from 'react';
 
-import type { DestinationSummary, RotateSecretResult } from '../api/deliveryClient';
+import type { DestinationSummary } from '../api/deliveryClient';
 import { useCompactTable } from '../hooks/useCompactTable';
 import { strings } from '../strings';
 import { ConfirmButton } from './ConfirmButton';
 import { hasUnreadableSecrets } from './destinationFields';
-import { formatUtc } from './formatUtc';
-import { EditDestinationForm } from './EditDestinationForm';
-import type { EditDestinationSubmission } from './EditDestinationForm';
+import { formatDateTimeZone } from './formatLocalTime';
 import { OwnerBadge } from './OwnerBadge';
 import { ownerInlineNoteOf, ownerNoteOf } from './ownership';
 import { RowActionsMenu } from './RowActionsMenu';
@@ -37,6 +35,7 @@ export interface SecretRevealState {
 
 interface DestinationsTableProps {
   destinations: DestinationSummary[];
+  /** The destination whose edit dialog is open: its reveal renders in the dialog, not the row. */
   editingName: string | null;
   isBusy: (params: { action: DestinationAction; name: string }) => boolean;
   rowErrors: Record<string, string>;
@@ -44,17 +43,15 @@ interface DestinationsTableProps {
   reveals: Record<string, SecretRevealState>;
   /** Registers a focusable control under a key so the owner can move focus to it. */
   registerControl: (params: { key: string; element: HTMLElement | null }) => void;
-  onToggleEditor: (name: string) => void;
-  onCloseEditor: (name: string) => void;
+  /** Opens the edit dialog for the destination. */
+  onEdit: (name: string) => void;
   onSendTest: (name: string) => void;
   onSetEnabled: (params: { name: string; enabled: boolean }) => void;
   onDelete: (name: string) => void;
   onDismissReveal: (name: string) => void;
-  onSave: (params: { name: string } & EditDestinationSubmission) => Promise<void>;
-  onRotate: (params: { name: string; overlapHours: number }) => Promise<RotateSecretResult>;
 }
 
-// The editor and reveal rows span every column of the layout in use, Actions included:
+// The reveal row spans every column of the layout in use, Actions included:
 // Name, Owner, Type, Target, Status, Actions when roomy; the narrow layout drops Owner.
 const WIDE_COLUMN_COUNT = 6;
 const COMPACT_COLUMN_COUNT = 5;
@@ -135,7 +132,7 @@ function TestResultLine({
   );
 }
 
-function RevealBox({
+export function RevealBox({
   name,
   reveal,
   onDismiss,
@@ -161,7 +158,9 @@ function RevealBox({
       <p className="destinations__secret">{reveal.secret}</p>
       {reveal.previousExpiresAt !== null && (
         <p className="destinations__hint">
-          {strings.revealPreviousValidUntil({ when: formatUtc(reveal.previousExpiresAt) })}
+          {strings.revealPreviousValidUntil({
+            when: formatDateTimeZone({ timestamp: reveal.previousExpiresAt }),
+          })}
         </p>
       )}
       <button type="button" className="destinations__button" onClick={onDismiss}>
@@ -179,14 +178,11 @@ export function DestinationsTable({
   testResults,
   reveals,
   registerControl,
-  onToggleEditor,
-  onCloseEditor,
+  onEdit,
   onSendTest,
   onSetEnabled,
   onDelete,
   onDismissReveal,
-  onSave,
-  onRotate,
 }: DestinationsTableProps): JSX.Element {
   const compact = useCompactTable();
   const columns = compact ? COMPACT_COLUMNS : WIDE_COLUMNS;
@@ -255,7 +251,7 @@ export function DestinationsTable({
 
             // The visible text is the bare verb (the row names the destination); the accessible
             // name keeps the destination. A busy action shows its progress text for both.
-            const labels = destinationActionLabels({ name, editing: isEditing });
+            const labels = destinationActionLabels({ name });
 
             const menuItems: RowMenuItem[] = [
               {
@@ -271,8 +267,7 @@ export function DestinationsTable({
                 id: 'edit',
                 label: labels.edit.visible,
                 ariaLabel: labels.edit.accessible,
-                expanded: isEditing,
-                onSelect: () => onToggleEditor(name),
+                onSelect: () => onEdit(name),
               });
             }
             if (destination.enabled) {
@@ -418,8 +413,8 @@ export function DestinationsTable({
                             type="button"
                             className="destinations__button"
                             aria-label={labels.edit.accessible}
-                            aria-expanded={isEditing}
-                            onClick={() => onToggleEditor(name)}
+                            aria-haspopup="dialog"
+                            onClick={() => onEdit(name)}
                           >
                             {labels.edit.visible}
                           </button>
@@ -485,26 +480,10 @@ export function DestinationsTable({
                     </td>
                   )}
                 </tr>
-                {isEditing && !unreadable && (
+                {reveal !== undefined && !isEditing && (
                   <tr>
-                    <td colSpan={columnCount} className="admin-table__editor-cell">
-                      <div className="admin-table__editor">
-                        <EditDestinationForm
-                          destination={destination}
-                          saving={isBusy({ action: 'save', name })}
-                          rotating={isBusy({ action: 'rotate', name })}
-                          onSave={(submission) => onSave({ name, ...submission })}
-                          onRotate={(overlapHours) => onRotate({ name, overlapHours })}
-                          onClose={() => onCloseEditor(name)}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                )}
-                {reveal !== undefined && (
-                  <tr>
-                    <td colSpan={columnCount} className="admin-table__editor-cell">
-                      <div className="admin-table__editor">
+                    <td colSpan={columnCount} className="destinations__reveal-cell">
+                      <div className="destinations__reveal-row">
                         <RevealBox
                           name={name}
                           reveal={reveal}

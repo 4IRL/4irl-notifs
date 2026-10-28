@@ -357,7 +357,7 @@ describe('Destinations table, narrow layout', () => {
     expect(menu).toHaveTextContent('delete blew up');
   });
 
-  it('Edit opens the inline editor and moves focus into it', async () => {
+  it('Edit opens the dialog and moves focus into it; the menu keeps offering Edit', async () => {
     const user = userEvent.setup();
     renderDestinations(
       buildClient({
@@ -369,15 +369,9 @@ describe('Destinations table, narrow layout', () => {
     await openMenu({ user, row: 'family_ntfy' });
     await chooseItem({ user, name: 'Edit family_ntfy' });
 
-    const editor = document.querySelector('.admin-table__editor') as HTMLElement;
-    expect(editor).not.toBeNull();
-    expect(editor).toContainElement(document.activeElement as HTMLElement);
-    // Reopening the menu offers Close.
-    await openMenu({ user, row: 'family_ntfy' });
-    expect(screen.getByRole('menuitem', { name: 'Close family_ntfy' })).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
+    const dialog = screen.getByRole('dialog', { name: 'Edit destination family_ntfy' });
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    expect(dialog.closest('tr')).toBeNull();
   });
 });
 
@@ -1029,12 +1023,10 @@ describe('Row action labels, roomy layout', () => {
     ]);
     expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
 
-    // The open editor turns Edit into Close.
+    // The open dialog leaves the row's Edit label alone; closing returns to the row.
     await user.click(screen.getByRole('button', { name: 'Edit family_ntfy' }));
-    const editing = rowButtons(rowOfButton('Close family_ntfy'));
-    expect(editing.visible[1]).toBe('Close');
-    expect(editing.names[1]).toBe('Close family_ntfy');
-    await user.click(screen.getByRole('button', { name: 'Close family_ntfy' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
 
     // Each confirm dialog: the verb is still short and the name still carries the destination.
     for (const verb of ['Disable', 'Delete']) {
@@ -1348,7 +1340,7 @@ describe('Owner badge, narrow layout', () => {
     });
   });
 
-  it('the Destinations editor row spans every column of the narrow table', async () => {
+  it('the Destinations edit dialog adds no editor row to the narrow table', async () => {
     const user = userEvent.setup();
     renderDestinations(
       buildClient({
@@ -1358,8 +1350,8 @@ describe('Owner badge, narrow layout', () => {
     await screen.findByRole('button', { name: 'Actions for row_a' });
     await openMenu({ user, row: 'row_a' });
     await chooseItem({ user, name: 'Edit row_a' });
-    const cell = document.querySelector('.admin-table__editor-cell') as HTMLTableCellElement;
-    expect(cell.colSpan).toBe(columnTitles().length);
+    expect(screen.getByRole('dialog', { name: 'Edit destination row_a' })).toBeInTheDocument();
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(columnTitles()).toHaveLength(5);
   });
 
@@ -1438,10 +1430,8 @@ describe('Owner badge, roomy layout', () => {
     });
   });
 
-  it('editor rows span every column of the roomy tables, Owner included', async () => {
+  it('Destinations, Routes and Heartbeats all edit in dialogs without an extra table row', async () => {
     const user = userEvent.setup();
-    const editorColSpan = (): number =>
-      (document.querySelector('.admin-table__editor-cell') as HTMLTableCellElement).colSpan;
 
     const destinations = renderDestinations(
       buildClient({
@@ -1449,7 +1439,8 @@ describe('Owner badge, roomy layout', () => {
       }),
     );
     await user.click(await screen.findByRole('button', { name: 'Edit row_a' }));
-    expect(editorColSpan()).toBe(columnTitles().length);
+    expect(screen.getByRole('dialog', { name: 'Edit destination row_a' })).toBeInTheDocument();
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(columnTitles()).toHaveLength(6);
     destinations.unmount();
 

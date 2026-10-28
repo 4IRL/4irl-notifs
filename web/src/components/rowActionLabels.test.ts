@@ -12,7 +12,7 @@ function violations(labels: object): string[] {
 
 describe('destinationActionLabels', () => {
   it('shows the bare verb and keeps the destination in the accessible name', () => {
-    const labels = destinationActionLabels({ name: 'hook1', editing: false });
+    const labels = destinationActionLabels({ name: 'hook1' });
 
     expect(Object.fromEntries(Object.entries(labels).map(([key, l]) => [key, l.visible]))).toEqual({
       test: 'Test',
@@ -31,15 +31,8 @@ describe('destinationActionLabels', () => {
     expect(labels.cancelDisable.accessible).toBe('Cancel Disable hook1');
   });
 
-  it('reads Close while the editor is open', () => {
-    const { edit } = destinationActionLabels({ name: 'hook1', editing: true });
-
-    expect(edit).toEqual({ visible: 'Close', accessible: 'Close hook1' });
-  });
-
   it('keeps every visible text inside its accessible name', () => {
-    expect(violations(destinationActionLabels({ name: 'hook1', editing: false }))).toEqual([]);
-    expect(violations(destinationActionLabels({ name: 'hook1', editing: true }))).toEqual([]);
+    expect(violations(destinationActionLabels({ name: 'hook1' }))).toEqual([]);
   });
 });
 

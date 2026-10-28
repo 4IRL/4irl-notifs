@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 
 import { ApiError } from '../api/client';
@@ -13,9 +13,13 @@ import { useLatestRequest } from '../hooks/useLatestRequest';
 import { strings } from '../strings';
 import { AddDestinationForm } from './AddDestinationForm';
 import type { AddDestinationSubmission } from './AddDestinationForm';
-import { DestinationsTable } from './DestinationsTable';
+import { hasUnreadableSecrets } from './destinationFields';
+import { DestinationsTable, RevealBox } from './DestinationsTable';
 import type { DestinationAction, SecretRevealState, TestResult } from './DestinationsTable';
+import { EditDestinationForm } from './EditDestinationForm';
 import type { EditDestinationSubmission } from './EditDestinationForm';
+import { EditModal } from './EditModal';
+import type { ConfirmStep } from './EditModal';
 import type { DestinationsLoadState } from './RoutesSection';
 import { messageOf, withoutKey } from './rowState';
 import './DestinationsTable.css';
@@ -30,6 +34,15 @@ interface DestinationsSectionProps {
 
 const HEADING_KEY = 'heading';
 const ADD_KEY = 'add';
+const MAX_REFRESH_ATTEMPTS = 3;
+// Stamped on the edit dialog so a focused element inside it resolves to its destination row.
+const ROW_ID_ATTRIBUTE = 'data-destination-name';
+
+/** A rotated secret waiting for the edit dialog to close before it moves into the row. */
+interface PendingReveal {
+  name: string;
+  reveal: SecretRevealState;
+}
 
 /**
  * The Destinations section of the Delivery tab. It is mounted lazily by the
@@ -51,19 +64,40 @@ export function DestinationsSection({
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
   const [reveals, setReveals] = useState<Record<string, SecretRevealState>>({});
   const [editingName, setEditingName] = useState<string | null>(null);
+  // The edited destination as it was when the dialog opened: titles the dialog and renders the
+  // form after a refresh drops the row.
+  const [editSnapshot, setEditSnapshot] = useState<DestinationSummary | null>(null);
+  const [formDirty, setFormDirty] = useState(false);
+  const [confirmStep, setConfirmStep] = useState<ConfirmStep | null>(null);
+  const [pendingReveal, setPendingReveal] = useState<PendingReveal | null>(null);
+  // True when the dialog that is closing must not restore focus (a live reveal takes it).
+  const [skipReturnFocus, setSkipReturnFocus] = useState(false);
   const [adding, setAdding] = useState(false);
+  // Mirrors of state for async callbacks that outlive the render they started in.
+  const editingNameRef = useRef<string | null>(null);
+  const destinationsRef = useRef<DestinationSummary[]>([]);
+  const revealsRef = useRef<Record<string, SecretRevealState>>({});
+  const pendingRevealRef = useRef<PendingReveal | null>(null);
+  const rotatedInDialogRef = useRef(false);
+  // The edit dialog's focus targets: the Edit button or kebab to return to, the field to focus
+  // first, and the heading to fall back to.
+  const editReturnRef = useRef<HTMLElement | null>(null);
+  const firstEditFieldRef = useRef<HTMLInputElement | null>(null);
+  const headingRef = useRef<HTMLElement | null>(null);
 
-  const { registerControl, requestFocus } = useFocusRegistry();
+  const { registerControl, requestFocus, getControl } = useFocusRegistry();
   const { isBusy: isKeyBusy, exclusive: exclusiveByKey } = useExclusive<string>();
   const track = useLatestRequest();
 
   const refreshDestinations = useCallback(
-    (): Promise<void> =>
+    /** Resolves true when this request's outcome was applied, false when a newer one superseded it. */
+    (): Promise<boolean> =>
       track(client.listDestinations()).then((outcome) => {
         if (outcome.stale) {
-          return;
+          return false;
         }
         if (outcome.ok) {
+          destinationsRef.current = outcome.value;
           setDestinations(outcome.value);
           setError(null);
         } else {
@@ -74,9 +108,43 @@ export function DestinationsSection({
           );
         }
         setLoading(false);
+        return true;
       }),
     [client, track],
   );
+
+  /** Updates the reveals through the ref so async callers always start from the latest. */
+  const updateReveals = useCallback(
+    (update: (current: Record<string, SecretRevealState>) => Record<string, SecretRevealState>) => {
+      revealsRef.current = update(revealsRef.current);
+      setReveals(revealsRef.current);
+    },
+    [],
+  );
+
+  const queueReveal = useCallback((next: PendingReveal | null) => {
+    pendingRevealRef.current = next;
+    setPendingReveal(next);
+  }, []);
+
+  /** Moves a queued rotate reveal into the reveals (copy and clear are one step). */
+  const flushPendingReveal = useCallback(() => {
+    const queued = pendingRevealRef.current;
+    if (queued === null) {
+      return;
+    }
+    updateReveals((current) => ({ ...current, [queued.name]: queued.reveal }));
+    queueReveal(null);
+  }, [queueReveal, updateReveals]);
+
+  // Moves a rotated secret into its row once the dialog has closed. This must be a post-commit
+  // effect: the row's reveal mounts (and takes focus) only after Modal's cleanup has lifted
+  // `inert` from `#root`.
+  useEffect(() => {
+    if (editingName === null && pendingReveal !== null) {
+      flushPendingReveal();
+    }
+  }, [editingName, pendingReveal, flushPendingReveal]);
 
   useEffect(() => {
     void refreshDestinations();
@@ -117,10 +185,12 @@ export function DestinationsSection({
   }
 
   function forgetDestination(name: string) {
-    setReveals((current) => withoutKey({ record: current, key: name }));
+    updateReveals((current) => withoutKey({ record: current, key: name }));
     setTestResults((current) => withoutKey({ record: current, key: name }));
     setRowErrors((current) => withoutKey({ record: current, key: name }));
-    setEditingName((current) => (current === name ? null : current));
+    if (editingNameRef.current === name) {
+      setEditor(null);
+    }
   }
 
   function handleSendTest(name: string) {
@@ -203,7 +273,7 @@ export function DestinationsSection({
   async function handleAdd({ params, generatedSecret }: AddDestinationSubmission): Promise<void> {
     await client.createDestination(params);
     if (generatedSecret !== null) {
-      setReveals((current) => ({
+      updateReveals((current) => ({
         ...current,
         [params.name]: { secret: generatedSecret, previousExpiresAt: null, source: 'add' },
       }));
@@ -226,12 +296,23 @@ export function DestinationsSection({
       name,
       work: async () => {
         await client.updateDestination({ name, config, secrets });
-        await refreshDestinations();
+        // A superseded refresh never updates `destinationsRef`; re-read (a few times at most) so
+        // the close gate below judges the newest list, not a stale one.
+        for (let attempt = 0; attempt < MAX_REFRESH_ATTEMPTS; attempt += 1) {
+          if (await refreshDestinations()) {
+            break;
+          }
+        }
       },
     });
-    setEditingName(null);
-    setReveals((current) => withoutKey({ record: current, key: name }));
-    requestFocus(`edit:${name}`);
+    // Close only the dialog this save came from, and only while its destination still exists.
+    // Focus return belongs to the dialog's returnFocusRef; a rotate reveal is not cleared.
+    if (
+      editingNameRef.current === name &&
+      destinationsRef.current.some((destination) => destination.name === name)
+    ) {
+      setEditor(null);
+    }
   }
 
   function handleRotate({
@@ -249,42 +330,111 @@ export function DestinationsSection({
         // Reload through the tracked refresh so the newest response wins: a
         // stale in-flight list response can no longer revert the rotation.
         await refreshDestinations();
-        setReveals((current) => ({
-          ...current,
-          [name]: {
+        // Queued, not shown: the form's `onRotated` decides whether the dialog closes first.
+        queueReveal({
+          name,
+          reveal: {
             secret: result.signingSecret,
             previousExpiresAt: result.destination.config.previous_secret_expires_at ?? null,
             source: 'rotate',
           },
-        }));
+        });
         return result;
       },
     });
   }
 
-  function closeEditor(name: string) {
-    setEditingName(null);
-    setReveals((current) => withoutKey({ record: current, key: name }));
-    requestFocus(`edit:${name}`);
+  /**
+   * Opens the editor for `name` (or closes it with null) and resets every per-dialog flag. On a
+   * close it decides, from the state at that moment, whether the dialog may restore focus: not
+   * when a rotate reveal is live (or queued) for the destination, which takes focus itself.
+   */
+  function setEditor(name: string | null) {
+    if (name === null) {
+      const closing = editingNameRef.current;
+      const liveReveal =
+        closing !== null &&
+        (revealsRef.current[closing] !== undefined || pendingRevealRef.current?.name === closing);
+      setSkipReturnFocus(rotatedInDialogRef.current && liveReveal);
+    } else {
+      setSkipReturnFocus(false);
+    }
+    editingNameRef.current = name;
+    rotatedInDialogRef.current = false;
+    setEditingName(name);
+    setFormDirty(false);
+    setConfirmStep(null);
+    if (name === null) {
+      setEditSnapshot(null);
+    }
   }
 
-  function toggleEditor(name: string) {
-    if (editingName === name) {
-      closeEditor(name);
+  function openEditor(name: string) {
+    const destination = destinations.find((candidate) => candidate.name === name);
+    if (destination === undefined || hasUnreadableSecrets(destination.secrets)) {
       return;
     }
-    if (editingName !== null) {
-      // Opening another editor closes the current one, clearing its reveal.
-      const previous = editingName;
-      setReveals((current) => withoutKey({ record: current, key: previous }));
+    // One editor at a time across add and edit.
+    setAdding(false);
+    editReturnRef.current = getControl(`edit:${name}`);
+    setEditor(name);
+    setEditSnapshot(destination);
+  }
+
+  function handleRotated({ name, dirty }: { name: string; dirty: boolean }) {
+    if (editingNameRef.current !== name) {
+      flushPendingReveal();
+      return;
     }
-    setEditingName(name);
+    rotatedInDialogRef.current = true;
+    if (dirty) {
+      // Typed edits stay under the guard; the secret shows inside the dialog meanwhile.
+      flushPendingReveal();
+    } else {
+      // The post-close effect moves the queued reveal into the row.
+      setEditor(null);
+    }
+  }
+
+  function handleRequestConfirm(step: ConfirmStep) {
+    setConfirmStep({
+      ...step,
+      onConfirm: () => {
+        setConfirmStep(null);
+        step.onConfirm();
+      },
+      onCancel: () => {
+        setConfirmStep(null);
+        step.onCancel();
+      },
+    });
   }
 
   function dismissReveal(name: string) {
-    setReveals((current) => withoutKey({ record: current, key: name }));
-    requestFocus(`first:${name}`);
+    updateReveals((current) => withoutKey({ record: current, key: name }));
+    if (editingNameRef.current === name) {
+      // The in-dialog reveal is gone; registry targets sit under the inert `#root`.
+      firstEditFieldRef.current?.focus();
+      return;
+    }
+    requestFocus(getControl(`edit:${name}`) === null ? `first:${name}` : `edit:${name}`);
   }
+
+  // The edited destination: live while it exists, else the snapshot taken at open (row is gone).
+  const liveEditing = destinations.find((candidate) => candidate.name === editingName);
+  const editingDestination = editingName === null ? null : (liveEditing ?? editSnapshot);
+  // Only a successful list can say the row is gone: a failed reload empties `destinations` too.
+  const rowGone =
+    !loading &&
+    error === null &&
+    editingName !== null &&
+    liveEditing === undefined &&
+    editSnapshot !== null;
+  const editingReveal = editingName === null ? undefined : reveals[editingName];
+  const editBusy =
+    editingName !== null &&
+    (isBusy({ action: 'save', name: editingName }) ||
+      isBusy({ action: 'rotate', name: editingName }));
 
   return (
     <section className="destinations" aria-labelledby="destinations-heading">
@@ -292,7 +442,10 @@ export function DestinationsSection({
         <h2
           id="destinations-heading"
           tabIndex={-1}
-          ref={(element) => registerControl({ key: HEADING_KEY, element })}
+          ref={(element) => {
+            headingRef.current = element;
+            registerControl({ key: HEADING_KEY, element });
+          }}
         >
           {strings.destinationsHeading}
         </h2>
@@ -340,16 +493,64 @@ export function DestinationsSection({
           testResults={testResults}
           reveals={reveals}
           registerControl={registerControl}
-          onToggleEditor={toggleEditor}
-          onCloseEditor={closeEditor}
+          onEdit={openEditor}
           onSendTest={handleSendTest}
           onSetEnabled={handleSetEnabled}
           onDelete={handleDelete}
           onDismissReveal={dismissReveal}
-          onSave={handleSave}
-          onRotate={handleRotate}
         />
       )}
+      <EditModal
+        open={editingName !== null}
+        title={
+          editingDestination === null
+            ? ''
+            : strings.editDestinationNamed({ name: editingDestination.name })
+        }
+        onClose={() => setEditor(null)}
+        dirty={formDirty}
+        busy={editBusy}
+        returnFocusRef={editReturnRef}
+        fallbackFocusRef={headingRef}
+        initialFocusRef={firstEditFieldRef}
+        confirmStep={confirmStep}
+        rowGone={rowGone}
+        restoreFocus={!skipReturnFocus}
+        ownerRow={
+          editingName === null ? undefined : { attribute: ROW_ID_ATTRIBUTE, id: editingName }
+        }
+      >
+        {({ requestClose }) =>
+          editingDestination === null ? null : (
+            <>
+              {editingReveal !== undefined && (
+                <RevealBox
+                  name={editingDestination.name}
+                  reveal={editingReveal}
+                  onDismiss={() => dismissReveal(editingDestination.name)}
+                />
+              )}
+              <EditDestinationForm
+                key={editingDestination.name}
+                destination={editingDestination}
+                saving={isBusy({ action: 'save', name: editingDestination.name })}
+                rotating={isBusy({ action: 'rotate', name: editingDestination.name })}
+                onSave={(submission) =>
+                  handleSave({ name: editingDestination.name, ...submission })
+                }
+                onRotate={(overlapHours) =>
+                  handleRotate({ name: editingDestination.name, overlapHours })
+                }
+                onClose={requestClose}
+                onRequestConfirm={handleRequestConfirm}
+                onDirtyChange={setFormDirty}
+                onRotated={({ dirty }) => handleRotated({ name: editingDestination.name, dirty })}
+                firstFieldRef={firstEditFieldRef}
+              />
+            </>
+          )
+        }
+      </EditModal>
     </section>
   );
 }

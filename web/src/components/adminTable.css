@@ -161,6 +161,22 @@
   width: 100cqw;
 }
 
+/* The one-time secret reveal row (Destinations): a full-width cell whose content is pinned
+   to the visible width of the wrapper, so the text wraps normally, never sits under a
+   pinned cell (this row has none) and never needs horizontal scrolling. */
+.admin-table td.destinations__reveal-cell {
+  white-space: normal;
+  padding-inline: 0;
+}
+
+.destinations__reveal-row {
+  position: sticky;
+  inset-inline-start: 0;
+  box-sizing: border-box;
+  width: 100%;
+  width: 100cqw;
+}
+
 /* The kebab column (narrow layout only; see RowActionsMenu): a narrow Actions column pinned
    to the end edge of the wrapper, opaque, so the row menu is always reachable and never
    covered. Its cells sit below the pinned titles (z-index 2); its header cell is the corner,
@@ -191,6 +207,18 @@
 .admin-table__owner-line {
   display: block;
   margin-top: 0.25rem;
+}
+
+/* A secondary line under the identifying value of a lead cell (an app's display name, a person's
+   hash, a user's app chips and topic patterns). Its own block line; text may wrap here so a long
+   list never widens the nowrap table. */
+.admin-table__sub {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  font-weight: normal;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* The narrow layout (the same breakpoint as `useCompactTable`, which swaps each row's inline
