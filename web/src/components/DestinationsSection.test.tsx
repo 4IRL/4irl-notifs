@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client';
 import type { DeliveryApiClient, DestinationSummary } from '../api/deliveryClient';
 import { strings } from '../strings';
+import { useTimeZone } from '../test-timezone';
 import { DestinationsSection } from './DestinationsSection';
 
 afterEach(() => {
@@ -485,23 +486,6 @@ describe('owner column', () => {
     expect(dialog.querySelector('.modal__notice')).toBeNull();
   });
 
-  it('keeps an open editor row spanning the whole table', async () => {
-    const user = userEvent.setup();
-    await renderOwned();
-
-    await user.click(button('Edit chores4irl_hook'));
-
-    const table = screen.getByRole('table');
-    const headerCount = within(table).getAllByRole('columnheader').length;
-    const editorCell = screen
-      .getByLabelText(strings.destTopicLabel, { exact: false })
-      .closest('td');
-    expect(editorCell).toHaveAttribute('colspan', String(headerCount));
-    // The form sits in the pinned wrapper, so it fits the scroll wrapper and wraps normally.
-    expect(editorCell).toHaveClass('admin-table__editor-cell');
-    expect(editorCell?.querySelector('.admin-table__editor')).not.toBeNull();
-  });
-
   it('pins the Name column in the header and in every row, never the Actions cell', async () => {
     await renderOwned();
 
@@ -683,7 +667,7 @@ describe('add destination', () => {
 });
 
 describe('edit destination', () => {
-  it('prefills config, focuses the first field and keeps one editor open at a time', async () => {
+  it('opens a dialog with the config prefilled and the first field focused', async () => {
     const user = userEvent.setup();
     const client = buildClient({
       listDestinations: vi
@@ -695,17 +679,102 @@ describe('edit destination', () => {
     });
     renderSection(client);
 
-    await user.click(await screen.findByRole('button', { name: 'Edit a_one' }));
-    const topic = screen.getByLabelText(strings.destTopicLabel);
+    const trigger = await screen.findByRole('button', { name: 'Edit a_one' });
+    expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+    await user.click(trigger);
+
+    const dialog = screen.getByRole('dialog', {
+      name: strings.editDestinationNamed({ name: 'a_one' }),
+    });
+    expect(dialog).toHaveAttribute('data-owner-row-attribute', 'data-destination-name');
+    expect(dialog).toHaveAttribute('data-owner-row-id', 'a_one');
+    const topic = within(dialog).getByLabelText(strings.destTopicLabel);
     expect(topic).toHaveValue('topic_one');
     expect(topic).toHaveFocus();
-    expect(button('Close a_one')).toHaveAttribute('aria-expanded', 'true');
-
-    await user.click(button('Edit b_two'));
-
+    // The row no longer grows an inline editor.
     expect(screen.getAllByLabelText(strings.destTopicLabel)).toHaveLength(1);
-    expect(screen.getByLabelText(strings.destTopicLabel)).toHaveValue('topic_two');
-    expect(button('Edit a_one')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('dialog').closest('tr')).toBeNull();
+  });
+
+  it('Close returns focus to the Edit trigger without a prompt when nothing changed', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildDestination({ name: 'ops' })]),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit ops' }));
+    // The dialog's X shares the form Close button's name; the form's is the second.
+    await user.click(
+      within(screen.getByRole('dialog')).getAllByRole('button', {
+        name: strings.closeEditAction,
+      })[1],
+    );
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(button('Edit ops')).toHaveFocus();
+  });
+
+  it('asks before discarding typed edits, and treats a reverted edit as clean', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDestinations: vi
+        .fn()
+        .mockResolvedValue([buildDestination({ name: 'ops', config: { topic: 'old_topic' } })]),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit ops' }));
+    const topic = screen.getByLabelText(strings.destTopicLabel);
+    await user.type(topic, 'x');
+    await user.keyboard('{Escape}');
+
+    expect(screen.getByText(strings.discardChangesMessage)).toBeInTheDocument();
+    await user.click(button(strings.keepEditing));
+    expect(topic).toHaveValue('old_topicx');
+
+    // Reverting to the baseline makes the form clean again: Escape closes with no prompt.
+    await user.type(topic, '{Backspace}');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(button('Edit ops')).toHaveFocus();
+    expect(client.updateDestination).not.toHaveBeenCalled();
+  });
+
+  it('discards typed edits on Discard changes', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildDestination({ name: 'ops' })]),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit ops' }));
+    await user.type(screen.getByLabelText(strings.destTopicLabel), '_x');
+    await user.keyboard('{Escape}');
+    await user.click(button(strings.discardChanges));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(client.updateDestination).not.toHaveBeenCalled();
+    expect(button('Edit ops')).toHaveFocus();
+  });
+
+  it('shows a notice and disables the form when a refresh removes the edited row', async () => {
+    const user = userEvent.setup();
+    const listDestinations = vi
+      .fn()
+      .mockResolvedValueOnce([buildDestination({ name: 'ops' }), buildDestination({ name: 'zz' })])
+      .mockResolvedValue([buildDestination({ name: 'zz', enabled: false })]);
+    const client = buildClient({ listDestinations });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit ops' }));
+    await user.click(button('Disable zz'));
+    await user.click(button('Confirm disable zz'));
+
+    expect(await screen.findByText(strings.editRowGone)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('dialog')).getByRole('button', { name: strings.closeAction }),
+    ).toBeInTheDocument();
   });
 
   it('closes without a request on an untouched Save and focuses the Edit trigger', async () => {
@@ -811,6 +880,33 @@ describe('edit destination', () => {
   });
 });
 
+describe('rotate signing secret in a non-UTC zone', () => {
+  useTimeZone('Asia/Kolkata');
+
+  it('words the previous-secret expiry in the viewer zone with its abbreviation', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+      rotateSecret: vi.fn().mockResolvedValue({
+        destination: buildWebhook({
+          config: { previous_secret_expires_at: '2099-01-02T03:04:05Z' },
+        }),
+        signingSecret: 'NEW_SECRET_VALUE',
+      }),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    await user.click(button('Rotate chores_hook'));
+    await user.click(button('Confirm rotate chores_hook'));
+
+    await screen.findByText('NEW_SECRET_VALUE');
+    expect(
+      screen.getByText('Previous secret valid until 2099-01-02 08:34 GMT+5:30.'),
+    ).toBeInTheDocument();
+  });
+});
+
 describe('rotate signing secret', () => {
   function rotated(overrides: Partial<DestinationSummary> = {}): DestinationSummary {
     return buildWebhook({
@@ -843,7 +939,7 @@ describe('rotate signing secret', () => {
     ).toBeInTheDocument();
   });
 
-  it('rotate dialog names the action and destination; Escape closes only the dialog', async () => {
+  it('rotate confirms inside the edit dialog (no second dialog); Escape cancels only the confirm step', async () => {
     const user = userEvent.setup();
     const client = buildClient({
       listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
@@ -856,14 +952,13 @@ describe('rotate signing secret', () => {
     const trigger = button('Rotate chores_hook');
     await user.click(trigger);
 
-    const dialog = within(
-      screen.getByRole('dialog', { name: strings.rotateDestinationDialogTitle }),
-    );
-    expect(dialog.getByText(strings.dialogItemDestination)).toBeInTheDocument();
-    expect(dialog.getByText('chores_hook')).toBeInTheDocument();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByRole('alert')).toHaveTextContent('Confirm rotate chores_hook');
+    expect(button('Confirm rotate chores_hook')).toBeInTheDocument();
 
     await user.keyboard('{Escape}');
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.queryByText(strings.discardChangesMessage)).not.toBeInTheDocument();
     expect(screen.getByLabelText(strings.destWebhookUrlLabel)).toHaveValue(
       'https://new.example/hook',
     );
@@ -872,7 +967,7 @@ describe('rotate signing secret', () => {
     expect(client.updateDestination).not.toHaveBeenCalled();
   });
 
-  it('Cancel closes only the dialog, keeps the editor values and returns focus to the trigger', async () => {
+  it('Cancel closes only the confirm step, keeps the editor values and returns focus to the trigger', async () => {
     const user = userEvent.setup();
     const client = buildClient({
       listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
@@ -887,13 +982,35 @@ describe('rotate signing secret', () => {
       within(screen.getByRole('dialog')).getByRole('button', { name: strings.cancelAction }),
     );
 
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
     expect(screen.getByLabelText(strings.destWebhookUrlLabel)).toHaveValue(
       'https://new.example/hook',
     );
     expect(trigger).toHaveFocus();
     expect(client.rotateSecret).not.toHaveBeenCalled();
     expect(client.updateDestination).not.toHaveBeenCalled();
+  });
+
+  it('returns focus to the Rotate button after Confirm and after a failed rotate', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<never>();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+      rotateSecret: vi.fn().mockReturnValue(pending.promise),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    await user.click(button('Rotate chores_hook'));
+    await user.click(button('Confirm rotate chores_hook'));
+    // In flight: the busy control keeps focus, and the dialog cannot be dismissed.
+    expect(button(strings.rotatingDestination)).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    pending.reject(new ApiError({ status: 500, message: 'boom' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('boom');
+    expect(button('Rotate chores_hook')).toHaveFocus();
   });
 
   it('sends the chosen overlap', async () => {
@@ -926,7 +1043,9 @@ describe('rotate signing secret', () => {
     await user.click(button('Rotate chores_hook'));
 
     expect(
-      within(screen.getByRole('dialog')).getByText(strings.rotateInvalidatesPrevious),
+      within(screen.getByRole('dialog')).getByText(strings.rotateInvalidatesPrevious, {
+        exact: false,
+      }),
     ).toBeInTheDocument();
   });
 
@@ -1005,8 +1124,8 @@ describe('rotate signing secret', () => {
     await screen.findByRole('button', { name: 'Enable zz_other' });
     expect(screen.getByText('NEW_SECRET_VALUE')).toBeInTheDocument();
 
-    // Closing the editor clears it; it does not come back from list data.
-    await user.click(button('Close chores_hook'));
+    // Only dismissing clears it; it does not come back from list data afterwards.
+    await user.click(button(strings.revealDismiss));
     expect(screen.queryByText('NEW_SECRET_VALUE')).not.toBeInTheDocument();
   });
 
@@ -1087,8 +1206,187 @@ describe('rotate signing secret', () => {
     staleList.resolve([buildWebhook()]);
     await staleList.promise;
 
+    // The clean rotate closed the dialog; reopening and rotating again sees the refreshed config.
+    await user.click(button('Edit chores_hook'));
     await user.click(button('Rotate chores_hook'));
-    expect(screen.getByText(strings.rotateInvalidatesPrevious)).toBeInTheDocument();
+    expect(
+      screen.getByText(strings.rotateInvalidatesPrevious, { exact: false }),
+    ).toBeInTheDocument();
+  });
+
+  it('a clean rotate closes the dialog and shows the reveal in its row, focused, until dismissed', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+      rotateSecret: vi
+        .fn()
+        .mockResolvedValue({ destination: rotated(), signingSecret: 'NEW_SECRET_VALUE' }),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    await user.click(button('Rotate chores_hook'));
+    await user.click(button('Confirm rotate chores_hook'));
+
+    const secret = await screen.findByText('NEW_SECRET_VALUE');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // The reveal's own mount-time focus is the last focus write (restoreFocus was skipped).
+    const container = secret.closest('[tabindex="-1"]');
+    expect(container).toHaveFocus();
+    const cell = secret.closest('td');
+    expect(cell).toHaveClass('destinations__reveal-cell');
+    expect(secret.closest('.destinations__reveal-row')).not.toBeNull();
+    const headerCount = within(screen.getByRole('table')).getAllByRole('columnheader').length;
+    expect(cell).toHaveAttribute('colspan', String(headerCount));
+
+    // Dismissing with the dialog closed returns focus to the row's Edit button.
+    await user.click(button(strings.revealDismiss));
+    expect(screen.queryByText('NEW_SECRET_VALUE')).not.toBeInTheDocument();
+    await waitFor(() => expect(button('Edit chores_hook')).toHaveFocus());
+  });
+
+  it('a dirty rotate keeps the dialog open with the typed values and the reveal inside it', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+      rotateSecret: vi
+        .fn()
+        .mockResolvedValue({ destination: rotated(), signingSecret: 'NEW_SECRET_VALUE' }),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    await user.type(screen.getByLabelText(strings.destWebhookUrlLabel), 'https://new.example/hook');
+    await user.click(button('Rotate chores_hook'));
+    await user.click(button('Confirm rotate chores_hook'));
+
+    const dialog = screen.getByRole('dialog');
+    const secret = await within(dialog).findByText('NEW_SECRET_VALUE');
+    expect(screen.getByLabelText(strings.destWebhookUrlLabel)).toHaveValue(
+      'https://new.example/hook',
+    );
+    // One render site: the table has no reveal row while the dialog shows the destination.
+    expect(screen.getAllByText('NEW_SECRET_VALUE')).toHaveLength(1);
+    expect(document.querySelector('.destinations__reveal-cell')).toBeNull();
+    expect(secret.closest('[tabindex="-1"]')).toHaveFocus();
+
+    // Dismissing inside the dialog moves focus to the first field; a later close restores the Edit button.
+    await user.click(within(dialog).getByRole('button', { name: strings.revealDismiss }));
+    expect(screen.getByLabelText(strings.destWebhookUrlLabel)).toHaveFocus();
+    await user.keyboard('{Escape}');
+    await user.click(button(strings.discardChanges));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(button('Edit chores_hook')).toHaveFocus();
+  });
+
+  it('a dirty rotate then Discard moves the undismissed reveal into the row, focused, and it survives', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+      rotateSecret: vi
+        .fn()
+        .mockResolvedValue({ destination: rotated(), signingSecret: 'NEW_SECRET_VALUE' }),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    await user.type(screen.getByLabelText(strings.destWebhookUrlLabel), 'https://new.example/hook');
+    await user.click(button('Rotate chores_hook'));
+    await user.click(button('Confirm rotate chores_hook'));
+    await within(screen.getByRole('dialog')).findByText('NEW_SECRET_VALUE');
+
+    await user.keyboard('{Escape}');
+    await user.click(button(strings.discardChanges));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    const secret = screen.getByText('NEW_SECRET_VALUE');
+    expect(secret.closest('td')).toHaveClass('destinations__reveal-cell');
+    expect(secret.closest('[tabindex="-1"]')).toHaveFocus();
+  });
+
+  it('a dirty rotate then Save moves the undismissed reveal into the row', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+      rotateSecret: vi
+        .fn()
+        .mockResolvedValue({ destination: rotated(), signingSecret: 'NEW_SECRET_VALUE' }),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    await user.type(screen.getByLabelText(strings.destWebhookUrlLabel), 'https://new.example/hook');
+    await user.click(button('Rotate chores_hook'));
+    await user.click(button('Confirm rotate chores_hook'));
+    await within(screen.getByRole('dialog')).findByText('NEW_SECRET_VALUE');
+
+    await user.click(button('Save chores_hook'));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByText('NEW_SECRET_VALUE').closest('td')).toHaveClass(
+      'destinations__reveal-cell',
+    );
+  });
+
+  it('stays open when a secret is typed while the rotate is still pending', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<{ destination: DestinationSummary; signingSecret: string }>();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+      rotateSecret: vi.fn().mockReturnValue(pending.promise),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    await user.click(button('Rotate chores_hook'));
+    await user.click(button('Confirm rotate chores_hook'));
+    await user.type(screen.getByLabelText(strings.destWebhookUrlLabel), 'https://new.example/hook');
+
+    pending.resolve({ destination: rotated(), signingSecret: 'NEW_SECRET_VALUE' });
+
+    const dialog = screen.getByRole('dialog');
+    expect(await within(dialog).findByText('NEW_SECRET_VALUE')).toBeInTheDocument();
+    expect(screen.getByLabelText(strings.destWebhookUrlLabel)).toHaveValue(
+      'https://new.example/hook',
+    );
+  });
+
+  it('ignores Save while a rotate is in flight', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<never>();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+      rotateSecret: vi.fn().mockReturnValue(pending.promise),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    await user.type(screen.getByLabelText(strings.destWebhookUrlLabel), 'https://new.example/hook');
+    await user.click(button('Rotate chores_hook'));
+    await user.click(button('Confirm rotate chores_hook'));
+    await user.click(button('Save chores_hook'));
+
+    expect(client.updateDestination).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('ignores Rotate while a save is in flight', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<never>();
+    const client = buildClient({
+      listDestinations: vi.fn().mockResolvedValue([buildWebhook()]),
+      updateDestination: vi.fn().mockReturnValue(pending.promise),
+    });
+    renderSection(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit chores_hook' }));
+    await user.type(screen.getByLabelText(strings.destWebhookUrlLabel), 'https://new.example/hook');
+    await user.click(button('Save chores_hook'));
+    await user.click(button('Rotate chores_hook'));
+
+    expect(client.updateDestination).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'Confirm rotate chores_hook' })).toBeNull();
+    expect(client.rotateSecret).not.toHaveBeenCalled();
   });
 
   it('shows a rotate failure inline', async () => {

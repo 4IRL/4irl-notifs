@@ -38,6 +38,12 @@
   min-width: 0;
 }
 
+/* A grid item's automatic minimum is its min-content, so one wide child would stretch the track
+   (and the page) past the viewport: let every section shrink and its table wrapper scroll. */
+.app-tabs__panel > * {
+  min-width: 0;
+}
+
 /* The author display rule above would otherwise defeat the `hidden` attribute. */
 .app-tabs__panel[hidden] {
   display: none;

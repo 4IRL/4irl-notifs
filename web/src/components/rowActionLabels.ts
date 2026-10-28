@@ -15,7 +15,6 @@ export interface ActionLabel {
 /** The labels of a destination row's actions, inline buttons and menu items alike. */
 export interface DestinationActionLabels {
   test: ActionLabel;
-  /** "Edit", or "Close" while this row's editor is open. */
   edit: ActionLabel;
   disable: ActionLabel;
   confirmDisable: ActionLabel;
@@ -34,20 +33,12 @@ export interface RouteActionLabels {
   cancelDelete: ActionLabel;
 }
 
-export function destinationActionLabels({
-  name,
-  editing,
-}: {
-  name: string;
-  editing: boolean;
-}): DestinationActionLabels {
+export function destinationActionLabels({ name }: { name: string }): DestinationActionLabels {
   const disable = strings.disableDestination({ name });
   const deleteName = strings.deleteDestination({ name });
   return {
     test: { visible: strings.rowActionTest, accessible: strings.sendTestTo({ name }) },
-    edit: editing
-      ? { visible: strings.rowActionClose, accessible: strings.closeDestination({ name }) }
-      : { visible: strings.rowActionEdit, accessible: strings.editDestination({ name }) },
+    edit: { visible: strings.rowActionEdit, accessible: strings.editDestination({ name }) },
     disable: { visible: strings.rowActionDisable, accessible: disable },
     confirmDisable: {
       visible: strings.rowActionConfirmDisable,
