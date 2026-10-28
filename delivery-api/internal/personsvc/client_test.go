@@ -24,7 +24,7 @@ func newBufferLogger(buffer *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(buffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
-func TestCreateAppRequestShape(t *testing.T) {
+func TestCreateAppRequestShape(testInstance *testing.T) {
 	type capturedRequest struct{ method, path, contentType, id, secret, body string }
 	// Buffered so the handler goroutine hands the data over with a happens-before edge.
 	captured := make(chan capturedRequest, 1)
@@ -46,26 +46,26 @@ func TestCreateAppRequestShape(t *testing.T) {
 		BaseURL: server.URL + "/", AccessClientID: testClientID, AccessClientSecret: testClientSecret,
 	})
 	if createErr := client.CreateApp(context.Background(), "my-app", "My App"); createErr != nil {
-		t.Fatalf("CreateApp: %v", createErr)
+		testInstance.Fatalf("CreateApp: %v", createErr)
 	}
 	got := <-captured
 	gotMethod, gotPath, gotContentType, gotID, gotSecret, gotBody :=
 		got.method, got.path, got.contentType, got.id, got.secret, got.body
 	if gotMethod != http.MethodPost || gotPath != "/apps" {
-		t.Fatalf("got %s %s", gotMethod, gotPath)
+		testInstance.Fatalf("got %s %s", gotMethod, gotPath)
 	}
 	if gotContentType != "application/json" {
-		t.Fatalf("content type %q", gotContentType)
+		testInstance.Fatalf("content type %q", gotContentType)
 	}
 	if gotID != testClientID || gotSecret != testClientSecret {
-		t.Fatalf("access headers %q %q", gotID, gotSecret)
+		testInstance.Fatalf("access headers %q %q", gotID, gotSecret)
 	}
 	if gotBody != `{"app_id":"my-app","display_name":"My App"}` {
-		t.Fatalf("body %q", gotBody)
+		testInstance.Fatalf("body %q", gotBody)
 	}
 }
 
-func TestCreateAppAccessHeadersOnlyWhenConfigured(t *testing.T) {
+func TestCreateAppAccessHeadersOnlyWhenConfigured(testInstance *testing.T) {
 	tests := []struct {
 		name, id, secret string
 		wantID, wantSec  bool
@@ -76,7 +76,7 @@ func TestCreateAppAccessHeadersOnlyWhenConfigured(t *testing.T) {
 		{"both", "x", "y", true, true},
 	}
 	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
 			headers := make(chan http.Header, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				headers <- request.Header.Clone()
@@ -87,19 +87,19 @@ func TestCreateAppAccessHeadersOnlyWhenConfigured(t *testing.T) {
 				BaseURL: server.URL, AccessClientID: testCase.id, AccessClientSecret: testCase.secret,
 			})
 			if createErr := client.CreateApp(context.Background(), "a", "A"); createErr != nil {
-				t.Fatal(createErr)
+				subTest.Fatal(createErr)
 			}
 			header := <-headers
 			_, hasID := header["Cf-Access-Client-Id"]
 			_, hasSecret := header["Cf-Access-Client-Secret"]
 			if hasID != testCase.wantID || hasSecret != testCase.wantSec {
-				t.Fatalf("hasID=%v hasSecret=%v", hasID, hasSecret)
+				subTest.Fatalf("hasID=%v hasSecret=%v", hasID, hasSecret)
 			}
 		})
 	}
 }
 
-func TestCreateAppStatuses(t *testing.T) {
+func TestCreateAppStatuses(testInstance *testing.T) {
 	tests := []struct {
 		status  int
 		wantErr bool
@@ -113,7 +113,7 @@ func TestCreateAppStatuses(t *testing.T) {
 		{http.StatusBadGateway, true},
 	}
 	for _, testCase := range tests {
-		t.Run(http.StatusText(testCase.status), func(t *testing.T) {
+		testInstance.Run(http.StatusText(testCase.status), func(subTest *testing.T) {
 			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 				calls.Add(1)
@@ -124,22 +124,22 @@ func TestCreateAppStatuses(t *testing.T) {
 			client := NewClient(Config{BaseURL: server.URL, AccessClientID: "i", AccessClientSecret: testClientSecret})
 			createErr := client.CreateApp(context.Background(), "a", "A")
 			if (createErr != nil) != testCase.wantErr {
-				t.Fatalf("err=%v wantErr=%v", createErr, testCase.wantErr)
+				subTest.Fatalf("err=%v wantErr=%v", createErr, testCase.wantErr)
 			}
 			if calls.Load() != 1 {
-				t.Fatalf("calls=%d", calls.Load())
+				subTest.Fatalf("calls=%d", calls.Load())
 			}
 			if createErr != nil {
 				text := createErr.Error()
 				if strings.Contains(text, "BODYLEAK") || strings.Contains(text, testClientSecret) {
-					t.Fatalf("error leaks: %q", text)
+					subTest.Fatalf("error leaks: %q", text)
 				}
 			}
 		})
 	}
 }
 
-func TestCreateAppTimeout(t *testing.T) {
+func TestCreateAppTimeout(testInstance *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -151,17 +151,17 @@ func TestCreateAppTimeout(t *testing.T) {
 	client := NewClient(Config{BaseURL: server.URL, Timeout: 50 * time.Millisecond})
 	createErr := client.CreateApp(context.Background(), "a", "A")
 	if createErr == nil {
-		t.Fatal("want timeout error")
+		testInstance.Fatal("want timeout error")
 	}
 	if !errors.Is(createErr, context.DeadlineExceeded) && !os.IsTimeout(createErr) {
-		t.Fatalf("want a timeout error, got %v", createErr)
+		testInstance.Fatalf("want a timeout error, got %v", createErr)
 	}
 	if calls.Load() != 1 {
-		t.Fatalf("calls=%d", calls.Load())
+		testInstance.Fatalf("calls=%d", calls.Load())
 	}
 }
 
-func TestCreateAppRedirectNotFollowed(t *testing.T) {
+func TestCreateAppRedirectNotFollowed(testInstance *testing.T) {
 	var targetHits atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		targetHits.Add(1)
@@ -174,14 +174,14 @@ func TestCreateAppRedirectNotFollowed(t *testing.T) {
 	defer server.Close()
 	client := NewClient(Config{BaseURL: server.URL})
 	if createErr := client.CreateApp(context.Background(), "a", "A"); createErr == nil {
-		t.Fatal("want error on 307")
+		testInstance.Fatal("want error on 307")
 	}
 	if targetHits.Load() != 0 {
-		t.Fatal("redirect was followed")
+		testInstance.Fatal("redirect was followed")
 	}
 }
 
-func TestCreateAppUnconfiguredNeverDials(t *testing.T) {
+func TestCreateAppUnconfiguredNeverDials(testInstance *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -189,20 +189,20 @@ func TestCreateAppUnconfiguredNeverDials(t *testing.T) {
 	defer server.Close()
 	client := NewClient(Config{})
 	if client.Configured() {
-		t.Fatal("empty config must not be configured")
+		testInstance.Fatal("empty config must not be configured")
 	}
 	if createErr := client.CreateApp(context.Background(), "a", "A"); !errors.Is(createErr, ErrNotConfigured) {
-		t.Fatalf("err=%v", createErr)
+		testInstance.Fatalf("err=%v", createErr)
 	}
 	if calls.Load() != 0 {
-		t.Fatal("dialed")
+		testInstance.Fatal("dialed")
 	}
 	if !NewClient(Config{BaseURL: server.URL}).Configured() {
-		t.Fatal("BaseURL set must be configured")
+		testInstance.Fatal("BaseURL set must be configured")
 	}
 }
 
-func TestCreateAppLogsStartAndEnd(t *testing.T) {
+func TestCreateAppLogsStartAndEnd(testInstance *testing.T) {
 	tests := []struct {
 		name        string
 		status      int
@@ -215,7 +215,7 @@ func TestCreateAppLogsStartAndEnd(t *testing.T) {
 		{"timeout", 0, true, "failed"},
 	}
 	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
 			release := make(chan struct{})
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 				if testCase.hang {
@@ -237,22 +237,22 @@ func TestCreateAppLogsStartAndEnd(t *testing.T) {
 
 			lines := strings.Split(strings.TrimSpace(buffer.String()), "\n")
 			if len(lines) < 2 {
-				t.Fatalf("want start and end lines, got %q", buffer.String())
+				subTest.Fatalf("want start and end lines, got %q", buffer.String())
 			}
 			if !strings.Contains(lines[0], "start") {
-				t.Fatalf("first line not start: %q", lines[0])
+				subTest.Fatalf("first line not start: %q", lines[0])
 			}
 			end := lines[len(lines)-1]
 			for _, want := range []string{"end", "app_id=log-app", "outcome=" + testCase.wantOutcome, "duration"} {
 				if !strings.Contains(end, want) {
-					t.Fatalf("end line missing %q: %q", want, end)
+					subTest.Fatalf("end line missing %q: %q", want, end)
 				}
 			}
 			if !testCase.hang && !strings.Contains(end, "status=") {
-				t.Fatalf("end line missing status: %q", end)
+				subTest.Fatalf("end line missing status: %q", end)
 			}
 			if strings.Contains(buffer.String(), testClientSecret) || strings.Contains(buffer.String(), "BODYLEAK") {
-				t.Fatalf("log leaks secret or body: %q", buffer.String())
+				subTest.Fatalf("log leaks secret or body: %q", buffer.String())
 			}
 		})
 	}

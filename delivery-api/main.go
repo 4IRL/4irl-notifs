@@ -154,9 +154,6 @@ func buildRegistrar(personServiceURL string, resolveSecret func(string) (string,
 	client := personsvc.NewClient(personsvc.Config{
 		BaseURL: personServiceURL, AccessClientID: accessID, AccessClientSecret: accessSecret, Logger: logger,
 	})
-	if !client.Configured() {
-		return nil
-	}
 	return client
 }
 

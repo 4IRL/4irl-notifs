@@ -113,7 +113,7 @@ func (client *Client) CreateApp(ctx context.Context, appID string, displayName s
 
 	status, outcome, callErr := client.post(ctx, appID, displayName)
 
-	attrs := []any{"app_id", appID, "outcome", outcome, "duration", time.Since(started)}
+	attrs := []any{"app_id", appID, "outcome", outcome, "duration", time.Since(started).String()}
 	if status != 0 {
 		attrs = append(attrs, "status", status)
 	}

@@ -802,7 +802,8 @@ graph TD
   Compose secrets (`PERSON_SERVICE_ACCESS_CLIENT_*`), never a plaintext `.env`.
 - **`DELIVERY_DB_PASSWORD` (required repo secret)**: the delivery-api Postgres password, 32+ lowercase
   hex characters (`openssl rand -hex 32`); the deploy fails before touching the VPS if it is missing or
-  malformed, so set it before the first merge. Unlike the secrets above it is written to
+  malformed, so set it before the first merge. Unlike the optional `PERSON_SERVICE_ACCESS_CLIENT_*` secrets above (which also live in
+  `secrets-persistent/` and are written empty when unset), it is required, and it is written to
   `secrets-persistent/` on every deploy and never deleted (delivery-api reads it on every start).
   Postgres fixes the password into the `delivery-pgdata` volume at initdb, so **rotating** the GitHub
   secret first needs `ALTER ROLE delivery PASSWORD '<new value>'` run inside `delivery-postgres`;

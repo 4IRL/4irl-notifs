@@ -113,6 +113,10 @@ func TestAppProvisioningRelaysAnswersWithForcedHeaders(testInstance *testing.T) 
 		{name: "404", status: http.StatusNotFound},
 		{name: "429 numeric retry-after", status: http.StatusTooManyRequests, retryAfter: "30", wantRetryAfter: "30"},
 		{name: "429 non-numeric retry-after dropped", status: http.StatusTooManyRequests, retryAfter: "<script>"},
+		{name: "429 nine-digit retry-after relayed", status: http.StatusTooManyRequests, retryAfter: "123456789", wantRetryAfter: "123456789"},
+		{name: "429 ten-digit retry-after dropped", status: http.StatusTooManyRequests, retryAfter: "1234567890"},
+		{name: "429 trailing newline retry-after dropped", status: http.StatusTooManyRequests, retryAfter: "30\n"},
+		{name: "429 trailing space retry-after dropped", status: http.StatusTooManyRequests, retryAfter: "30 "},
 		{name: "500", status: http.StatusInternalServerError},
 		{name: "200 with numeric retry-after copied", status: http.StatusOK, retryAfter: "30", wantRetryAfter: "30"},
 	}
