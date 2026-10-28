@@ -1232,7 +1232,7 @@ describe('rotate signing secret', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     // The reveal's own mount-time focus is the last focus write (restoreFocus was skipped).
     const container = secret.closest('[tabindex="-1"]');
-    expect(container).toHaveFocus();
+    await waitFor(() => expect(container).toHaveFocus());
     const cell = secret.closest('td');
     expect(cell).toHaveClass('destinations__reveal-cell');
     expect(secret.closest('.destinations__reveal-row')).not.toBeNull();
@@ -1268,7 +1268,7 @@ describe('rotate signing secret', () => {
     // One render site: the table has no reveal row while the dialog shows the destination.
     expect(screen.getAllByText('NEW_SECRET_VALUE')).toHaveLength(1);
     expect(document.querySelector('.destinations__reveal-cell')).toBeNull();
-    expect(secret.closest('[tabindex="-1"]')).toHaveFocus();
+    await waitFor(() => expect(secret.closest('[tabindex="-1"]')).toHaveFocus());
 
     // Dismissing inside the dialog moves focus to the first field; a later close restores the Edit button.
     await user.click(within(dialog).getByRole('button', { name: strings.revealDismiss }));
