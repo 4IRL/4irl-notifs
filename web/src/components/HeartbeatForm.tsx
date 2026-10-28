@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { FormEvent, JSX } from 'react';
+import type { FormEvent, JSX, RefObject } from 'react';
 
 import { ApiError } from '../api/client';
 import type {
@@ -10,6 +10,7 @@ import type {
   ProbeConfigInput,
   UpdateHeartbeatParams,
 } from '../api/deliveryClient';
+import { useLowercaseInput } from '../hooks/useLowercaseInput';
 import { strings } from '../strings';
 import {
   HEARTBEAT_GRACE_RANGE_SECONDS,
@@ -33,6 +34,7 @@ import type { DurationInput } from './heartbeatDuration';
 import { HeartbeatProbeFields } from './HeartbeatProbeFields';
 import type { ProbeFieldValues } from './HeartbeatProbeFields';
 import { probeAccessHintOf } from './heartbeatRowState';
+import { withHttpsScheme } from './probeUrl';
 import { ProbeCredentialsField } from './ProbeCredentialsField';
 import type { CredentialsStaged } from './ProbeCredentialsField';
 import './DestinationForm.css';
@@ -57,6 +59,13 @@ interface HeartbeatFormBaseProps {
   saving?: boolean;
   /** Cancel (add) or Close (edit, and an untouched Save). */
   onClose: () => void;
+  /** Edit only: reports whether any field differs from the baseline (false again on unmount). */
+  onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Receives the edit's target field (Period for a push check, URL for a probe) so the owner's
+   * dialog can focus it. In add mode it is the App ID input; it defaults to a private ref.
+   */
+  firstFieldRef?: RefObject<HTMLInputElement | null>;
 }
 
 interface HeartbeatAddFormProps extends HeartbeatFormBaseProps {
@@ -195,6 +204,8 @@ export function HeartbeatForm({
   saving = false,
   onSubmit,
   onClose,
+  onDirtyChange,
+  firstFieldRef: firstFieldRefProp,
 }: HeartbeatFormProps): JSX.Element {
   const isEdit = check !== undefined;
   const idSuffix = isEdit ? String(check.id) : 'new';
@@ -210,6 +221,13 @@ export function HeartbeatForm({
   const [staged, setStaged] = useState<CredentialsStaged>('untouched');
   const [appId, setAppId] = useState('');
   const [name, setName] = useState('');
+  // Add mode only renders these inputs, so edit mode never lowercases anything.
+  const appIdInput = useLowercaseInput({
+    setValue: (value) => updateField({ field: 'appId', setter: setAppId, value }),
+  });
+  const nameInput = useLowercaseInput({
+    setValue: (value) => updateField({ field: 'name', setter: setName, value }),
+  });
   const [period, setPeriod] = useState<DurationInput>(
     check === undefined ? DEFAULT_PERIOD : splitDuration(check.periodSeconds),
   );
@@ -234,11 +252,17 @@ export function HeartbeatForm({
   const [fieldErrors, setFieldErrors] = useState<FieldErrors<FormField>>({});
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const firstFieldRef = useRef<HTMLInputElement | null>(null);
+  const localFirstFieldRef = useRef<HTMLInputElement | null>(null);
+  const localPeriodRef = useRef<HTMLInputElement | null>(null);
+  const localUrlRef = useRef<HTMLInputElement | null>(null);
+  const isProbeEditForm = baselineProbe !== null;
+  // The supplied ref marks the field the owner focuses: App ID on add, Period on a push edit,
+  // URL on a probe edit.
+  const firstFieldRef = (!isEdit ? firstFieldRefProp : undefined) ?? localFirstFieldRef;
+  const periodRef = (isEdit && !isProbeEditForm ? firstFieldRefProp : undefined) ?? localPeriodRef;
+  const urlRef = (isEdit && isProbeEditForm ? firstFieldRefProp : undefined) ?? localUrlRef;
   const nameRef = useRef<HTMLInputElement | null>(null);
-  const periodRef = useRef<HTMLInputElement | null>(null);
   const graceRef = useRef<HTMLInputElement | null>(null);
-  const urlRef = useRef<HTMLInputElement | null>(null);
   const statusesRef = useRef<HTMLInputElement | null>(null);
   const bodyMatchRef = useRef<HTMLInputElement | null>(null);
   const intervalRef = useRef<HTMLInputElement | null>(null);
@@ -251,16 +275,53 @@ export function HeartbeatForm({
   const isProbe = isProbeAdd || isProbeEdit;
 
   useEffect(() => {
-    // Add focuses App ID; a push edit has no App ID input, so it focuses Period; a probe edit
-    // has no Period, so it focuses the URL.
-    let target = firstFieldRef;
-    if (isEdit) {
-      target = isProbeEdit ? urlRef : periodRef;
+    // Add focuses App ID on mount. An edit's dialog focuses its target (Period for a push edit,
+    // URL for a probe edit) through `initialFocusRef`.
+    if (!isEdit) {
+      firstFieldRef.current?.focus();
     }
-    target.current?.focus();
-    // Mount-only: the target never changes for the life of the form.
+    // Mount-only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Dirty (edit only): the same comparisons the submit makes, so a field edited and reverted
+  // to its baseline is clean again.
+  let dirty = false;
+  if (isEdit) {
+    const parsedStatuses = parseExpectedStatuses(probe.statuses);
+    if (baselineProbe !== null) {
+      const timeoutText = probe.timeout.trim();
+      const timeoutSeconds = timeoutText === '' ? Number.NaN : Number(timeoutText);
+      dirty =
+        probe.url.trim() !== baselineProbe.url ||
+        (parsedStatuses.ok
+          ? !sameNumberSet({ left: parsedStatuses.statuses, right: baselineProbe.expectedStatuses })
+          : probe.statuses !== baselineProbe.expectedStatuses.join(', ')) ||
+        probe.bodyMatch !== (baselineProbe.bodyMatch ?? '') ||
+        timeoutSeconds !== baselineProbe.timeoutSeconds ||
+        toSeconds(probe.interval) !== baselineProbe.intervalSeconds ||
+        staged !== 'untouched' ||
+        clientId !== '' ||
+        clientSecret !== '';
+    } else {
+      dirty =
+        toSeconds(period) !== baseline.periodSeconds || toSeconds(grace) !== baseline.graceSeconds;
+    }
+    dirty = dirty || !sameSet({ left: selected, right: baseline.destinations });
+  }
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  useEffect(() => {
+    onDirtyChangeRef.current = onDirtyChange;
+  });
+  useEffect(() => {
+    onDirtyChangeRef.current?.(dirty);
+  }, [dirty]);
+  useEffect(
+    () => () => {
+      onDirtyChangeRef.current?.(false);
+    },
+    [],
+  );
 
   // Loaded destinations first, then any name the check started with or has
   // selected that the list does not know (a stale reference), so it stays
@@ -329,6 +390,14 @@ export function HeartbeatForm({
     clearFieldErrors(['clientId', 'clientSecret']);
   }
 
+  /** An edit whose URL still equals the saved one keeps it byte-for-byte (never rewritten). */
+  function normaliseProbeUrl(url: string): string {
+    if (baselineProbe !== null && url.trim() === baselineProbe.url) {
+      return baselineProbe.url;
+    }
+    return withHttpsScheme(url);
+  }
+
   function changeProbe(next: Partial<ProbeFieldValues>) {
     setProbe((current) => ({ ...current, ...next }));
     const touched: FormField[] = [];
@@ -379,9 +448,11 @@ export function HeartbeatForm({
   }
 
   function validateProbe({
+    url,
     intervalSeconds,
     timeoutSeconds,
   }: {
+    url: string;
     intervalSeconds: number | null;
     timeoutSeconds: number;
   }): FieldErrors<FormField> {
@@ -390,7 +461,7 @@ export function HeartbeatForm({
     // server-valid value the stricter client rules reject never blocks an unrelated change.
     const base = baselineProbe;
     const parsedStatuses = parseExpectedStatuses(probe.statuses);
-    const urlChanged = base === null || probe.url.trim() !== base.url;
+    const urlChanged = base === null || url !== base.url;
     let statusesChanged = true;
     if (base !== null) {
       statusesChanged = parsedStatuses.ok
@@ -401,7 +472,7 @@ export function HeartbeatForm({
     const intervalChanged = base === null || intervalSeconds !== base.intervalSeconds;
     const timeoutChanged = base === null || timeoutSeconds !== base.timeoutSeconds;
 
-    const urlProblem = probeUrlProblem(probe.url.trim());
+    const urlProblem = probeUrlProblem(url);
     if (urlChanged && urlProblem !== null) {
       errors.url = PROBE_URL_ERRORS[urlProblem];
     }
@@ -449,6 +520,20 @@ export function HeartbeatForm({
     if (submitting || saving) {
       return;
     }
+    // Add mode, Enter/Save mid-composition: submit what the fields will show.
+    const submitAppId = isEdit ? appId : appId.toLowerCase();
+    const submitName = isEdit ? name : name.toLowerCase();
+    if (submitAppId !== appId) {
+      setAppId(submitAppId);
+    }
+    if (submitName !== name) {
+      setName(submitName);
+    }
+    // Enter, "Go" and Save skip the URL's blur: normalise here so every path behaves alike.
+    const submitUrl = normaliseProbeUrl(probe.url);
+    if (isProbe && submitUrl !== probe.url) {
+      setProbe((current) => ({ ...current, url: submitUrl }));
+    }
     const periodSeconds = toSeconds(period);
     const graceSeconds = toSeconds(grace);
     const intervalSeconds = toSeconds(probe.interval);
@@ -456,16 +541,16 @@ export function HeartbeatForm({
     const timeoutSeconds = timeoutText === '' ? Number.NaN : Number(timeoutText);
 
     const errors: FieldErrors<FormField> = {};
-    if (!isEdit && !isValidHeartbeatAppId(appId.trim())) {
+    if (!isEdit && !isValidHeartbeatAppId(submitAppId.trim())) {
       errors.appId = strings.invalidHeartbeatAppId;
     }
-    if (!isEdit && !isValidHeartbeatName(name.trim())) {
+    if (!isEdit && !isValidHeartbeatName(submitName.trim())) {
       errors.name = strings.invalidHeartbeatName;
     }
     Object.assign(
       errors,
       isProbe
-        ? validateProbe({ intervalSeconds, timeoutSeconds })
+        ? validateProbe({ url: submitUrl, intervalSeconds, timeoutSeconds })
         : validatePush({ periodSeconds, graceSeconds }),
     );
     if (selected.length < 1) {
@@ -511,11 +596,11 @@ export function HeartbeatForm({
       }
       pending = onSubmit({
         kind: 'probe',
-        appId: appId.trim(),
-        name: name.trim(),
+        appId: submitAppId.trim(),
+        name: submitName.trim(),
         destinations: orderedSelected,
         probe: {
-          url: probe.url.trim(),
+          url: submitUrl,
           expectedStatuses: statuses.statuses,
           bodyMatch: probe.bodyMatch === '' ? null : probe.bodyMatch,
           timeoutSeconds,
@@ -530,8 +615,8 @@ export function HeartbeatForm({
       }
       pending = onSubmit({
         kind: 'push',
-        appId: appId.trim(),
-        name: name.trim(),
+        appId: submitAppId.trim(),
+        name: submitName.trim(),
         periodSeconds,
         graceSeconds,
         destinations: orderedSelected,
@@ -540,8 +625,8 @@ export function HeartbeatForm({
       const changes: HeartbeatEditSubmission = {};
       const probeChanges: Partial<ProbeConfigInput> = {};
       const statuses = parseExpectedStatuses(probe.statuses);
-      if (probe.url.trim() !== baselineProbe.url) {
-        probeChanges.url = probe.url.trim();
+      if (submitUrl !== baselineProbe.url) {
+        probeChanges.url = submitUrl;
       }
       if (
         statuses.ok &&
@@ -631,9 +716,7 @@ export function HeartbeatForm({
 
   const form = (
     <form
-      aria-label={
-        isEdit ? strings.editHeartbeatNamed({ check: checkLabel }) : strings.addHeartbeatHeading
-      }
+      aria-label={isEdit ? undefined : strings.addHeartbeatHeading}
       onSubmit={handleSubmit}
       noValidate
     >
@@ -686,9 +769,10 @@ export function HeartbeatForm({
                   hasHint: false,
                   error: fieldErrors.appId,
                 })}
-                onChange={(event) =>
-                  updateField({ field: 'appId', setter: setAppId, value: event.target.value })
-                }
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                {...appIdInput}
               />
               {fieldErrors.appId && (
                 <span
@@ -713,9 +797,10 @@ export function HeartbeatForm({
                   hasHint: false,
                   error: fieldErrors.name,
                 })}
-                onChange={(event) =>
-                  updateField({ field: 'name', setter: setName, value: event.target.value })
-                }
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                {...nameInput}
               />
               {fieldErrors.name && (
                 <span
@@ -767,6 +852,7 @@ export function HeartbeatForm({
               timeout: timeoutRef,
             }}
             onChange={changeProbe}
+            normaliseUrl={normaliseProbeUrl}
             intervalHint={intervalHint}
           />
           <ProbeCredentialsField

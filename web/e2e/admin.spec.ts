@@ -6,6 +6,7 @@ import {
   TIMESTAMP,
   deliveryWire,
   destinationWire,
+  expectDialogInViewport,
   expectEditorInView,
   expectNoPageOverflow,
   expectTouchTarget,
@@ -1987,7 +1988,10 @@ test.describe('admin UI Delivery tab', () => {
     });
     await edit.click();
 
-    const form = section.getByRole('form', { name: 'Edit urls4irl/nightly_backup' });
+    // The edit form lives in the shared dialog, portalled outside the section.
+    const form = page
+      .getByRole('dialog', { name: 'Edit urls4irl/nightly_backup', exact: true })
+      .locator('form');
     await expect(form.getByLabel('Period', { exact: true })).toBeFocused();
     await expect(form.getByLabel('Period', { exact: true })).toHaveValue('24');
     await expect(form.getByLabel('Period unit')).toHaveValue('hours');
@@ -1998,11 +2002,6 @@ test.describe('admin UI Delivery tab', () => {
     await expect(stale).toBeChecked();
     await expect(stale).toBeVisible();
     await expect(form.locator('label', { hasText: 'old_hook' })).toContainText('(not found)');
-
-    // One editor at a time: opening another row's editor closes this one.
-    await section.getByRole('button', { name: 'Edit urls4irl/reaper', exact: true }).click();
-    await expect(form).toHaveCount(0);
-    await edit.click();
 
     // Changing only the grace sends only the grace.
     await form.getByLabel('Grace', { exact: true }).fill('3');
@@ -2030,6 +2029,7 @@ test.describe('admin UI Delivery tab', () => {
     // Close without saving sends nothing and refocuses the trigger.
     await edit.click();
     await form.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(form).toHaveCount(0);
     await expect(edit).toBeFocused();
     expect(mock.mutations.filter((request) => request.method === 'PATCH')).toHaveLength(3);
     expect(mock.unmocked).toEqual([]);
@@ -2145,16 +2145,17 @@ test.describe('admin UI Delivery tab', () => {
       expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
     }
 
-    // The inline editor, opened from the menu, spans the table but is sized to the visible
-    // width, takes focus, and neither scrolls the page nor sits under anything, wherever the
-    // wrapper is scrolled.
+    // The edit dialog, opened from the menu, takes focus and fits the viewport without
+    // scrolling the page.
     menu = await openRowMenu({ page, row: 'urls4irl/nightly_backup' });
     await menu.getByRole('menuitem', { name: 'Edit urls4irl/nightly_backup', exact: true }).click();
-    const editForm = section.getByRole('form', { name: 'Edit urls4irl/nightly_backup' });
+    const editForm = page
+      .getByRole('dialog', { name: 'Edit urls4irl/nightly_backup', exact: true })
+      .locator('form');
     await expect(editForm).toBeVisible();
     await expect(editForm.locator(':focus')).toHaveCount(1);
     await expectNoPageOverflow(page);
-    await expectEditorInView({ wrapper, form: editForm });
+    await expectDialogInViewport(page);
     const editBox = await editForm.boundingBox();
     expect(editBox?.x ?? -1).toBeGreaterThanOrEqual(0);
     expect((editBox?.x ?? 0) + (editBox?.width ?? 0)).toBeLessThanOrEqual(390);
@@ -3041,13 +3042,6 @@ test.describe('admin UI Delivery tab', () => {
         scroll: '.routes__scroll',
         columns: 5,
       },
-      {
-        row: 'chores4irl/daily',
-        editName: 'Edit chores4irl/daily',
-        table: '.heartbeats__table',
-        scroll: '.heartbeats__scroll',
-        columns: 6,
-      },
     ]) {
       const menu = await openRowMenu({ page, row });
       await menu.getByRole('menuitem', { name: editName, exact: true }).click();
@@ -3058,6 +3052,28 @@ test.describe('admin UI Delivery tab', () => {
         wrapper: page.locator(scroll),
         form: editorCell.locator('form'),
       });
+    }
+
+    // Editing opens the shared dialog inside the viewport and leaves the narrow table's columns
+    // alone (no editor row spans them any more).
+    for (const { row, editName, dialogName, table, columns } of [
+      {
+        row: 'chores4irl/daily',
+        editName: 'Edit chores4irl/daily',
+        dialogName: 'Edit chores4irl/daily',
+        table: '.heartbeats__table',
+        columns: 6,
+      },
+    ]) {
+      const menu = await openRowMenu({ page, row });
+      await menu.getByRole('menuitem', { name: editName, exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: dialogName, exact: true });
+      await expect(dialog).toBeVisible();
+      await expect(page.locator(`${table} tbody td[colspan]`)).toHaveCount(0);
+      await expect(page.locator(`${table} thead th`)).toHaveCount(columns);
+      await expectDialogInViewport(page);
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
     }
 
     // App identities (no Owner column): the "approved ... UTC" sub-line under the app id is

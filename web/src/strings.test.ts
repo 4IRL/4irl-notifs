@@ -179,6 +179,14 @@ describe('strings module', () => {
     ).toBe('id VkT2p9wQ · urls4irl-hash-all');
   });
 
+  it('words the local-time hints with the viewer zone and no longer claims UTC', () => {
+    const hint =
+      'Times are shown in your local time zone (Asia/Kolkata); the abbreviations on each time follow daylight saving.';
+    expect(strings.timesLocalHint({ zone: 'Asia/Kolkata' })).toBe(hint);
+    expect(strings.heartbeatsHint({ zone: 'Asia/Kolkata' })).toContain(hint);
+    expect(strings.heartbeatsHint({ zone: 'Asia/Kolkata' })).not.toContain('Times are UTC');
+  });
+
   it('exposes the tab and delivery status card copy', () => {
     expect(strings.tabProvisioning).toBe('Provisioning');
     expect(strings.tabDelivery).toBe('Delivery');

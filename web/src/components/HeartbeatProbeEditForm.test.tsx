@@ -142,7 +142,7 @@ async function openEditor({
   const user = userEvent.setup();
   render(<Heartbeats client={api} destinationsState={DESTINATIONS} />);
   await user.click(await screen.findByRole('button', { name: `Edit ${LABEL}` }));
-  return { user, form: screen.getByRole('form', { name: `Edit ${LABEL}` }), api };
+  return { user, form: screen.getByRole('dialog', { name: `Edit ${LABEL}` }), api };
 }
 
 function field(form: HTMLElement, label: string): HTMLInputElement {
@@ -251,7 +251,51 @@ describe('probe edit form: diff', () => {
     });
     await save(user, form);
     expect(api.updateHeartbeat).not.toHaveBeenCalled();
-    expect(screen.queryByRole('form', { name: `Edit ${LABEL}` })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: `Edit ${LABEL}` })).toBeNull();
+  });
+
+  it('reverting URL, statuses and interval to the baseline leaves the dialog clean', async () => {
+    const { user, form } = await openEditor();
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    const baselineUrl = url.value;
+    const statuses = field(form, strings.heartbeatProbeStatusesLabel);
+    const baselineStatuses = statuses.value;
+    await replaceText({ user, input: url, text: 'https://changed.example.com/x' });
+    await replaceText({ user, input: statuses, text: '500' });
+    await replaceText({ user, input: url, text: baselineUrl });
+    await replaceText({ user, input: statuses, text: baselineStatuses });
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByText(strings.discardChangesMessage)).toBeNull();
+    expect(screen.queryByRole('dialog', { name: `Edit ${LABEL}` })).toBeNull();
+  });
+
+  it('a dirty probe URL shows the discard guard on Escape', async () => {
+    const { user, form } = await openEditor();
+    await replaceText({
+      user,
+      input: field(form, strings.heartbeatProbeUrlLabel),
+      text: 'https://changed.example.com/x',
+    });
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.getByText(strings.discardChangesMessage)).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: `Edit ${LABEL}` })).toBeInTheDocument();
+  });
+
+  it('Clear then Undo on stored credentials is clean again', async () => {
+    const { user, form } = await openEditor({
+      check: probeCheck({ probe: { hasAccessToken: true } }),
+    });
+    await user.click(control(form, strings.heartbeatCredentialsClear));
+    await user.click(control(form, strings.heartbeatCredentialsUndo));
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByText(strings.discardChangesMessage)).toBeNull();
+    expect(screen.queryByRole('dialog', { name: `Edit ${LABEL}` })).toBeNull();
   });
 
   it('sends a changed URL and statuses and a cleared body match as null', async () => {
@@ -342,6 +386,58 @@ describe('probe edit form: diff', () => {
     await save(second.user, second.form);
     expect(second.api.updateHeartbeat).not.toHaveBeenCalled();
     expect(second.form).toHaveTextContent(strings.invalidProbeBodyMatch);
+  });
+
+  it('prepends https:// on blur and sends the prefixed URL', async () => {
+    const { user, form, api } = await openEditor();
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    await replaceText({ user, input: url, text: 'other.example/x' });
+    await user.tab();
+    expect(url.value).toBe('https://other.example/x');
+    await save(user, form);
+    await waitFor(() => expect(api.updateHeartbeat).toHaveBeenCalledTimes(1));
+    expect(lastUpdate(api)).toEqual({ id: 7, probe: { url: 'https://other.example/x' } });
+  });
+
+  it('keeps an explicit http:// on blur and flags it at submit', async () => {
+    const { user, form, api } = await openEditor();
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    await replaceText({ user, input: url, text: 'http://x' });
+    await user.tab();
+    expect(url.value).toBe('http://x');
+    await save(user, form);
+    expect(api.updateHeartbeat).not.toHaveBeenCalled();
+    expect(form).toHaveTextContent(strings.invalidProbeUrlScheme);
+  });
+
+  it('leaves an untouched saved URL byte-for-byte on blur and never blocks an unrelated save', async () => {
+    const check = probeCheck({ probe: { url: 'HTTP://legacy.example/health' } });
+    const { user, form, api } = await openEditor({ check });
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    await user.tab();
+    expect(url.value).toBe('HTTP://legacy.example/health');
+    await replaceText({ user, input: field(form, strings.heartbeatProbeTimeoutLabel), text: '4' });
+    await save(user, form);
+    await waitFor(() => expect(api.updateHeartbeat).toHaveBeenCalledTimes(1));
+    expect(lastUpdate(api)).toEqual({ id: 7, probe: { timeoutSeconds: 4 } });
+  });
+
+  it('adds nothing on a blank blur', async () => {
+    const { user, form } = await openEditor();
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    await user.clear(url);
+    await user.tab();
+    expect(url.value).toBe('');
+  });
+
+  it('Enter in the URL field normalises at submit without a blur', async () => {
+    const { user, form, api } = await openEditor();
+    const url = field(form, strings.heartbeatProbeUrlLabel);
+    await replaceText({ user, input: url, text: 'other.example{Enter}' });
+    await waitFor(() => expect(api.updateHeartbeat).toHaveBeenCalledTimes(1));
+    expect(form).not.toHaveTextContent(strings.invalidProbeUrlScheme);
+    expect(lastUpdate(api)).toEqual({ id: 7, probe: { url: 'https://other.example' } });
+    expect(url.value).toBe('https://other.example');
   });
 
   it('an unchanged URL the client rules reject never blocks an unrelated change', async () => {
@@ -521,7 +617,7 @@ describe('probe edit form: stored credentials', () => {
     expect(form.querySelector('[aria-invalid="true"]')).toBeNull();
     await save(user, form);
     expect(api.updateHeartbeat).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.queryByRole('form', { name: `Edit ${LABEL}` })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: `Edit ${LABEL}` })).toBeNull());
   });
 
   it('a half pair errors on the empty half', async () => {
@@ -708,7 +804,7 @@ describe('probe edit form: quiet reload', () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     fireEvent.click(screen.getByRole('button', { name: `Edit ${LABEL}` }));
-    const form = screen.getByRole('form', { name: `Edit ${LABEL}` });
+    const form = screen.getByRole('dialog', { name: `Edit ${LABEL}` });
     fireEvent.click(control(form, strings.heartbeatCredentialsReplace));
     fireEvent.change(field(form, strings.heartbeatCredentialsClientIdLabel), {
       target: { value: 'zq-id' },
@@ -722,7 +818,7 @@ describe('probe edit form: quiet reload', () => {
     });
     expect(listHeartbeats.mock.calls.length).toBeGreaterThan(1);
 
-    const same = screen.getByRole('form', { name: `Edit ${LABEL}` });
+    const same = screen.getByRole('dialog', { name: `Edit ${LABEL}` });
     expect(field(same, strings.heartbeatCredentialsClientIdLabel).value).toBe('zq-id');
     expect(field(same, strings.heartbeatCredentialsClientSecretLabel).value).toBe('zq-secret');
     expect(credentialStatus(same)).toHaveTextContent(strings.heartbeatCredentialsReplacing);

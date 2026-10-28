@@ -673,7 +673,7 @@ describe('Heartbeats table, narrow layout', () => {
     expect(screen.getByRole('dialog', { name: 'Delete check?' })).toHaveTextContent(note);
   });
 
-  it('Edit opens the inline editor with focus in it', async () => {
+  it('Edit opens the dialog with focus in it and returns focus to the kebab on close', async () => {
     const user = userEvent.setup();
     renderHeartbeats(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1]) }));
     await screen.findByRole('button', { name: `Actions for ${ROW_1}` });
@@ -681,9 +681,10 @@ describe('Heartbeats table, narrow layout', () => {
     await openMenu({ user, row: ROW_1 });
     await chooseItem({ user, name: `Edit ${ROW_1}` });
 
-    const editor = document.querySelector('.admin-table__editor') as HTMLElement;
-    expect(editor).not.toBeNull();
-    expect(editor).toContainElement(document.activeElement as HTMLElement);
+    const dialog = screen.getByRole('dialog', { name: `Edit ${ROW_1}` });
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(kebab(ROW_1)).toHaveFocus());
   });
 
   it('a failed pause puts the server error on the kebab and in the menu', async () => {
@@ -1370,14 +1371,13 @@ describe('Owner badge, narrow layout', () => {
     expect(columnTitles()).toHaveLength(5);
   });
 
-  it('the Heartbeats editor row spans every column of the narrow table', async () => {
+  it('the Heartbeats edit dialog adds no editor row to the narrow table', async () => {
     const user = userEvent.setup();
     renderHeartbeats(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1]) }));
     await screen.findByRole('button', { name: `Actions for ${ROW_1}` });
     await openMenu({ user, row: ROW_1 });
     await chooseItem({ user, name: `Edit ${ROW_1}` });
-    const cell = document.querySelector('.admin-table__editor-cell') as HTMLTableCellElement;
-    expect(cell.colSpan).toBe(columnTitles().length);
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(columnTitles()).toHaveLength(6);
   });
 });
@@ -1461,7 +1461,7 @@ describe('Owner badge, roomy layout', () => {
 
     renderHeartbeats(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1]) }));
     await user.click(await screen.findByRole('button', { name: `Edit ${ROW_1}` }));
-    expect(editorColSpan()).toBe(columnTitles().length);
+    expect(screen.getByRole('dialog', { name: `Edit ${ROW_1}` })).toBeInTheDocument();
     expect(columnTitles()).toHaveLength(7);
   });
 
