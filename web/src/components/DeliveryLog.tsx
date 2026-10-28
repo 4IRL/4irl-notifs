@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { JSX } from 'react';
 
 import type {
@@ -7,11 +7,15 @@ import type {
   DeliveryState,
   DeliverySummary,
 } from '../api/deliveryClient';
+import { useCompactTable } from '../hooks/useCompactTable';
 import { useFocusRegistry } from '../hooks/useFocusRegistry';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { strings } from '../strings';
+import { ChoiceMenu } from './ChoiceMenu';
 import { ConfirmButton } from './ConfirmButton';
-import { formatMinute } from './formatUtc';
+import { formatTimeOfDay } from './formatLocalTime';
+import { LocalTime } from './LocalTime';
+import { RefreshButton } from './RefreshButton';
 import { messageOf, withoutKey } from './rowState';
 import './DeliveryLog.css';
 
@@ -34,6 +38,30 @@ const FILTERS: { state: DeliveryState; label: string }[] = [
   { state: 'delivered', label: strings.deliveryLogFilterDelivered },
 ];
 
+const DEFAULT_FILTER: DeliveryState = 'dead';
+
+function FunnelGlyph(): JSX.Element {
+  return (
+    <svg
+      className="row-menu__glyph"
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        d="M3 5h18l-7 8.5V20l-4-2v-4.5z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 const STATE_LABELS: Record<DeliveryState, string> = {
   dead: strings.deliveryStateDead,
   pending: strings.deliveryStatePending,
@@ -50,7 +78,7 @@ function capitalised(text: string): string {
 }
 
 function formatClock(timestamp: string): string {
-  return timestamp.slice(11, 19);
+  return formatTimeOfDay({ timestamp, withSeconds: true });
 }
 
 function shortMessageId(id: string): string {
@@ -63,7 +91,9 @@ function shortMessageId(id: string): string {
  * replay flags; every load goes through the shared latest-request helper.
  */
 export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
-  const [filter, setFilter] = useState<DeliveryState>('dead');
+  const compact = useCompactTable();
+  const hintId = useId();
+  const [filter, setFilter] = useState<DeliveryState>(DEFAULT_FILTER);
   const [deliveries, setDeliveries] = useState<DeliverySummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -226,7 +256,9 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
               <td className="delivery-log__mono">
                 {strings.attemptLatency({ ms: attempt.latencyMs })}
               </td>
-              <td className="delivery-log__mono">{formatClock(attempt.startedAt)}</td>
+              <td className="delivery-log__mono">
+                <LocalTime timestamp={attempt.startedAt} format="timeOfDaySeconds" />
+              </td>
               <td className="delivery-log__mono delivery-log__wrap">
                 {attempt.error !== null && <div>{attempt.error}</div>}
                 {attempt.responseSnippet !== null && (
@@ -252,28 +284,44 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
         >
           {strings.deliveryLogHeading}
         </h2>
-        <div
-          className="delivery-log__filters"
-          role="group"
-          aria-label={strings.deliveryLogFilterLabel}
-        >
-          {FILTERS.map(({ state, label }) => (
-            <button
-              key={state}
-              type="button"
-              className="delivery-log__button"
-              aria-pressed={filter === state}
-              onClick={() => selectFilter(state)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <button type="button" className="delivery-log__button" onClick={() => startReload(filter)}>
-          {strings.deliveryLogRefresh}
-        </button>
+        {!compact && (
+          <div
+            className="delivery-log__filters"
+            role="group"
+            aria-label={strings.deliveryLogFilterLabel}
+          >
+            {FILTERS.map(({ state, label }) => (
+              <button
+                key={state}
+                type="button"
+                className="delivery-log__button"
+                aria-pressed={filter === state}
+                onClick={() => selectFilter(state)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        <RefreshButton
+          label={strings.deliveryLogRefresh}
+          className="delivery-log__button"
+          busy={loading}
+          onClick={() => startReload(filter)}
+        />
+        {compact && (
+          <ChoiceMenu
+            label={strings.deliveryLogFiltersMenu}
+            choices={FILTERS.map(({ state, label }) => ({ value: state, label }))}
+            value={filter}
+            onSelect={selectFilter}
+            active={filter !== DEFAULT_FILTER}
+            describedById={hintId}
+            icon={<FunnelGlyph />}
+          />
+        )}
       </div>
-      <p className="delivery-log__hint">
+      <p id={hintId} className="delivery-log__hint">
         {strings.deliveryLogHint({ state: filter })}
         {filter === 'dead' && ` ${strings.deliveryLogReplayHint}`}
       </p>
@@ -341,7 +389,9 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
                       <td className="delivery-log__mono">
                         {delivery.lastStatusCode ?? strings.noValue}
                       </td>
-                      <td className="delivery-log__mono">{formatMinute(delivery.updatedAt)}</td>
+                      <td className="delivery-log__mono">
+                        <LocalTime timestamp={delivery.updatedAt} />
+                      </td>
                       <td>
                         <div className="delivery-log__actions">
                           <button

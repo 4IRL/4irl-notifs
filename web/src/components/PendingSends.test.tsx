@@ -10,6 +10,7 @@ import type {
   ScheduledMessagesList,
 } from '../api/deliveryClient';
 import { strings } from '../strings';
+import { useTimeZone } from '../test-timezone';
 import { formatRelativeFuture } from './formatRelative';
 import { PendingSends } from './PendingSends';
 
@@ -193,7 +194,7 @@ describe('PendingSends', () => {
     expect(screen.getByText('reminder')).toBeInTheDocument();
     expect(screen.getByText('ops_discord')).toBeInTheDocument();
     expect(screen.getByText('discord')).toBeInTheDocument();
-    expect(screen.getByText('2026-10-17 20:15')).toBeInTheDocument();
+    expect(screen.getByText('2026-10-17 20:15 UTC')).toBeInTheDocument();
     expect(screen.getAllByText(strings.pendingStateScheduled)).toHaveLength(2);
     expect(screen.queryByText(strings.pendingStateDue)).toBeNull();
     // The recipient row lists the personal topic, not a destination.
@@ -202,7 +203,12 @@ describe('PendingSends', () => {
 
     const time = screen.getByText('2099-10-18 19:00 UTC');
     expect(time.tagName).toBe('TIME');
-    expect(time).toHaveAttribute('datetime', '2099-10-18T19:00:00Z');
+    expect(time).toHaveAttribute('datetime', '2099-10-18T19:00:00.000Z');
+    expect(time).toHaveAttribute('title', '2099-10-18T19:00:00.000Z');
+    const created = screen.getByText('2026-10-17 20:15 UTC');
+    expect(created.tagName).toBe('TIME');
+    expect(created).toHaveAttribute('datetime', '2026-10-17T20:15:44.000Z');
+    expect(created).toHaveAttribute('title', '2026-10-17T20:15:44.000Z');
     expect(status()).toBeEmptyDOMElement();
   });
 
@@ -1012,5 +1018,36 @@ describe('PendingSends', () => {
       expect(client.listScheduledMessages).toHaveBeenCalledTimes(callsBefore);
       expect(vi.getTimerCount()).toBe(0);
     });
+  });
+});
+
+describe('PendingSends times in a non-UTC zone', () => {
+  useTimeZone('Asia/Kolkata');
+
+  it('shows deliver and created times in the viewer zone and names the zone in the hint', async () => {
+    const client = buildClient({
+      listScheduledMessages: vi.fn().mockResolvedValue(
+        listOf([
+          buildScheduled({
+            messageId: 'a',
+            idempotencyKey: 'chore-1',
+            deliverAt: '2099-10-18T19:00:00Z',
+            createdAt: '2026-10-17T20:15:44Z',
+          }),
+        ]),
+      ),
+    });
+    render(<PendingSends client={client} />);
+
+    expect(await screen.findByText('chore-1')).toBeInTheDocument();
+    const deliver = screen.getByText('2099-10-19 00:30 GMT+5:30');
+    expect(deliver.tagName).toBe('TIME');
+    expect(deliver).toHaveAttribute('datetime', '2099-10-18T19:00:00.000Z');
+    expect(deliver).toHaveAttribute('title', '2099-10-18T19:00:00.000Z');
+    expect(screen.getByText('2026-10-18 01:45 GMT+5:30')).toBeInTheDocument();
+    expect(
+      // ICU may canonicalise the zone to its legacy alias (Asia/Calcutta).
+      screen.getByText(/Times are shown in your local time zone \(Asia\/(Kolkata|Calcutta)\)/),
+    ).toBeInTheDocument();
   });
 });

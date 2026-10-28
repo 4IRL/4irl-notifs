@@ -10,8 +10,10 @@ import { useLatestRequest } from '../hooks/useLatestRequest';
 import { strings } from '../strings';
 import { ConfirmButton } from './ConfirmButton';
 import { formatRelativeFuture } from './formatRelative';
-import { formatMinute, formatUtc } from './formatUtc';
+import { localZoneName } from './formatLocalTime';
+import { LocalTime } from './LocalTime';
 import { OWNER_ROW_ATTRIBUTE, OWNER_ROW_ID } from './Modal';
+import { RefreshButton } from './RefreshButton';
 import { messageOf, withoutKey } from './rowState';
 import './PendingSends.css';
 
@@ -301,15 +303,16 @@ export function PendingSends({ client }: PendingSendsProps): JSX.Element {
         <h2 id="pending-sends-heading" tabIndex={-1} ref={headingRef}>
           {strings.pendingSendsHeading}
         </h2>
-        <button
-          type="button"
+        <RefreshButton
+          label={strings.pendingSendsRefresh}
           className="pending-sends__button pending-sends__button--ghost"
+          busy={loading}
           onClick={startRefresh}
-        >
-          {strings.pendingSendsRefresh}
-        </button>
+        />
       </div>
-      <p className="pending-sends__hint">{strings.pendingSendsHint({ limit: PENDING_LIMIT })}</p>
+      <p className="pending-sends__hint">
+        {strings.pendingSendsHint({ limit: PENDING_LIMIT, zone: localZoneName() })}
+      </p>
       {!loading && error === null && total > items.length && (
         <p className="pending-sends__hint">
           {strings.pendingSendsTruncated({ shown: items.length, total })}
@@ -372,14 +375,14 @@ export function PendingSends({ client }: PendingSendsProps): JSX.Element {
                     </td>
                     <td>{renderDestinations(item)}</td>
                     <td>
-                      <time dateTime={item.deliverAt} className="pending-sends__mono">
-                        {formatUtc(item.deliverAt)}
-                      </time>
+                      <LocalTime timestamp={item.deliverAt} className="pending-sends__mono" />
                       <span className="pending-sends__sub">
                         {formatRelativeFuture({ deliverAt: item.deliverAt, now })}
                       </span>
                     </td>
-                    <td className="pending-sends__mono">{formatMinute(item.createdAt)}</td>
+                    <td className="pending-sends__mono">
+                      <LocalTime timestamp={item.createdAt} />
+                    </td>
                     <td className="pending-sends__actions-cell">
                       <div className="pending-sends__actions">
                         <ConfirmButton

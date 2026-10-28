@@ -3620,7 +3620,8 @@ test.describe('admin UI Delivery tab', () => {
 
     await page.setViewportSize({ width: 480, height: 900 });
     await page.goto('/#delivery');
-    await expect(page.locator('.row-menu__trigger')).toHaveCount(4);
+    // Four row kebabs; the fifth `.row-menu__trigger` is the delivery-log filter funnel.
+    await expect(page.locator('tbody .row-menu__trigger')).toHaveCount(4);
     await expect(
       page.locator(
         ':is(.destinations__table, .routes__table, .heartbeats__table, .app-identities__table) tbody button:not(.row-menu__trigger)',

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DeliveryApiClient, ReadinessResult } from '../api/deliveryClient';
 import { strings } from '../strings';
+import { useTimeZone } from '../test-timezone';
 import { DeliveryStatusCard } from './DeliveryStatusCard';
 
 function clientReturning(getReadiness: DeliveryApiClient['getReadiness']): DeliveryApiClient {
@@ -24,7 +25,9 @@ describe('DeliveryStatusCard', () => {
     );
 
     expect(screen.getByText(strings.deliveryStatusChecking)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: strings.deliveryStatusRefresh })).toBeDisabled();
+    const refresh = screen.getByRole('button', { name: strings.deliveryStatusRefresh });
+    expect(refresh).toHaveAttribute('aria-disabled', 'true');
+    expect(refresh).not.toBeDisabled();
   });
 
   it('renders ready with no migration failure', async () => {
@@ -151,6 +154,30 @@ describe('DeliveryStatusCard', () => {
     expect(screen.getByText(/A newer migration \(v5\) failed/)).toBeInTheDocument();
     expect(screen.getByText(/The service still runs on schema 4/)).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  describe('in a non-UTC zone', () => {
+    useTimeZone('America/Los_Angeles');
+
+    it('words the failed migration time in the viewer zone with its abbreviation', async () => {
+      render(
+        <DeliveryStatusCard
+          client={clientWith({
+            kind: 'ok',
+            schemaVersion: 4,
+            expectedSchemaVersion: 4,
+            heartbeatChecker: { lastTickAt: '2026-10-19T09:00:00Z', stale: false },
+            lastMigrationFailure: {
+              version: 5,
+              error: 'ERROR: column "x" already exists',
+              failedAt: '2026-10-17T06:00:00Z',
+            },
+          })}
+        />,
+      );
+
+      expect(await screen.findByText('v5 · 2026-10-16 23:00 PDT')).toBeInTheDocument();
+    });
   });
 
   it('renders a schema mismatch as a danger alert naming the failed migration', async () => {

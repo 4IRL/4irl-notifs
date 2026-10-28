@@ -183,7 +183,11 @@ describe('strings module', () => {
     const hint =
       'Times are shown in your local time zone (Asia/Kolkata); the abbreviations on each time follow daylight saving.';
     expect(strings.timesLocalHint({ zone: 'Asia/Kolkata' })).toBe(hint);
+    expect(strings.pendingSendsHint({ limit: 50, zone: 'Asia/Kolkata' })).toContain(hint);
     expect(strings.heartbeatsHint({ zone: 'Asia/Kolkata' })).toContain(hint);
+    expect(strings.pendingSendsHint({ limit: 50, zone: 'Asia/Kolkata' })).not.toContain(
+      'Times are UTC',
+    );
     expect(strings.heartbeatsHint({ zone: 'Asia/Kolkata' })).not.toContain('Times are UTC');
   });
 

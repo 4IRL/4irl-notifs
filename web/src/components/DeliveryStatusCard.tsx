@@ -8,7 +8,8 @@ import type {
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { strings } from '../strings';
 import { formatRelativePast } from './formatRelative';
-import { formatUtc } from './formatUtc';
+import { formatDateTimeZone } from './formatLocalTime';
+import { RefreshButton } from './RefreshButton';
 import './DeliveryStatusCard.css';
 
 interface DeliveryStatusCardProps {
@@ -112,7 +113,9 @@ export function DeliveryStatusCard({ client }: DeliveryStatusCardProps) {
                     ? strings.deliveryStatusNone
                     : strings.deliveryStatusFailureValue({
                         version: result.lastMigrationFailure.version,
-                        failedAt: formatUtc(result.lastMigrationFailure.failedAt),
+                        failedAt: formatDateTimeZone({
+                          timestamp: result.lastMigrationFailure.failedAt,
+                        }),
                       })}
                 </dd>
               </div>
@@ -133,17 +136,15 @@ export function DeliveryStatusCard({ client }: DeliveryStatusCardProps) {
             </dl>
           )}
         </div>
-        <button
-          type="button"
+        <RefreshButton
+          label={strings.deliveryStatusRefresh}
           className="status-card__refresh"
-          disabled={checking}
+          busy={checking}
           onClick={() => {
             setResult(null);
             void load();
           }}
-        >
-          {strings.deliveryStatusRefresh}
-        </button>
+        />
       </div>
       {hasSchema && result.heartbeatChecker.stale && (
         <p className="status-card__warn">{strings.heartbeatCheckerStalledWarning}</p>
