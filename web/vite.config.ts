@@ -29,6 +29,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: false,
+    globalSetup: ['./vitest.global-setup.ts'],
     setupFiles: ['./src/test-setup.ts'],
     include: ['src/**/*.test.{ts,tsx}', 'functions/**/*.test.ts', 'worktree-ports.test.ts'],
   },

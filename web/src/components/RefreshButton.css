@@ -1,0 +1,34 @@
+/* The compact refresh control: a 44px transparent icon button, styled like the row-menu trigger.
+   An in-flight or disabled refresh dims the static icon (no spinner). */
+.refresh-button__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.refresh-button__icon:hover {
+  background: var(--surface-hover);
+}
+
+.refresh-button__icon:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.refresh-button__icon[data-dimmed='true'] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.refresh-button__icon[data-dimmed='true']:hover {
+  background: transparent;
+}

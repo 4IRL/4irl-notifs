@@ -16,6 +16,8 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${e2ePort}`,
     trace: 'on-first-retry',
+    // Pin the browser zone so time fixtures hold on non-UTC hosts.
+    timezoneId: 'UTC',
   },
   projects: [
     {
