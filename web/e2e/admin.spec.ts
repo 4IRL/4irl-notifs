@@ -3035,13 +3035,6 @@ test.describe('admin UI Delivery tab', () => {
         scroll: '.destinations__scroll',
         columns: 5,
       },
-      {
-        row: 'route 2',
-        editName: 'Edit route 2',
-        table: '.routes__table',
-        scroll: '.routes__scroll',
-        columns: 5,
-      },
     ]) {
       const menu = await openRowMenu({ page, row });
       await menu.getByRole('menuitem', { name: editName, exact: true }).click();
@@ -3057,6 +3050,13 @@ test.describe('admin UI Delivery tab', () => {
     // Editing opens the shared dialog inside the viewport and leaves the narrow table's columns
     // alone (no editor row spans them any more).
     for (const { row, editName, dialogName, table, columns } of [
+      {
+        row: 'route 2',
+        editName: 'Edit route 2',
+        dialogName: 'Edit route 2',
+        table: '.routes__table',
+        columns: 5,
+      },
       {
         row: 'chores4irl/daily',
         editName: 'Edit chores4irl/daily',
@@ -3697,17 +3697,13 @@ test.describe('admin UI Delivery tab', () => {
     await expect(rowKebab({ page, row: 'hook1' })).toBeFocused();
 
     // The route editor.
-    const routeWrapper = page.locator('.routes__scroll');
     const routeMenu = await openRowMenu({ page, row: 'route 1' });
     await routeMenu.getByRole('menuitem', { name: 'Edit route 1', exact: true }).click();
-    const routeForm = routeWrapper.locator('.admin-table__editor form');
-    await expect(routeForm).toBeVisible();
-    await expect(routeForm.locator(':focus')).toHaveCount(1);
-    await expectEditorInView({ wrapper: routeWrapper, form: routeForm });
+    const routeDialog = page.getByRole('dialog', { name: 'Edit route 1' });
+    await expect(routeDialog).toBeVisible();
+    await expect(routeDialog.locator(':focus')).toHaveCount(1);
+    await expectDialogInViewport(page);
     await expectNoPageOverflow(page);
-    const routeFormBox = await routeForm.boundingBox();
-    expect(routeFormBox?.x ?? -1).toBeGreaterThanOrEqual(0);
-    expect((routeFormBox?.x ?? 0) + (routeFormBox?.width ?? 0)).toBeLessThanOrEqual(390);
     expect(mock.unmocked).toEqual([]);
   });
 

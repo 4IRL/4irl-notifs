@@ -1,7 +1,6 @@
-import { Fragment } from 'react';
 import type { JSX } from 'react';
 
-import type { DestinationSummary, RouteSummary } from '../api/deliveryClient';
+import type { RouteSummary } from '../api/deliveryClient';
 import { useCompactTable } from '../hooks/useCompactTable';
 import { strings } from '../strings';
 import { ConfirmButton } from './ConfirmButton';
@@ -10,8 +9,6 @@ import { ownerInlineNoteOf, ownerNoteOf } from './ownership';
 import { RowActionsMenu } from './RowActionsMenu';
 import type { RowMenuItem } from './RowActionsMenu';
 import { routeActionLabels } from './rowActionLabels';
-import { RouteForm } from './RouteForm';
-import type { RouteSubmission } from './RouteForm';
 import { revealFocusedControl } from './adminTableFocus';
 import './adminTable.css';
 import './RoutesTable.css';
@@ -21,23 +18,14 @@ export type RouteAction = 'save' | 'delete';
 
 interface RoutesTableProps {
   routes: RouteSummary[];
-  /** Destinations for the edit form's checkboxes (empty while loading or failed). */
-  destinations: DestinationSummary[];
-  editingId: number | null;
   isBusy: (params: { action: RouteAction; id: number }) => boolean;
   rowErrors: Record<number, string>;
   /** Registers a focusable control under a key so the owner can move focus to it. */
   registerControl: (params: { key: string; element: HTMLElement | null }) => void;
-  onToggleEditor: (id: number) => void;
-  onCloseEditor: (id: number) => void;
+  /** Opens the edit dialog for the route. */
+  onEdit: (id: number) => void;
   onDelete: (id: number) => void;
-  onSave: (params: { id: number } & RouteSubmission) => Promise<void>;
 }
-
-// The editor row spans every column of the layout in use, Actions included:
-// App, Channel, Owner, Destinations, Status, Actions when roomy; the narrow layout drops Owner.
-const WIDE_COLUMN_COUNT = 6;
-const COMPACT_COLUMN_COUNT = 5;
 
 type RouteColumn = 'app' | 'channel' | 'owner' | 'destinations' | 'status';
 
@@ -49,19 +37,14 @@ const COMPACT_COLUMNS: RouteColumn[] = ['app', 'channel', 'status', 'destination
 
 export function RoutesTable({
   routes,
-  destinations,
-  editingId,
   isBusy,
   rowErrors,
   registerControl,
-  onToggleEditor,
-  onCloseEditor,
+  onEdit,
   onDelete,
-  onSave,
 }: RoutesTableProps): JSX.Element {
   const compact = useCompactTable();
   const columns = compact ? COMPACT_COLUMNS : WIDE_COLUMNS;
-  const columnCount = compact ? COMPACT_COLUMN_COUNT : WIDE_COLUMN_COUNT;
   const headers: Record<RouteColumn, JSX.Element> = {
     app: (
       <th key="app" scope="col" className="admin-table__lead">
@@ -112,21 +95,19 @@ export function RoutesTable({
         <tbody>
           {routes.map((route) => {
             const { id } = route;
-            const isEditing = editingId === id;
             const rowError = rowErrors[id];
             const ownerNote = ownerNoteOf(route);
             const ownerInlineNote = ownerInlineNoteOf(route);
             const deleteBusy = isBusy({ action: 'delete', id });
             // The visible text is the bare verb (the row names the route); the accessible name
             // keeps the route. A busy action shows its progress text for both.
-            const labels = routeActionLabels({ id, editing: isEditing });
+            const labels = routeActionLabels({ id });
             const menuItems: RowMenuItem[] = [
               {
                 id: 'edit',
                 label: labels.edit.visible,
                 ariaLabel: labels.edit.accessible,
-                expanded: isEditing,
-                onSelect: () => onToggleEditor(id),
+                onSelect: () => onEdit(id),
               },
               {
                 id: 'delete',
@@ -190,80 +171,63 @@ export function RoutesTable({
               ),
             };
             return (
-              <Fragment key={id}>
-                <tr>
-                  {columns.map((column) => cells[column])}
-                  {compact ? (
-                    <td className="admin-table__actions admin-table__kebab">
-                      <RowActionsMenu
-                        rowLabel={strings.routeRowLabel({ id })}
-                        items={menuItems}
-                        note={ownerInlineNote}
-                        errors={rowError === undefined ? undefined : [rowError]}
-                        focusKeys={[`edit:${id}`]}
-                        registerControl={registerControl}
+              <tr key={id}>
+                {columns.map((column) => cells[column])}
+                {compact ? (
+                  <td className="admin-table__actions admin-table__kebab">
+                    <RowActionsMenu
+                      rowLabel={strings.routeRowLabel({ id })}
+                      items={menuItems}
+                      note={ownerInlineNote}
+                      errors={rowError === undefined ? undefined : [rowError]}
+                      focusKeys={[`edit:${id}`]}
+                      registerControl={registerControl}
+                    />
+                  </td>
+                ) : (
+                  <td className="admin-table__actions">
+                    <div className="routes__actions">
+                      <button
+                        ref={(element) => registerControl({ key: `edit:${id}`, element })}
+                        type="button"
+                        className="routes__button"
+                        aria-label={labels.edit.accessible}
+                        aria-haspopup="dialog"
+                        onClick={() => onEdit(id)}
+                      >
+                        {labels.edit.visible}
+                      </button>
+                      <ConfirmButton
+                        triggerLabel={labels.delete.visible}
+                        triggerAriaLabel={labels.delete.accessible}
+                        confirmLabel={labels.confirmDelete.visible}
+                        confirmAriaLabel={labels.confirmDelete.accessible}
+                        dismissAriaLabel={labels.cancelDelete.accessible}
+                        className="routes__button routes__button--danger"
+                        confirmNotice={ownerNote ?? undefined}
+                        busy={deleteBusy}
+                        busyLabel={strings.deletingRoute}
+                        dialogTitle={strings.deleteRouteDialogTitle}
+                        dialogItem={{
+                          label: strings.dialogItemRoute,
+                          value: strings.routeRowLabel({ id }),
+                        }}
+                        onConfirm={() => onDelete(id)}
                       />
-                    </td>
-                  ) : (
-                    <td className="admin-table__actions">
-                      <div className="routes__actions">
-                        <button
-                          ref={(element) => registerControl({ key: `edit:${id}`, element })}
-                          type="button"
-                          className="routes__button"
-                          aria-label={labels.edit.accessible}
-                          aria-expanded={isEditing}
-                          onClick={() => onToggleEditor(id)}
-                        >
-                          {labels.edit.visible}
-                        </button>
-                        <ConfirmButton
-                          triggerLabel={labels.delete.visible}
-                          triggerAriaLabel={labels.delete.accessible}
-                          confirmLabel={labels.confirmDelete.visible}
-                          confirmAriaLabel={labels.confirmDelete.accessible}
-                          dismissAriaLabel={labels.cancelDelete.accessible}
-                          className="routes__button routes__button--danger"
-                          confirmNotice={ownerNote ?? undefined}
-                          busy={deleteBusy}
-                          busyLabel={strings.deletingRoute}
-                          dialogTitle={strings.deleteRouteDialogTitle}
-                          dialogItem={{
-                            label: strings.dialogItemRoute,
-                            value: strings.routeRowLabel({ id }),
-                          }}
-                          onConfirm={() => onDelete(id)}
-                        />
-                      </div>
-                      {ownerNote !== null && (
-                        <span className="routes__sub admin-table__aux admin-table__note">
-                          {ownerInlineNote}
-                        </span>
-                      )}
-                      {rowError !== undefined && (
-                        <p role="alert" className="routes__row-error admin-table__aux">
-                          {rowError}
-                        </p>
-                      )}
-                    </td>
-                  )}
-                </tr>
-                {isEditing && (
-                  <tr>
-                    <td colSpan={columnCount} className="admin-table__editor-cell">
-                      <div className="admin-table__editor">
-                        <RouteForm
-                          route={route}
-                          destinations={destinations}
-                          saving={isBusy({ action: 'save', id })}
-                          onSubmit={(submission) => onSave({ id, ...submission })}
-                          onClose={() => onCloseEditor(id)}
-                        />
-                      </div>
-                    </td>
-                  </tr>
+                    </div>
+                    {ownerNote !== null && (
+                      <span className="routes__sub admin-table__aux admin-table__note">
+                        {ownerInlineNote}
+                      </span>
+                    )}
+                    {rowError !== undefined && (
+                      <p role="alert" className="routes__row-error admin-table__aux">
+                        {rowError}
+                      </p>
+                    )}
+                  </td>
                 )}
-              </Fragment>
+              </tr>
             );
           })}
         </tbody>
