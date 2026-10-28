@@ -7,6 +7,10 @@
 // outbound sinks share. Every request carries the internal credential header
 // provisioning-api checks. When no origin or no credential is configured
 // Configured reports false and MintPublisher fails closed without dialing.
+//
+// It also relays POST /v1/provision and POST /v1/deprovision (Provision, Deprovision): those hand the
+// upstream status, body, Content-Type and Retry-After back unchanged as a Passthrough, and fail closed
+// with ErrNotConfigured the same way. Redirects are never followed and there is no retry.
 package provisionclient
 
 import (
@@ -39,8 +43,9 @@ const (
 
 	provisionAppPath = "/v1/provision-app"
 
-	// maxResponseBytes caps how much of a mint response is read; a real grant is
-	// a few hundred bytes.
+	// maxResponseBytes caps how much of a response is read, for a mint and for a pass-through; a real
+	// grant is a few hundred bytes. A mint truncates at the cap (and then fails to decode); a
+	// pass-through over the cap is an error, never a truncated answer.
 	maxResponseBytes = 64 << 10
 )
 
@@ -169,4 +174,102 @@ func (client *Client) MintPublisher(ctx context.Context, appID string) (Publishe
 		return PublisherGrant{}, errors.New("provision-app: response token is malformed")
 	}
 	return grant, nil
+}
+
+const (
+	provisionPath   = "/v1/provision"
+	deprovisionPath = "/v1/deprovision"
+)
+
+// Passthrough is a provisioning-api answer handed back unchanged: the upstream status, body bytes,
+// Content-Type and Retry-After header. Body can carry a one-time secret (a provision response holds the
+// token and possibly the password), so it is never logged or put in an error.
+//
+// ContentType and RetryAfter are relayed verbatim from the upstream and are untrusted: a caller must not
+// reflect an arbitrary ContentType (for example text/html would be an XSS risk on this origin) or
+// RetryAfter to its own client blindly; validate or force them (application/json, a numeric delay).
+type Passthrough struct {
+	Status      int
+	Body        []byte
+	ContentType string
+	RetryAfter  string
+}
+
+// DeprovisionTarget names the person to remove. Exactly one of Email and UserID is set; UserID is the
+// ntfy user id (u_<person_hash>).
+type DeprovisionTarget struct {
+	Email  string
+	UserID string
+}
+
+type appEmailRequest struct {
+	AppID string `json:"app_id"`
+	Email string `json:"email"`
+}
+
+type deprovisionByUserIDRequest struct {
+	AppID  string `json:"app_id"`
+	UserID string `json:"user_id"`
+}
+
+// Provision asks provisioning-api to add the person with email to appID and returns its answer as-is.
+// A non-2xx status is not an error; only a failure to get an answer is. Error text never contains the
+// email, the credential or the response body.
+func (client *Client) Provision(ctx context.Context, appID string, email string) (Passthrough, error) {
+	body, marshalErr := json.Marshal(appEmailRequest{AppID: appID, Email: email})
+	if marshalErr != nil {
+		return Passthrough{}, errors.New("provision: encode request failed")
+	}
+	return client.passthrough(ctx, "provision", provisionPath, body)
+}
+
+// Deprovision asks provisioning-api to remove the person from appID and returns its answer as-is.
+// Exactly one of target.Email and target.UserID must be set.
+func (client *Client) Deprovision(ctx context.Context, appID string, target DeprovisionTarget) (Passthrough, error) {
+	if (target.Email == "") == (target.UserID == "") {
+		return Passthrough{}, errors.New("deprovision: exactly one of email and user_id is required")
+	}
+	var payload any
+	if target.Email != "" {
+		payload = appEmailRequest{AppID: appID, Email: target.Email}
+	} else {
+		payload = deprovisionByUserIDRequest{AppID: appID, UserID: target.UserID}
+	}
+	body, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return Passthrough{}, errors.New("deprovision: encode request failed")
+	}
+	return client.passthrough(ctx, "deprovision", deprovisionPath, body)
+}
+
+// passthrough posts body to path and returns the response unchanged. Redirects are not followed and
+// there is no retry. A response body over maxResponseBytes is an error, never a truncated pass-through.
+func (client *Client) passthrough(ctx context.Context, label string, path string, body []byte) (Passthrough, error) {
+	if !client.Configured() {
+		return Passthrough{}, ErrNotConfigured
+	}
+	request, requestErr := client.newJSONRequest(ctx, path, body)
+	if requestErr != nil {
+		return Passthrough{}, fmt.Errorf("%s: build request failed", label)
+	}
+	response, doErr := client.httpClient.Do(request)
+	if doErr != nil {
+		// The *url.Error carries only the method and URL (no body or headers), so it is safe to wrap.
+		return Passthrough{}, fmt.Errorf("%s: request failed: %w", label, doErr)
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if readErr != nil {
+		return Passthrough{}, fmt.Errorf("%s: read response failed", label)
+	}
+	if len(responseBody) > maxResponseBytes {
+		return Passthrough{}, fmt.Errorf("%s: response body exceeds %d bytes", label, maxResponseBytes)
+	}
+	return Passthrough{
+		Status:      response.StatusCode,
+		Body:        responseBody,
+		ContentType: response.Header.Get("Content-Type"),
+		RetryAfter:  response.Header.Get("Retry-After"),
+	}, nil
 }
