@@ -51,6 +51,19 @@ export const strings = {
 
   // Confirm dialogs (shared Modal shell).
   closeDialog: 'Close',
+  closeAction: 'Close dialog',
+  discardChangesMessage: 'Discard unsaved changes?',
+  discardChanges: 'Discard changes',
+  keepEditing: 'Keep editing',
+  editRowGone: 'This item was removed. Close this dialog to continue.',
+  // Edit dialog title; editDestination is the shorter trigger label on the row.
+  editDestinationNamed: ({ name }: { name: string }): string => `Edit destination ${name}`,
+  editRouteTitle: 'Edit route',
+  editAppNamed: ({ appId }: { appId: string }): string => `Edit app ${appId}`,
+  tokenShownOnceGuard: 'This token is shown once. Close without copying it?',
+  closeAnyway: 'Close anyway',
+  keepOpen: 'Keep open',
+  appSavedResult: ({ appId }: { appId: string }): string => `Saved ${appId}.`,
   dialogItemUser: 'User',
   dialogItemUserApp: 'User · app',
   dialogUserApp: ({ user, app }: { user: string; app: string }): string => `${user} · ${app}`,
@@ -124,6 +137,8 @@ export const strings = {
   resetPasswordAction: 'Reset password',
   confirmResetPasswordAction: 'Confirm reset',
   resettingPasswordAction: 'Resetting…',
+  // Row trigger/menu-item text while a reset is in flight; sits inside resetPasswordBusyNamed.
+  resettingPasswordRowAction: 'Resetting password',
   resetPasswordNotice: 'Resetting replaces the current password immediately.',
   resetPasswordUnavailable: 'Reset unavailable: email not loaded.',
   resetPasswordDone: 'Done',
@@ -210,6 +225,8 @@ export const strings = {
   appsLoading: 'Loading apps…',
   appsEmpty: 'No apps registered yet.',
   appsLoadError: 'Could not load apps.',
+  columnApp: 'App',
+  columnPerson: 'Person',
   columnAppName: 'Name',
   columnAppId: 'App ID',
   columnAppDescription: 'Description',
@@ -269,6 +286,7 @@ export const strings = {
   deliveryStatusMigrationLabel: 'Last migration failure',
   deliveryStatusNone: 'none',
   noValue: '—',
+  columnActions: 'Actions',
   separator: ' · ',
   adminTestDeliveryTitle: 'Test from 4IRL admin',
   adminTestDeliveryBody: ({ destination }: { destination: string }): string =>
@@ -457,6 +475,7 @@ export const strings = {
   deliveryLogFilterDead: 'Dead',
   deliveryLogFilterPending: 'Pending',
   deliveryLogFilterDelivered: 'Delivered',
+  deliveryLogFiltersMenu: 'Filter deliveries',
   deliveryLogRefresh: 'Refresh log',
   deliveryLogHint: ({ state }: { state: string }): string =>
     `Showing the newest 50 ${state} deliveries.`,
@@ -498,6 +517,8 @@ export const strings = {
   // Pending sends section.
   pendingSendsHeading: 'Pending sends',
   pendingSendsRefresh: 'Refresh pending sends',
+  timesLocalHint: ({ zone }: { zone: string }): string =>
+    `Times are shown in your local time zone (${zone}); the abbreviations on each time follow daylight saving.`,
   pendingSendsHint: ({ limit }: { limit: number }): string =>
     `Messages scheduled with deliver_at, soonest first (up to ${limit} shown). Times are UTC. Once released they leave this list and appear in the Delivery log.`,
   pendingSendsTruncated: ({ shown, total }: { shown: number; total: number }): string =>
