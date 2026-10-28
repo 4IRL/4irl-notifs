@@ -516,8 +516,8 @@ export const strings = {
   pendingSendsRefresh: 'Refresh pending sends',
   timesLocalHint: ({ zone }: { zone: string }): string =>
     `Times are shown in your local time zone (${zone}); the abbreviations on each time follow daylight saving.`,
-  pendingSendsHint: ({ limit }: { limit: number }): string =>
-    `Messages scheduled with deliver_at, soonest first (up to ${limit} shown). Times are UTC. Once released they leave this list and appear in the Delivery log.`,
+  pendingSendsHint: ({ limit, zone }: { limit: number; zone: string }): string =>
+    `Messages scheduled with deliver_at, soonest first (up to ${limit} shown). ${strings.timesLocalHint({ zone })} Once released they leave this list and appear in the Delivery log.`,
   pendingSendsTruncated: ({ shown, total }: { shown: number; total: number }): string =>
     `Showing the ${shown} soonest of ${total} pending sends.`,
   pendingSendsLoading: 'Loading pending sends…',
