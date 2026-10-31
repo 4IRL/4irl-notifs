@@ -106,6 +106,22 @@ func TestDeprovisionSendsExactRequest(testInstance *testing.T) {
 	}
 }
 
+func TestSetPasswordSendsExactRequest(testInstance *testing.T) {
+	server, captured := captureServer(testInstance)
+
+	result, setErr := New(Config{BaseURL: server.URL, Credential: testCredential}).
+		SetPassword(context.Background(), "urls4irl", testEmail, "correct-horse")
+
+	if setErr != nil {
+		testInstance.Fatalf("SetPassword: %v", setErr)
+	}
+	assertCaptured(testInstance, captured, "/v1/set-password",
+		`{"app_id":"urls4irl","email":"person@example.com","password":"correct-horse"}`)
+	if result.Status != http.StatusOK || string(result.Body) != `{"ok":true}` {
+		testInstance.Errorf("result = %+v", result)
+	}
+}
+
 func TestDeprovisionRequiresExactlyOneTarget(testInstance *testing.T) {
 	for _, target := range []DeprovisionTarget{{}, {Email: testEmail, UserID: "u_abc123"}} {
 		client := New(Config{BaseURL: "http://provisioning-api:8080", Credential: testCredential})
@@ -318,7 +334,9 @@ func TestPassthroughErrorsNeverContainEmailCredentialOrBody(testInstance *testin
 			_, provisionErr := client.Provision(ctx, "urls4irl", testEmail)
 			_, deprovisionErr := client.Deprovision(ctx, "urls4irl", DeprovisionTarget{Email: testEmail})
 
-			for _, callErr := range []error{provisionErr, deprovisionErr} {
+			_, setPasswordErr := client.SetPassword(ctx, "urls4irl", testEmail, "leaky-password-value")
+
+			for _, callErr := range []error{provisionErr, deprovisionErr, setPasswordErr} {
 				if callErr == nil {
 					subTest.Fatal("call succeeded, want an error")
 				}

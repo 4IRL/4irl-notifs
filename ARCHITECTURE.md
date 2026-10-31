@@ -192,6 +192,16 @@ An app proves which app it is with a delivery key it gets from its own GitHub Ac
 of its Access token. With that key an app can also provision and remove its own users:
 `POST /v1/apps/{app_id}/provision` (`{email}`) and `POST /v1/apps/{app_id}/deprovision` (`{email}` or
 `{person_hash}`) relay provisioning-api's answer (upstream 401/403/3xx become a fixed 502).
+`POST /v1/apps/{app_id}/ntfy-publisher` (`{"rotate"?: bool}`) lets the app (re)mint its own ntfy publisher
+token: delivery-api seals it and answers only the token-free publisher view. The app route is limited to
+10 mints per app per rolling hour (`429` with `Retry-After`; the operator's own mint route is exempt), an
+overlapping mint for the same app is refused with `409 publisher mint already in progress`, and at most 2
+mints run at once (`503` over the cap). Attempts are recorded in `app_publisher_mints`, swept by the
+existing replay cleanup ticker.
+`POST /v1/apps/{app_id}/set-password` (`{email, password}`, legacy: not for new apps) sets the person's one
+shared password across apps through provisioning-api's `/v1/set-password`; the answer is relayed as for
+provision (a person not in this app is the upstream `404 user does not exist`). Only presence of email and
+password is checked here; the password is never logged.
 
 1. The app's deploy workflow requests a GitHub OIDC token (audience `DELIVERY_OIDC_AUDIENCE`, default
    `notifs-delivery`) and posts `{"app_id","token"}` to `POST /v1/app-identity/exchange` (behind the Access

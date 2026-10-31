@@ -276,6 +276,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/heartbeats/{id}/resume", server.appHeartbeatScoped(server.handleAppResumeCheck))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/provision", server.appProvisioningScoped(server.handleAppProvision))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/deprovision", server.appProvisioningScoped(server.handleAppDeprovision))
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/set-password", server.appProvisioningScoped(server.handleAppSetPassword))
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/ntfy-publisher", server.appPublisherScoped(server.handleAppMintPublisher))
 
 	server.mux.HandleFunc("POST /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleMintPublisher))
 	server.mux.HandleFunc("GET /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleGetPublisher))

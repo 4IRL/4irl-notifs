@@ -16,6 +16,7 @@ const (
 	errMsgProvisioningUnavailable = "provisioning unavailable"
 	errMsgProvisioningFailed      = "provisioning request failed"
 	errMsgEmailRequired           = "email required"
+	errMsgPasswordRequired        = "password required"
 	errMsgEmailOrHashRequired     = "exactly one of email or person_hash required"
 	errMsgInvalidPersonHash       = "invalid person_hash"
 )
@@ -29,6 +30,7 @@ var retryAfterPattern = regexp.MustCompile(`^[0-9]{1,9}$`)
 type AppProvisioning interface {
 	Provision(ctx context.Context, appID string, email string) (provisionclient.Passthrough, error)
 	Deprovision(ctx context.Context, appID string, target provisionclient.DeprovisionTarget) (provisionclient.Passthrough, error)
+	SetPassword(ctx context.Context, appID, email, password string) (provisionclient.Passthrough, error)
 }
 
 // appProvisioningScoped wraps an app-scoped provisioning handler: the response is marked non-cacheable, the
@@ -112,6 +114,39 @@ func (server *Server) handleAppDeprovision(responseWriter http.ResponseWriter, r
 	answer, err := server.appProvisioning.Deprovision(request.Context(), appID, target)
 	server.relayProvisioning(responseWriter, request, relayCall{
 		appID: appID, personHash: loggedHash, action: "deprovision", started: started,
+	}, answer, err)
+}
+
+type appSetPasswordRequestBody struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// handleAppSetPassword serves POST /v1/apps/{app_id}/set-password. Legacy: not for new apps. It sets the
+// person's one shared password across apps; provisioning-api refuses (404) when the person is not in this
+// app. Only presence is checked here; length and email format are validated upstream and relayed. The
+// email and password are never logged.
+func (server *Server) handleAppSetPassword(responseWriter http.ResponseWriter, request *http.Request) {
+	appID, ok := server.authenticatedAppID(responseWriter, request)
+	if !ok {
+		return
+	}
+	var body appSetPasswordRequestBody
+	if !decodeJSON(responseWriter, request, &body, maxAdminBodyBytes) {
+		return
+	}
+	if body.Email == "" {
+		writeError(responseWriter, http.StatusBadRequest, errMsgEmailRequired)
+		return
+	}
+	if body.Password == "" {
+		writeError(responseWriter, http.StatusBadRequest, errMsgPasswordRequired)
+		return
+	}
+	started := time.Now()
+	answer, err := server.appProvisioning.SetPassword(request.Context(), appID, body.Email, body.Password)
+	server.relayProvisioning(responseWriter, request, relayCall{
+		appID: appID, personHash: personhash.Hash(body.Email), action: "set-password", started: started,
 	}, answer, err)
 }
 

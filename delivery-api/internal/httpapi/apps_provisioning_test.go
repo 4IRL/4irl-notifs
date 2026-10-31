@@ -32,6 +32,8 @@ type provisionCall struct {
 	appID  string
 	email  string
 	target provisionclient.DeprovisionTarget
+
+	password string
 }
 
 // fakeAppProvisioning records calls and returns a scripted answer or error.
@@ -52,6 +54,13 @@ func (fake *fakeAppProvisioning) Deprovision(
 	_ context.Context, appID string, target provisionclient.DeprovisionTarget,
 ) (provisionclient.Passthrough, error) {
 	fake.calls = append(fake.calls, provisionCall{appID: appID, target: target})
+	return fake.answer, fake.err
+}
+
+func (fake *fakeAppProvisioning) SetPassword(
+	_ context.Context, appID, email, password string,
+) (provisionclient.Passthrough, error) {
+	fake.calls = append(fake.calls, provisionCall{appID: appID, email: email, password: password})
 	return fake.answer, fake.err
 }
 
