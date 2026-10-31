@@ -21,12 +21,15 @@ const publisherPath = "/v1/admin/apps/urls4irl/ntfy-publisher"
 
 // fakePublishers is a Publishers double that returns canned results and counts calls.
 type fakePublishers struct {
-	view        publisher.PublisherView
-	err         error
-	mintCalls   int
-	getCalls    int
-	removeCalls int
-	lastAppID   string
+	view          publisher.PublisherView
+	err           error
+	mintCalls     int // Mint plus MintAsOperator
+	appCalls      int // Mint (app path, rate limited)
+	operatorCalls int // MintAsOperator (exempt)
+	getCalls      int
+	removeCalls   int
+	lastAppID     string
+	lastRotate    bool
 }
 
 func (fake *fakePublishers) Remove(_ context.Context, appID string) error {
@@ -35,8 +38,18 @@ func (fake *fakePublishers) Remove(_ context.Context, appID string) error {
 	return fake.err
 }
 
-func (fake *fakePublishers) Mint(_ context.Context, appID string) (publisher.PublisherView, error) {
+func (fake *fakePublishers) MintAsOperator(_ context.Context, appID string, rotate bool) (publisher.PublisherView, error) {
+	fake.operatorCalls++
 	fake.mintCalls++
+	fake.lastRotate = rotate
+	fake.lastAppID = appID
+	return fake.view, fake.err
+}
+
+func (fake *fakePublishers) Mint(_ context.Context, appID string, rotate bool) (publisher.PublisherView, error) {
+	fake.appCalls++
+	fake.mintCalls++
+	fake.lastRotate = rotate
 	fake.lastAppID = appID
 	return fake.view, fake.err
 }
@@ -101,6 +114,17 @@ func TestPublishersRouteToTheRightMethod(testInstance *testing.T) {
 	}
 }
 
+func TestOperatorMintPublisherNeverRotates(testInstance *testing.T) {
+	fake := &fakePublishers{view: samplePublisherView(), lastRotate: true}
+	servePublishers(fake, nil, http.MethodPost, publisherPath)
+	if fake.operatorCalls != 1 || fake.appCalls != 0 {
+		testInstance.Fatalf("operator route: MintAsOperator=%d Mint=%d, want 1/0", fake.operatorCalls, fake.appCalls)
+	}
+	if fake.mintCalls != 1 || fake.lastRotate {
+		testInstance.Fatalf("operator mint: calls=%d rotate=%v, want 1 call with rotate=false", fake.mintCalls, fake.lastRotate)
+	}
+}
+
 func TestPublishersDeleteIs204WithNoBody(testInstance *testing.T) {
 	fake := &fakePublishers{}
 
@@ -142,7 +166,7 @@ func TestPublishersDeleteMapsErrors(testInstance *testing.T) {
 }
 
 func TestPublishersDeleteInvalidAppIDIs400(testInstance *testing.T) {
-	service := publisher.NewService(nil, nil, nil)
+	service := publisher.NewService(nil, nil, nil, nil)
 	recorder := servePublishers(service, nil, http.MethodDelete, "/v1/admin/apps/Bad-App/ntfy-publisher")
 	assertResponse(testInstance, recorder, http.StatusBadRequest, `{"error":"invalid app_id"}`+"\n")
 }
@@ -176,6 +200,16 @@ func TestPublishersMapErrors(testInstance *testing.T) {
 			wantStatus: http.StatusServiceUnavailable, wantBody: `{"error":"publisher minting unavailable"}` + "\n",
 		},
 		{
+			name: "post-mint store failure (wrapped) is 503 and echoes nothing", method: http.MethodPost,
+			err:        fmt.Errorf("%w: upsert: %w", publisher.ErrMintUnavailable, errors.New("boom tk_secret")),
+			wantStatus: http.StatusServiceUnavailable, wantBody: `{"error":"publisher minting unavailable"}` + "\n",
+		},
+		{
+			name: "mint busy is 409", method: http.MethodPost,
+			err:        publisher.ErrMintBusy,
+			wantStatus: http.StatusConflict, wantBody: `{"error":"publisher mint already in progress"}` + "\n",
+		},
+		{
 			name: "unconfigured provisioning client is 503", method: http.MethodPost,
 			err:        provisionclient.ErrNotConfigured,
 			wantStatus: http.StatusServiceUnavailable, wantBody: `{"error":"publisher minting unavailable"}` + "\n",
@@ -202,7 +236,7 @@ func TestPublishersMapErrors(testInstance *testing.T) {
 
 func TestPublishersInvalidAppIDIs400(testInstance *testing.T) {
 	// A real publisher.Service validates the app id before touching its store or minter.
-	service := publisher.NewService(nil, nil, nil)
+	service := publisher.NewService(nil, nil, nil, nil)
 	recorder := servePublishers(service, nil, http.MethodPost, "/v1/admin/apps/Bad-App/ntfy-publisher")
 	assertResponse(testInstance, recorder, http.StatusBadRequest, `{"error":"invalid app_id"}`+"\n")
 }

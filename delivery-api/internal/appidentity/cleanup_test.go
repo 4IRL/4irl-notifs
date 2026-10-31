@@ -516,3 +516,183 @@ func TestReplayCleanupNeverSweepsPendingRequestsWithoutAPositiveTTL(testInstance
 		})
 	}
 }
+
+// fakeMintSweeper records every publisher-mint sweep (time and window) and signals each call.
+type fakeMintSweeper struct {
+	mutex      sync.Mutex
+	nows       []time.Time
+	windows    []time.Duration
+	deleted    int64
+	err        error
+	panicValue any
+	called     chan struct{}
+}
+
+func newFakeMintSweeper() *fakeMintSweeper {
+	return &fakeMintSweeper{called: make(chan struct{}, 16)}
+}
+
+func (sweeper *fakeMintSweeper) DeleteExpiredPublisherMints(
+	_ context.Context, now time.Time, window time.Duration,
+) (int64, error) {
+	sweeper.mutex.Lock()
+	sweeper.nows = append(sweeper.nows, now)
+	sweeper.windows = append(sweeper.windows, window)
+	deleted, err, panicValue := sweeper.deleted, sweeper.err, sweeper.panicValue
+	sweeper.mutex.Unlock()
+	select {
+	case sweeper.called <- struct{}{}:
+	default:
+	}
+	if panicValue != nil {
+		panic(panicValue)
+	}
+	return deleted, err
+}
+
+func (sweeper *fakeMintSweeper) sweeps() (nows []time.Time, windows []time.Duration) {
+	sweeper.mutex.Lock()
+	defer sweeper.mutex.Unlock()
+	return append([]time.Time(nil), sweeper.nows...), append([]time.Duration(nil), sweeper.windows...)
+}
+
+func waitForMintSweep(testInstance *testing.T, sweeper *fakeMintSweeper) {
+	testInstance.Helper()
+	select {
+	case <-sweeper.called:
+	case <-time.After(testWaitBudget):
+		testInstance.Fatal("timed out waiting for DeleteExpiredPublisherMints")
+	}
+}
+
+// startCleanupWithMints runs RunReplayCleanup with a mint sweeper on the same ticker.
+func startCleanupWithMints(
+	testInstance *testing.T, replay ReplaySweeper, mints PublisherMintSweeper, window time.Duration,
+	interval time.Duration, logs *syncBuffer,
+) (stop func()) {
+	testInstance.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunReplayCleanup(ctx, ReplayCleanupConfig{
+			Store: replay, MintStore: mints, MintWindow: window, Interval: interval,
+			Now: func() time.Time { return testNow }, Logger: textLogger(logs),
+		})
+	}()
+	return func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(testWaitBudget):
+			testInstance.Error("RunReplayCleanup did not return after cancel")
+		}
+	}
+}
+
+func TestReplayCleanupAlsoSweepsPublisherMintsOnTheSameTick(testInstance *testing.T) {
+	mints := newFakeMintSweeper()
+	mints.deleted = 4
+	replay := newFakeSweeper()
+	logs := &syncBuffer{}
+	stop := startCleanupWithMints(testInstance, replay, mints, time.Hour, time.Hour, logs)
+
+	waitForMintSweep(testInstance, mints)
+	stop()
+
+	nows, windows := mints.sweeps()
+	if len(nows) != 1 || !nows[0].Equal(testNow) || windows[0] != time.Hour {
+		testInstance.Errorf("mint sweeps = %v with windows %v, want one at %v with a 1h window", nows, windows, testNow)
+	}
+	if len(replay.sweepTimes()) != 1 {
+		testInstance.Errorf("the replay sweep did not run on the same tick")
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "publisher mint cleanup deleted old rows") || !strings.Contains(logged, "deleted=4") {
+		testInstance.Errorf("a mint sweep that deleted rows must log the count at info:\n%s", logged)
+	}
+}
+
+func TestReplayCleanupSweepsPublisherMintsAgainOnEveryTick(testInstance *testing.T) {
+	mints := newFakeMintSweeper()
+	stop := startCleanupWithMints(testInstance, newFakeSweeper(), mints, time.Hour, 5*time.Millisecond, &syncBuffer{})
+	defer stop()
+
+	waitForMintSweep(testInstance, mints)
+	waitForMintSweep(testInstance, mints)
+	waitForMintSweep(testInstance, mints)
+}
+
+func TestReplayCleanupMintSweepFailureIsLoggedAndDoesNotBlockTheReplaySweep(testInstance *testing.T) {
+	mints := newFakeMintSweeper()
+	mints.err = errors.New("delete old publisher mints: database unavailable")
+	replay := newFakeSweeper()
+	logs := &syncBuffer{}
+	stop := startCleanupWithMints(testInstance, replay, mints, time.Hour, 5*time.Millisecond, logs)
+
+	waitForMintSweep(testInstance, mints)
+	waitForMintSweep(testInstance, mints)
+	waitForSweep(testInstance, replay)
+	stop()
+
+	logged := logs.String()
+	if !strings.Contains(logged, "level=ERROR") || !strings.Contains(logged, "publisher mint cleanup failed") ||
+		!strings.Contains(logged, "database unavailable") {
+		testInstance.Errorf("a failed mint sweep must log the error text at error:\n%s", logged)
+	}
+	if strings.Contains(logged, "oidc replay cleanup failed") {
+		testInstance.Errorf("the replay sweep did not fail:\n%s", logged)
+	}
+}
+
+func TestReplayCleanupSurvivesAPanickingMintStore(testInstance *testing.T) {
+	mints := newFakeMintSweeper()
+	mints.panicValue = "boom"
+	logs := &syncBuffer{}
+	stop := startCleanupWithMints(testInstance, newFakeSweeper(), mints, time.Hour, 5*time.Millisecond, logs)
+
+	waitForMintSweep(testInstance, mints)
+	waitForMintSweep(testInstance, mints)
+	stop()
+
+	if !strings.Contains(logs.String(), "publisher mint cleanup panicked") {
+		testInstance.Errorf("a panicking mint store must be recovered and logged:\n%s", logs.String())
+	}
+}
+
+func TestReplayCleanupStaysQuietWhenNoPublisherMintIsOld(testInstance *testing.T) {
+	mints := newFakeMintSweeper()
+	logs := &syncBuffer{}
+	stop := startCleanupWithMints(testInstance, newFakeSweeper(), mints, time.Hour, time.Hour, logs)
+
+	waitForMintSweep(testInstance, mints)
+	stop()
+
+	if logged := logs.String(); logged != "" {
+		testInstance.Errorf("an empty mint sweep logged:\n%s", logged)
+	}
+}
+
+func TestReplayCleanupNeverSweepsPublisherMintsWithoutAPositiveWindow(testInstance *testing.T) {
+	for _, window := range []time.Duration{0, -time.Hour} {
+		testInstance.Run(window.String(), func(subTest *testing.T) {
+			mints := newFakeMintSweeper()
+			replay := newFakeSweeper()
+			logs := &syncBuffer{}
+			stop := startCleanupWithMints(subTest, replay, mints, window, 5*time.Millisecond, logs)
+
+			// The replay sweep still runs, so the loop is alive; the mint store must stay untouched.
+			waitForSweep(subTest, replay)
+			waitForSweep(subTest, replay)
+			stop()
+
+			if nows, _ := mints.sweeps(); len(nows) != 0 {
+				subTest.Errorf("mint sweeps = %v, want none for window %v", nows, window)
+			}
+			logged := logs.String()
+			if !strings.Contains(logged, "level=ERROR") || !strings.Contains(logged, "publisher mint cleanup not started: invalid window") {
+				subTest.Errorf("an invalid window must be logged at error:\n%s", logged)
+			}
+		})
+	}
+}

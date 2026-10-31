@@ -3,7 +3,9 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
+	"strconv"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
@@ -15,6 +17,8 @@ const (
 	errMsgPublisherNotFound        = "publisher not found"
 	errMsgPublisherMintUnavailable = "publisher minting unavailable"
 	errMsgPublisherMintFailed      = "provisioning-api mint failed"
+	errMsgPublisherRateLimited     = "publisher mint rate limit exceeded"
+	errMsgPublisherMintBusy        = "publisher mint already in progress"
 )
 
 // Publishers is the per-app ntfy publisher surface the
@@ -22,7 +26,10 @@ const (
 // satisfies it. Reading the plaintext token is deliberately not part of it: the
 // token is for the ntfy sink, never the admin API.
 type Publishers interface {
-	Mint(ctx context.Context, appID string) (publisher.PublisherView, error)
+	// Mint is the app path and is rate limited per app; MintAsOperator is the operator path and is
+	// exempt. Anything not explicitly MintAsOperator is limited.
+	Mint(ctx context.Context, appID string, rotate bool) (publisher.PublisherView, error)
+	MintAsOperator(ctx context.Context, appID string, rotate bool) (publisher.PublisherView, error)
 	Get(ctx context.Context, appID string) (publisher.PublisherView, error)
 	Remove(ctx context.Context, appID string) error
 }
@@ -48,7 +55,7 @@ func (server *Server) requirePublishers(handler http.HandlerFunc) http.HandlerFu
 
 // handleMintPublisher serves POST /v1/admin/apps/{app_id}/ntfy-publisher (200).
 func (server *Server) handleMintPublisher(responseWriter http.ResponseWriter, request *http.Request) {
-	view, err := server.publishers.Mint(request.Context(), request.PathValue("app_id"))
+	view, err := server.publishers.MintAsOperator(request.Context(), request.PathValue("app_id"), false)
 	if err != nil {
 		server.writePublisherError(responseWriter, request, err)
 		return
@@ -79,14 +86,24 @@ func (server *Server) handleDeletePublisher(responseWriter http.ResponseWriter, 
 
 // writePublisherError is the single chokepoint mapping a publisher error to an
 // HTTP response. Validation errors carry a client-safe message; known sentinels
-// map to fixed messages; anything else is a provisioning-api mint failure (or a
-// store failure), logged with the path only, never the request body, and answered
+// map to fixed messages: a rate-limited mint is 429 with Retry-After, an overlapping
+// same-app mint is 409, and unavailability (not configured, in-flight cap, lock or
+// transaction failure, or a failure to store a token already minted upstream) is 503.
+// Anything else is a provisioning-api mint failure (minter error or a grant for
+// another app), logged with the path only, never the request body, and answered
 // with a generic 502 so no upstream detail leaks.
 func (server *Server) writePublisherError(responseWriter http.ResponseWriter, request *http.Request, err error) {
 	var validationErr *publisher.ValidationError
+	var rateLimitedErr *publisher.RateLimitedError
 	switch {
 	case errors.As(err, &validationErr):
 		writeError(responseWriter, http.StatusBadRequest, validationErr.Message)
+	case errors.As(err, &rateLimitedErr):
+		retryAfterSeconds := max(int64(math.Ceil(rateLimitedErr.RetryAfter.Seconds())), 1)
+		responseWriter.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds, 10))
+		writeError(responseWriter, http.StatusTooManyRequests, errMsgPublisherRateLimited)
+	case errors.Is(err, publisher.ErrMintBusy):
+		writeError(responseWriter, http.StatusConflict, errMsgPublisherMintBusy)
 	case errors.Is(err, registry.ErrNoPublisher):
 		writeError(responseWriter, http.StatusNotFound, errMsgPublisherNotFound)
 	case errors.Is(err, publisher.ErrMintUnavailable), errors.Is(err, provisionclient.ErrNotConfigured):

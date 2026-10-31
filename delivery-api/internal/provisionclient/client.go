@@ -132,10 +132,11 @@ type provisionAppRequest struct {
 
 // MintPublisher asks provisioning-api for a publisher token for appID.
 //
-// rotate is always false. provision-app is an additive mint, so each call
-// returns a new token and leaves existing ones valid; rotate:true would revoke
-// every publisher-labeled token for the app, including the ones apps hold for
-// direct publishing.
+// rotate=false is an additive mint: the call returns a new token and leaves
+// existing ones valid. rotate=true revokes every publisher-labeled token for
+// the app first (in the one-door model apps hold no publisher token, so this
+// affects only delivery-api's sealed copy plus any token an app still holds
+// from before cutover).
 //
 // A non-2xx status (a redirect included, since none is followed) returns an
 // error naming only the status code, never the response body, so nothing the
@@ -143,11 +144,11 @@ type provisionAppRequest struct {
 // A token
 // that does not look like an ntfy access token is an error. The token is never
 // logged or put in an error.
-func (client *Client) MintPublisher(ctx context.Context, appID string) (PublisherGrant, error) {
+func (client *Client) MintPublisher(ctx context.Context, appID string, rotate bool) (PublisherGrant, error) {
 	if !client.Configured() {
 		return PublisherGrant{}, ErrNotConfigured
 	}
-	body, marshalErr := json.Marshal(provisionAppRequest{AppID: appID, Rotate: false})
+	body, marshalErr := json.Marshal(provisionAppRequest{AppID: appID, Rotate: rotate})
 	if marshalErr != nil {
 		return PublisherGrant{}, fmt.Errorf("provision-app: encode request: %w", marshalErr)
 	}
@@ -179,7 +180,25 @@ func (client *Client) MintPublisher(ctx context.Context, appID string) (Publishe
 const (
 	provisionPath   = "/v1/provision"
 	deprovisionPath = "/v1/deprovision"
+	setPasswordPath = "/v1/set-password"
 )
+
+type setPasswordRequest struct {
+	AppID    string `json:"app_id"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// SetPassword asks provisioning-api to set the shared password of the person with email, who must belong to
+// appID, and returns its answer as-is. A non-2xx status is not an error; only a failure to get an answer is.
+// Error text never contains the email, the password, the credential or the response body.
+func (client *Client) SetPassword(ctx context.Context, appID string, email string, password string) (Passthrough, error) {
+	body, marshalErr := json.Marshal(setPasswordRequest{AppID: appID, Email: email, Password: password})
+	if marshalErr != nil {
+		return Passthrough{}, errors.New("set-password: encode request failed")
+	}
+	return client.passthrough(ctx, "set-password", setPasswordPath, body)
+}
 
 // Passthrough is a provisioning-api answer handed back unchanged: the upstream status, body bytes,
 // Content-Type and Retry-After header. Body can carry a one-time secret (a provision response holds the
