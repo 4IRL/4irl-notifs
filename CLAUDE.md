@@ -129,10 +129,10 @@ shown for reference only.
 | `make dev-oidc-keys` (`node scripts/dev-oidc-keys.mjs`) | Generate the throwaway OIDC signing key pair in gitignored `.local/dev-oidc/` that the local/CI delivery-api trusts in dev mode (`make local-up` runs it first; idempotent) |
 | `make go-test` (`go test ./...`) | Run Go unit tests |
 | `make go-integration-test` (`go test -tags integration ./...`) | Run Go integration tests (local stack must be up) |
-| `make go-lint` (`gofmt -l .` + `golangci-lint run`) | Check Go formatting + lint |
+| `make go-lint` (`gofmt -l .` + pinned `golangci-lint run`) | Check Go formatting + lint; golangci-lint is pinned in the Makefile to CI's version (`golangci-pin-check` fails on drift from `.github/workflows/lint.yml`) |
 | `make delivery-test` (`go test ./...` in `delivery-api/`) | Run delivery-api Go unit tests |
 | `make delivery-integration-test` (`go test -p 1 -tags integration ./...`) | Run delivery-api integration tests (local stack must be up) |
-| `make delivery-lint` / `make delivery-fmt` (`gofmt -l .` + `golangci-lint run` / `gofmt -w .`) | Check / apply delivery-api Go formatting + lint |
+| `make delivery-lint` / `make delivery-fmt` (`gofmt -l .` + pinned `golangci-lint run` / `gofmt -w .`) | Check / apply delivery-api Go formatting + lint (same pinned golangci-lint as `go-lint`) |
 | `make delivery-vet-integration` (`go vet -tags integration ./...` in `delivery-api/`) | Vet delivery-api including integration-tagged files (`delivery-lint` does not compile them) |
 | `make workflows-lint` (`actionlint`, pinned `v1.7.12`) | Lint the GitHub Actions workflow YAML and the composite actions under `.github/actions/*/action.yml` (through generated wrappers in `.local/action-lint/`; needs node (wrapper generation) and Go (actionlint), no npm install) |
 | `make web-test` (`npm test`) | Run frontend unit tests (Vitest) |

@@ -1,5 +1,5 @@
 .PHONY: help lint test local-up local-down local-logs dev-oidc-keys dev-web dev-web-bg dev-web-stop notif-smoke-test \
-	go-test go-test-race go-integration-test go-lint go-fmt \
+	go-test go-test-race go-integration-test go-lint go-fmt golangci-pin-check \
 	delivery-test delivery-integration-test delivery-lint delivery-vet-integration delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	setup-web-dev setup-web-test setup-web-e2e setup-web-build setup-web-lint setup-web-format setup-web-pages-dev \
@@ -164,6 +164,20 @@ notif-smoke-test: ## Provision an app publisher and a test user, publish as the 
 
 ## Go (provisioning-api)
 
+# golangci-lint is pinned exactly and run through `go run`, like actionlint below, so a local `make
+# go-lint` / `make delivery-lint` runs the same version as CI instead of whatever is on PATH (a newer local
+# version once passed code that CI's v2.12.2 `unparam` rejected). Keep it equal to the `version:` of both
+# golangci-lint steps in .github/workflows/lint.yml; golangci-pin-check fails the lint targets on drift.
+GOLANGCI_LINT_VERSION := v2.12.2
+GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+golangci-pin-check: ## Check the Makefile's golangci-lint version matches .github/workflows/lint.yml
+	@total=$$(grep -c '^ *version: v' .github/workflows/lint.yml); \
+	matching=$$(grep -c '^ *version: $(GOLANGCI_LINT_VERSION)$$' .github/workflows/lint.yml); \
+	if [ "$$total" -eq 0 ] || [ "$$total" -ne "$$matching" ]; then \
+		echo "golangci-lint version drift: Makefile pins $(GOLANGCI_LINT_VERSION), .github/workflows/lint.yml has $$matching of $$total matching"; exit 1; \
+	fi
+
 go-test: ## Run Go unit tests
 	cd provisioning-api && go test ./...
 
@@ -173,9 +187,9 @@ go-test-race: ## Run Go unit tests under the race detector
 go-integration-test: ## Run Go integration tests (local stack must be up)
 	@C="$$($(COMPOSE) ps -q provisioning-api)"; cd provisioning-api && NOTIFS_API_CONTAINER="$$C" NOTIFS_API_URL=$(API_URL) NTFY_URL=$(NTFY_URL) go test -tags integration ./...
 
-go-lint: ## Check Go formatting and lint
+go-lint: golangci-pin-check ## Check Go formatting and lint
 	@UNFORMATTED="$$(cd provisioning-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }
-	cd provisioning-api && golangci-lint run
+	cd provisioning-api && $(GOLANGCI_LINT) run
 
 go-fmt: ## Apply Go formatting
 	cd provisioning-api && gofmt -w .
@@ -193,9 +207,9 @@ delivery-test: ## Run delivery-api Go unit tests
 delivery-integration-test: ## Run delivery-api integration tests (local stack must be up)
 	@C="$$($(COMPOSE) ps -q delivery-api)"; D="$$($(COMPOSE) ps -q delivery-postgres)"; cd delivery-api && NOTIFS_DELIVERY_CONTAINER="$$C" NOTIFS_DELIVERY_DB_CONTAINER="$$D" NOTIFS_DELIVERY_MAX_SCHEDULED="$${DELIVERY_MAX_SCHEDULED_PER_APP:-1000}" NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_NTFY_URL=$(NTFY_URL) NOTIFS_API_URL=$(API_URL) NOTIFS_DELIVERY_TEST_DSN="postgres://delivery:delivery-local-dev@127.0.0.1:$(DELIVERY_DB_PORT_HOST)/delivery?sslmode=disable" go test -p 1 -tags integration ./...
 
-delivery-lint: ## Check delivery-api Go formatting and lint
+delivery-lint: golangci-pin-check ## Check delivery-api Go formatting and lint
 	@UNFORMATTED="$$(cd delivery-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }
-	cd delivery-api && golangci-lint run
+	cd delivery-api && $(GOLANGCI_LINT) run
 
 delivery-vet-integration: ## Vet delivery-api including integration-tagged files
 	cd delivery-api && go vet -tags integration ./...
