@@ -160,26 +160,26 @@ func (service *Service) mintLocked(
 			return PublisherView{}, fmt.Errorf("%w: rate limit: %w", ErrMintUnavailable, reserveErr)
 		}
 	}
-	fail := func(stage string, cause error) (PublisherView, error) {
+	fail := func(stage string, cause error) error {
 		if rotate {
 			service.logRotateNotStored(ctx, appID, stage, cause)
 		}
-		return PublisherView{}, cause
+		return cause
 	}
 	// A client disconnect must not cancel an in-flight mint: a rotate=true mint revokes the old
 	// tokens upstream first, so abandoning it would leave nothing stored.
 	grant, mintErr := service.minter.MintPublisher(context.WithoutCancel(ctx), appID, rotate)
 	if mintErr != nil {
-		return fail("minter", fmt.Errorf("mint publisher: %w", mintErr))
+		return PublisherView{}, fail("minter", fmt.Errorf("mint publisher: %w", mintErr))
 	}
 	if grant.AppID != appID {
-		return fail("app_mismatch", errors.New("mint publisher: grant is for a different app"))
+		return PublisherView{}, fail("app_mismatch", errors.New("mint publisher: grant is for a different app"))
 	}
 	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), service.persistTimeout)
 	defer cancelPersist()
 	sealedToken, sealErr := service.sealer.Seal([]byte(grant.Token), TokenAAD(appID))
 	if sealErr != nil {
-		return fail("seal", fmt.Errorf("%w: seal publisher token: %w", ErrMintUnavailable, sealErr))
+		return PublisherView{}, fail("seal", fmt.Errorf("%w: seal publisher token: %w", ErrMintUnavailable, sealErr))
 	}
 	stored, upsertErr := tx.Upsert(persistCtx, StoredPublisher{
 		AppID:           appID,
@@ -188,7 +188,7 @@ func (service *Service) mintLocked(
 		SealedToken:     sealedToken,
 	})
 	if upsertErr != nil {
-		return fail("upsert", fmt.Errorf("%w: upsert: %w", ErrMintUnavailable, upsertErr))
+		return PublisherView{}, fail("upsert", fmt.Errorf("%w: upsert: %w", ErrMintUnavailable, upsertErr))
 	}
 	return viewOf(stored), nil
 }
