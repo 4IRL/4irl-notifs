@@ -519,7 +519,7 @@ const (
 // pipelineMinter is a publisher.Minter that returns a fixed grant.
 type pipelineMinter struct{}
 
-func (pipelineMinter) MintPublisher(_ context.Context, appID string) (provisionclient.PublisherGrant, error) {
+func (pipelineMinter) MintPublisher(_ context.Context, appID string, _ bool) (provisionclient.PublisherGrant, error) {
 	return provisionclient.PublisherGrant{
 		AppID: appID, PublisherUserID: "app-" + appID, TopicPattern: appID + "-*", Token: recipientMintedToken,
 	}, nil
@@ -558,8 +558,8 @@ func TestPipelineDeliversARecipientMessageToTheNtfyTopic(testInstance *testing.T
 
 	registryService := registry.NewService(registry.NewPGStore(pool), sealer, logger)
 	store := message.NewPGStore(pool)
-	publishers := publisher.NewService(publisher.NewPGStore(pool), pipelineMinter{}, sealer)
-	if _, mintErr := publishers.Mint(ctx, recipientAppID); mintErr != nil {
+	publishers := publisher.NewService(publisher.NewPGStore(pool), pipelineMinter{}, sealer, nil)
+	if _, mintErr := publishers.Mint(ctx, recipientAppID, false); mintErr != nil {
 		testInstance.Fatalf("Mint: %v", mintErr)
 	}
 

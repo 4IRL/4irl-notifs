@@ -332,7 +332,8 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		return provisionClientErr
 	}
 	minter, appProvisioning := provisionInterfaces(provisionClient)
-	publisherService := publisher.NewService(publisher.NewPGStore(pool), minter, sealer)
+	publisherStore := publisher.NewPGStore(pool)
+	publisherService := publisher.NewService(publisherStore, minter, sealer, logger)
 	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil
 	// *publisher.Service) makes the worker dead-letter a recipient delivery as no_publisher instead of sending.
 	var recipients dispatch.RecipientResolver
@@ -414,14 +415,16 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 			})
 		},
 		prober.run,
-		// The OIDC replay ledger has its own cleanup loop: it sweeps a different table on a
-		// different (absolute expires_at) criterion than the message retention sweeper above.
+		// The OIDC replay cleanup loop hosts the identity-table sweeps and the publisher mint-attempt
+		// sweep: different tables on different criteria than the message retention sweeper above.
 		func(backgroundCtx context.Context) {
 			appidentity.RunReplayCleanup(backgroundCtx, appidentity.ReplayCleanupConfig{
 				Store:         appIdentityStore,
 				RejectedStore: appIdentityStore,
 				PendingStore:  appIdentityStore,
 				PendingTTL:    oidcConfig.PendingRequestTTL,
+				MintStore:     publisherStore,
+				MintWindow:    publisher.MintRateWindow,
 				Interval:      appidentity.DefaultReplayCleanupInterval,
 				Logger:        logger,
 			})

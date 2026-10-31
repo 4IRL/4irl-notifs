@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/appid"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
@@ -20,12 +22,34 @@ type Service struct {
 	store  Store
 	minter Minter
 	sealer *seal.Sealer
+	logger *slog.Logger
+
+	// mintSlots is the process-wide in-flight mint semaphore (capacity MaxInFlightMints). A nil
+	// channel (Service not built by NewService) refuses every mint.
+	mintSlots chan struct{}
+	// persistTimeout bounds grant check, seal and upsert after the upstream mint; tests override it.
+	persistTimeout time.Duration
 }
 
 // NewService builds a Service. minter may be nil, in which case Mint returns
-// ErrMintUnavailable.
-func NewService(store Store, minter Minter, sealer *seal.Sealer) *Service {
-	return &Service{store: store, minter: minter, sealer: sealer}
+// ErrMintUnavailable. A nil logger uses slog.Default().
+func NewService(store Store, minter Minter, sealer *seal.Sealer, logger *slog.Logger) *Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{
+		store: store, minter: minter, sealer: sealer, logger: logger,
+		mintSlots: make(chan struct{}, MaxInFlightMints), persistTimeout: MintPersistTimeout,
+	}
+}
+
+// logRotateNotStored records that a rotate=true mint failed after the minter
+// was invoked: provisioning-api revokes old tokens before minting, so the
+// stored token may already be dead. The token is never logged.
+func (service *Service) logRotateNotStored(ctx context.Context, appID, stage string, cause error) {
+	service.logger.ErrorContext(ctx,
+		"publisher rotate attempted but new token not stored; recipient delivery may fail until re-mint",
+		"app_id", appID, "stage", stage, "error", cause)
 }
 
 // TokenAAD returns the additional data a token is sealed under. The key
@@ -38,32 +62,133 @@ func TokenAAD(appID string) []byte {
 // upserts it, replacing any previous token. It returns *ValidationError for an
 // invalid app id (before the minter is called) and ErrMintUnavailable when no
 // minter is configured. A minter error is returned and nothing is stored.
-func (service *Service) Mint(ctx context.Context, appID string) (PublisherView, error) {
+//
+// rotate is forwarded to the minter. When rotate is true and anything fails
+// after the minter was invoked, a distinct ERROR is logged (see
+// logRotateNotStored).
+//
+// This is the app path: it is always rate limited (MintRateLimit per MintRateWindow per app,
+// *RateLimitedError). Overlapping mints for one app return ErrMintBusy. At most MaxInFlightMints
+// mints run at once; over the cap, and for a lock/transaction failure or a failure to store a token
+// that was already minted upstream, the error satisfies errors.Is(err, ErrMintUnavailable). Only a
+// minter error or a grant for another app is a plain error.
+func (service *Service) Mint(ctx context.Context, appID string, rotate bool) (PublisherView, error) {
+	return service.mint(ctx, appID, rotate, true)
+}
+
+// MintAsOperator is Mint for the trusted operator route: it skips the rate limit (no slot is
+// recorded, never *RateLimitedError) but takes the same per-app lock and in-flight cap.
+func (service *Service) MintAsOperator(ctx context.Context, appID string, rotate bool) (PublisherView, error) {
+	return service.mint(ctx, appID, rotate, false)
+}
+
+// tryAcquireMintSlot takes one in-flight mint slot without blocking. A nil channel never succeeds
+// (fails closed).
+func (service *Service) tryAcquireMintSlot() (release func(), ok bool) {
+	select {
+	case service.mintSlots <- struct{}{}:
+		return func() { <-service.mintSlots }, true
+	default:
+		return nil, false
+	}
+}
+
+// mint is the single mint path. Order: validate, nil-minter, in-flight cap, transaction + try-lock
+// (busy / unavailable), rate-limit slot (app path only), minter, grant check, seal, upsert, commit.
+func (service *Service) mint(ctx context.Context, appID string, rotate, limited bool) (PublisherView, error) {
 	if validateErr := appid.ValidateAppID(appID); validateErr != nil {
 		return PublisherView{}, &ValidationError{Message: validateErr.Error()}
 	}
 	if service.minter == nil {
 		return PublisherView{}, ErrMintUnavailable
 	}
-	grant, mintErr := service.minter.MintPublisher(ctx, appID)
+	release, acquired := service.tryAcquireMintSlot()
+	if !acquired {
+		service.logger.WarnContext(ctx, "publisher mint refused", "app_id", appID, "reason", "in-flight cap")
+		return PublisherView{}, ErrMintUnavailable
+	}
+	defer release()
+
+	var view PublisherView
+	fnRan, fnOK := false, false
+	storeErr := service.store.WithAppMintLock(ctx, appID, func(tx MintTx) error {
+		fnRan = true
+		mintedView, mintErr := service.mintLocked(ctx, tx, appID, rotate, limited)
+		if mintErr != nil {
+			return mintErr
+		}
+		view = mintedView
+		fnOK = true
+		return nil
+	})
+	if storeErr == nil {
+		return view, nil
+	}
+	switch {
+	case fnRan && fnOK:
+		// The token was minted and stored in the transaction, but the commit failed.
+		cause := fmt.Errorf("%w: commit: %w", ErrMintUnavailable, storeErr)
+		if rotate {
+			service.logRotateNotStored(ctx, appID, "commit", storeErr)
+		} else {
+			service.logger.ErrorContext(ctx, "publisher mint commit failed", "app_id", appID, "error", storeErr)
+		}
+		return PublisherView{}, cause
+	case fnRan:
+		return PublisherView{}, storeErr
+	case errors.Is(storeErr, ErrMintBusy):
+		service.logger.InfoContext(ctx, "publisher mint refused", "app_id", appID, "reason", "mint already in progress")
+	default:
+		service.logger.ErrorContext(ctx, "publisher mint transaction unavailable", "app_id", appID, "error", storeErr)
+	}
+	return PublisherView{}, storeErr
+}
+
+// mintLocked runs inside the per-app lock transaction.
+func (service *Service) mintLocked(
+	ctx context.Context, tx MintTx, appID string, rotate, limited bool,
+) (PublisherView, error) {
+	if limited {
+		if reserveErr := tx.ReserveMintSlot(ctx, appID, MintRateLimit, MintRateWindow); reserveErr != nil {
+			var rateLimited *RateLimitedError
+			if errors.As(reserveErr, &rateLimited) {
+				service.logger.InfoContext(ctx, "publisher mint rate limited",
+					"app_id", appID, "retry_after", rateLimited.RetryAfter.String())
+				return PublisherView{}, reserveErr
+			}
+			service.logger.ErrorContext(ctx, "publisher mint rate-limit store failed", "app_id", appID, "error", reserveErr)
+			return PublisherView{}, fmt.Errorf("%w: rate limit: %w", ErrMintUnavailable, reserveErr)
+		}
+	}
+	fail := func(stage string, cause error) error {
+		if rotate {
+			service.logRotateNotStored(ctx, appID, stage, cause)
+		}
+		return cause
+	}
+	// A client disconnect must not cancel an in-flight mint: a rotate=true mint revokes the old
+	// tokens upstream first, so abandoning it would leave nothing stored.
+	grant, mintErr := service.minter.MintPublisher(context.WithoutCancel(ctx), appID, rotate)
 	if mintErr != nil {
-		return PublisherView{}, fmt.Errorf("mint publisher: %w", mintErr)
+		return PublisherView{}, fail("minter", fmt.Errorf("mint publisher: %w", mintErr))
 	}
 	if grant.AppID != appID {
-		return PublisherView{}, errors.New("mint publisher: grant is for a different app")
+		return PublisherView{}, fail("app_mismatch", errors.New("mint publisher: grant is for a different app"))
 	}
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), service.persistTimeout)
+	defer cancelPersist()
 	sealedToken, sealErr := service.sealer.Seal([]byte(grant.Token), TokenAAD(appID))
 	if sealErr != nil {
-		return PublisherView{}, fmt.Errorf("seal publisher token: %w", sealErr)
+		return PublisherView{}, fail("seal", fmt.Errorf("%w: seal publisher token: %w", ErrMintUnavailable, sealErr))
 	}
-	stored, upsertErr := service.store.Upsert(ctx, StoredPublisher{
+	stored, upsertErr := tx.Upsert(persistCtx, StoredPublisher{
 		AppID:           appID,
 		PublisherUserID: grant.PublisherUserID,
 		TopicPattern:    grant.TopicPattern,
 		SealedToken:     sealedToken,
 	})
 	if upsertErr != nil {
-		return PublisherView{}, upsertErr
+		return PublisherView{}, fail("upsert", fmt.Errorf("%w: upsert: %w", ErrMintUnavailable, upsertErr))
 	}
 	return viewOf(stored), nil
 }
