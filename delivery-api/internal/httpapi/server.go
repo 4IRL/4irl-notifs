@@ -159,13 +159,14 @@ type Server struct {
 	appHeartbeats AppHeartbeats
 	// appProvisioning backs the app-scoped provisioning endpoints (provision, deprovision, set and reset password).
 	appProvisioning AppProvisioning
-	resetLimiter    ResetLimiter
-	messages        Messages
-	publishers      Publishers
-	heartbeats      Heartbeats
-	appIdentity     AppIdentity
-	now             func() time.Time
-	mux             *http.ServeMux
+	// resetLimiter is the door limit of the app reset-password route.
+	resetLimiter ResetLimiter
+	messages     Messages
+	publishers   Publishers
+	heartbeats   Heartbeats
+	appIdentity  AppIdentity
+	now          func() time.Time
+	mux          *http.ServeMux
 }
 
 // readinessResponseBody is the /readyz JSON body when the database answered.

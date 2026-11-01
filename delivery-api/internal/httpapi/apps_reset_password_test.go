@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,10 @@ func TestAppResetNilLimiterIs503BeforeKeyCheck(testInstance *testing.T) {
 	rig := newProvisioningRig(&fakeAppProvisioning{})
 	rig.server.resetLimiter = nil
 
-	recorder := rig.post(resetPasswordPath, resetBody("a@example.com"))
+	// No Authorization header: a 503 (not 401) proves the limiter check runs before the key check.
+	request := httptest.NewRequest(http.MethodPost, resetPasswordPath, strings.NewReader(resetBody("a@example.com")))
+	recorder := httptest.NewRecorder()
+	rig.server.Handler().ServeHTTP(recorder, request)
 
 	assertResponse(testInstance, recorder, http.StatusServiceUnavailable, `{"error":"reset limit unavailable"}`+"\n")
 	assertNoStore(testInstance, recorder)

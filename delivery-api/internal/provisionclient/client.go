@@ -206,7 +206,7 @@ func (client *Client) SetPassword(ctx context.Context, appID string, email strin
 // to appID, and returns its answer as-is (a 200 body carries the new password). A non-2xx status is not an
 // error; only a failure to get an answer is. Error text never contains the email, the credential or the
 // response body.
-func (client *Client) ResetPassword(ctx context.Context, appID string, email string) (Passthrough, error) {
+func (client *Client) ResetPassword(ctx context.Context, appID, email string) (Passthrough, error) {
 	body, marshalErr := json.Marshal(appEmailRequest{AppID: appID, Email: email})
 	if marshalErr != nil {
 		return Passthrough{}, errors.New("reset-password: encode request failed")

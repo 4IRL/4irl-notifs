@@ -96,31 +96,31 @@ func (rig *resetRig) reset(testInstance *testing.T) (int, http.Header, []byte) {
 // requireReset resets once, requires a 200 that carries a new password, and returns it.
 func (rig *resetRig) requireReset(testInstance *testing.T, label string) string {
 	testInstance.Helper()
-	status, _, body := rig.reset(testInstance)
+	password, _ := rig.requireResetWithHeaders(testInstance, label)
+	return password
+}
+
+func (rig *resetRig) requireResetWithHeaders(testInstance *testing.T, label string) (string, http.Header) {
+	testInstance.Helper()
+	status, headers, body := rig.reset(testInstance)
 	requireStatus(testInstance, label, status, http.StatusOK, body)
 	var reset resetPasswordJSON
 	decodeBody(testInstance, label, body, &reset)
 	if reset.Password == "" || reset.AppID != rig.appID || reset.UserID != rig.username {
 		testInstance.Fatalf("%s answer = %+v, want a password for app %q user %q", label, reset, rig.appID, rig.username)
 	}
-	return reset.Password
+	return reset.Password, headers
 }
 
 func TestAppResetsItsPersonsPassword(testInstance *testing.T) {
 	rig := newResetRig(testInstance)
 
-	status, headers, body := rig.reset(testInstance)
+	password, headers := rig.requireResetWithHeaders(testInstance, "reset")
 
-	requireStatus(testInstance, "reset", status, http.StatusOK, body)
 	if cacheControl := headers.Get("Cache-Control"); cacheControl != "no-store" {
 		testInstance.Errorf("reset Cache-Control = %q, want no-store", cacheControl)
 	}
-	var reset resetPasswordJSON
-	decodeBody(testInstance, "reset", body, &reset)
-	if reset.Password == "" || reset.AppID != rig.appID || reset.UserID != rig.username {
-		testInstance.Fatalf("reset answer = %+v, want a password for app %q user %q", reset, rig.appID, rig.username)
-	}
-	rig.requirePasswordWorks(testInstance, "the new password", reset.Password)
+	rig.requirePasswordWorks(testInstance, "the new password", password)
 	rig.requirePasswordRejected(testInstance, "the old password", rig.currentPwd)
 }
 

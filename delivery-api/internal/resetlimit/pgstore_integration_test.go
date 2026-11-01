@@ -107,7 +107,7 @@ func TestReserveCapsAreIsolatedPerAppAndPerPerson(testInstance *testing.T) {
 
 func TestReserveBothCapsReachedReportsAppScopeAndTheLargerWait(testInstance *testing.T) {
 	ctx, store, pool := newResetStore(testInstance)
-	// Person rows (3) are the app's oldest-but-one; app oldest row is older, so the app wait is shorter.
+	// Person rows are 600s old (wait ~3000s); the other app rows are 3000s old (app wait ~600s); the larger wait is reported.
 	seed(ctx, testInstance, pool, "urls4irl", "person-a", PersonLimit, 600)        // expire in ~3000s
 	seed(ctx, testInstance, pool, "urls4irl", "other", AppLimit-PersonLimit, 3000) // app oldest expires in ~600s
 
