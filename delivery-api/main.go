@@ -34,6 +34,7 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/readiness"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/resetlimit"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/secretenv"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/sink"
@@ -333,6 +334,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	}
 	minter, appProvisioning := provisionInterfaces(provisionClient)
 	publisherStore := publisher.NewPGStore(pool)
+	resetWired := newResetWiring(resetlimit.NewPGStore(pool))
 	publisherService := publisher.NewService(publisherStore, minter, sealer, logger)
 	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil
 	// *publisher.Service) makes the worker dead-letter a recipient delivery as no_publisher instead of sending.
@@ -379,6 +381,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Heartbeats:       heartbeatService,
 		AppHeartbeats:    heartbeatService,
 		AppProvisioning:  appProvisioning,
+		ResetLimiter:     resetWired.limiter,
 		AppIdentity:      appIdentityService,
 	}).Handler()
 
@@ -425,6 +428,8 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 				PendingTTL:    oidcConfig.PendingRequestTTL,
 				MintStore:     publisherStore,
 				MintWindow:    publisher.MintRateWindow,
+				ResetStore:    resetWired.sweeper,
+				ResetWindow:   resetWired.window,
 				Interval:      appidentity.DefaultReplayCleanupInterval,
 				Logger:        logger,
 			})
@@ -445,6 +450,20 @@ type proberWiring struct {
 	freshness *heartbeat.Freshness
 	config    heartbeat.ProberConfig
 	run       func(context.Context)
+}
+
+// resetWiring ties one reset-attempt store to both of its consumers: the reset-password door limit and the
+// cleanup sweep, with the window the limit counts over.
+type resetWiring struct {
+	limiter httpapi.ResetLimiter
+	sweeper appidentity.ResetAttemptSweeper
+	window  time.Duration
+}
+
+// newResetWiring hands the same store to the route's limiter and to the sweeper, so the sweep never prunes a
+// window shorter than the one the limit counts over.
+func newResetWiring(store *resetlimit.PGStore) resetWiring {
+	return resetWiring{limiter: store, sweeper: store, window: resetlimit.Window}
 }
 
 // newProberWiring builds the prober configuration with the production interval and concurrency and a fresh

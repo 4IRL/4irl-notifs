@@ -3,12 +3,15 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/resetlimit"
 )
 
 // Client-safe messages of the app-scoped provisioning routes.
@@ -19,18 +22,52 @@ const (
 	errMsgPasswordRequired        = "password required"
 	errMsgEmailOrHashRequired     = "exactly one of email or person_hash required"
 	errMsgInvalidPersonHash       = "invalid person_hash"
+	errMsgResetRateLimited        = "reset rate limit exceeded"
+	errMsgResetLimitUnavailable   = "reset limit unavailable"
 )
 
 // retryAfterPattern is the only Retry-After shape relayed to an app: a short delay in whole seconds. An
 // upstream value of any other shape is dropped rather than reflected.
 var retryAfterPattern = regexp.MustCompile(`^[0-9]{1,9}$`)
 
-// AppProvisioning is the provisioning-api relay the app-scoped provision and deprovision routes call.
-// *provisionclient.Client satisfies it. The app id is always the calling app's own (from its key).
+// AppProvisioning is the provisioning-api relay the app-scoped provision, deprovision, set-password and
+// reset-password routes call. *provisionclient.Client satisfies it. The app id is always the calling app's
+// own (from its key).
 type AppProvisioning interface {
 	Provision(ctx context.Context, appID string, email string) (provisionclient.Passthrough, error)
 	Deprovision(ctx context.Context, appID string, target provisionclient.DeprovisionTarget) (provisionclient.Passthrough, error)
 	SetPassword(ctx context.Context, appID, email, password string) (provisionclient.Passthrough, error)
+	ResetPassword(ctx context.Context, appID, email string) (provisionclient.Passthrough, error)
+}
+
+// ResetLimiter is the door limit of the app reset-password route. Reserve records one attempt for the app
+// and person (a normalized person hash) before the relay and returns nil when it is admitted, a
+// *resetlimit.RateLimitedError when a cap is reached, or another error when the store cannot answer.
+// *resetlimit.PGStore satisfies it.
+type ResetLimiter interface {
+	Reserve(ctx context.Context, appID, personHash string) error
+}
+
+// setRetryAfter sets Retry-After to the wait in whole seconds, rounded up, minimum 1.
+func setRetryAfter(responseWriter http.ResponseWriter, wait time.Duration) {
+	seconds := max(int64(math.Ceil(wait.Seconds())), 1)
+	responseWriter.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+}
+
+// appResetScoped wraps the reset-password handler: appProvisioningScoped plus a 503 when no ResetLimiter is
+// configured, answered before the key is looked at (fail closed).
+func (server *Server) appResetScoped(handler http.HandlerFunc) http.HandlerFunc {
+	return server.requireAppProvisioning(server.requireResetLimiter(server.requireAppKey(assertedAppIDFromPath, handler)))
+}
+
+func (server *Server) requireResetLimiter(handler http.HandlerFunc) http.HandlerFunc {
+	return func(responseWriter http.ResponseWriter, request *http.Request) {
+		if server.resetLimiter == nil {
+			writeError(responseWriter, http.StatusServiceUnavailable, errMsgResetLimitUnavailable)
+			return
+		}
+		handler(responseWriter, request)
+	}
 }
 
 // appProvisioningScoped wraps an app-scoped provisioning handler: the response is marked non-cacheable, the
@@ -148,6 +185,59 @@ func (server *Server) handleAppSetPassword(responseWriter http.ResponseWriter, r
 	server.relayProvisioning(responseWriter, request, relayCall{
 		appID: appID, personHash: personhash.Hash(body.Email), action: "set-password", started: started,
 	}, answer, err)
+}
+
+type appResetPasswordRequestBody struct {
+	Email string `json:"email"`
+}
+
+// handleAppResetPassword serves POST /v1/apps/{app_id}/reset-password. A malformed body or a blank email is
+// refused before a limit slot is used. The attempt is recorded (Reserve commits) before the relay and stays
+// recorded whatever upstream answers; a refused or failed Reserve never reaches upstream. Only presence of the
+// email is checked here, its format is validated upstream. The email and the returned password are never logged.
+func (server *Server) handleAppResetPassword(responseWriter http.ResponseWriter, request *http.Request) {
+	appID, ok := server.authenticatedAppID(responseWriter, request)
+	if !ok {
+		return
+	}
+	var body appResetPasswordRequestBody
+	if !decodeJSON(responseWriter, request, &body, maxAdminBodyBytes) {
+		return
+	}
+	if personhash.Normalize(body.Email) == "" {
+		writeError(responseWriter, http.StatusBadRequest, errMsgEmailRequired)
+		return
+	}
+	personHash := personhash.Hash(body.Email)
+	if reserveErr := server.resetLimiter.Reserve(request.Context(), appID, personHash); reserveErr != nil {
+		server.writeResetLimitError(responseWriter, appID, personHash, reserveErr)
+		return
+	}
+	started := time.Now()
+	answer, err := server.appProvisioning.ResetPassword(request.Context(), appID, body.Email)
+	server.relayProvisioning(responseWriter, request, relayCall{
+		appID: appID, personHash: personHash, action: "reset-password", started: started,
+	}, answer, err)
+}
+
+// writeResetLimitError maps a refused or failed Reserve to a response. The error text of the store never
+// reaches the body.
+func (server *Server) writeResetLimitError(responseWriter http.ResponseWriter, appID, personHash string, err error) {
+	var rateLimitedErr *resetlimit.RateLimitedError
+	switch {
+	case errors.As(err, &rateLimitedErr):
+		server.logger.Info("reset attempt rate limited",
+			"app_id", appID, "person_hash", personHash, "scope", rateLimitedErr.Scope,
+			"retry_after", rateLimitedErr.RetryAfter.String())
+		setRetryAfter(responseWriter, rateLimitedErr.RetryAfter)
+		writeError(responseWriter, http.StatusTooManyRequests, errMsgResetRateLimited)
+	case errors.Is(err, context.Canceled):
+		server.logger.Debug("reset limit request canceled", "app_id", appID, "person_hash", personHash)
+		writeError(responseWriter, http.StatusServiceUnavailable, errMsgResetLimitUnavailable)
+	default:
+		server.logger.Error("reset limit store failed", "app_id", appID, "person_hash", personHash, "error", err)
+		writeError(responseWriter, http.StatusServiceUnavailable, errMsgResetLimitUnavailable)
+	}
 }
 
 // relayCall is the non-secret context of one provisioning call, used for logging.

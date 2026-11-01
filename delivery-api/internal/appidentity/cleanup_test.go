@@ -696,3 +696,168 @@ func TestReplayCleanupNeverSweepsPublisherMintsWithoutAPositiveWindow(testInstan
 		})
 	}
 }
+
+// fakeResetSweeper records every reset-attempt sweep (time and window) and signals each call.
+type fakeResetSweeper struct {
+	mutex      sync.Mutex
+	nows       []time.Time
+	windows    []time.Duration
+	deleted    int64
+	err        error
+	panicValue any
+	called     chan struct{}
+}
+
+func newFakeResetSweeper() *fakeResetSweeper {
+	return &fakeResetSweeper{called: make(chan struct{}, 16)}
+}
+
+func (sweeper *fakeResetSweeper) DeleteExpiredResetAttempts(
+	_ context.Context, now time.Time, window time.Duration,
+) (int64, error) {
+	sweeper.mutex.Lock()
+	sweeper.nows = append(sweeper.nows, now)
+	sweeper.windows = append(sweeper.windows, window)
+	deleted, err, panicValue := sweeper.deleted, sweeper.err, sweeper.panicValue
+	sweeper.mutex.Unlock()
+	select {
+	case sweeper.called <- struct{}{}:
+	default:
+	}
+	if panicValue != nil {
+		panic(panicValue)
+	}
+	return deleted, err
+}
+
+func (sweeper *fakeResetSweeper) sweeps() (nows []time.Time, windows []time.Duration) {
+	sweeper.mutex.Lock()
+	defer sweeper.mutex.Unlock()
+	return append([]time.Time(nil), sweeper.nows...), append([]time.Duration(nil), sweeper.windows...)
+}
+
+func waitForResetSweep(testInstance *testing.T, sweeper *fakeResetSweeper) {
+	testInstance.Helper()
+	select {
+	case <-sweeper.called:
+	case <-time.After(testWaitBudget):
+		testInstance.Fatal("timed out waiting for DeleteExpiredResetAttempts")
+	}
+}
+
+// startCleanupWithResets runs RunReplayCleanup with a reset sweeper (and optionally a mint sweeper)
+// on the same ticker.
+func startCleanupWithResets(
+	testInstance *testing.T, replay ReplaySweeper, mints PublisherMintSweeper, resets ResetAttemptSweeper,
+	window time.Duration, interval time.Duration, logs *syncBuffer,
+) (stop func()) {
+	testInstance.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunReplayCleanup(ctx, ReplayCleanupConfig{
+			Store: replay, MintStore: mints, MintWindow: time.Hour, ResetStore: resets, ResetWindow: window,
+			Interval: interval, Now: func() time.Time { return testNow }, Logger: textLogger(logs),
+		})
+	}()
+	return func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(testWaitBudget):
+			testInstance.Error("RunReplayCleanup did not return after cancel")
+		}
+	}
+}
+
+func TestReplayCleanupAlsoSweepsResetAttemptsOnTheSameTickAndLeavesMintsUnchanged(testInstance *testing.T) {
+	resets := newFakeResetSweeper()
+	resets.deleted = 6
+	mints := newFakeMintSweeper()
+	logs := &syncBuffer{}
+	stop := startCleanupWithResets(testInstance, newFakeSweeper(), mints, resets, time.Hour, time.Hour, logs)
+
+	waitForResetSweep(testInstance, resets)
+	waitForMintSweep(testInstance, mints)
+	stop()
+
+	nows, windows := resets.sweeps()
+	if len(nows) != 1 || !nows[0].Equal(testNow) || windows[0] != time.Hour {
+		testInstance.Errorf("reset sweeps = %v with windows %v, want one at %v with a 1h window", nows, windows, testNow)
+	}
+	if mintNows, _ := mints.sweeps(); len(mintNows) != 1 {
+		testInstance.Errorf("mint sweeps = %v, want exactly one (unchanged)", mintNows)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "reset attempt cleanup deleted old rows") || !strings.Contains(logged, "deleted=6") {
+		testInstance.Errorf("a reset sweep that deleted rows must log the count at info:\n%s", logged)
+	}
+}
+
+func TestReplayCleanupSweepsResetAttemptsAgainOnEveryTick(testInstance *testing.T) {
+	resets := newFakeResetSweeper()
+	stop := startCleanupWithResets(testInstance, newFakeSweeper(), nil, resets, time.Hour, 5*time.Millisecond, &syncBuffer{})
+	defer stop()
+
+	waitForResetSweep(testInstance, resets)
+	waitForResetSweep(testInstance, resets)
+	waitForResetSweep(testInstance, resets)
+}
+
+func TestReplayCleanupFailingOrPanickingResetSweeperDoesNotStopTheOtherSweeps(testInstance *testing.T) {
+	for name, configure := range map[string]func(*fakeResetSweeper){
+		"error": func(resets *fakeResetSweeper) {
+			resets.err = errors.New("delete old reset attempts: database unavailable")
+		},
+		"panic": func(resets *fakeResetSweeper) { resets.panicValue = "boom" },
+	} {
+		testInstance.Run(name, func(subTest *testing.T) {
+			resets := newFakeResetSweeper()
+			configure(resets)
+			replay := newFakeSweeper()
+			mints := newFakeMintSweeper()
+			logs := &syncBuffer{}
+			stop := startCleanupWithResets(subTest, replay, mints, resets, time.Hour, 5*time.Millisecond, logs)
+
+			waitForResetSweep(subTest, resets)
+			waitForResetSweep(subTest, resets)
+			waitForSweep(subTest, replay)
+			waitForMintSweep(subTest, mints)
+			waitForMintSweep(subTest, mints)
+			stop()
+
+			logged := logs.String()
+			if !strings.Contains(logged, "level=ERROR") ||
+				(!strings.Contains(logged, "reset attempt cleanup failed") && !strings.Contains(logged, "reset attempt cleanup panicked")) {
+				subTest.Errorf("a failing reset sweep must be logged at error:\n%s", logged)
+			}
+			if strings.Contains(logged, "oidc replay cleanup failed") || strings.Contains(logged, "publisher mint cleanup failed") {
+				subTest.Errorf("the other sweeps did not fail:\n%s", logged)
+			}
+		})
+	}
+}
+
+func TestReplayCleanupNeverSweepsResetAttemptsWithoutAPositiveWindow(testInstance *testing.T) {
+	for _, window := range []time.Duration{0, -time.Hour} {
+		testInstance.Run(window.String(), func(subTest *testing.T) {
+			resets := newFakeResetSweeper()
+			replay := newFakeSweeper()
+			logs := &syncBuffer{}
+			stop := startCleanupWithResets(subTest, replay, nil, resets, window, 5*time.Millisecond, logs)
+
+			waitForSweep(subTest, replay)
+			waitForSweep(subTest, replay)
+			stop()
+
+			if nows, _ := resets.sweeps(); len(nows) != 0 {
+				subTest.Errorf("reset sweeps = %v, want none for window %v", nows, window)
+			}
+			logged := logs.String()
+			if !strings.Contains(logged, "level=ERROR") || !strings.Contains(logged, "reset attempt cleanup not started: invalid window") {
+				subTest.Errorf("an invalid window must be logged at error:\n%s", logged)
+			}
+		})
+	}
+}

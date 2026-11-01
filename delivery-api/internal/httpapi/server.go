@@ -114,11 +114,16 @@ type ServerConfig struct {
 	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
 	// caveat as Registry applies.
 	AppHeartbeats AppHeartbeats
-	// AppProvisioning backs the app-scoped /v1/apps/{app_id}/provision and /deprovision
-	// endpoints. When nil, both answer 503 (fail closed). Callers must leave this an
-	// untyped nil when no client exists: a typed-nil pointer stored here is a non-nil
-	// interface and would bypass that guard.
+	// AppProvisioning backs the app-scoped /v1/apps/{app_id}/provision, /deprovision,
+	// /set-password and /reset-password endpoints. When nil, all answer 503 (fail closed).
+	// Callers must leave this an untyped nil when no client exists: a typed-nil pointer
+	// stored here is a non-nil interface and would bypass that guard.
 	AppProvisioning AppProvisioning
+	// ResetLimiter is the door limit of /v1/apps/{app_id}/reset-password. When nil, that
+	// route answers 503 (fail closed). Callers must leave this an untyped nil when no
+	// limiter exists: a typed-nil pointer stored here is a non-nil interface and would
+	// bypass that guard.
+	ResetLimiter ResetLimiter
 	// Messages backs the /v1/messages and /v1/admin/deliveries endpoints. When
 	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
 	// caveat as Registry applies.
@@ -152,14 +157,16 @@ type Server struct {
 	appRegistry AppRegistry
 	// appHeartbeats backs the app-scoped heartbeat check endpoints.
 	appHeartbeats AppHeartbeats
-	// appProvisioning backs the app-scoped provision and deprovision endpoints.
+	// appProvisioning backs the app-scoped provisioning endpoints (provision, deprovision, set and reset password).
 	appProvisioning AppProvisioning
-	messages        Messages
-	publishers      Publishers
-	heartbeats      Heartbeats
-	appIdentity     AppIdentity
-	now             func() time.Time
-	mux             *http.ServeMux
+	// resetLimiter is the door limit of the app reset-password route.
+	resetLimiter ResetLimiter
+	messages     Messages
+	publishers   Publishers
+	heartbeats   Heartbeats
+	appIdentity  AppIdentity
+	now          func() time.Time
+	mux          *http.ServeMux
 }
 
 // readinessResponseBody is the /readyz JSON body when the database answered.
@@ -212,6 +219,7 @@ func NewServer(config ServerConfig) *Server {
 		appRegistry:     config.AppRegistry,
 		appHeartbeats:   config.AppHeartbeats,
 		appProvisioning: config.AppProvisioning,
+		resetLimiter:    config.ResetLimiter,
 		messages:        config.Messages,
 		publishers:      config.Publishers,
 		heartbeats:      config.Heartbeats,
@@ -277,6 +285,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/provision", server.appProvisioningScoped(server.handleAppProvision))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/deprovision", server.appProvisioningScoped(server.handleAppDeprovision))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/set-password", server.appProvisioningScoped(server.handleAppSetPassword))
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/reset-password", server.appResetScoped(server.handleAppResetPassword))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/ntfy-publisher", server.appPublisherScoped(server.handleAppMintPublisher))
 
 	server.mux.HandleFunc("POST /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleMintPublisher))

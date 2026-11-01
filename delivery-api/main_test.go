@@ -18,9 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/appidentity"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/resetlimit"
 )
 
 // resultTimeout bounds how long a test waits on serve or a request before
@@ -1466,6 +1468,22 @@ func TestNewProberWiringUsesItsOwnFreshnessAndProductionDefaults(testInstance *t
 	}
 	if wiring.run == nil {
 		testInstance.Fatal("run is nil, want the RunProber background entry")
+	}
+}
+
+func TestNewResetWiringSharesOneStoreAndTheLimitWindow(testInstance *testing.T) {
+	store := resetlimit.NewPGStore(nil)
+
+	wiring := newResetWiring(store)
+
+	if wiring.limiter != httpapi.ResetLimiter(store) {
+		testInstance.Error("limiter is not the store handed in")
+	}
+	if wiring.sweeper != appidentity.ResetAttemptSweeper(store) {
+		testInstance.Error("sweeper is not the same store as the limiter")
+	}
+	if wiring.window != resetlimit.Window {
+		testInstance.Errorf("window = %v, want %v", wiring.window, resetlimit.Window)
 	}
 }
 

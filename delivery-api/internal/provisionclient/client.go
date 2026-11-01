@@ -181,6 +181,8 @@ const (
 	provisionPath   = "/v1/provision"
 	deprovisionPath = "/v1/deprovision"
 	setPasswordPath = "/v1/set-password"
+	// resetPasswordPath is provisioning-api's reset route; the 200 body carries the new plaintext password.
+	resetPasswordPath = "/v1/reset-password"
 )
 
 type setPasswordRequest struct {
@@ -198,6 +200,18 @@ func (client *Client) SetPassword(ctx context.Context, appID string, email strin
 		return Passthrough{}, errors.New("set-password: encode request failed")
 	}
 	return client.passthrough(ctx, "set-password", setPasswordPath, body)
+}
+
+// ResetPassword asks provisioning-api to reset the shared password of the person with email, who must belong
+// to appID, and returns its answer as-is (a 200 body carries the new password). A non-2xx status is not an
+// error; only a failure to get an answer is. Error text never contains the email, the credential or the
+// response body.
+func (client *Client) ResetPassword(ctx context.Context, appID, email string) (Passthrough, error) {
+	body, marshalErr := json.Marshal(appEmailRequest{AppID: appID, Email: email})
+	if marshalErr != nil {
+		return Passthrough{}, errors.New("reset-password: encode request failed")
+	}
+	return client.passthrough(ctx, "reset-password", resetPasswordPath, body)
 }
 
 // Passthrough is a provisioning-api answer handed back unchanged: the upstream status, body bytes,

@@ -3,9 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
-	"math"
 	"net/http"
-	"strconv"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
@@ -99,8 +97,7 @@ func (server *Server) writePublisherError(responseWriter http.ResponseWriter, re
 	case errors.As(err, &validationErr):
 		writeError(responseWriter, http.StatusBadRequest, validationErr.Message)
 	case errors.As(err, &rateLimitedErr):
-		retryAfterSeconds := max(int64(math.Ceil(rateLimitedErr.RetryAfter.Seconds())), 1)
-		responseWriter.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds, 10))
+		setRetryAfter(responseWriter, rateLimitedErr.RetryAfter)
 		writeError(responseWriter, http.StatusTooManyRequests, errMsgPublisherRateLimited)
 	case errors.Is(err, publisher.ErrMintBusy):
 		writeError(responseWriter, http.StatusConflict, errMsgPublisherMintBusy)

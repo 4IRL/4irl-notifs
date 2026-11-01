@@ -74,6 +74,7 @@ func registerPublisherAppCleanup(testInstance *testing.T, appID string) {
 		psql(testInstance, fmt.Sprintf("delete from messages where app_id = '%s'", appID))
 		psql(testInstance, fmt.Sprintf("delete from app_publishers where app_id = '%s'", appID))
 		psql(testInstance, fmt.Sprintf("delete from app_publisher_mints where app_id = '%s'", appID))
+		psql(testInstance, fmt.Sprintf("delete from app_reset_attempts where app_id = '%s'", appID))
 	})
 }
 

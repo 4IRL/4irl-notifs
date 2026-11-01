@@ -202,6 +202,17 @@ existing replay cleanup ticker.
 shared password across apps through provisioning-api's `/v1/set-password`; the answer is relayed as for
 provision (a person not in this app is the upstream `404 user does not exist`). Only presence of email and
 password is checked here; the password is never logged.
+`POST /v1/apps/{app_id}/reset-password` (`{email}`) resets the person's password through provisioning-api's
+`/v1/reset-password` and relays the answer as for provision (the `200` body carries the new password once;
+it is never logged). The app comes only from its key. Before the relay a Postgres door limit
+(`app_reset_attempts`, swept by the replay cleanup ticker) records the attempt and refuses it when the app
+has made 30 attempts in the last hour or 3 for that one person, so one app cannot use up a person's reset
+quota for the other apps. Attempts count, not successes: the slot is used whatever upstream answers, and a
+refused attempt is not recorded. A blank email or malformed body is a `400` that uses no slot. Over a cap
+the route answers `429 {"error":"reset rate limit exceeded"}` with `Retry-After` in whole seconds (the
+larger wait when both caps are hit), distinct from upstream's `too many password changes`. If the limit
+store cannot answer (or is not configured) the route answers `503 {"error":"reset limit unavailable"}` and
+makes no upstream call. The operator's admin reset path is exempt from the door limit.
 
 1. The app's deploy workflow requests a GitHub OIDC token (audience `DELIVERY_OIDC_AUDIENCE`, default
    `notifs-delivery`) and posts `{"app_id","token"}` to `POST /v1/app-identity/exchange` (behind the Access

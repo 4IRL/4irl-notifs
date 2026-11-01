@@ -114,6 +114,10 @@ func appKeyRoutes() []appKeyRoute {
 			bodyFormat: `{"email":"person@example.com","password":"correct-horse"}`,
 		},
 		{
+			name: "reset password", method: http.MethodPost, pathFormat: "/v1/apps/%s/reset-password", source: "path",
+			bodyFormat: `{"email":"person@example.com"}`,
+		},
+		{
 			name: "mint publisher", method: http.MethodPost, pathFormat: "/v1/apps/%s/ntfy-publisher", source: "path",
 			bodyFormat: "{}",
 		},
@@ -125,6 +129,7 @@ type appKeyRig struct {
 	messages   *fakeMessages
 	heartbeats *fakeHeartbeats
 	provision  *fakeAppProvisioning
+	limiter    *fakeResetLimiter
 	publishers *fakePublishers
 	identity   *fakeAppIdentity
 	logs       *bytes.Buffer
@@ -138,6 +143,7 @@ func newAppKeyRig() *appKeyRig {
 		messages:   &fakeMessages{submitResult: sampleStoredMessage(), getResult: sampleStoredMessage(), getByKeyResult: sampleStoredMessage()},
 		heartbeats: allResults(sampleCheck()),
 		provision:  &fakeAppProvisioning{answer: provisionclient.Passthrough{Status: http.StatusOK, Body: []byte("{}")}},
+		limiter:    &fakeResetLimiter{},
 		publishers: &fakePublishers{view: samplePublisherView()},
 		identity:   &fakeAppIdentity{resolved: appidentity.ResolvedKey{ID: 4, AppID: keyApp, Hint: "dak_abcd"}},
 		logs:       &bytes.Buffer{},
@@ -153,8 +159,8 @@ func (rig *appKeyRig) rebuild() {
 	}
 	rig.server = NewServer(ServerConfig{
 		Messages: rig.messages, Heartbeats: rig.heartbeats, AppIdentity: identity, AppProvisioning: rig.provision,
-		Publishers: rig.publishers,
-		Logger:     slog.New(slog.NewTextHandler(rig.logs, nil)),
+		ResetLimiter: rig.limiter, Publishers: rig.publishers,
+		Logger: slog.New(slog.NewTextHandler(rig.logs, nil)),
 	})
 }
 
@@ -169,7 +175,7 @@ func (rig *appKeyRig) serve(method string, path string, body string, authorizati
 }
 
 func (rig *appKeyRig) handlerCalls() int {
-	return rig.messages.totalCalls() + rig.heartbeats.totalCalls() + rig.provision.totalCalls() + rig.publishers.mintCalls
+	return rig.messages.totalCalls() + rig.heartbeats.totalCalls() + rig.provision.totalCalls() + rig.limiter.totalCalls() + rig.publishers.mintCalls
 }
 
 func (rig *appKeyRig) assertNoHandlerCall(testInstance *testing.T) {

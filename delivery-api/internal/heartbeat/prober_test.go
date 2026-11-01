@@ -710,7 +710,6 @@ func TestProberLogsNeverCarryTheTargetOrCredentials(testInstance *testing.T) {
 
 	closedServer := newProbeServer(testInstance, okHandler)
 	closedClient := loopbackProbeClient(testInstance, closedServer)
-	closedServer.Close()
 
 	cases := []probeCase{
 		{
@@ -767,6 +766,10 @@ func TestProberLogsNeverCarryTheTargetOrCredentials(testInstance *testing.T) {
 			mutate: func(claim *ProbeClaim) { claim.SealedAccessToken = otherCheckToken },
 		},
 	}
+
+	// Close only after every case server exists: closing earlier frees the port for the OS to hand to
+	// one of them, and the "closed" network case would then reach a live server.
+	closedServer.Close()
 
 	logs := &lockedBuffer{}
 	for _, testCase := range cases {
