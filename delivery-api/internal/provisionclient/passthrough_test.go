@@ -122,6 +122,21 @@ func TestSetPasswordSendsExactRequest(testInstance *testing.T) {
 	}
 }
 
+func TestResetPasswordSendsExactRequest(testInstance *testing.T) {
+	server, captured := captureServer(testInstance)
+
+	result, resetErr := New(Config{BaseURL: server.URL, Credential: testCredential}).
+		ResetPassword(context.Background(), "urls4irl", testEmail)
+
+	if resetErr != nil {
+		testInstance.Fatalf("ResetPassword: %v", resetErr)
+	}
+	assertCaptured(testInstance, captured, "/v1/reset-password", `{"app_id":"urls4irl","email":"person@example.com"}`)
+	if result.Status != http.StatusOK || string(result.Body) != `{"ok":true}` {
+		testInstance.Errorf("result = %+v", result)
+	}
+}
+
 func TestDeprovisionRequiresExactlyOneTarget(testInstance *testing.T) {
 	for _, target := range []DeprovisionTarget{{}, {Email: testEmail, UserID: "u_abc123"}} {
 		client := New(Config{BaseURL: "http://provisioning-api:8080", Credential: testCredential})
@@ -162,6 +177,9 @@ func TestPassthroughReturnsUpstreamAnswerUnchanged(testInstance *testing.T) {
 		}},
 		{"deprovision", func(client *Client) (Passthrough, error) {
 			return client.Deprovision(context.Background(), "urls4irl", DeprovisionTarget{Email: testEmail})
+		}},
+		{"reset-password", func(client *Client) (Passthrough, error) {
+			return client.ResetPassword(context.Background(), "urls4irl", testEmail)
 		}},
 	}
 	for _, callCase := range calls {
@@ -252,6 +270,9 @@ func TestPassthroughUnconfiguredFailsWithoutDialing(testInstance *testing.T) {
 		if !errors.Is(deprovisionErr, ErrNotConfigured) {
 			testInstance.Errorf("Deprovision error = %v, want ErrNotConfigured", deprovisionErr)
 		}
+		if _, resetErr := client.ResetPassword(context.Background(), "urls4irl", testEmail); !errors.Is(resetErr, ErrNotConfigured) {
+			testInstance.Errorf("ResetPassword error = %v, want ErrNotConfigured", resetErr)
+		}
 	}
 }
 
@@ -336,7 +357,9 @@ func TestPassthroughErrorsNeverContainEmailCredentialOrBody(testInstance *testin
 
 			_, setPasswordErr := client.SetPassword(ctx, "urls4irl", testEmail, "leaky-password-value")
 
-			for _, callErr := range []error{provisionErr, deprovisionErr, setPasswordErr} {
+			_, resetErr := client.ResetPassword(ctx, "urls4irl", testEmail)
+
+			for _, callErr := range []error{provisionErr, deprovisionErr, setPasswordErr, resetErr} {
 				if callErr == nil {
 					subTest.Fatal("call succeeded, want an error")
 				}

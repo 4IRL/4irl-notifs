@@ -64,22 +64,50 @@ func (fake *fakeAppProvisioning) SetPassword(
 	return fake.answer, fake.err
 }
 
+func (fake *fakeAppProvisioning) ResetPassword(
+	_ context.Context, appID, email string,
+) (provisionclient.Passthrough, error) {
+	fake.calls = append(fake.calls, provisionCall{appID: appID, email: email})
+	return fake.answer, fake.err
+}
+
 func (fake *fakeAppProvisioning) totalCalls() int { return len(fake.calls) }
 
+// reserveCall is one recorded Reserve.
+type reserveCall struct {
+	appID      string
+	personHash string
+}
+
+// fakeResetLimiter admits every attempt unless err is set, and records the calls.
+type fakeResetLimiter struct {
+	err   error
+	calls []reserveCall
+}
+
+func (fake *fakeResetLimiter) Reserve(_ context.Context, appID, personHash string) error {
+	fake.calls = append(fake.calls, reserveCall{appID: appID, personHash: personHash})
+	return fake.err
+}
+
+func (fake *fakeResetLimiter) totalCalls() int { return len(fake.calls) }
+
 type provisioningRig struct {
-	fake   *fakeAppProvisioning
-	logs   *bytes.Buffer
-	server *Server
+	fake    *fakeAppProvisioning
+	limiter *fakeResetLimiter
+	logs    *bytes.Buffer
+	server  *Server
 }
 
 func newProvisioningRig(fake *fakeAppProvisioning) *provisioningRig {
-	rig := &provisioningRig{fake: fake, logs: &bytes.Buffer{}}
+	rig := &provisioningRig{fake: fake, limiter: &fakeResetLimiter{}, logs: &bytes.Buffer{}}
 	var provisioning AppProvisioning
 	if fake != nil {
 		provisioning = fake
 	}
 	rig.server = NewServer(ServerConfig{
 		AppProvisioning: provisioning,
+		ResetLimiter:    rig.limiter,
 		AppIdentity:     &fakeAppIdentity{resolved: appidentity.ResolvedKey{ID: 4, AppID: keyApp, Hint: "dak_abcd"}},
 		Logger:          slog.New(slog.NewTextHandler(rig.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
