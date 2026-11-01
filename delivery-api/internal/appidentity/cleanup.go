@@ -45,6 +45,14 @@ type PublisherMintSweeper interface {
 	DeleteExpiredPublisherMints(ctx context.Context, now time.Time, window time.Duration) (int64, error)
 }
 
+// ResetAttemptSweeper deletes reset-attempt rows that aged out of the door-limit window. It is
+// satisfied by *resetlimit.PGStore.
+type ResetAttemptSweeper interface {
+	// DeleteExpiredResetAttempts deletes every app_reset_attempts row older than now-window and
+	// returns how many. It refuses a window that is not positive.
+	DeleteExpiredResetAttempts(ctx context.Context, now time.Time, window time.Duration) (int64, error)
+}
+
 // ReplayCleanupConfig configures RunReplayCleanup. Store and Interval are required; Now is
 // time.Now and Logger is slog.Default() when left zero. RejectedStore is optional: when set,
 // the same ticker also sweeps rejected registration requests older than RejectedRequestWindow.
@@ -60,7 +68,11 @@ type ReplayCleanupConfig struct {
 	PendingTTL    time.Duration
 	MintStore     PublisherMintSweeper
 	MintWindow    time.Duration
-	Interval      time.Duration
+	// ResetStore is optional: when set (with a positive ResetWindow, else it is not swept) the same
+	// ticker also deletes reset-attempt rows older than ResetWindow.
+	ResetStore  ResetAttemptSweeper
+	ResetWindow time.Duration
+	Interval    time.Duration
 
 	// Now supplies the sweep time, so tests can run on a fake clock.
 	Now    func() time.Time
@@ -126,6 +138,13 @@ func RunReplayCleanup(ctx context.Context, config ReplayCleanupConfig) {
 		mintStore = nil
 	}
 
+	// Same fail-closed rule for the reset attempt sweep.
+	resetStore, resetWindow := config.ResetStore, config.ResetWindow
+	if resetStore != nil && resetWindow <= 0 {
+		logger.Error("reset attempt cleanup not started: invalid window", "window", resetWindow)
+		resetStore = nil
+	}
+
 	sweep := func() {
 		sweepTime := now()
 		runSweep("oidc replay cleanup", func() (int64, error) {
@@ -145,6 +164,11 @@ func RunReplayCleanup(ctx context.Context, config ReplayCleanupConfig) {
 			runSweep("publisher mint cleanup", func() (int64, error) {
 				return mintStore.DeleteExpiredPublisherMints(ctx, sweepTime, mintWindow)
 			}, "publisher mint cleanup deleted old rows")
+		}
+		if resetStore != nil {
+			runSweep("reset attempt cleanup", func() (int64, error) {
+				return resetStore.DeleteExpiredResetAttempts(ctx, sweepTime, resetWindow)
+			}, "reset attempt cleanup deleted old rows")
 		}
 	}
 

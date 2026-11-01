@@ -34,6 +34,7 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/readiness"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/resetlimit"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/seal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/secretenv"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/sink"
@@ -333,6 +334,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	}
 	minter, appProvisioning := provisionInterfaces(provisionClient)
 	publisherStore := publisher.NewPGStore(pool)
+	resetStore := resetlimit.NewPGStore(pool)
 	publisherService := publisher.NewService(publisherStore, minter, sealer, logger)
 	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil
 	// *publisher.Service) makes the worker dead-letter a recipient delivery as no_publisher instead of sending.
@@ -425,6 +427,8 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 				PendingTTL:    oidcConfig.PendingRequestTTL,
 				MintStore:     publisherStore,
 				MintWindow:    publisher.MintRateWindow,
+				ResetStore:    resetStore,
+				ResetWindow:   resetlimit.Window,
 				Interval:      appidentity.DefaultReplayCleanupInterval,
 				Logger:        logger,
 			})
