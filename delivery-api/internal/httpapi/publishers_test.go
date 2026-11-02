@@ -166,7 +166,7 @@ func TestPublishersDeleteMapsErrors(testInstance *testing.T) {
 }
 
 func TestPublishersDeleteInvalidAppIDIs400(testInstance *testing.T) {
-	service := publisher.NewService(nil, nil, nil, nil)
+	service := publisher.NewService(nil, nil, nil, nil, nil)
 	recorder := servePublishers(service, nil, http.MethodDelete, "/v1/admin/apps/Bad-App/ntfy-publisher")
 	assertResponse(testInstance, recorder, http.StatusBadRequest, `{"error":"invalid app_id"}`+"\n")
 }
@@ -236,7 +236,7 @@ func TestPublishersMapErrors(testInstance *testing.T) {
 
 func TestPublishersInvalidAppIDIs400(testInstance *testing.T) {
 	// A real publisher.Service validates the app id before touching its store or minter.
-	service := publisher.NewService(nil, nil, nil, nil)
+	service := publisher.NewService(nil, nil, nil, nil, nil)
 	recorder := servePublishers(service, nil, http.MethodPost, "/v1/admin/apps/Bad-App/ntfy-publisher")
 	assertResponse(testInstance, recorder, http.StatusBadRequest, `{"error":"invalid app_id"}`+"\n")
 }

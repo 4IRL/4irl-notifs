@@ -31,6 +31,8 @@ type MintTx interface {
 	// Upsert inserts or replaces the app's publisher (in a savepoint, so a failed statement does
 	// not abort the transaction).
 	Upsert(ctx context.Context, publisher StoredPublisher) (StoredPublisher, error)
+	// Delete removes the app's publisher row on the lock's connection. It is idempotent.
+	Delete(ctx context.Context, appID string) error
 }
 
 // Minter obtains a fresh publisher grant for an app. *provisionclient.Client

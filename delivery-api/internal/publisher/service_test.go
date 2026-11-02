@@ -92,6 +92,10 @@ func (tx fakeMintTx) ReserveMintSlot(_ context.Context, appID string, _ int, _ t
 	return nil
 }
 
+func (tx fakeMintTx) Delete(ctx context.Context, appID string) error {
+	return tx.store.Delete(ctx, appID)
+}
+
 func (tx fakeMintTx) Upsert(ctx context.Context, publisher StoredPublisher) (StoredPublisher, error) {
 	tx.store.mutex.Lock()
 	deadline, hasDeadline := ctx.Deadline()
@@ -181,7 +185,7 @@ func TestMintSealsTokenWithAppBoundAADAndUpserts(testInstance *testing.T) {
 	store := newFakeStore()
 	minter := &fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}
 	sealer := newSealer(testInstance)
-	service := NewService(store, minter, sealer, nil)
+	service := NewService(store, minter, sealer, allowAll{}, nil)
 
 	view, mintErr := service.Mint(context.Background(), "urls4irl", false)
 	if mintErr != nil {
@@ -212,7 +216,7 @@ func TestMintTwiceReplacesSealedToken(testInstance *testing.T) {
 	minter := &fakeMinter{grants: []provisionclient.PublisherGrant{
 		grantFor("urls4irl", firstToken), grantFor("urls4irl", secondToken),
 	}}
-	service := NewService(store, minter, newSealer(testInstance), nil)
+	service := NewService(store, minter, newSealer(testInstance), allowAll{}, nil)
 
 	if _, mintErr := service.Mint(context.Background(), "urls4irl", false); mintErr != nil {
 		testInstance.Fatalf("first Mint: %v", mintErr)
@@ -232,7 +236,7 @@ func TestMintTwiceReplacesSealedToken(testInstance *testing.T) {
 
 func TestTokenOpensStoredToken(testInstance *testing.T) {
 	service := NewService(newFakeStore(),
-		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), nil)
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), allowAll{}, nil)
 	if _, mintErr := service.Mint(context.Background(), "urls4irl", false); mintErr != nil {
 		testInstance.Fatalf("Mint: %v", mintErr)
 	}
@@ -251,7 +255,7 @@ func TestTokenRejectsBlobSealedForAnotherApp(testInstance *testing.T) {
 		testInstance.Fatalf("Seal: %v", sealErr)
 	}
 	store.rows["urls4irl"] = StoredPublisher{AppID: "urls4irl", SealedToken: otherAppBlob}
-	service := NewService(store, nil, sealer, nil)
+	service := NewService(store, nil, sealer, allowAll{}, nil)
 
 	token, tokenErr := service.Token(context.Background(), "urls4irl")
 	if tokenErr == nil {
@@ -269,7 +273,7 @@ func TestTokenRejectsBlobSealedForAnotherApp(testInstance *testing.T) {
 }
 
 func TestUnknownAppHasNoPublisher(testInstance *testing.T) {
-	service := NewService(newFakeStore(), nil, newSealer(testInstance), nil)
+	service := NewService(newFakeStore(), nil, newSealer(testInstance), allowAll{}, nil)
 
 	if _, tokenErr := service.Token(context.Background(), "ghost"); !errors.Is(tokenErr, registry.ErrNoPublisher) {
 		testInstance.Errorf("Token err = %v, want ErrNoPublisher", tokenErr)
@@ -281,7 +285,7 @@ func TestUnknownAppHasNoPublisher(testInstance *testing.T) {
 
 func TestGetReturnsTheMintedViewWithoutAToken(testInstance *testing.T) {
 	service := NewService(newFakeStore(),
-		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), nil)
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), allowAll{}, nil)
 	minted, mintErr := service.Mint(context.Background(), "urls4irl", false)
 	if mintErr != nil {
 		testInstance.Fatalf("Mint: %v", mintErr)
@@ -306,7 +310,7 @@ func TestGetReturnsTheMintedViewWithoutAToken(testInstance *testing.T) {
 func TestMintWrapsTheUpsertErrorAsUnavailableKeepingTheCause(testInstance *testing.T) {
 	storeErr := errors.New("db down")
 	service := NewService(&failingStore{err: storeErr},
-		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), nil)
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), allowAll{}, nil)
 
 	_, mintErr := service.Mint(context.Background(), "urls4irl", false)
 	if !errors.Is(mintErr, ErrMintUnavailable) || !errors.Is(mintErr, storeErr) {
@@ -316,7 +320,7 @@ func TestMintWrapsTheUpsertErrorAsUnavailableKeepingTheCause(testInstance *testi
 
 func TestResolveRecipientBuildsAnNtfyDestinationFromTheAppToken(testInstance *testing.T) {
 	service := NewService(newFakeStore(),
-		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), nil)
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), allowAll{}, nil)
 	if _, mintErr := service.Mint(context.Background(), "urls4irl", false); mintErr != nil {
 		testInstance.Fatalf("Mint: %v", mintErr)
 	}
@@ -338,7 +342,7 @@ func TestResolveRecipientBuildsAnNtfyDestinationFromTheAppToken(testInstance *te
 }
 
 func TestResolveRecipientWithoutPublisherIsErrNoPublisher(testInstance *testing.T) {
-	service := NewService(newFakeStore(), nil, newSealer(testInstance), nil)
+	service := NewService(newFakeStore(), nil, newSealer(testInstance), allowAll{}, nil)
 
 	_, resolveErr := service.ResolveRecipient(context.Background(), "ghost", "76gzqgp4byjl6dje", "all")
 	if !errors.Is(resolveErr, registry.ErrNoPublisher) {
@@ -349,7 +353,7 @@ func TestResolveRecipientWithoutPublisherIsErrNoPublisher(testInstance *testing.
 func TestResolveRecipientRejectsANonHashRecipient(testInstance *testing.T) {
 	store := newFakeStore()
 	service := NewService(store,
-		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), nil)
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), allowAll{}, nil)
 	if _, mintErr := service.Mint(context.Background(), "urls4irl", false); mintErr != nil {
 		testInstance.Fatalf("Mint: %v", mintErr)
 	}
@@ -371,7 +375,7 @@ func TestResolveRecipientRejectsANonHashRecipient(testInstance *testing.T) {
 
 func TestHasPublisher(testInstance *testing.T) {
 	service := NewService(newFakeStore(),
-		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), nil)
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), allowAll{}, nil)
 
 	has, hasErr := service.HasPublisher(context.Background(), "urls4irl")
 	if hasErr != nil || has {
@@ -388,7 +392,7 @@ func TestHasPublisher(testInstance *testing.T) {
 
 func TestHasPublisherPropagatesStoreFailure(testInstance *testing.T) {
 	storeErr := errors.New("db down")
-	service := NewService(&failingStore{err: storeErr}, nil, newSealer(testInstance), nil)
+	service := NewService(&failingStore{err: storeErr}, nil, newSealer(testInstance), allowAll{}, nil)
 
 	has, hasErr := service.HasPublisher(context.Background(), "urls4irl")
 	if !errors.Is(hasErr, storeErr) || has {
@@ -417,10 +421,12 @@ func (tx failingMintTx) Upsert(context.Context, StoredPublisher) (StoredPublishe
 	return StoredPublisher{}, tx.err
 }
 
+func (tx failingMintTx) Delete(context.Context, string) error { return tx.err }
+
 func TestRemoveDeletesThePublisherSoRecipientSubmitsFailClosed(testInstance *testing.T) {
 	store := newFakeStore()
 	service := NewService(store,
-		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), nil)
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), allowAll{}, nil)
 	if _, mintErr := service.Mint(context.Background(), "urls4irl", false); mintErr != nil {
 		testInstance.Fatalf("Mint: %v", mintErr)
 	}
@@ -440,7 +446,7 @@ func TestRemoveDeletesThePublisherSoRecipientSubmitsFailClosed(testInstance *tes
 
 func TestRemoveIsIdempotent(testInstance *testing.T) {
 	store := newFakeStore()
-	service := NewService(store, nil, newSealer(testInstance), nil)
+	service := NewService(store, nil, newSealer(testInstance), allowAll{}, nil)
 
 	for attempt := 0; attempt < 2; attempt++ {
 		if removeErr := service.Remove(context.Background(), "urls4irl"); removeErr != nil {
@@ -454,7 +460,7 @@ func TestRemoveIsIdempotent(testInstance *testing.T) {
 
 func TestRemoveRejectsInvalidAppIDBeforeTheStore(testInstance *testing.T) {
 	store := newFakeStore()
-	service := NewService(store, nil, newSealer(testInstance), nil)
+	service := NewService(store, nil, newSealer(testInstance), allowAll{}, nil)
 
 	removeErr := service.Remove(context.Background(), "Bad-App")
 
@@ -469,7 +475,7 @@ func TestRemoveRejectsInvalidAppIDBeforeTheStore(testInstance *testing.T) {
 
 func TestRemovePropagatesStoreFailure(testInstance *testing.T) {
 	storeErr := errors.New("db down")
-	service := NewService(&failingStore{err: storeErr}, nil, newSealer(testInstance), nil)
+	service := NewService(&failingStore{err: storeErr}, nil, newSealer(testInstance), allowAll{}, nil)
 
 	if removeErr := service.Remove(context.Background(), "urls4irl"); !errors.Is(removeErr, storeErr) {
 		testInstance.Errorf("Remove err = %v, want the store error", removeErr)
@@ -481,7 +487,7 @@ func TestMintRejectsInvalidAppIDBeforeCallingMinter(testInstance *testing.T) {
 		testInstance.Run("app_id "+appID, func(subTest *testing.T) {
 			store := newFakeStore()
 			minter := &fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}
-			service := NewService(store, minter, newSealer(subTest), nil)
+			service := NewService(store, minter, newSealer(subTest), allowAll{}, nil)
 
 			_, mintErr := service.Mint(context.Background(), appID, false)
 
@@ -503,7 +509,7 @@ func TestMintAcceptsBoundaryAppIDs(testInstance *testing.T) {
 	for _, appID := range []string{"a", "0app", "my_app_2", strings.Repeat("a", 63)} {
 		testInstance.Run(appID, func(subTest *testing.T) {
 			minter := &fakeMinter{grants: []provisionclient.PublisherGrant{grantFor(appID, firstToken)}}
-			service := NewService(newFakeStore(), minter, newSealer(subTest), nil)
+			service := NewService(newFakeStore(), minter, newSealer(subTest), allowAll{}, nil)
 			if _, mintErr := service.Mint(context.Background(), appID, false); mintErr != nil {
 				subTest.Fatalf("Mint(%q): %v", appID, mintErr)
 			}
@@ -514,7 +520,7 @@ func TestMintAcceptsBoundaryAppIDs(testInstance *testing.T) {
 func TestMintReturnsMinterErrorAndStoresNothing(testInstance *testing.T) {
 	store := newFakeStore()
 	minterErr := errors.New("provisioning-api unreachable")
-	service := NewService(store, &fakeMinter{err: minterErr}, newSealer(testInstance), nil)
+	service := NewService(store, &fakeMinter{err: minterErr}, newSealer(testInstance), allowAll{}, nil)
 
 	_, mintErr := service.Mint(context.Background(), "urls4irl", false)
 	if !errors.Is(mintErr, minterErr) {
@@ -527,7 +533,7 @@ func TestMintReturnsMinterErrorAndStoresNothing(testInstance *testing.T) {
 
 func TestMintWithoutMinterIsUnavailable(testInstance *testing.T) {
 	store := newFakeStore()
-	service := NewService(store, nil, newSealer(testInstance), nil)
+	service := NewService(store, nil, newSealer(testInstance), allowAll{}, nil)
 
 	_, mintErr := service.Mint(context.Background(), "urls4irl", false)
 	if !errors.Is(mintErr, ErrMintUnavailable) {
@@ -541,7 +547,7 @@ func TestMintWithoutMinterIsUnavailable(testInstance *testing.T) {
 func TestMintRejectsGrantForAnotherApp(testInstance *testing.T) {
 	store := newFakeStore()
 	minter := &fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("otherapp", firstToken)}}
-	service := NewService(store, minter, newSealer(testInstance), nil)
+	service := NewService(store, minter, newSealer(testInstance), allowAll{}, nil)
 
 	if _, mintErr := service.Mint(context.Background(), "urls4irl", false); mintErr == nil {
 		testInstance.Fatal("Mint stored a grant minted for a different app")
@@ -557,7 +563,7 @@ func rotateServiceFor(testInstance *testing.T, store Store, minter Minter) (*Ser
 	testInstance.Helper()
 	var logBuffer bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuffer, nil))
-	return NewService(store, minter, newSealer(testInstance), logger), &logBuffer
+	return NewService(store, minter, newSealer(testInstance), allowAll{}, logger), &logBuffer
 }
 
 func TestMintForwardsRotateToTheMinter(testInstance *testing.T) {
@@ -635,7 +641,7 @@ func TestMintRotateWithInvalidAppIDDoesNotLogOrCallTheMinter(testInstance *testi
 
 func TestPublisherViewHasNoTokenField(testInstance *testing.T) {
 	service := NewService(newFakeStore(),
-		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), nil)
+		&fakeMinter{grants: []provisionclient.PublisherGrant{grantFor("urls4irl", firstToken)}}, newSealer(testInstance), allowAll{}, nil)
 	view, mintErr := service.Mint(context.Background(), "urls4irl", false)
 	if mintErr != nil {
 		testInstance.Fatalf("Mint: %v", mintErr)

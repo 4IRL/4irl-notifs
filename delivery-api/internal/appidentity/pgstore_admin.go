@@ -366,3 +366,13 @@ func (store *PGStore) Unbind(ctx context.Context, appID string) (bool, error) {
 	}
 	return tag.RowsAffected() == 1, nil
 }
+
+// BindingExists implements AdminStore.
+func (store *PGStore) BindingExists(ctx context.Context, appID string) (bool, error) {
+	var exists bool
+	if queryErr := store.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM app_bindings WHERE app_id = $1)`, appID).Scan(&exists); queryErr != nil {
+		return false, pgutil.WrapDBError("check app binding", queryErr)
+	}
+	return exists, nil
+}

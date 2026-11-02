@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -47,6 +48,15 @@ const (
 	// grant is a few hundred bytes. A mint truncates at the cap (and then fails to decode); a
 	// pass-through over the cap is an error, never a truncated answer.
 	maxResponseBytes = 64 << 10
+
+	// listUsersMaxResponseBytes is the larger cap for ListUsers: GET /v1/users returns every ntfy user,
+	// which can exceed maxResponseBytes. An over-cap body is still an error, never truncated.
+	listUsersMaxResponseBytes = 4 << 20
+
+	// deprovisionAppTimeout is the fixed client timeout for DeprovisionApp: the upstream sweep removes
+	// every ntfy user of the app serially and can outlast defaultTimeout, so the cascade's upstream step needs
+	// a longer budget (TestDeprovisionAppOutlastsDefaultTimeout pins that it does).
+	deprovisionAppTimeout = 60 * time.Second
 )
 
 // tokenPattern is the shape of an ntfy access token. A response whose token does
@@ -83,6 +93,8 @@ type Client struct {
 	baseURL    string
 	credential string
 	httpClient *http.Client
+	// longHTTPClient is used only by DeprovisionApp; same redirect refusal, longer timeout.
+	longHTTPClient *http.Client
 }
 
 // New builds a Client from config.
@@ -91,16 +103,18 @@ func New(config Config) *Client {
 	if timeout == 0 {
 		timeout = defaultTimeout
 	}
+	// A redirect is never followed: a 307/308 would re-POST the app_id body to wherever it points. The
+	// 3xx response comes back as an ordinary non-2xx status error.
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	longTimeout := deprovisionAppTimeout
+	if timeout > longTimeout {
+		longTimeout = timeout
+	}
 	return &Client{
-		baseURL:    strings.TrimSuffix(config.BaseURL, "/"),
-		credential: config.Credential,
-		httpClient: &http.Client{
-			Timeout: timeout,
-			// A redirect is never followed: a 307/308 would re-POST the app_id body to
-			// wherever it points. The 3xx response comes back as an ordinary non-2xx
-			// status error.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
+		baseURL:        strings.TrimSuffix(config.BaseURL, "/"),
+		credential:     config.Credential,
+		httpClient:     &http.Client{Timeout: timeout, CheckRedirect: noRedirect},
+		longHTTPClient: &http.Client{Timeout: longTimeout, CheckRedirect: noRedirect},
 	}
 }
 
@@ -113,13 +127,18 @@ func (client *Client) Configured() bool {
 // newJSONRequest is the single request-building path: every call the client
 // makes goes through it, so the credential and Content-Type headers are set in
 // one place and later methods inherit them.
-func (client *Client) newJSONRequest(ctx context.Context, path string, body []byte) (*http.Request, error) {
-	request, requestErr := http.NewRequestWithContext(
-		ctx, http.MethodPost, client.baseURL+path, bytes.NewReader(body))
+func (client *Client) newJSONRequest(ctx context.Context, method string, path string, body []byte) (*http.Request, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+	request, requestErr := http.NewRequestWithContext(ctx, method, client.baseURL+path, bodyReader)
 	if requestErr != nil {
 		return nil, requestErr
 	}
-	request.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	request.Header.Set(credentialHeader, client.credential)
 	return request, nil
 }
@@ -152,7 +171,7 @@ func (client *Client) MintPublisher(ctx context.Context, appID string, rotate bo
 	if marshalErr != nil {
 		return PublisherGrant{}, fmt.Errorf("provision-app: encode request: %w", marshalErr)
 	}
-	request, requestErr := client.newJSONRequest(ctx, provisionAppPath, body)
+	request, requestErr := client.newJSONRequest(ctx, http.MethodPost, provisionAppPath, body)
 	if requestErr != nil {
 		return PublisherGrant{}, fmt.Errorf("provision-app: build request: %w", requestErr)
 	}
@@ -182,7 +201,10 @@ const (
 	deprovisionPath = "/v1/deprovision"
 	setPasswordPath = "/v1/set-password"
 	// resetPasswordPath is provisioning-api's reset route; the 200 body carries the new plaintext password.
-	resetPasswordPath = "/v1/reset-password"
+	resetPasswordPath  = "/v1/reset-password"
+	usersPath          = "/v1/users"
+	deprovisionAppPath = "/v1/deprovision-app"
+	testNotifyPath     = "/v1/test-notify"
 )
 
 type setPasswordRequest struct {
@@ -199,7 +221,7 @@ func (client *Client) SetPassword(ctx context.Context, appID string, email strin
 	if marshalErr != nil {
 		return Passthrough{}, errors.New("set-password: encode request failed")
 	}
-	return client.passthrough(ctx, "set-password", setPasswordPath, body)
+	return client.passthrough(ctx, passthroughCall{label: "set-password", method: http.MethodPost, path: setPasswordPath, body: body})
 }
 
 // ResetPassword asks provisioning-api to reset the shared password of the person with email, who must belong
@@ -211,7 +233,7 @@ func (client *Client) ResetPassword(ctx context.Context, appID, email string) (P
 	if marshalErr != nil {
 		return Passthrough{}, errors.New("reset-password: encode request failed")
 	}
-	return client.passthrough(ctx, "reset-password", resetPasswordPath, body)
+	return client.passthrough(ctx, passthroughCall{label: "reset-password", method: http.MethodPost, path: resetPasswordPath, body: body})
 }
 
 // Passthrough is a provisioning-api answer handed back unchanged: the upstream status, body bytes,
@@ -253,7 +275,7 @@ func (client *Client) Provision(ctx context.Context, appID string, email string)
 	if marshalErr != nil {
 		return Passthrough{}, errors.New("provision: encode request failed")
 	}
-	return client.passthrough(ctx, "provision", provisionPath, body)
+	return client.passthrough(ctx, passthroughCall{label: "provision", method: http.MethodPost, path: provisionPath, body: body})
 }
 
 // Deprovision asks provisioning-api to remove the person from appID and returns its answer as-is.
@@ -272,32 +294,105 @@ func (client *Client) Deprovision(ctx context.Context, appID string, target Depr
 	if marshalErr != nil {
 		return Passthrough{}, errors.New("deprovision: encode request failed")
 	}
-	return client.passthrough(ctx, "deprovision", deprovisionPath, body)
+	return client.passthrough(ctx, passthroughCall{label: "deprovision", method: http.MethodPost, path: deprovisionPath, body: body})
 }
 
-// passthrough posts body to path and returns the response unchanged. Redirects are not followed and
-// there is no retry. A response body over maxResponseBytes is an error, never a truncated pass-through.
-func (client *Client) passthrough(ctx context.Context, label string, path string, body []byte) (Passthrough, error) {
+// TestNotifyRequest is the operator test-notify body relayed to provisioning-api.
+type TestNotifyRequest struct {
+	AppID      string   `json:"app_id"`
+	Recipients []string `json:"recipients"`
+	Channel    string   `json:"channel"`
+	Message    string   `json:"message"`
+	Title      string   `json:"title"`
+}
+
+// ListUsers asks provisioning-api for every ntfy user and returns its answer as-is. The response may be
+// up to listUsersMaxResponseBytes.
+func (client *Client) ListUsers(ctx context.Context) (Passthrough, error) {
+	return client.passthrough(ctx, passthroughCall{
+		label: "list-users", method: http.MethodGet, path: usersPath, maxBytes: listUsersMaxResponseBytes})
+}
+
+// DeleteUser asks provisioning-api to delete the ntfy user userID (path-escaped) and returns its answer as-is.
+// An empty, "." or ".." userID is an error and no request is made: path escaping leaves those unchanged and
+// a path-cleaning upstream would resolve them to another route.
+func (client *Client) DeleteUser(ctx context.Context, userID string) (Passthrough, error) {
+	if userID == "" || userID == "." || userID == ".." {
+		return Passthrough{}, errors.New("delete-user: invalid user id")
+	}
+	return client.passthrough(ctx, passthroughCall{
+		label: "delete-user", method: http.MethodDelete, path: usersPath + "/" + url.PathEscape(userID)})
+}
+
+// DeprovisionApp asks provisioning-api to remove everything it holds for appID and returns its answer
+// as-is. It uses the longer-timeout client because the upstream sweep can outlast defaultTimeout.
+func (client *Client) DeprovisionApp(ctx context.Context, appID string) (Passthrough, error) {
+	body, marshalErr := json.Marshal(struct {
+		AppID string `json:"app_id"`
+	}{AppID: appID})
+	if marshalErr != nil {
+		return Passthrough{}, errors.New("deprovision-app: encode request failed")
+	}
+	return client.passthrough(ctx, passthroughCall{
+		label: "deprovision-app", method: http.MethodPost, path: deprovisionAppPath, body: body,
+		httpClient: client.longHTTPClient})
+}
+
+// TestNotify asks provisioning-api to send a test notification and returns its answer as-is.
+func (client *Client) TestNotify(ctx context.Context, request TestNotifyRequest) (Passthrough, error) {
+	if request.Recipients == nil {
+		request.Recipients = []string{}
+	}
+	body, marshalErr := json.Marshal(request)
+	if marshalErr != nil {
+		return Passthrough{}, errors.New("test-notify: encode request failed")
+	}
+	return client.passthrough(ctx, passthroughCall{
+		label: "test-notify", method: http.MethodPost, path: testNotifyPath, body: body})
+}
+
+// passthroughCall describes one relayed request. Zero maxBytes means maxResponseBytes; nil httpClient
+// means the client's default one.
+type passthroughCall struct {
+	label      string
+	method     string
+	path       string
+	body       []byte
+	maxBytes   int64
+	httpClient *http.Client
+}
+
+// passthrough sends call and returns the response unchanged. Redirects are not followed and there is no
+// retry. A response body over the cap is an error, never a truncated pass-through.
+func (client *Client) passthrough(ctx context.Context, call passthroughCall) (Passthrough, error) {
 	if !client.Configured() {
 		return Passthrough{}, ErrNotConfigured
 	}
-	request, requestErr := client.newJSONRequest(ctx, path, body)
-	if requestErr != nil {
-		return Passthrough{}, fmt.Errorf("%s: build request failed", label)
+	maxBytes := call.maxBytes
+	if maxBytes == 0 {
+		maxBytes = maxResponseBytes
 	}
-	response, doErr := client.httpClient.Do(request)
+	httpClient := call.httpClient
+	if httpClient == nil {
+		httpClient = client.httpClient
+	}
+	request, requestErr := client.newJSONRequest(ctx, call.method, call.path, call.body)
+	if requestErr != nil {
+		return Passthrough{}, fmt.Errorf("%s: build request failed", call.label)
+	}
+	response, doErr := httpClient.Do(request)
 	if doErr != nil {
 		// The *url.Error carries only the method and URL (no body or headers), so it is safe to wrap.
-		return Passthrough{}, fmt.Errorf("%s: request failed: %w", label, doErr)
+		return Passthrough{}, fmt.Errorf("%s: request failed: %w", call.label, doErr)
 	}
 	defer func() { _ = response.Body.Close() }()
 
-	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
 	if readErr != nil {
-		return Passthrough{}, fmt.Errorf("%s: read response failed", label)
+		return Passthrough{}, fmt.Errorf("%s: read response failed", call.label)
 	}
-	if len(responseBody) > maxResponseBytes {
-		return Passthrough{}, fmt.Errorf("%s: response body exceeds %d bytes", label, maxResponseBytes)
+	if int64(len(responseBody)) > maxBytes {
+		return Passthrough{}, fmt.Errorf("%s: response body exceeds %d bytes", call.label, maxBytes)
 	}
 	return Passthrough{
 		Status:      response.StatusCode,

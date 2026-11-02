@@ -19,10 +19,11 @@ const tokenAADPrefix = "delivery-api/app-publisher/v1:"
 
 // Service mints, stores and reads per-app ntfy publisher tokens.
 type Service struct {
-	store  Store
-	minter Minter
-	sealer *seal.Sealer
-	logger *slog.Logger
+	store   Store
+	minter  Minter
+	sealer  *seal.Sealer
+	checker BindingChecker
+	logger  *slog.Logger
 
 	// mintSlots is the process-wide in-flight mint semaphore (capacity MaxInFlightMints). A nil
 	// channel (Service not built by NewService) refuses every mint.
@@ -31,14 +32,23 @@ type Service struct {
 	persistTimeout time.Duration
 }
 
+// BindingChecker answers whether an app has an approved binding.
+// *appidentity.Service satisfies it.
+type BindingChecker interface {
+	HasBinding(ctx context.Context, appID string) (bool, error)
+}
+
 // NewService builds a Service. minter may be nil, in which case Mint returns
-// ErrMintUnavailable. A nil logger uses slog.Default().
-func NewService(store Store, minter Minter, sealer *seal.Sealer, logger *slog.Logger) *Service {
+// ErrMintUnavailable. A nil checker refuses every mint with ErrMintUnavailable (fail closed).
+// A nil logger uses slog.Default().
+func NewService(
+	store Store, minter Minter, sealer *seal.Sealer, checker BindingChecker, logger *slog.Logger,
+) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Service{
-		store: store, minter: minter, sealer: sealer, logger: logger,
+		store: store, minter: minter, sealer: sealer, checker: checker, logger: logger,
 		mintSlots: make(chan struct{}, MaxInFlightMints), persistTimeout: MintPersistTimeout,
 	}
 }
@@ -102,6 +112,9 @@ func (service *Service) mint(ctx context.Context, appID string, rotate, limited 
 	if service.minter == nil {
 		return PublisherView{}, ErrMintUnavailable
 	}
+	if boundErr := service.requireBound(ctx, appID); boundErr != nil {
+		return PublisherView{}, boundErr
+	}
 	release, acquired := service.tryAcquireMintSlot()
 	if !acquired {
 		service.logger.WarnContext(ctx, "publisher mint refused", "app_id", appID, "reason", "in-flight cap")
@@ -144,10 +157,34 @@ func (service *Service) mint(ctx context.Context, appID string, rotate, limited 
 	return PublisherView{}, storeErr
 }
 
+// requireBound fails closed: a nil checker or a lookup error is ErrMintUnavailable, a confirmed
+// absent binding is ErrAppNotBound.
+func (service *Service) requireBound(ctx context.Context, appID string) error {
+	if service.checker == nil {
+		service.logger.WarnContext(ctx, "publisher mint refused", "app_id", appID, "reason", "no binding checker")
+		return ErrMintUnavailable
+	}
+	bound, lookupErr := service.checker.HasBinding(ctx, appID)
+	if lookupErr != nil {
+		service.logger.ErrorContext(ctx, "publisher mint binding lookup failed", "app_id", appID, "error", lookupErr)
+		return fmt.Errorf("%w: binding lookup: %w", ErrMintUnavailable, lookupErr)
+	}
+	if !bound {
+		service.logger.InfoContext(ctx, "publisher mint refused", "app_id", appID, "reason", "app not bound")
+		return ErrAppNotBound
+	}
+	return nil
+}
+
 // mintLocked runs inside the per-app lock transaction.
 func (service *Service) mintLocked(
 	ctx context.Context, tx MintTx, appID string, rotate, limited bool,
 ) (PublisherView, error) {
+	// Re-check inside the lock: a cascade that unbound the app after the pre-check must not be
+	// followed by a re-mint.
+	if boundErr := service.requireBound(ctx, appID); boundErr != nil {
+		return PublisherView{}, boundErr
+	}
 	if limited {
 		if reserveErr := tx.ReserveMintSlot(ctx, appID, MintRateLimit, MintRateWindow); reserveErr != nil {
 			var rateLimited *RateLimitedError
@@ -212,6 +249,22 @@ func (service *Service) Remove(ctx context.Context, appID string) error {
 		return &ValidationError{Message: validateErr.Error()}
 	}
 	return service.store.Delete(ctx, appID)
+}
+
+// RemoveExclusive deletes the app's stored publisher while holding the per-app mint lock, so it
+// cannot interleave with a mint. It does not take the in-flight slot and is not rate limited.
+// A mint holding the lock yields ErrMintBusy (never blocks); store trouble satisfies
+// errors.Is(err, ErrMintUnavailable) or is the delete error. An invalid id is *ValidationError.
+func (service *Service) RemoveExclusive(ctx context.Context, appID string) error {
+	if validateErr := appid.ValidateAppID(appID); validateErr != nil {
+		return &ValidationError{Message: validateErr.Error()}
+	}
+	if service.store == nil {
+		return ErrMintUnavailable
+	}
+	return service.store.WithAppMintLock(ctx, appID, func(tx MintTx) error {
+		return tx.Delete(ctx, appID)
+	})
 }
 
 // HasPublisher reports whether the app has a publisher. Only a store failure is

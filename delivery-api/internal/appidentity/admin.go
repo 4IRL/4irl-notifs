@@ -171,4 +171,7 @@ type AdminStore interface {
 	// Unbind deletes the app's binding and with it every key issued under it. It reports
 	// whether a binding existed. Objects the app owns are not touched.
 	Unbind(ctx context.Context, appID string) (deleted bool, err error)
+
+	// BindingExists reports whether the app has an approved binding. It takes no lock.
+	BindingExists(ctx context.Context, appID string) (bool, error)
 }

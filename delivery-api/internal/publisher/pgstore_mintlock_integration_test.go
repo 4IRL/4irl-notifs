@@ -64,6 +64,26 @@ func TestMintLockTryLockRefusesWhileHeldAndNotOtherApps(testInstance *testing.T)
 	}
 }
 
+func TestMintTxDeleteRemovesThePublisherIdempotently(testInstance *testing.T) {
+	ctx, store, _ := newMintLockStore(testInstance)
+	if upsertErr := store.WithAppMintLock(ctx, "urls4irl", func(tx MintTx) error {
+		_, err := tx.Upsert(ctx, samplePublisherRow("urls4irl"))
+		return err
+	}); upsertErr != nil {
+		testInstance.Fatalf("seed: %v", upsertErr)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if deleteErr := store.WithAppMintLock(ctx, "urls4irl", func(tx MintTx) error {
+			return tx.Delete(ctx, "urls4irl")
+		}); deleteErr != nil {
+			testInstance.Fatalf("Delete attempt %d: %v", attempt, deleteErr)
+		}
+	}
+	if _, getErr := store.Get(ctx, "urls4irl"); getErr == nil {
+		testInstance.Fatal("publisher still present after MintTx.Delete")
+	}
+}
+
 func TestMintLockIsReleasedAfterFnErrorAndPanic(testInstance *testing.T) {
 	ctx, store, pool := newMintLockStore(testInstance)
 	fnErr := errors.New("fn failed")

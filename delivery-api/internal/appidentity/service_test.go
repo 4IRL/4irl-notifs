@@ -613,6 +613,9 @@ type fakeAdminStore struct {
 	key     Key
 	deleted bool
 	unbound string
+	// bindingChecked and bindingExists record and answer BindingExists, separate from Unbind's fields.
+	bindingChecked string
+	bindingExists  bool
 
 	// getErr is what GetRequest returns; approveErr is what ApproveRequest returns (err when nil).
 	getErr     error
@@ -695,6 +698,42 @@ func (fake *fakeAdminStore) RevokeKey(_ context.Context, _ int64, now time.Time)
 func (fake *fakeAdminStore) Unbind(_ context.Context, appID string) (bool, error) {
 	fake.unbound = appID
 	return fake.deleted, fake.err
+}
+
+func (fake *fakeAdminStore) BindingExists(_ context.Context, appID string) (bool, error) {
+	fake.bindingChecked = appID
+	return fake.bindingExists, fake.err
+}
+
+func TestHasBindingValidatesThenReadsTheStore(testInstance *testing.T) {
+	storeErr := errors.New("store down")
+	cases := []struct {
+		name      string
+		appID     string
+		exists    bool
+		storeErr  error
+		want      bool
+		wantErr   bool
+		wantStore bool
+	}{
+		{name: "bound", appID: "urls4irl", exists: true, want: true, wantStore: true},
+		{name: "unbound", appID: "urls4irl", wantStore: true},
+		{name: "store error", appID: "urls4irl", storeErr: storeErr, wantErr: true, wantStore: true},
+		{name: "invalid id never reaches the store", appID: "Not Valid", wantErr: true},
+	}
+	for _, testCase := range cases {
+		testInstance.Run(testCase.name, func(testInstance *testing.T) {
+			admin := &fakeAdminStore{bindingExists: testCase.exists, err: testCase.storeErr}
+			service := NewService(ServiceConfig{Admin: admin, Registrar: &fakeRegistrar{}})
+			got, err := service.HasBinding(context.Background(), testCase.appID)
+			if (err != nil) != testCase.wantErr || got != testCase.want {
+				testInstance.Fatalf("HasBinding = %v, %v", got, err)
+			}
+			if (admin.bindingChecked != "") != testCase.wantStore {
+				testInstance.Fatalf("store consulted = %q, want consulted %v", admin.bindingChecked, testCase.wantStore)
+			}
+		})
+	}
 }
 
 func TestAdminUseCasesPassTheServiceClockAndLogTheDecision(testInstance *testing.T) {
