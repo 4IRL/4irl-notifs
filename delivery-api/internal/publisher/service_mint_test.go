@@ -95,13 +95,13 @@ func okMinter() *fakeMinter {
 }
 
 func TestMintTuningConstantsArePinned(testInstance *testing.T) {
-	// MaxInFlightMints must stay below the pgxpool default MaxConns (max(4, NumCPU)); raise the
+	// MaxInFlightMints*2 must stay below the pool's MaxConns (8, database.maxConns); raise the
 	// pool's MaxConns before raising the cap.
 	if MaxInFlightMints != 2 || MintBeginTimeout != 3*time.Second || MintCommitTimeout != 5*time.Second ||
 		MintPersistTimeout != 5*time.Second || MintRateLimit != 10 || MintRateWindow != time.Hour {
 		testInstance.Fatal("a mint tuning constant changed")
 	}
-	service := NewService(newFakeStore(), nil, newSealer(testInstance), nil)
+	service := NewService(newFakeStore(), nil, newSealer(testInstance), allowAll{}, nil)
 	if cap(service.mintSlots) != MaxInFlightMints || service.persistTimeout != MintPersistTimeout {
 		testInstance.Fatalf("defaults: cap=%d persist=%v", cap(service.mintSlots), service.persistTimeout)
 	}

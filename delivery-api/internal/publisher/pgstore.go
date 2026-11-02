@@ -176,6 +176,14 @@ func (mintTx *pgMintTx) Upsert(ctx context.Context, publisher StoredPublisher) (
 	return stored, nil
 }
 
+// Delete implements MintTx. It is idempotent and runs on the lock's connection.
+func (mintTx *pgMintTx) Delete(ctx context.Context, appID string) error {
+	if _, execErr := mintTx.tx.Exec(ctx, `DELETE FROM app_publishers WHERE app_id = $1`, appID); execErr != nil {
+		return pgutil.WrapDBError("delete app publisher", execErr)
+	}
+	return nil
+}
+
 // DeleteExpiredPublisherMints deletes mint-attempt rows older than window and returns how many.
 // It refuses a window that is not positive, which would delete in-window rows and reopen the limit.
 func (store *PGStore) DeleteExpiredPublisherMints(ctx context.Context, now time.Time, window time.Duration) (int64, error) {

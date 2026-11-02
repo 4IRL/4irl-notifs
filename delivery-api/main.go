@@ -335,7 +335,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	minter, appProvisioning := provisionInterfaces(provisionClient)
 	publisherStore := publisher.NewPGStore(pool)
 	resetWired := newResetWiring(resetlimit.NewPGStore(pool))
-	publisherService := publisher.NewService(publisherStore, minter, sealer, logger)
+	publisherService := publisher.NewService(publisherStore, minter, sealer, appIdentityService, logger)
 	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil
 	// *publisher.Service) makes the worker dead-letter a recipient delivery as no_publisher instead of sending.
 	var recipients dispatch.RecipientResolver

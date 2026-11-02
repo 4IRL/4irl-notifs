@@ -17,8 +17,8 @@ import (
 // Worker defaults, applied by NewWorker for every zero WorkerConfig field.
 const (
 	// DefaultConcurrency is the number of claim loops Run starts. It equals
-	// pgxpool's default MaxConns on the 2-vCPU VPS; that is accepted because
-	// ClaimDue and RecordAttempt are short transactions that commit before any
+	// half of the pool's MaxConns (8, database.maxConns); ClaimDue and
+	// RecordAttempt are short transactions that commit before any
 	// network I/O, so four workers each briefly holding one connection should
 	// not starve the HTTP handlers. If /readyz flaps or HTTP latency spikes,
 	// raise the pool's MaxConns above Concurrency (Concurrency+4) or lower

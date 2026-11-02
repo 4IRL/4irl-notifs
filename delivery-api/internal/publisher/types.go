@@ -21,6 +21,9 @@ var ErrMintUnavailable = errors.New("publisher minting is unavailable")
 // (never queued), so the stored token is always the last one minted.
 var ErrMintBusy = errors.New("publisher mint already in progress")
 
+// ErrAppNotBound means the app has no approved binding, so no publisher is minted for it.
+var ErrAppNotBound = errors.New("app has no approved binding")
+
 // RateLimitedError reports that an app has used its mint quota. RetryAfter is the time until the
 // oldest counted attempt ages out of the window, rounded up to whole seconds (minimum one second).
 type RateLimitedError struct {
@@ -30,10 +33,11 @@ type RateLimitedError struct {
 // Error returns a fixed message that carries no app data.
 func (rateLimited *RateLimitedError) Error() string { return "publisher mint rate limit exceeded" }
 
-// Mint tuning. The in-flight cap and the begin timeout are tied to the database pool: the pool
-// default is max(4, NumCPU) connections (database.NewPool sets no MaxConns), and each in-flight mint
-// holds exactly one connection for up to the 15s upstream call. Raise the pool's MaxConns before
-// raising MaxInFlightMints.
+// Mint tuning. The in-flight cap and the begin timeout are tied to the database pool: database.NewPool
+// sets MaxConns to 8. Each in-flight mint holds one connection for the lock transaction (up to the 15s
+// upstream call) and transiently needs a second for the in-lock binding re-check, so 2 connections per
+// in-flight mint (MaxInFlightMints*2 must stay below the pool's MaxConns, leaving room for the dispatch
+// worker). Raise the pool's MaxConns (database.maxConns) before raising MaxInFlightMints.
 const (
 	// MintRateLimit is the number of app-route mint attempts allowed per app per MintRateWindow.
 	MintRateLimit = 10

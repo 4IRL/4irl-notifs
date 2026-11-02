@@ -780,6 +780,26 @@ func TestUnbindInvalidatesEveryKeyAndIsIdempotent(testInstance *testing.T) {
 	}
 }
 
+func TestBindingExistsReflectsTheBindingRow(testInstance *testing.T) {
+	ctx, store, pool := newTestStore(testInstance)
+	if exists, err := store.BindingExists(ctx, "urls4irl"); err != nil || exists {
+		testInstance.Fatalf("BindingExists before bind = %v, %v, want false", exists, err)
+	}
+	insertTestBinding(ctx, testInstance, pool, "urls4irl", testClaims(1, ""))
+	if exists, err := store.BindingExists(ctx, "urls4irl"); err != nil || !exists {
+		testInstance.Fatalf("BindingExists after bind = %v, %v, want true", exists, err)
+	}
+	if exists, err := store.BindingExists(ctx, "chores4irl"); err != nil || exists {
+		testInstance.Fatalf("BindingExists for another app = %v, %v, want false", exists, err)
+	}
+	if _, err := store.Unbind(ctx, "urls4irl"); err != nil {
+		testInstance.Fatalf("Unbind: %v", err)
+	}
+	if exists, err := store.BindingExists(ctx, "urls4irl"); err != nil || exists {
+		testInstance.Fatalf("BindingExists after unbind = %v, %v, want false", exists, err)
+	}
+}
+
 func TestUnbindKeepsTheAppOwnedObjects(testInstance *testing.T) {
 	ctx, store, pool := newTestStore(testInstance)
 	insertTestBinding(ctx, testInstance, pool, "urls4irl", testClaims(1, ""))

@@ -516,6 +516,11 @@ const (
 	recipientEmail       = "Alice@Example.com"
 )
 
+// pipelineBound is a permissive publisher.BindingChecker: every app is bound.
+type pipelineBound struct{}
+
+func (pipelineBound) HasBinding(context.Context, string) (bool, error) { return true, nil }
+
 // pipelineMinter is a publisher.Minter that returns a fixed grant.
 type pipelineMinter struct{}
 
@@ -558,7 +563,7 @@ func TestPipelineDeliversARecipientMessageToTheNtfyTopic(testInstance *testing.T
 
 	registryService := registry.NewService(registry.NewPGStore(pool), sealer, logger)
 	store := message.NewPGStore(pool)
-	publishers := publisher.NewService(publisher.NewPGStore(pool), pipelineMinter{}, sealer, nil)
+	publishers := publisher.NewService(publisher.NewPGStore(pool), pipelineMinter{}, sealer, pipelineBound{}, nil)
 	if _, mintErr := publishers.Mint(ctx, recipientAppID, false); mintErr != nil {
 		testInstance.Fatalf("Mint: %v", mintErr)
 	}

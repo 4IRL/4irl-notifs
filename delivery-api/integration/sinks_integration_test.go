@@ -217,7 +217,9 @@ func TestRecipientDeliveryThroughNtfy(testInstance *testing.T) {
 			subscriber.PersonHash, personhash.Hash(email), subscriber.Token != "")
 	}
 
-	// 2. Mint the app's publisher through delivery-api.
+	// 2. Bind the app (publisher mint refuses an app with no approved binding), then mint the app's
+	// publisher through delivery-api.
+	appKeyFor(testInstance, appID)
 	status, body = apiRequest(testInstance, http.MethodPost, adminBasePath+"/apps/"+appID+"/ntfy-publisher", nil)
 	requireStatus(testInstance, "POST ntfy-publisher", status, http.StatusOK, body)
 	var minted publisherMintResponse

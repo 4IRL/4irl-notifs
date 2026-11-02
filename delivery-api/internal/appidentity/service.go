@@ -402,6 +402,15 @@ func (service *Service) RevokeKey(ctx context.Context, keyID int64) (Key, error)
 	return key, nil
 }
 
+// HasBinding reports whether the app has an approved binding. An invalid app id is an error;
+// a store failure is propagated.
+func (service *Service) HasBinding(ctx context.Context, appID string) (bool, error) {
+	if validateErr := ValidateAppID(appID); validateErr != nil {
+		return false, validateErr
+	}
+	return service.admin.BindingExists(ctx, appID)
+}
+
 // Unbind deletes an app's binding and invalidates every key issued under it. The objects
 // the app owns are kept.
 func (service *Service) Unbind(ctx context.Context, appID string) (bool, error) {
