@@ -469,18 +469,37 @@ func TestProvisionInterfaces(testInstance *testing.T) {
 	resolver := func(string) (string, error) { return fakeCredential, nil }
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 
-	nilMinter, nilProvisioning := provisionInterfaces(nil)
-	if nilMinter != nil || nilProvisioning != nil {
-		testInstance.Errorf("nil client gave minter = %v, appProvisioning = %v; want untyped nils", nilMinter, nilProvisioning)
+	nilMinter, nilProvisioning, nilAdmin := provisionInterfaces(nil)
+	if nilMinter != nil || nilProvisioning != nil || nilAdmin != nil {
+		testInstance.Errorf("nil client gave minter = %v, appProvisioning = %v, adminProvisioning = %v; want untyped nils",
+			nilMinter, nilProvisioning, nilAdmin)
 	}
 
 	client, clientErr := buildProvisionClient("http://provisioning-api:8080", resolver, logger)
 	if clientErr != nil || client == nil {
 		testInstance.Fatalf("client = %v, err = %v; want a client", client, clientErr)
 	}
-	minter, appProvisioning := provisionInterfaces(client)
-	if minter == nil || appProvisioning == nil {
-		testInstance.Errorf("client gave minter = %v, appProvisioning = %v; want both set", minter, appProvisioning)
+	minter, appProvisioning, adminProvisioning := provisionInterfaces(client)
+	if minter == nil || appProvisioning == nil || adminProvisioning == nil {
+		testInstance.Errorf("client gave minter = %v, appProvisioning = %v, adminProvisioning = %v; want all set",
+			minter, appProvisioning, adminProvisioning)
+	}
+}
+
+func TestBuildAppTeardown(testInstance *testing.T) {
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	if got := buildAppTeardown(nil, nil, nil, nil, logger); got != nil {
+		testInstance.Errorf("nil client gave %#v, want an untyped nil interface", got)
+	}
+
+	resolver := func(string) (string, error) { return "fake-credential", nil }
+	client, clientErr := buildProvisionClient("http://provisioning-api:8080", resolver, logger)
+	if clientErr != nil || client == nil {
+		testInstance.Fatalf("client = %v, err = %v; want a client", client, clientErr)
+	}
+	if got := buildAppTeardown(client, nil, nil, nil, logger); got == nil {
+		testInstance.Error("client gave nil, want a teardown service")
 	}
 }
 

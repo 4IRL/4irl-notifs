@@ -128,7 +128,19 @@ the VPS; person-service + admin UI are Cloudflare-native.
   (`DELIVERY_PROVISIONING_URL`, sending the internal credential `DELIVERY_PROVISIONING_CREDENTIAL`;
   either unset answers 503) and stores it sealed, `GET` returns the record (never
   the token), and `DELETE` removes delivery-api's stored copy (idempotent, 204) so recipient submits fail
-  closed until a re-mint. It does not revoke the token in ntfy.
+  closed until a re-mint. It does not revoke the token in ntfy. `POST` takes an optional body
+  `{"rotate": bool}` (strict JSON; absent means `false`) that revokes the earlier publisher tokens, and answers
+  `404 app has no approved binding` when the app has none (checked before and inside the mint lock).
+- Operator provisioning relay (delivery-api forwards to provisioning-api with the internal credential, so the
+  admin UI no longer calls provisioning-api directly; 503 when `DELIVERY_PROVISIONING_URL` is unset):
+  `POST /v1/admin/provision`, `/deprovision`, `/reset-password` and `/test-notify` (the last requires a bound
+  `app_id`), `GET /v1/admin/users` and `DELETE /v1/admin/users/{user_id}`.
+  `POST /v1/admin/apps/{app_id}/deprovision` is the irreversible app teardown cascade: it removes the app's
+  provisioning-api state first (failing closed with 502 if that fails), then its ntfy publisher, binding and
+  owned checks, routes and destinations. It is idempotent. The body must be `{"app_id": "<the path app_id>"}` as a confirmation; a missing or
+  different one is `400`. The answer's `deleted` block carries `orphaned_routes` and `orphaned_checks`: operator-owned
+  routes and checks that lost their last destination link and now deliver nowhere. `409` means a publisher
+  mint is in progress, `400 invalid app_id`, `503` when teardown is not configured.
 
 - `POST /v1/messages` (submit, optional `?wait=N`), `GET /v1/messages/{id}?app_id=` and
   `GET /v1/messages?app_id=&idempotency_key=` — the app envelope API. Every route here (and the two
