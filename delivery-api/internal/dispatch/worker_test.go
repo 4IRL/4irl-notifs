@@ -536,6 +536,9 @@ func TestWorkerGoneDisablesDestinationOnceAndRecordsDeadGone(t *testing.T) {
 		result.Record.Outcome != message.OutcomeGone {
 		t.Fatalf("result = %+v, want dead/gone", result)
 	}
+	// The worker records first and disables after, so the record appearing does not mean the disable has run: stop
+	// waits for the in-flight attempt to finish before the calls are read.
+	harnessInstance.stop(t)
 	calls := harnessInstance.resolver.disableCalls()
 	if len(calls) != 1 || calls[0].name != testDestination || calls[0].reason != "destination reported gone (410 or equivalent)" {
 		t.Errorf("DisableDestination calls = %+v, want one for %q with the 410 reason", calls, testDestination)
@@ -563,6 +566,9 @@ func TestWorkerSinkAssertedGoneDisablesANamedDestination(t *testing.T) {
 		result.DeadReason == nil || *result.DeadReason != message.DeadReasonGone {
 		t.Fatalf("result = %+v, want dead/gone", result)
 	}
+	// The worker records first and disables after, so the record appearing does not mean the disable has run: stop
+	// waits for the in-flight attempt to finish before the calls are read.
+	harnessInstance.stop(t)
 	calls := harnessInstance.resolver.disableCalls()
 	want := disableCall{name: testDestination, destinationID: 7, reason: "destination reported gone (410 or equivalent)"}
 	if len(calls) != 1 || calls[0] != want {
