@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
@@ -51,9 +53,36 @@ func (server *Server) requirePublishers(handler http.HandlerFunc) http.HandlerFu
 	}
 }
 
-// handleMintPublisher serves POST /v1/admin/apps/{app_id}/ntfy-publisher (200).
+// mintPublisherRequestBody is the optional body of the operator mint route.
+type mintPublisherRequestBody struct {
+	Rotate bool `json:"rotate"`
+}
+
+// requestBodyEmpty reports whether the request carries no body at all. It peeks one byte under the
+// body read deadline and leaves the body readable.
+func requestBodyEmpty(responseWriter http.ResponseWriter, request *http.Request) bool {
+	if request.Body == nil || request.Body == http.NoBody {
+		return true
+	}
+	defer boundBodyRead(responseWriter)()
+	buffered := bufio.NewReader(request.Body)
+	_, peekErr := buffered.Peek(1)
+	request.Body = struct {
+		io.Reader
+		io.Closer
+	}{buffered, request.Body}
+	return errors.Is(peekErr, io.EOF)
+}
+
+// handleMintPublisher serves POST /v1/admin/apps/{app_id}/ntfy-publisher (200). An empty body means
+// rotate=false; a present body is strict JSON {"rotate": bool}.
 func (server *Server) handleMintPublisher(responseWriter http.ResponseWriter, request *http.Request) {
-	view, err := server.publishers.MintAsOperator(request.Context(), request.PathValue("app_id"), false)
+	var body mintPublisherRequestBody
+	if !requestBodyEmpty(responseWriter, request) &&
+		!decodeJSON(responseWriter, request, &body, maxAdminBodyBytes) {
+		return
+	}
+	view, err := server.publishers.MintAsOperator(request.Context(), request.PathValue("app_id"), body.Rotate)
 	if err != nil {
 		server.writePublisherError(responseWriter, request, err)
 		return
@@ -101,6 +130,8 @@ func (server *Server) writePublisherError(responseWriter http.ResponseWriter, re
 		writeError(responseWriter, http.StatusTooManyRequests, errMsgPublisherRateLimited)
 	case errors.Is(err, publisher.ErrMintBusy):
 		writeError(responseWriter, http.StatusConflict, errMsgPublisherMintBusy)
+	case errors.Is(err, publisher.ErrAppNotBound):
+		writeError(responseWriter, http.StatusNotFound, errMsgAdminAppNotBound)
 	case errors.Is(err, registry.ErrNoPublisher):
 		writeError(responseWriter, http.StatusNotFound, errMsgPublisherNotFound)
 	case errors.Is(err, publisher.ErrMintUnavailable), errors.Is(err, provisionclient.ErrNotConfigured):

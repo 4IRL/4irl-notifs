@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/appidentity"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/appteardown"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/database"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
@@ -90,11 +91,29 @@ func envOrDefault(key string, fallback string) string {
 // provisionInterfaces maps the provisioning client to the interfaces that consume it. Each is set only
 // when the client exists: an untyped nil (never a typed-nil *provisionclient.Client) keeps the 503 /
 // publisher.ErrMintUnavailable guards working.
-func provisionInterfaces(client *provisionclient.Client) (publisher.Minter, httpapi.AppProvisioning) {
+func provisionInterfaces(client *provisionclient.Client) (publisher.Minter, httpapi.AppProvisioning, httpapi.AdminProvisioning) {
 	if client == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return client, client
+	return client, client, client
+}
+
+// buildAppTeardown wires the deprovision-app cascade. Without a provisioning client it returns an untyped
+// nil (never a typed-nil *appteardown.Service), so the cascade route answers 503.
+func buildAppTeardown(
+	client *provisionclient.Client, binder appteardown.Binder, remover appteardown.PublisherRemover,
+	store appteardown.ObjectStore, logger *slog.Logger,
+) httpapi.AppTeardown {
+	if client == nil {
+		return nil
+	}
+	return appteardown.NewService(appteardown.ServiceConfig{
+		Provisioner: client,
+		Binder:      binder,
+		Publisher:   remover,
+		Store:       store,
+		Logger:      logger,
+	})
 }
 
 // buildProvisionClient returns the provisioning-api client, or a nil client when it is unavailable. It needs
@@ -332,10 +351,11 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	if provisionClientErr != nil {
 		return provisionClientErr
 	}
-	minter, appProvisioning := provisionInterfaces(provisionClient)
+	minter, appProvisioning, adminProvisioning := provisionInterfaces(provisionClient)
 	publisherStore := publisher.NewPGStore(pool)
 	resetWired := newResetWiring(resetlimit.NewPGStore(pool))
 	publisherService := publisher.NewService(publisherStore, minter, sealer, appIdentityService, logger)
+	appTeardown := buildAppTeardown(provisionClient, appIdentityService, publisherService, appteardown.NewPGStore(pool), logger)
 	// Recipients is set only when the ntfy sink is configured: a nil interface (not a typed-nil
 	// *publisher.Service) makes the worker dead-letter a recipient delivery as no_publisher instead of sending.
 	var recipients dispatch.RecipientResolver
@@ -370,19 +390,22 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	prober := newProberWiring(heartbeatStore, heartbeatService.HoldOffUntil, guardedClient, sealer, logger)
 	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
-		Logger:           logger,
-		Readiness:        checker,
-		HeartbeatChecker: heartbeatFreshness,
-		HeartbeatProber:  prober.freshness,
-		Registry:         registryService,
-		AppRegistry:      registryService,
-		Messages:         messageService,
-		Publishers:       publisherService,
-		Heartbeats:       heartbeatService,
-		AppHeartbeats:    heartbeatService,
-		AppProvisioning:  appProvisioning,
-		ResetLimiter:     resetWired.limiter,
-		AppIdentity:      appIdentityService,
+		Logger:            logger,
+		Readiness:         checker,
+		HeartbeatChecker:  heartbeatFreshness,
+		HeartbeatProber:   prober.freshness,
+		Registry:          registryService,
+		AppRegistry:       registryService,
+		Messages:          messageService,
+		Publishers:        publisherService,
+		Heartbeats:        heartbeatService,
+		AppHeartbeats:     heartbeatService,
+		AppProvisioning:   appProvisioning,
+		ResetLimiter:      resetWired.limiter,
+		AdminProvisioning: adminProvisioning,
+		BindingChecker:    appIdentityService,
+		AppTeardown:       appTeardown,
+		AppIdentity:       appIdentityService,
 	}).Handler()
 
 	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)

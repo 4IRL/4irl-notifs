@@ -114,14 +114,97 @@ func TestPublishersRouteToTheRightMethod(testInstance *testing.T) {
 	}
 }
 
-func TestOperatorMintPublisherNeverRotates(testInstance *testing.T) {
-	fake := &fakePublishers{view: samplePublisherView(), lastRotate: true}
-	servePublishers(fake, nil, http.MethodPost, publisherPath)
-	if fake.operatorCalls != 1 || fake.appCalls != 0 {
-		testInstance.Fatalf("operator route: MintAsOperator=%d Mint=%d, want 1/0", fake.operatorCalls, fake.appCalls)
+// serveMintBody POSTs body (nil means no body at all) to the operator mint route.
+func serveMintBody(fake Publishers, body *string) *httptest.ResponseRecorder {
+	server := NewServer(ServerConfig{Publishers: fake})
+	var request *http.Request
+	if body == nil {
+		request = httptest.NewRequest(http.MethodPost, publisherPath, http.NoBody)
+	} else {
+		request = httptest.NewRequest(http.MethodPost, publisherPath, strings.NewReader(*body))
 	}
-	if fake.mintCalls != 1 || fake.lastRotate {
-		testInstance.Fatalf("operator mint: calls=%d rotate=%v, want 1 call with rotate=false", fake.mintCalls, fake.lastRotate)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	return recorder
+}
+
+func TestOperatorMintPublisherRotateBody(testInstance *testing.T) {
+	str := func(text string) *string { return &text }
+	tests := []struct {
+		name       string
+		body       *string
+		wantStatus int
+		wantCalls  int
+		wantRotate bool
+	}{
+		{name: "no body is rotate false", body: nil, wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "empty body is rotate false", body: str(""), wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "rotate true", body: str(`{"rotate":true}`), wantStatus: http.StatusOK, wantCalls: 1, wantRotate: true},
+		{name: "rotate false", body: str(`{"rotate":false}`), wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "empty object is rotate false", body: str(`{}`), wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "unknown field is 400", body: str(`{"rotate":true,"extra":1}`), wantStatus: http.StatusBadRequest},
+		{name: "invalid JSON is 400", body: str(`{"rotate":`), wantStatus: http.StatusBadRequest},
+		{name: "non-bool rotate is 400", body: str(`{"rotate":"yes"}`), wantStatus: http.StatusBadRequest},
+	}
+	for _, testCase := range tests {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			fake := &fakePublishers{view: samplePublisherView(), lastRotate: !testCase.wantRotate}
+			recorder := serveMintBody(fake, testCase.body)
+			if recorder.Code != testCase.wantStatus {
+				subTest.Fatalf("status = %d, want %d (%s)", recorder.Code, testCase.wantStatus, recorder.Body.String())
+			}
+			if fake.operatorCalls != testCase.wantCalls || fake.appCalls != 0 {
+				subTest.Fatalf("MintAsOperator=%d Mint=%d, want %d/0", fake.operatorCalls, fake.appCalls, testCase.wantCalls)
+			}
+			if testCase.wantCalls == 1 && fake.lastRotate != testCase.wantRotate {
+				subTest.Fatalf("rotate = %v, want %v", fake.lastRotate, testCase.wantRotate)
+			}
+		})
+	}
+}
+
+func TestPublishersAppNotBoundIs404(testInstance *testing.T) {
+	fake := &fakePublishers{err: publisher.ErrAppNotBound}
+	recorder := servePublishers(fake, nil, http.MethodPost, publisherPath)
+	assertResponse(testInstance, recorder, http.StatusNotFound, `{"error":"app has no approved binding"}`+"\n")
+}
+
+// unboundStore is a publisher.Store with no rows; the mint lock is never expected.
+type unboundStore struct{}
+
+func (unboundStore) Get(context.Context, string) (publisher.StoredPublisher, error) {
+	return publisher.StoredPublisher{}, registry.ErrNoPublisher
+}
+func (unboundStore) Delete(context.Context, string) error { return nil }
+func (unboundStore) WithAppMintLock(context.Context, string, func(publisher.MintTx) error) error {
+	return errors.New("mint lock must not be taken")
+}
+
+type countingChecker struct{ calls int }
+
+func (checker *countingChecker) HasBinding(context.Context, string) (bool, error) {
+	checker.calls++
+	return false, nil
+}
+
+func TestGetAndDeletePublisherNeverConsultTheBindingChecker(testInstance *testing.T) {
+	for _, withChecker := range []bool{true, false} {
+		checker := &countingChecker{}
+		var bindingChecker publisher.BindingChecker
+		if withChecker {
+			bindingChecker = checker
+		}
+		service := publisher.NewService(unboundStore{}, nil, nil, bindingChecker, nil)
+
+		getRecorder := servePublishers(service, nil, http.MethodGet, publisherPath)
+		assertResponse(testInstance, getRecorder, http.StatusNotFound, `{"error":"publisher not found"}`+"\n")
+		deleteRecorder := servePublishers(service, nil, http.MethodDelete, publisherPath)
+		if deleteRecorder.Code != http.StatusNoContent {
+			testInstance.Fatalf("DELETE for an unbound app = %d, want 204", deleteRecorder.Code)
+		}
+		if checker.calls != 0 {
+			testInstance.Fatalf("checker consulted %d times by GET/DELETE", checker.calls)
+		}
 	}
 }
 

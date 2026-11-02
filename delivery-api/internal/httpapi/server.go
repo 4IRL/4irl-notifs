@@ -7,7 +7,9 @@
 // endpoints under /v1/admin/heartbeats, the app identity token exchange under
 // /v1/app-identity and the operator identity endpoints under
 // /v1/admin/app-identity, and the app-scoped destination endpoints under
-// /v1/apps/{app_id}/destinations.
+// /v1/apps/{app_id}/destinations, and the operator provisioning endpoints
+// (/v1/admin/provision, /deprovision, /reset-password, /users, /users/{user_id}
+// and /test-notify).
 package httpapi
 
 import (
@@ -124,6 +126,17 @@ type ServerConfig struct {
 	// limiter exists: a typed-nil pointer stored here is a non-nil interface and would
 	// bypass that guard.
 	ResetLimiter ResetLimiter
+	// AdminProvisioning backs the operator /v1/admin/provision, /deprovision, /reset-password,
+	// /users, /users/{user_id} and /test-notify endpoints. When nil, all answer 503 (fail
+	// closed). Callers must leave this an untyped nil when no client exists: a typed-nil
+	// pointer stored here is a non-nil interface and would bypass that guard.
+	AdminProvisioning AdminProvisioning
+	// BindingChecker gates operator provision and test-notify on an approved binding. When
+	// nil, those two routes answer 503 (fail closed). The same typed-nil caveat applies.
+	BindingChecker BindingChecker
+	// AppTeardown backs POST /v1/admin/apps/{app_id}/deprovision (the cascade). When nil, that
+	// route answers 503 (fail closed). The same typed-nil caveat applies.
+	AppTeardown AppTeardown
 	// Messages backs the /v1/messages and /v1/admin/deliveries endpoints. When
 	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
 	// caveat as Registry applies.
@@ -161,12 +174,18 @@ type Server struct {
 	appProvisioning AppProvisioning
 	// resetLimiter is the door limit of the app reset-password route.
 	resetLimiter ResetLimiter
-	messages     Messages
-	publishers   Publishers
-	heartbeats   Heartbeats
-	appIdentity  AppIdentity
-	now          func() time.Time
-	mux          *http.ServeMux
+	// adminProvisioning backs the operator provisioning endpoints.
+	adminProvisioning AdminProvisioning
+	// bindingChecker gates operator provision and test-notify.
+	bindingChecker BindingChecker
+	// appTeardown backs the deprovision-app cascade.
+	appTeardown AppTeardown
+	messages    Messages
+	publishers  Publishers
+	heartbeats  Heartbeats
+	appIdentity AppIdentity
+	now         func() time.Time
+	mux         *http.ServeMux
 }
 
 // readinessResponseBody is the /readyz JSON body when the database answered.
@@ -211,21 +230,24 @@ func NewServer(config ServerConfig) *Server {
 	}
 
 	server := &Server{
-		logger:          logger,
-		readiness:       config.Readiness,
-		checker:         config.HeartbeatChecker,
-		prober:          config.HeartbeatProber,
-		registry:        config.Registry,
-		appRegistry:     config.AppRegistry,
-		appHeartbeats:   config.AppHeartbeats,
-		appProvisioning: config.AppProvisioning,
-		resetLimiter:    config.ResetLimiter,
-		messages:        config.Messages,
-		publishers:      config.Publishers,
-		heartbeats:      config.Heartbeats,
-		appIdentity:     config.AppIdentity,
-		now:             config.Now,
-		mux:             http.NewServeMux(),
+		logger:            logger,
+		readiness:         config.Readiness,
+		checker:           config.HeartbeatChecker,
+		prober:            config.HeartbeatProber,
+		registry:          config.Registry,
+		appRegistry:       config.AppRegistry,
+		appHeartbeats:     config.AppHeartbeats,
+		appProvisioning:   config.AppProvisioning,
+		resetLimiter:      config.ResetLimiter,
+		adminProvisioning: config.AdminProvisioning,
+		bindingChecker:    config.BindingChecker,
+		appTeardown:       config.AppTeardown,
+		messages:          config.Messages,
+		publishers:        config.Publishers,
+		heartbeats:        config.Heartbeats,
+		appIdentity:       config.AppIdentity,
+		now:               config.Now,
+		mux:               http.NewServeMux(),
 	}
 	if server.now == nil {
 		server.now = time.Now
@@ -288,6 +310,13 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/reset-password", server.appResetScoped(server.handleAppResetPassword))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/ntfy-publisher", server.appPublisherScoped(server.handleAppMintPublisher))
 
+	server.mux.HandleFunc("POST /v1/admin/provision", server.requireAdminProvisioning(server.handleAdminProvision))
+	server.mux.HandleFunc("POST /v1/admin/deprovision", server.requireAdminProvisioning(server.handleAdminDeprovision))
+	server.mux.HandleFunc("POST /v1/admin/reset-password", server.requireAdminProvisioning(server.handleAdminResetPassword))
+	server.mux.HandleFunc("GET /v1/admin/users", server.requireAdminProvisioning(server.handleAdminListUsers))
+	server.mux.HandleFunc("DELETE /v1/admin/users/{user_id}", server.requireAdminProvisioning(server.handleAdminDeleteUser))
+	server.mux.HandleFunc("POST /v1/admin/test-notify", server.requireAdminProvisioning(server.handleAdminTestNotify))
+	server.mux.HandleFunc("POST /v1/admin/apps/{app_id}/deprovision", server.requireAppTeardown(server.handleAdminDeprovisionApp))
 	server.mux.HandleFunc("POST /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleMintPublisher))
 	server.mux.HandleFunc("GET /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleGetPublisher))
 	server.mux.HandleFunc("DELETE /v1/admin/apps/{app_id}/ntfy-publisher", server.requirePublishers(server.handleDeletePublisher))
