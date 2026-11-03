@@ -93,7 +93,7 @@ local-logs: ## Follow logs for the local stack
 
 ## Admin UI dev server
 
-dev-web: ## Run the admin UI dev server in the foreground (proxies /v1 to the local API; see web/vite.config.ts)
+dev-web: ## Run the admin UI dev server in the foreground (proxies /delivery to the local delivery-api; see web/vite.config.ts)
 	cd web && npm run dev -- --host 127.0.0.1 --port $(WEB_PORT) --strictPort
 
 dev-web-bg: ## Start the admin UI dev server detached, logging to .dev/vite-dev.log

@@ -1,7 +1,12 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 
-import { expectNoPageOverflow, expectTouchTarget, mockDelivery } from './support/adminMocks';
+import {
+  expectNoPageOverflow,
+  expectTouchTarget,
+  mockDelivery,
+  mockProvisioning,
+} from './support/adminMocks';
 
 const REFRESH_NAMES = [
   'Refresh status',
@@ -15,6 +20,7 @@ const FUNNEL_NAME = 'Filter deliveries';
 
 async function setup(page: Page, width: number): Promise<void> {
   await page.setViewportSize({ width, height: 900 });
+  await mockProvisioning(page);
   await mockDelivery(page);
   await page.goto('/#delivery');
   await expect(page.getByRole('heading', { name: 'Delivery log' })).toBeVisible();

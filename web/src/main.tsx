@@ -8,7 +8,7 @@ import { createPersonApiClient } from './api/personClient.ts';
 import './theme.css';
 import './index.css';
 
-// Both clients are always same-origin: the provisioning API (`/v1/*`) and the
+// Both clients are always same-origin: delivery-api (`/delivery/*`) and the
 // person service (`/people`, `/apps`) are reached through Cloudflare Pages
 // Functions that proxy to the backends server-side, so no build-time base URL
 // is needed. The People and Apps views are gated on their own build flags

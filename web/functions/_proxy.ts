@@ -1,7 +1,7 @@
 // Shared Cloudflare Pages Function proxy helper for the admin UI.
 //
 // The admin SPA (notifs-admin.4irl.app) calls same-origin relative paths
-// (`/v1/*` and `/people`); these Functions forward each request server-side to
+// (`/delivery/*` and `/people`); these Functions forward each request server-side to
 // the Access-gated backends (notifs-api / notifs-people) using the proxy's
 // Cloudflare Access **service token**, so the browser never makes a
 // cross-origin request. See the design doc + plan under
@@ -14,7 +14,6 @@ import { jsonError } from './_http';
  *  build-time VITE vars). The two URLs are plaintext vars; the two client
  *  credentials are encrypted Pages secrets. */
 export interface Env {
-  PROVISIONING_API_URL: string;
   PERSON_SERVICE_URL: string;
   /** Base URL of the delivery-api (served under the same-origin `/delivery/*`
    *  Function, which strips the `/delivery` prefix). Runtime Pages plaintext var. */
@@ -56,7 +55,7 @@ export async function proxyTo({
 }): Promise<Response> {
   // Misconfiguration guard: without the service-token credentials every backend
   // call would be rejected by Access, so fail fast and never touch the network.
-  // An unset upstream base (PROVISIONING_API_URL / PERSON_SERVICE_URL) is the
+  // An unset upstream base (PERSON_SERVICE_URL / DELIVERY_API_URL) is the
   // same class of deploy misconfiguration — guard it here so it surfaces an
   // accurate `500 proxy misconfigured` rather than a misleading
   // `502 upstream unreachable` after a doomed fetch to an empty/relative URL.
@@ -67,7 +66,7 @@ export async function proxyTo({
 
   // Validate the caller's Cloudflare Access JWT (the CF_Authorization session
   // token) BEFORE any backend call. Access no longer edge-challenges these
-  // paths (the operator adds a path-based Access **Bypass** on /v1 and /people
+  // paths (the operator adds a path-based Access **Bypass** on /delivery and /people
   // so same-origin POSTs aren't downgraded to a login redirect), so the Function
   // is now the authenticator. Only DISABLE_ACCESS_AUTH='true' makes this a no-op
   // (the local-dev opt-out); otherwise auth is enforced. See `_auth.ts` +
@@ -79,7 +78,7 @@ export async function proxyTo({
 
   const url = new URL(request.url);
   // Trim trailing slashes on the base so an operator typo (e.g. a
-  // `PROVISIONING_API_URL` ending in `/`) can't produce a double-slash path
+  // `DELIVERY_API_URL` ending in `/`) can't produce a double-slash path
   // that 404s. Mirrors `personClient.ts`'s `baseUrl.replace(/\/+$/, '')`.
   const trimmedUpstreamBase = upstreamBase.replace(/\/+$/, '');
   const upstreamPath =

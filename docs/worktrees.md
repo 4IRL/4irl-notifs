@@ -204,9 +204,12 @@ make worktree-rm
   run never attaches to another worktree's server.
 - `make dev-pages` runs `wrangler pages dev` on its default listen port (8788; no `--port` is passed),
   which is not parameterized and collides if two run at once.
-- `web/.dev.vars` is a shared symlink to the primary's file. Its `PROVISIONING_API_URL` and
-  `PERSON_SERVICE_URL` are not rewritten per worktree, so `make dev-pages` in a worktree reaches
-  whatever those URLs name, not necessarily that worktree's `API_PORT`.
+- `web/.dev.vars` is a shared symlink to the primary's file. Its `PERSON_SERVICE_URL` and
+  `DELIVERY_API_URL` are not rewritten per worktree, so `make dev-pages` in a worktree reaches
+  whatever those URLs name, not necessarily that worktree's ports.
+- `make dev-web` provisioning calls go through `/delivery/v1/admin/*`, so they need the local
+  delivery-api running (`make local-up`). It is already wired to provisioning-api in
+  `docker-compose.yml`.
 
 ## Via the stronghold
 
