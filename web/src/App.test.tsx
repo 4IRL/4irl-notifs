@@ -719,6 +719,10 @@ describe('App', () => {
     const client = buildFakeClient();
     const personClient = buildFakePersonClient();
     render(<App client={client} personClient={personClient} appsEnabled />);
+    await waitFor(() => expect(client.listUsers).toHaveBeenCalled());
+    await waitFor(() => expect(personClient.listApps).toHaveBeenCalled());
+    const listUsersCallsBefore = vi.mocked(client.listUsers).mock.calls.length;
+    const listAppsCallsBefore = vi.mocked(personClient.listApps).mock.calls.length;
 
     const addSection = screen
       .getByRole('heading', { name: strings.addAppHeading })
@@ -746,6 +750,12 @@ describe('App', () => {
       await screen.findByText(strings.publisherMintedResult({ appId: 'tasktracker' })),
     ).toBeInTheDocument();
     expect(screen.queryByText(strings.appAlreadyRegisteredNote)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(vi.mocked(client.listUsers).mock.calls.length).toBe(listUsersCallsBefore + 1),
+    );
+    await waitFor(() =>
+      expect(vi.mocked(personClient.listApps).mock.calls.length).toBe(listAppsCallsBefore + 1),
+    );
   });
 
   async function submitAddApp(): Promise<void> {
@@ -769,12 +779,22 @@ describe('App', () => {
         .mockRejectedValue(new ApiError({ status: 409, message: 'app already exists' })),
     });
     render(<App client={client} personClient={personClient} appsEnabled />);
+    await waitFor(() => expect(client.listUsers).toHaveBeenCalled());
+    await waitFor(() => expect(personClient.listApps).toHaveBeenCalled());
+    const listUsersCallsBefore = vi.mocked(client.listUsers).mock.calls.length;
+    const listAppsCallsBefore = vi.mocked(personClient.listApps).mock.calls.length;
 
     await submitAddApp();
 
     expect(
       await screen.findByText(strings.publisherMintedResult({ appId: 'tasktracker' })),
     ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(vi.mocked(client.listUsers).mock.calls.length).toBe(listUsersCallsBefore + 1),
+    );
+    await waitFor(() =>
+      expect(vi.mocked(personClient.listApps).mock.calls.length).toBe(listAppsCallsBefore + 1),
+    );
     expect(personClient.updateApp).toHaveBeenCalledWith({
       appId: 'tasktracker',
       displayName: 'Task Tracker',
@@ -880,6 +900,55 @@ describe('App', () => {
         listAppsCallsBefore,
       ),
     );
+  });
+
+  describe('re-mint token failures', () => {
+    async function remintWith(provisionApp: ApiClient['provisionApp']) {
+      const client = buildFakeClient({ provisionApp });
+      const personClient = buildFakePersonClient({
+        listApps: vi.fn().mockResolvedValue([
+          {
+            appId: 'urls4irl',
+            displayName: 'URLs4IRL',
+            description: null,
+            createdAt: '2026-07-25T10:00:00Z',
+          },
+        ]),
+      });
+      render(<App client={client} personClient={personClient} appsEnabled />);
+      await userEvent.click(
+        await screen.findByRole('button', { name: `${strings.editAction} URLs4IRL` }),
+      );
+      const dialog = screen.getByRole('dialog');
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: strings.remintTokenAction }),
+      );
+      return dialog;
+    }
+
+    it('shows the try-again copy for a not-bound 404', async () => {
+      const dialog = await remintWith(
+        vi
+          .fn()
+          .mockRejectedValue(new ApiError({ status: 404, message: 'app has no approved binding' })),
+      );
+
+      await waitFor(() =>
+        expect(within(dialog).getByRole('alert')).toHaveTextContent(
+          strings.appNotBoundRetryError({ appId: 'urls4irl' }),
+        ),
+      );
+    });
+
+    it('shows a 404 with any other message unchanged', async () => {
+      const dialog = await remintWith(
+        vi.fn().mockRejectedValue(new ApiError({ status: 404, message: 'publisher not found' })),
+      );
+
+      await waitFor(() =>
+        expect(within(dialog).getByRole('alert')).toHaveTextContent('publisher not found'),
+      );
+    });
   });
 
   it('removes an app via the cascade after confirming', async () => {

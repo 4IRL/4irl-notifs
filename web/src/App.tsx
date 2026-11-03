@@ -42,7 +42,13 @@ import './App.css';
  * not-bound copy; any other rejection (including any other 404) is returned
  * untouched so the caller rethrows it as is.
  */
-function mapNotBoundRejection({ rejection, appId }: { rejection: unknown; appId: string }): unknown {
+function mapNotBoundRejection({
+  rejection,
+  appId,
+}: {
+  rejection: unknown;
+  appId: string;
+}): unknown {
   if (isAppNotBound(rejection)) {
     return new ApiError({ status: 404, message: strings.appNotBoundRetryError({ appId }) });
   }
