@@ -30,7 +30,7 @@ import type { DeliveryMockSeed } from './support/adminMocks';
 
 test.describe('admin UI critical flows', () => {
   test('lists users loaded from the API on page load', async ({ page }) => {
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -71,7 +71,7 @@ test.describe('admin UI critical flows', () => {
       page,
     }) => {
       let usersReturned = 0;
-      await page.route('**/v1/users', async (route) => {
+      await page.route('**/delivery/v1/admin/users', async (route) => {
         // Empty before provisioning, one user afterwards. The mobile-layout
         // case keeps the list empty: a user row widens the unrelated Send-test
         // table past 390px, which would mask the provision reveal's own layout.
@@ -92,7 +92,7 @@ test.describe('admin UI critical flows', () => {
           body: JSON.stringify({ users }),
         });
       });
-      await page.route('**/v1/provision', async (route) => {
+      await page.route('**/delivery/v1/admin/provision', async (route) => {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -162,7 +162,7 @@ test.describe('admin UI critical flows', () => {
     const EMAIL = 'alice@example.com';
 
     async function mockUsersWithEmail(page: Page): Promise<void> {
-      await page.route('**/v1/users', async (route) => {
+      await page.route('**/delivery/v1/admin/users', async (route) => {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -210,7 +210,7 @@ test.describe('admin UI critical flows', () => {
       await mockUsersWithEmail(page);
       let resetBody: unknown = null;
       let resetCalls = 0;
-      await page.route('**/v1/reset-password', async (route) => {
+      await page.route('**/delivery/v1/admin/reset-password', async (route) => {
         resetCalls += 1;
         resetBody = route.request().postDataJSON();
         await route.fulfill({
@@ -258,7 +258,7 @@ test.describe('admin UI critical flows', () => {
     }) => {
       await mockUsersWithEmail(page);
       let status = 429;
-      await page.route('**/v1/reset-password', async (route) => {
+      await page.route('**/delivery/v1/admin/reset-password', async (route) => {
         await route.fulfill({
           status,
           contentType: 'application/json',
@@ -297,7 +297,7 @@ test.describe('admin UI critical flows', () => {
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
-      await page.route('**/v1/reset-password', async (route) => {
+      await page.route('**/delivery/v1/admin/reset-password', async (route) => {
         await gate;
         await route.fulfill({
           status: 200,
@@ -355,7 +355,7 @@ test.describe('admin UI critical flows', () => {
   });
 
   test('lists people from the person service', async ({ page }) => {
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -390,7 +390,7 @@ test.describe('admin UI critical flows', () => {
   });
 
   test('adding an app registers it and reveals the publisher token', async ({ page }) => {
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -445,7 +445,7 @@ test.describe('admin UI critical flows', () => {
   });
 
   test('removing an app cascades after confirming', async ({ page }) => {
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -498,7 +498,7 @@ test.describe('admin UI critical flows', () => {
   });
 
   test('re-mint dialog Escape closes only the dialog', async ({ page }) => {
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -560,7 +560,7 @@ test.describe('admin UI critical flows', () => {
 
   test('remove app dialog is full screen at 390px', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -614,7 +614,7 @@ test.describe('admin UI critical flows', () => {
   }) => {
     // A user is provisioned into urls4irl (unregistered); tasktracker is the
     // only registered app.
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -674,7 +674,7 @@ test.describe('admin UI critical flows', () => {
 
   test('sends a test notification and shows a delivered result', async ({ page }) => {
     // Two subscribers on one app so the Send-test section has scoped rows.
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -705,7 +705,7 @@ test.describe('admin UI critical flows', () => {
       });
     });
     let testNotifyBody: unknown = null;
-    await page.route('**/v1/test-notify', async (route) => {
+    await page.route('**/delivery/v1/admin/test-notify', async (route) => {
       testNotifyBody = route.request().postDataJSON();
       await route.fulfill({
         status: 200,

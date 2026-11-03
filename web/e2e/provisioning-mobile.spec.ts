@@ -125,7 +125,7 @@ test.describe('Provisioning at 420px', () => {
       title: 'Deprovision app access?',
       cancel: `Cancel Deprovision urls4irl for ${EMAIL}`,
       confirm: 'Confirm deprovision urls4irl',
-      request: 'POST /v1/deprovision',
+      request: 'POST /delivery/v1/admin/deprovision',
       body: { app_id: 'urls4irl', user_id: USER_ID },
     },
     {
@@ -136,7 +136,7 @@ test.describe('Provisioning at 420px', () => {
       title: 'Delete user?',
       cancel: `Cancel Delete ${EMAIL}`,
       confirm: `Confirm delete ${EMAIL}`,
-      request: `DELETE /v1/users/${USER_ID}`,
+      request: `DELETE /delivery/v1/admin/users/${USER_ID}`,
       body: null,
     },
     {
@@ -148,7 +148,7 @@ test.describe('Provisioning at 420px', () => {
       cancel: `Cancel Delete ${EMAIL}`,
       confirm: `Confirm delete ${EMAIL}`,
       // A person delete is a full teardown: it deletes the person's ntfy user.
-      request: `DELETE /v1/users/${USER_ID}`,
+      request: `DELETE /delivery/v1/admin/users/${USER_ID}`,
       body: null,
     },
     {

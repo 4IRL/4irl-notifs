@@ -88,7 +88,7 @@ for (const viewport of VIEWPORTS) {
       const mock = await mockProvisioning(page);
       await mockDelivery(page);
       const provisions: unknown[] = [];
-      await page.route('**/v1/provision', async (route) => {
+      await page.route('**/delivery/v1/admin/provision', async (route) => {
         provisions.push(route.request().postDataJSON());
         await route.fulfill({
           status: 200,

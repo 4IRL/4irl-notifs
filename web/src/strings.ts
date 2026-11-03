@@ -907,4 +907,8 @@ export const strings = {
     `Could not unbind: ${message}`,
 
   genericError: 'Something went wrong. Please try again.',
+  appNotBoundError: ({ appId }: { appId: string }) =>
+    `${appId} has no approved delivery key yet. Approve its key request on the Delivery tab, then add it again.`,
+  appNotBoundRetryError: ({ appId }: { appId: string }) =>
+    `${appId} has no approved delivery key yet. Approve its key request on the Delivery tab, then try again.`,
 } as const;

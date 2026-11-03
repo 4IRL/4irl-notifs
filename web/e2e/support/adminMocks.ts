@@ -457,7 +457,7 @@ export async function openRowMenu({ page, row }: { page: Page; row: string }): P
 
 /** Seed for the stateful provisioning mock, in the wire shapes the two APIs return. */
 export interface ProvisioningSeed {
-  /** `{ user_id, apps, topic_patterns }` rows of `GET /v1/users`. */
+  /** `{ user_id, apps, topic_patterns }` rows of `GET /delivery/v1/admin/users`. */
   users?: Json[];
   /** `{ person_hash, email, created_at }` rows of `GET /people`. */
   people?: Json[];
@@ -492,8 +492,20 @@ export function appWire({
 /** The reveal-once publisher token every mint and re-mint returns. */
 export const MINTED_TOKEN = 'tk_pub_e2e_minted_token';
 
+// The six relayed calls live at `/delivery/v1/admin/...` (users, users/{id}, provision,
+// deprovision, reset-password, test-notify); provision-app and deprovision-app still use
+// the old `/v1/...` proxy until their steps. `mockDelivery`'s `**/delivery/**` catch-all
+// defers these paths with `route.fallback()` (see RELAYED_ADMIN_PATH), so this mock serves
+// them whether it is registered before or after `mockDelivery`. Only users, people and apps
+// take an `/<id>` suffix (capture group 1). A spec that installs `mockDelivery` without
+// `mockProvisioning` and hits one of these paths reaches the network unrecorded, as it did
+// with the old `/v1/...` paths; such specs must also install `mockProvisioning`.
 const PROVISIONING_PATH =
-  /^\/(?:v1\/(?:users|provision|provision-app|deprovision|deprovision-app|reset-password)|people|apps)(?:\/([^/]+))?$/;
+  /^\/(?:v1\/(?:provision-app|deprovision-app)|delivery\/v1\/admin\/(?:provision|deprovision|reset-password|test-notify)|(?:delivery\/v1\/admin\/users|people|apps)(?:\/([^/]+))?)$/;
+
+/** The six relayed `/delivery/v1/admin/*` paths `mockProvisioning` owns (keep in sync with PROVISIONING_PATH). */
+const RELAYED_ADMIN_PATH =
+  /^\/delivery\/v1\/admin\/(?:users(?:\/[^/]+)?|provision|deprovision|reset-password|test-notify)$/;
 
 /**
  * A stateful fake of the provisioning API and the person service: list, edit and delete users,
@@ -553,7 +565,7 @@ export async function mockProvisioning(
       const match = PROVISIONING_PATH.exec(url.pathname);
       const id = match?.[1] === undefined ? undefined : decodeURIComponent(match[1]);
 
-      if (method === 'GET' && url.pathname === '/v1/users') {
+      if (method === 'GET' && url.pathname === '/delivery/v1/admin/users') {
         await reply({ route, body: { users: mock.users } });
         return;
       }
@@ -599,7 +611,11 @@ export async function mockProvisioning(
         await reply({ route, body: {} });
         return;
       }
-      if (method === 'DELETE' && url.pathname.startsWith('/v1/users/') && id !== undefined) {
+      if (
+        method === 'DELETE' &&
+        url.pathname.startsWith('/delivery/v1/admin/users/') &&
+        id !== undefined
+      ) {
         mock.users = mock.users.filter((candidate) => candidate.user_id !== id);
         await reply({ route, body: {} });
         return;
@@ -621,12 +637,12 @@ export async function mockProvisioning(
         await reply({ route, body: { app_id: body.app_id, removed: true } });
         return;
       }
-      if (method === 'POST' && url.pathname === '/v1/deprovision') {
+      if (method === 'POST' && url.pathname === '/delivery/v1/admin/deprovision') {
         mock.users = mock.users.filter((candidate) => candidate.user_id !== body.user_id);
         await reply({ route, body: { app_id: body.app_id, user_id: body.user_id, removed: true } });
         return;
       }
-      if (method === 'POST' && url.pathname === '/v1/reset-password') {
+      if (method === 'POST' && url.pathname === '/delivery/v1/admin/reset-password') {
         await reply({
           route,
           body: { user_id: 'u_reset', app_id: body.app_id, password: 'reset-password-e2e-0123' },
@@ -698,6 +714,12 @@ export async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Pro
     const url = new URL(request.url());
     const method = request.method();
     const pathname = url.pathname;
+    // The six relayed provisioning calls belong to `mockProvisioning` (which matches them via
+    // PROVISIONING_PATH); defer so they are neither recorded nor counted as unmocked here.
+    if (RELAYED_ADMIN_PATH.test(pathname)) {
+      await route.fallback();
+      return;
+    }
     const raw = request.postData();
     const recorded: RecordedRequest = {
       method,

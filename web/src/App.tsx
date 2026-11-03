@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { ApiError } from './api/client';
+import { ApiError, isAppNotBound } from './api/client';
 import type {
   ApiClient,
   AppUserPair,
@@ -36,6 +36,18 @@ import { AppsTable } from './components/AppsTable';
 import { UnregisteredApps } from './components/UnregisteredApps';
 import { strings } from './strings';
 import './App.css';
+
+/**
+ * Maps the delivery-api "app has no approved binding" 404 to the neutral
+ * not-bound copy; any other rejection (including any other 404) is returned
+ * untouched so the caller rethrows it as is.
+ */
+function rethrowIfNotBound({ rejection, appId }: { rejection: unknown; appId: string }): unknown {
+  if (isAppNotBound(rejection)) {
+    return new ApiError({ status: 404, message: strings.appNotBoundRetryError({ appId }) });
+  }
+  return rejection;
+}
 
 /**
  * Props for App. The API client is injected so tests can supply a double.
@@ -199,7 +211,12 @@ function App({
 
   const handleProvision = useCallback(
     async (params: ProvisionParams): Promise<ProvisionResult> => {
-      const result = await client.provision(params);
+      let result: ProvisionResult;
+      try {
+        result = await client.provision(params);
+      } catch (rejection: unknown) {
+        throw rethrowIfNotBound({ rejection, appId: params.appId });
+      }
       await refreshUsers();
       await refreshPeople();
       return result;
@@ -322,7 +339,13 @@ function App({
   // selection/send/results state (mirroring ProvisionForm), so this never
   // touches the shared `error` banner or refreshes any list.
   const handleTestNotify = useCallback(
-    (params: TestNotifyParams) => client.testNotify(params),
+    async (params: TestNotifyParams) => {
+      try {
+        return await client.testNotify(params);
+      } catch (rejection: unknown) {
+        throw rethrowIfNotBound({ rejection, appId: params.appId });
+      }
+    },
     [client],
   );
 

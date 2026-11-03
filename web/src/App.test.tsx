@@ -178,6 +178,81 @@ describe('App', () => {
     await waitFor(() => expect(listUsers.mock.calls.length).toBeGreaterThanOrEqual(2));
   });
 
+  it('provision for an app with no approved binding shows the try-again copy and refreshes nothing', async () => {
+    const listUsers = vi.fn().mockResolvedValue([]);
+    const provision = vi
+      .fn()
+      .mockRejectedValue(new ApiError({ status: 404, message: 'app has no approved binding' }));
+    const personClient = buildFakePersonClient();
+    const client = buildFakeClient({ listUsers, provision });
+    render(<App client={client} personClient={personClient} />);
+    await waitFor(() => expect(personClient.listPeople).toHaveBeenCalledTimes(1));
+
+    await userEvent.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
+    await userEvent.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
+    await userEvent.click(screen.getByRole('button', { name: strings.provisionAction }));
+
+    expect(
+      await screen.findByText(strings.appNotBoundRetryError({ appId: 'urls4irl' })),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/add it again/)).not.toBeInTheDocument();
+    expect(listUsers).toHaveBeenCalledTimes(1);
+    expect(personClient.listPeople).toHaveBeenCalledTimes(1);
+  });
+
+  it('provision shows a 404 with any other message unchanged', async () => {
+    const provision = vi
+      .fn()
+      .mockRejectedValue(new ApiError({ status: 404, message: 'publisher not found' }));
+    render(<App client={buildFakeClient({ provision })} />);
+
+    await userEvent.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
+    await userEvent.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
+    await userEvent.click(screen.getByRole('button', { name: strings.provisionAction }));
+
+    expect(await screen.findByText('publisher not found')).toBeInTheDocument();
+  });
+
+  describe('test-notify errors', () => {
+    async function sendTest(testNotify: ApiClient['testNotify']) {
+      const client = buildFakeClient({
+        listUsers: vi
+          .fn()
+          .mockResolvedValue([
+            { userId: 'u_76gzqgp4byjl6dje', apps: ['urls4irl'], topicPatterns: ['urls4irl-*'] },
+          ]),
+        testNotify,
+      });
+      render(<App client={client} />);
+      await userEvent.click(
+        await screen.findByRole('checkbox', {
+          name: strings.sendTestSelectAria({ who: 'u_76gzqgp4byjl6dje' }),
+        }),
+      );
+      await userEvent.click(screen.getByRole('button', { name: strings.sendTestAction }));
+    }
+
+    it('shows the try-again copy for a not-bound 404', async () => {
+      await sendTest(
+        vi
+          .fn()
+          .mockRejectedValue(new ApiError({ status: 404, message: 'app has no approved binding' })),
+      );
+
+      expect(
+        await screen.findByText(strings.appNotBoundRetryError({ appId: 'urls4irl' })),
+      ).toBeInTheDocument();
+    });
+
+    it('shows a 404 with any other message unchanged', async () => {
+      await sendTest(
+        vi.fn().mockRejectedValue(new ApiError({ status: 404, message: 'publisher not found' })),
+      );
+
+      expect(await screen.findByText('publisher not found')).toBeInTheDocument();
+    });
+  });
+
   it('deleting a user calls the client and refreshes', async () => {
     const listUsers = vi
       .fn()

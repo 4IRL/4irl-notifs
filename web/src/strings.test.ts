@@ -62,6 +62,12 @@ describe('strings module', () => {
     expect(strings.removeAppNotice).toBe(
       'Removes the app, its publisher identity and every subscriber grant.',
     );
+    expect(strings.appNotBoundError({ appId: 'zapp' })).toBe(
+      'zapp has no approved delivery key yet. Approve its key request on the Delivery tab, then add it again.',
+    );
+    expect(strings.appNotBoundRetryError({ appId: 'zapp' })).toBe(
+      'zapp has no approved delivery key yet. Approve its key request on the Delivery tab, then try again.',
+    );
     expect(strings.replayDeliveryDialogTitle).toBe('Replay delivery?');
     expect(strings.replayDeliveryNotice).toBe('Sends the same message to the destination again.');
     expect(strings.dialogItemDestination).toBe('Destination');
