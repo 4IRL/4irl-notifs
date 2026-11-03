@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1596,5 +1596,187 @@ describe('App Delivery tab', () => {
         strings.addHeartbeatHintEmpty,
       );
     });
+  });
+});
+
+describe('App delivery refresh after Remove App and binding approval', () => {
+  const urls4irlApp = {
+    appId: 'urls4irl',
+    displayName: 'URLs4IRL',
+    description: null,
+    createdAt: '2026-07-25T10:00:00Z',
+  };
+  const pendingRequest = {
+    id: 1,
+    appId: 'app_1',
+    githubRepository: '4IRL/app_1',
+    githubRepositoryId: 812345601,
+    workflowPath: '.github/workflows/prod-deploy.yml',
+    gitRef: 'refs/heads/main',
+    environment: 'production',
+    githubRunId: '14022',
+    status: 'pending' as const,
+    createdAt: '2026-10-21T18:04:00Z',
+    updatedAt: '2026-10-21T18:04:00Z',
+  };
+
+  beforeEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  /** Renders every Delivery section, visits the Delivery tab, then returns to Provisioning. */
+  async function renderVisited({
+    client,
+    deliveryClient,
+    personClient,
+  }: {
+    client: ApiClient;
+    deliveryClient: DeliveryApiClient;
+    personClient: PersonApiClient;
+  }) {
+    const user = userEvent.setup();
+    render(
+      <App
+        client={client}
+        personClient={personClient}
+        deliveryClient={deliveryClient}
+        appsEnabled
+        destinationsEnabled
+        heartbeatsEnabled
+        appIdentitiesEnabled
+      />,
+    );
+    await screen.findByText('URLs4IRL');
+    await user.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+    await screen.findByText(strings.heartbeatsEmpty);
+    await screen.findByText(strings.identitiesRequestsEmpty);
+    await user.click(screen.getByRole('tab', { name: strings.tabProvisioning }));
+    return user;
+  }
+
+  async function removeUrls4irl(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole('button', { name: `${strings.removeAction} URLs4IRL` }));
+    await user.click(
+      screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+    );
+  }
+
+  /** Lets any stray follow-up fetch land so an "exactly N" count assertion is meaningful. */
+  async function settle() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+  }
+
+  function deliveryFetchCounts(deliveryClient: DeliveryApiClient) {
+    return [
+      vi.mocked(deliveryClient.listDestinations).mock.calls.length,
+      vi.mocked(deliveryClient.listRoutes).mock.calls.length,
+      vi.mocked(deliveryClient.listHeartbeats).mock.calls.length,
+      vi.mocked(deliveryClient.listIdentityRequests).mock.calls.length,
+      vi.mocked(deliveryClient.listIdentityBindings).mock.calls.length,
+    ];
+  }
+
+  it('re-requests destinations, routes, heartbeats and identities after a successful removal', async () => {
+    const deliveryClient = buildFakeDeliveryClient();
+    const user = await renderVisited({
+      client: buildFakeClient(),
+      deliveryClient,
+      personClient: buildFakePersonClient({
+        listApps: vi.fn().mockImplementation(() => Promise.resolve([{ ...urls4irlApp }])),
+      }),
+    });
+    expect(deliveryFetchCounts(deliveryClient)).toEqual([1, 1, 1, 1, 1]);
+
+    await removeUrls4irl(user);
+
+    await waitFor(() => expect(deliveryFetchCounts(deliveryClient)).toEqual([2, 2, 2, 2, 2]));
+    await settle();
+    expect(deliveryFetchCounts(deliveryClient)).toEqual([2, 2, 2, 2, 2]);
+  });
+
+  it.each([400, 502])('re-requests none of the lists after a %i failure', async (status) => {
+    const client = buildFakeClient({
+      deprovisionApp: vi
+        .fn()
+        .mockRejectedValue(new ApiError({ status, message: `said ${status}` })),
+    });
+    const deliveryClient = buildFakeDeliveryClient();
+    const user = await renderVisited({
+      client,
+      deliveryClient,
+      personClient: buildFakePersonClient({ listApps: vi.fn().mockResolvedValue([urls4irlApp]) }),
+    });
+
+    await removeUrls4irl(user);
+
+    expect(await screen.findByText(`said ${status}`)).toBeInTheDocument();
+    await settle();
+    expect(deliveryFetchCounts(deliveryClient)).toEqual([1, 1, 1, 1, 1]);
+  });
+
+  it.each([409, 503])('re-requests all four lists after a %i failure', async (status) => {
+    const client = buildFakeClient({
+      deprovisionApp: vi
+        .fn()
+        .mockRejectedValue(new ApiError({ status, message: `said ${status}` })),
+    });
+    const deliveryClient = buildFakeDeliveryClient();
+    const personClient = buildFakePersonClient({
+      listApps: vi.fn().mockImplementation(() => Promise.resolve([{ ...urls4irlApp }])),
+    });
+    const user = await renderVisited({ client, deliveryClient, personClient });
+
+    await removeUrls4irl(user);
+
+    await waitFor(() => expect(deliveryFetchCounts(deliveryClient)).toEqual([2, 2, 2, 2, 2]));
+    await settle();
+    expect(deliveryFetchCounts(deliveryClient)).toEqual([2, 2, 2, 2, 2]);
+    expect(personClient.listApps).toHaveBeenCalledTimes(2);
+    expect(client.listUsers).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes the Apps list when a binding is approved', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient({
+      listIdentityRequests: vi.fn().mockResolvedValue([pendingRequest]),
+      approveIdentityRequest: vi.fn().mockResolvedValue({
+        appId: 'app_1',
+        githubRepository: '4IRL/app_1',
+        githubRepositoryId: 812345601,
+        githubOwnerId: 55,
+        workflowPath: '.github/workflows/prod-deploy.yml',
+        gitRef: 'refs/heads/main',
+        environment: 'production',
+        approvedAt: '2026-10-21T18:10:00Z',
+        keys: [],
+      }),
+    });
+    const personClient = buildFakePersonClient();
+    render(
+      <App
+        client={buildFakeClient()}
+        personClient={personClient}
+        deliveryClient={deliveryClient}
+        appsEnabled
+        appIdentitiesEnabled
+      />,
+    );
+    await user.click(await screen.findByRole('tab', { name: strings.tabDelivery }));
+    const approve = await screen.findByRole('button', {
+      name: 'Approve identity request for app_1',
+    });
+    const before = vi.mocked(personClient.listApps).mock.calls.length;
+
+    await user.click(approve);
+
+    await waitFor(() =>
+      expect(vi.mocked(personClient.listApps).mock.calls.length).toBe(before + 1),
+    );
   });
 });

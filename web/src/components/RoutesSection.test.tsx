@@ -845,3 +845,19 @@ describe('destination delete refreshes routes', () => {
     });
   });
 });
+
+describe('refresh signal', () => {
+  it('fetches once on mount and exactly once more when the signal changes', async () => {
+    const client = buildClient();
+    const { rerender } = render(
+      <RoutesSection client={client} destinationsState={READY_DESTINATIONS} refreshSignal={0} />,
+    );
+    await waitFor(() => expect(client.listRoutes).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <RoutesSection client={client} destinationsState={READY_DESTINATIONS} refreshSignal={1} />,
+    );
+
+    await waitFor(() => expect(client.listRoutes).toHaveBeenCalledTimes(2));
+  });
+});

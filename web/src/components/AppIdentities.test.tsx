@@ -1352,3 +1352,59 @@ describe('AppIdentities times in a non-UTC zone', () => {
     expect(within(row).getByText('revoked 2026-10-20 02:00 PDT by operator')).toBeInTheDocument();
   });
 });
+
+describe('AppIdentities refresh signal and approval callback', () => {
+  it('loads once on mount and reloads exactly once more when the signal changes', async () => {
+    const client = buildClient();
+    const { rerender } = render(<AppIdentities client={client} refreshSignal={0} />);
+    await screen.findByText(strings.identitiesRequestsEmpty);
+    expect(client.listIdentityRequests).toHaveBeenCalledTimes(1);
+    expect(client.listIdentityBindings).toHaveBeenCalledTimes(1);
+
+    rerender(<AppIdentities client={client} refreshSignal={1} />);
+
+    await waitFor(() => expect(client.listIdentityRequests).toHaveBeenCalledTimes(2));
+    expect(client.listIdentityBindings).toHaveBeenCalledTimes(2);
+  });
+
+  it('calls onBindingApproved once on a successful approval', async () => {
+    const user = userEvent.setup();
+    const onBindingApproved = vi.fn();
+    render(
+      <AppIdentities
+        client={buildClient({
+          listIdentityRequests: vi.fn().mockResolvedValue([REQUEST_1]),
+          approveIdentityRequest: vi.fn().mockResolvedValue(buildBinding({ appId: 'app_1' })),
+        })}
+        onBindingApproved={onBindingApproved}
+      />,
+    );
+    await screen.findAllByRole('table');
+
+    await user.click(button('Approve identity request for app_1'));
+
+    await waitFor(() => expect(onBindingApproved).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not call onBindingApproved when the approval fails with a 409', async () => {
+    const user = userEvent.setup();
+    const onBindingApproved = vi.fn();
+    render(
+      <AppIdentities
+        client={buildClient({
+          listIdentityRequests: vi.fn().mockResolvedValue([REQUEST_1]),
+          approveIdentityRequest: vi
+            .fn()
+            .mockRejectedValue(new ApiError({ message: 'request is not pending', status: 409 })),
+        })}
+        onBindingApproved={onBindingApproved}
+      />,
+    );
+    await screen.findAllByRole('table');
+
+    await user.click(button('Approve identity request for app_1'));
+
+    expect(await within(requestRow(1)).findByRole('alert')).toBeInTheDocument();
+    expect(onBindingApproved).not.toHaveBeenCalled();
+  });
+});

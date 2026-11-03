@@ -95,7 +95,7 @@ function App({
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [loading, setLoading] = useState(true);
   // Bumped when a removal may have deleted checks/routes/destinations (Step 3 reads it).
-  const [, setAppRemovedSignal] = useState(0);
+  const [appRemovedSignal, setAppRemovedSignal] = useState(0);
   // appIds with a removal running: the ref dedupes synchronously, the state drives rendering.
   const inFlightRemovalsRef = useRef<Set<string>>(new Set());
   const [removingAppIds, setRemovingAppIds] = useState<ReadonlySet<string>>(new Set());
@@ -483,16 +483,29 @@ function App({
           delivery={
             <>
               {destinationsEnabled && <DeliveryStatusCard client={deliveryClient} />}
-              {appIdentitiesEnabled && <AppIdentities client={deliveryClient} />}
+              {appIdentitiesEnabled && (
+                <AppIdentities
+                  client={deliveryClient}
+                  refreshSignal={appRemovedSignal}
+                  onBindingApproved={() => {
+                    void refreshApps();
+                  }}
+                />
+              )}
               {destinationsEnabled && (
                 <DeliveryRegistry
                   client={deliveryClient}
                   destinationsState={destinationsState}
                   onDestinationsStateChange={setDestinationsState}
+                  refreshSignal={appRemovedSignal}
                 />
               )}
               {heartbeatsSectionEnabled && (
-                <Heartbeats client={deliveryClient} destinationsState={destinationsState} />
+                <Heartbeats
+                  client={deliveryClient}
+                  destinationsState={destinationsState}
+                  refreshSignal={appRemovedSignal}
+                />
               )}
               {pendingSendsEnabled && <PendingSends client={deliveryClient} />}
               {deliveryLogEnabled && <DeliveryLog client={deliveryClient} />}

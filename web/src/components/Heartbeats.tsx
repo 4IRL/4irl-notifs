@@ -43,6 +43,8 @@ import './Heartbeats.css';
 
 interface HeartbeatsProps {
   client: DeliveryApiClient;
+  /** Bumped by the owner when the list may have changed server-side; a change reloads quietly. */
+  refreshSignal?: number;
   /**
    * The destinations list the Destinations section last reported (lifted to App
    * so there is one shared fetch). It gates "Add check" and feeds the form's
@@ -423,7 +425,11 @@ function HeartbeatActionsMenu({
  * quiet (no loading state) so open confirms and focus survive them; late is derived locally
  * while the server's state stays authoritative.
  */
-export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.Element {
+export function Heartbeats({
+  client,
+  destinationsState,
+  refreshSignal,
+}: HeartbeatsProps): JSX.Element {
   const compact = useCompactTable();
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -503,6 +509,16 @@ export function Heartbeats({ client, destinationsState }: HeartbeatsProps): JSX.
   useEffect(() => {
     void loadList({ quiet: false });
   }, [loadList]);
+
+  // A refresh signal change after mount reloads quietly; the mount value triggers nothing extra.
+  const lastRefreshSignalRef = useRef(refreshSignal);
+  useEffect(() => {
+    if (lastRefreshSignalRef.current === refreshSignal) {
+      return;
+    }
+    lastRefreshSignalRef.current = refreshSignal;
+    void loadList({ quiet: true });
+  }, [refreshSignal, loadList]);
 
   // Re-render the relative times and the derived late state every 30s. The
   // same tick quietly reloads, never overlapping an in-flight load and never

@@ -12,6 +12,8 @@ interface DeliveryRegistryProps {
   destinationsState: DestinationsLoadState;
   /** Receives every Destinations load-state report (initial load, add, edit, disable, delete). */
   onDestinationsStateChange: (state: DestinationsLoadState) => void;
+  /** Bumped by App when the server-side registry may have changed (an app was removed). */
+  refreshSignal?: number;
 }
 
 /**
@@ -24,6 +26,7 @@ export function DeliveryRegistry({
   client,
   destinationsState,
   onDestinationsStateChange,
+  refreshSignal = 0,
 }: DeliveryRegistryProps): JSX.Element {
   const [routesRefresh, setRoutesRefresh] = useState(0);
 
@@ -33,11 +36,12 @@ export function DeliveryRegistry({
         client={client}
         onLoadStateChange={onDestinationsStateChange}
         onDestinationDeleted={() => setRoutesRefresh((tick) => tick + 1)}
+        refreshSignal={refreshSignal}
       />
       <RoutesSection
         client={client}
         destinationsState={destinationsState}
-        refreshSignal={routesRefresh}
+        refreshSignal={routesRefresh + refreshSignal}
       />
     </>
   );

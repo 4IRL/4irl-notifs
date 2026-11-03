@@ -30,6 +30,8 @@ interface DestinationsSectionProps {
   onLoadStateChange?: (state: DestinationsLoadState) => void;
   /** Called after a destination delete (and the list refresh) settles. */
   onDestinationDeleted?: () => void;
+  /** Bumped by the owner when the list may have changed server-side; a change re-fetches. */
+  refreshSignal?: number;
 }
 
 const HEADING_KEY = 'heading';
@@ -56,6 +58,7 @@ export function DestinationsSection({
   client,
   onLoadStateChange,
   onDestinationDeleted,
+  refreshSignal,
 }: DestinationsSectionProps): JSX.Element {
   const [destinations, setDestinations] = useState<DestinationSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -148,7 +151,7 @@ export function DestinationsSection({
 
   useEffect(() => {
     void refreshDestinations();
-  }, [refreshDestinations]);
+  }, [refreshDestinations, refreshSignal]);
 
   useEffect(() => {
     if (onLoadStateChange === undefined) {
