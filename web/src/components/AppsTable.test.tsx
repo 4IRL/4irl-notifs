@@ -609,5 +609,51 @@ describe('AppsTable', () => {
       expect(screen.getByRole('status')).toHaveTextContent('Removing chores4irl…');
       expect(screen.getByRole('status')).not.toHaveTextContent('Removed');
     });
+
+    it('does not announce Removed or steal focus when an editor opens during an in-flight removal', async () => {
+      const user = userEvent.setup();
+      const twoApps: AppSummary[] = [
+        ...apps,
+        {
+          appId: 'chores4irl',
+          displayName: 'Chores4IRL',
+          description: null,
+          createdAt: '2026-07-26T10:00:00Z',
+        },
+      ];
+      let resolveRemoval: (value: boolean) => void = () => undefined;
+      const onRemoveApp = vi.fn().mockReturnValue(
+        new Promise<boolean>((resolve) => {
+          resolveRemoval = resolve;
+        }),
+      );
+      const props: ComponentProps<typeof AppsTable> = {
+        apps: twoApps,
+        subscriberCountByApp: new Map(),
+        loading: false,
+        error: null,
+        onUpdateApp: vi.fn(),
+        onRemintToken: vi.fn(),
+        onRemoveApp,
+      };
+      const { rerender } = render(<AppsTable {...props} />);
+
+      await confirmRemove(user);
+      expect(screen.getByRole('status')).toHaveTextContent('Removing urls4irl…');
+      await user.click(screen.getByRole('button', { name: `${strings.editAction} Chores4IRL` }));
+      const dialog = screen.getByRole('dialog');
+      expect(within(dialog).getByLabelText(strings.appDisplayNameLabel)).toHaveFocus();
+
+      await act(async () => {
+        resolveRemoval(true);
+      });
+      rerender(<AppsTable {...props} apps={[twoApps[1]]} />);
+
+      for (const status of screen.getAllByRole('status')) {
+        expect(status).toBeEmptyDOMElement();
+      }
+      expect(within(dialog).getByLabelText(strings.appDisplayNameLabel)).toHaveFocus();
+      expect(screen.getByRole('heading', { name: strings.appsHeading })).not.toHaveFocus();
+    });
   });
 });
