@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { ApiError } from './api/client';
+import { ApiError, isAppNotBound } from './api/client';
 import type {
   ApiClient,
   AppUserPair,
@@ -36,6 +36,24 @@ import { AppsTable } from './components/AppsTable';
 import { UnregisteredApps } from './components/UnregisteredApps';
 import { strings } from './strings';
 import './App.css';
+
+/**
+ * Maps the delivery-api "app has no approved binding" 404 to the neutral
+ * not-bound copy; any other rejection (including any other 404) is returned
+ * untouched so the caller rethrows it as is.
+ */
+function mapNotBoundRejection({
+  rejection,
+  appId,
+}: {
+  rejection: unknown;
+  appId: string;
+}): unknown {
+  if (isAppNotBound(rejection)) {
+    return new ApiError({ status: 404, message: strings.appNotBoundRetryError({ appId }) });
+  }
+  return rejection;
+}
 
 /**
  * Props for App. The API client is injected so tests can supply a double.
@@ -82,6 +100,11 @@ function App({
   });
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  // Bumped when a removal may have deleted checks/routes/destinations; the Delivery sections reload on change.
+  const [appRemovedSignal, setAppRemovedSignal] = useState(0);
+  // appIds with a removal running: the ref dedupes synchronously, the state drives rendering.
+  const inFlightRemovalsRef = useRef<Set<string>>(new Set());
+  const [removingAppIds, setRemovingAppIds] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [people, setPeople] = useState<PersonSummary[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(personClient !== undefined);
@@ -199,7 +222,12 @@ function App({
 
   const handleProvision = useCallback(
     async (params: ProvisionParams): Promise<ProvisionResult> => {
-      const result = await client.provision(params);
+      let result: ProvisionResult;
+      try {
+        result = await client.provision(params);
+      } catch (rejection: unknown) {
+        throw mapNotBoundRejection({ rejection, appId: params.appId });
+      }
       await refreshUsers();
       await refreshPeople();
       return result;
@@ -269,40 +297,49 @@ function App({
     [client, refreshUsers, refreshPeople],
   );
 
-  // Add app = registry-first: register metadata (on a 409, the row already
-  // exists from approval, so update it instead), then mint the publisher token.
-  // A failure after registration leaves a visible registry row with no token,
-  // recoverable via Re-mint. Returns the token result for the form's reveal.
+  // Add app = mint first, then register. Any mint error aborts before the app
+  // row is touched, so an unbound app (no approved delivery key) never leaves a
+  // row with no publisher. After a successful mint, a 409 on createApp means
+  // approval already created the row, so update it instead. A row-step failure
+  // after the mint is prefixed so the operator knows the mint happened; a
+  // retry mints one more token (earlier ones live until Revoke & re-mint).
   const handleAddApp = useCallback(
     async ({ appId, displayName, description }: CreateAppParams): Promise<AddAppResult> => {
       if (personClient === undefined) {
         throw new Error('person service not configured');
       }
+      let result: ProvisionAppResult;
+      try {
+        result = await client.provisionApp({ appId });
+      } catch (rejection: unknown) {
+        if (isAppNotBound(rejection)) {
+          throw new ApiError({ status: 404, message: strings.appNotBoundError({ appId }) });
+        }
+        throw rejection;
+      }
       let alreadyRegistered = false;
       try {
-        await personClient.createApp({ appId, displayName, description });
-      } catch (rejection: unknown) {
-        // 409: approval already created the row. Apply the operator's values
-        // below (inside the try/finally so the apps list still refreshes).
-        if (!(rejection instanceof ApiError && rejection.status === 409)) {
-          throw rejection;
-        }
-        alreadyRegistered = true;
-      }
-      try {
-        if (alreadyRegistered) {
+        try {
+          await personClient.createApp({ appId, displayName, description });
+        } catch (rejection: unknown) {
+          // 409: approval already created the row. Apply the operator's values.
+          if (!(rejection instanceof ApiError && rejection.status === 409)) {
+            throw rejection;
+          }
+          alreadyRegistered = true;
           await personClient.updateApp({ appId, displayName, description });
         }
-        const result = await client.provisionApp({ appId });
-        await refreshUsers();
-        return alreadyRegistered ? { ...result, alreadyRegistered: true } : result;
-      } finally {
-        // Refresh the registry even if minting the publisher token throws, so
-        // the just-registered app still appears in the table (and is thus
-        // recoverable via Re-mint) rather than staying invisible until an
-        // unrelated action happens to refresh apps.
+      } catch (rejection: unknown) {
+        const detail = rejection instanceof Error ? rejection.message : String(rejection);
         await refreshApps();
+        throw new ApiError({
+          status: rejection instanceof ApiError ? rejection.status : 0,
+          message: `${strings.publisherMintedButRegisterFailed}${detail}`,
+        });
       }
+      await refreshUsers();
+      await refreshApps();
+      return alreadyRegistered ? { ...result, alreadyRegistered: true } : result;
     },
     [personClient, client, refreshApps, refreshUsers],
   );
@@ -322,33 +359,64 @@ function App({
   // selection/send/results state (mirroring ProvisionForm), so this never
   // touches the shared `error` banner or refreshes any list.
   const handleTestNotify = useCallback(
-    (params: TestNotifyParams) => client.testNotify(params),
+    async (params: TestNotifyParams) => {
+      try {
+        return await client.testNotify(params);
+      } catch (rejection: unknown) {
+        throw mapNotBoundRejection({ rejection, appId: params.appId });
+      }
+    },
     [client],
   );
 
-  // Re-mint / rotate the publisher token. Returns the reveal-once result for
-  // the edit form; nothing in the tables changes, so no refresh is needed.
+  // Re-mint / rotate the publisher token. The token is never returned; the
+  // edit form only announces success. Nothing in the tables changes.
   const handleRemintToken = useCallback(
-    ({ appId, rotate }: { appId: string; rotate: boolean }): Promise<ProvisionAppResult> =>
-      client.provisionApp({ appId, rotate }),
+    async ({ appId, rotate }: { appId: string; rotate: boolean }): Promise<ProvisionAppResult> => {
+      try {
+        return await client.provisionApp({ appId, rotate });
+      } catch (rejection: unknown) {
+        throw mapNotBoundRejection({ rejection, appId });
+      }
+    },
     [client],
   );
 
-  // Remove app = full cascade (server-side): publisher identity + every
-  // subscriber grant + registry row. Refresh apps (row gone) and users (grants
-  // gone).
+  // Remove app = full cascade (server-side). Refresh apps (row gone) and users
+  // (grants gone). The cascade is not atomic, so a 409/503 may follow committed
+  // phases: show the message and refresh too. 400/502/other change nothing.
+  // Resolves true on success, false on any failure (never rejects).
   const handleRemoveApp = useCallback(
-    ({ appId }: { appId: string }) => {
-      void client
-        .deprovisionApp({ appId })
-        .then(() => {
-          setError(null);
-          return Promise.all([refreshApps(), refreshUsers()]);
-        })
-        .then(() => undefined)
-        .catch((rejection: unknown) => {
+    async ({ appId }: { appId: string }): Promise<boolean> => {
+      if (inFlightRemovalsRef.current.has(appId)) {
+        return false;
+      }
+      inFlightRemovalsRef.current.add(appId);
+      setRemovingAppIds(new Set(inFlightRemovalsRef.current));
+      // The id stays in flight through the refresh, so Remove is not re-enabled early.
+      try {
+        try {
+          await client.deprovisionApp({ appId });
+        } catch (rejection: unknown) {
+          if (
+            rejection instanceof ApiError &&
+            (rejection.status === 409 || rejection.status === 503)
+          ) {
+            setAppRemovedSignal((value) => value + 1);
+            await Promise.all([refreshApps(), refreshUsers()]);
+          }
+          // After the refresh, so a refresh failure cannot overwrite the server's reason.
           setError(rejection instanceof ApiError ? rejection.message : strings.genericError);
-        });
+          return false;
+        }
+        setError(null);
+        setAppRemovedSignal((value) => value + 1);
+        await Promise.all([refreshApps(), refreshUsers()]);
+        return true;
+      } finally {
+        inFlightRemovalsRef.current.delete(appId);
+        setRemovingAppIds(new Set(inFlightRemovalsRef.current));
+      }
     },
     [client, refreshApps, refreshUsers],
   );
@@ -391,6 +459,7 @@ function App({
           onUpdateApp={handleUpdateApp}
           onRemintToken={handleRemintToken}
           onRemoveApp={handleRemoveApp}
+          removingAppIds={removingAppIds}
         />
       )}
       {appsSectionEnabled && (
@@ -434,16 +503,29 @@ function App({
           delivery={
             <>
               {destinationsEnabled && <DeliveryStatusCard client={deliveryClient} />}
-              {appIdentitiesEnabled && <AppIdentities client={deliveryClient} />}
+              {appIdentitiesEnabled && (
+                <AppIdentities
+                  client={deliveryClient}
+                  refreshSignal={appRemovedSignal}
+                  onBindingApproved={() => {
+                    void refreshApps();
+                  }}
+                />
+              )}
               {destinationsEnabled && (
                 <DeliveryRegistry
                   client={deliveryClient}
                   destinationsState={destinationsState}
                   onDestinationsStateChange={setDestinationsState}
+                  refreshSignal={appRemovedSignal}
                 />
               )}
               {heartbeatsSectionEnabled && (
-                <Heartbeats client={deliveryClient} destinationsState={destinationsState} />
+                <Heartbeats
+                  client={deliveryClient}
+                  destinationsState={destinationsState}
+                  refreshSignal={appRemovedSignal}
+                />
               )}
               {pendingSendsEnabled && <PendingSends client={deliveryClient} />}
               {deliveryLogEnabled && <DeliveryLog client={deliveryClient} />}

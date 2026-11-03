@@ -30,7 +30,7 @@ describe('strings module', () => {
     );
     expect(strings.noPasswordReturned).toBe('No password was returned by this request.');
     expect(strings.noPasswordRecovery).toBe(
-      'If this person needs a new one, call POST /v1/reset-password from the app that serves them.',
+      'If this person needs a new one, call POST /v1/apps/{app_id}/reset-password from the app that serves them.',
     );
     expect(strings.passwordCopied).toBe('Copied');
     expect(strings.passwordCopyUnavailable).toBe(
@@ -60,7 +60,17 @@ describe('strings module', () => {
     expect(strings.deletePersonNotice).toBe('Deletes the person, every app grant and token.');
     expect(strings.removeAppDialogTitle).toBe('Remove app?');
     expect(strings.removeAppNotice).toBe(
-      'Removes the app, its publisher identity and every subscriber grant.',
+      'Removes the app, its publisher identity, every subscriber grant and delivery key, and the checks, routes and destinations it owns.',
+    );
+    expect(strings.removingAction).toBe('Removing');
+    expect(strings.removingActionNamed({ name: 'U4I' })).toBe('Removing U4I');
+    expect(strings.removingResult({ appId: 'u4i' })).toBe('Removing u4i…');
+    expect(strings.appRemovedResult({ appId: 'u4i' })).toBe('Removed u4i.');
+    expect(strings.appNotBoundError({ appId: 'zapp' })).toBe(
+      'zapp has no approved delivery key yet. Approve its key request on the Delivery tab, then add it again.',
+    );
+    expect(strings.appNotBoundRetryError({ appId: 'zapp' })).toBe(
+      'zapp has no approved delivery key yet. Approve its key request on the Delivery tab, then try again.',
     );
     expect(strings.replayDeliveryDialogTitle).toBe('Replay delivery?');
     expect(strings.replayDeliveryNotice).toBe('Sends the same message to the destination again.');
@@ -219,10 +229,22 @@ describe('strings module', () => {
     expect(strings.editDestinationNamed({ name: 'ops' })).toBe('Edit destination ops');
     expect(strings.editRouteTitle).toBe('Edit route');
     expect(strings.editAppNamed({ appId: 'u4i' })).toBe('Edit app u4i');
-    expect(strings.tokenShownOnceGuard).toBe('This token is shown once. Close without copying it?');
-    expect(strings.closeAnyway).toBe('Close anyway');
-    expect(strings.keepOpen).toBe('Keep open');
     expect(strings.appSavedResult({ appId: 'u4i' })).toBe('Saved u4i.');
+    expect(strings.publisherMintedResult({ appId: 'u4i' })).toBe(
+      'Publisher token minted for u4i. delivery-api stores it sealed; it is never shown.',
+    );
+    expect(strings.publisherRemintedResult({ appId: 'u4i' })).toBe(
+      'Publisher token re-minted for u4i.',
+    );
+    expect(strings.publisherRotatedResult({ appId: 'u4i' })).toBe(
+      'Publisher token for u4i revoked and re-minted. The old token no longer works.',
+    );
+    expect(strings.publisherMintedButRegisterFailed).toBe(
+      'Publisher token minted, but registering the app failed: ',
+    );
+    expect(strings.unregisteredAppsHint).toContain('POST /v1/apps/{app_id}/provision');
+    expect(strings.unregisteredAppsHint).toContain('its own delivery key');
+    expect(strings.unregisteredAppsHint).not.toContain('provision-app');
   });
 
   it('exposes the people section heading, status copy, and column headers', () => {

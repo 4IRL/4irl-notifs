@@ -8,8 +8,8 @@ import { strings } from '../strings';
 import { isValidAppId } from '../validation';
 import './AddAppForm.css';
 
-/** Props for AddAppForm. onAddApp registers the app and mints its publisher
- *  token, returning the reveal-once result. */
+/** Props for AddAppForm. onAddApp mints the app's publisher token (never
+ *  returned) and registers the app. */
 interface AddAppFormProps {
   onAddApp: (params: CreateAppParams) => Promise<AddAppResult>;
 }
@@ -18,10 +18,10 @@ interface AddAppFormProps {
 export type AddAppResult = ProvisionAppResult & { alreadyRegistered?: boolean };
 
 /**
- * Form for registering a new app. On success it reveals the app's publisher
- * token inline (shown once) — the same reveal pattern as ProvisionForm, no
- * modal. Registering an app both writes the registry row and mints the
- * publisher identity (see App.handleAddApp).
+ * Form for registering a new app. On success it shows an inline confirmation
+ * that the publisher token was minted (the token itself is never shown).
+ * Adding an app mints the publisher identity first, then writes the registry
+ * row (see App.handleAddApp).
  */
 export function AddAppForm({ onAddApp }: AddAppFormProps) {
   const [rawAppId, setAppId] = useState('');
@@ -34,6 +34,8 @@ export function AddAppForm({ onAddApp }: AddAppFormProps) {
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // A validation error must never sit beside a previous success.
+    setResult(null);
 
     // Enter/Save mid-composition: submit what the field will show.
     const appId = rawAppId.toLowerCase();
@@ -114,16 +116,10 @@ export function AddAppForm({ onAddApp }: AddAppFormProps) {
         )}
 
         {/* Always mounted so screen readers announce the text when it is filled. */}
-        <p role="status" className="add-app-form__status">
-          {result?.alreadyRegistered === true ? strings.appAlreadyRegisteredNote : ''}
-        </p>
-
-        {result !== null && (
-          <div className="add-app-form__token-reveal">
-            <p>{strings.publisherTokenRevealLead({ appId: result.appId })}</p>
-            <p className="add-app-form__token">{result.token}</p>
-          </div>
-        )}
+        <div role="status" aria-atomic="false" className="add-app-form__status">
+          {result !== null && <p>{strings.publisherMintedResult({ appId: result.appId })}</p>}
+          {result?.alreadyRegistered === true && <p>{strings.appAlreadyRegisteredNote}</p>}
+        </div>
       </form>
     </section>
   );

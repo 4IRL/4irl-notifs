@@ -80,6 +80,60 @@ describe('delivery proxy route', () => {
       expect(fetchMock.mock.calls[0][0]).toBe(`${UPSTREAM}/v1/admin/messages?wait=10`);
     });
 
+    describe('provisioning routes the admin UI uses', () => {
+      const ADMIN_UI_HEADERS = { ...JSON_HEADERS, 'X-Requested-With': 'admin-ui' };
+
+      it('forwards POST .../apps/{id}/ntfy-publisher with a JSON body', async () => {
+        fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+        await call({
+          path: '/delivery/v1/admin/apps/demo/ntfy-publisher',
+          init: { method: 'POST', headers: ADMIN_UI_HEADERS, body: '{"rotate":true}' },
+        });
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${UPSTREAM}/v1/admin/apps/demo/ntfy-publisher`);
+        expect(init.method).toBe('POST');
+        expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe('{"rotate":true}');
+      });
+
+      it('forwards POST .../apps/{id}/deprovision with its JSON body', async () => {
+        fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+        await call({
+          path: '/delivery/v1/admin/apps/demo/deprovision',
+          init: { method: 'POST', headers: ADMIN_UI_HEADERS, body: '{"app_id":"demo"}' },
+        });
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${UPSTREAM}/v1/admin/apps/demo/deprovision`);
+        expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe('{"app_id":"demo"}');
+      });
+
+      it('forwards GET .../users', async () => {
+        fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: [] }));
+        const response = await call({ path: '/delivery/v1/admin/users' });
+        expect(response.status).toBe(200);
+        expect(fetchMock.mock.calls[0][0]).toBe(`${UPSTREAM}/v1/admin/users`);
+      });
+
+      it('forwards a body-less DELETE .../users/{id} carrying X-Requested-With', async () => {
+        fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+        await call({
+          path: '/delivery/v1/admin/users/u1',
+          init: { method: 'DELETE', headers: { 'X-Requested-With': 'admin-ui' } },
+        });
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${UPSTREAM}/v1/admin/users/u1`);
+        expect(init.method).toBe('DELETE');
+      });
+
+      it('refuses a POST to .../provision without the guard header (403)', async () => {
+        const response = await call({
+          path: '/delivery/v1/admin/provision',
+          init: { method: 'POST', headers: JSON_HEADERS, body: '{}' },
+        });
+        expect(response.status).toBe(403);
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+    });
+
     it.each([409, 422, 503])('passes a %s upstream body through unchanged', async (status) => {
       fetchMock.mockResolvedValue(jsonResponse({ status, body: { error: 'upstream says no' } }));
       const response = await call({ path: '/delivery/readyz' });

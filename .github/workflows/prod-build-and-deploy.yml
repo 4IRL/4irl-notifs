@@ -51,9 +51,11 @@ jobs:
       # aborts before touching the VPS if it is missing or not 64 lowercase hex).
       PROVISIONING_INTERNAL_CREDENTIAL: ${{ secrets.PROVISIONING_INTERNAL_CREDENTIAL }}
 
-  # Admin UI (Cloudflare Pages) is independent of the Docker image + VPS stack, so it runs in
-  # parallel with build-prod/deploy-prod (no `needs`), gated by the same merged-to-main guard.
+  # Admin UI (Cloudflare Pages) calls delivery-api, so it deploys only AFTER deploy-prod: a UI
+  # that targets new API routes must never go live before the API. `needs` (with no `always()`)
+  # skips it when build-prod or deploy-prod fails or is skipped. Same merged-to-main guard.
   deploy-admin-ui:
+    needs: [deploy-prod]
     if: github.event.pull_request.merged == true
     name: 'CD Prod - Deploy Admin UI'
     uses: ./.github/workflows/pages-deploy.yml

@@ -14,7 +14,7 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
 | **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`), a retention sweeper the heartbeat checker (30 s tick) and the heartbeat prober (website probe loop, 10 s scan, bounded concurrency). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
-| **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/v1/*`, `/people`, `/apps` and `/delivery/*` proxy Functions. |
+| **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/people`, `/apps` and `/delivery/*` proxy Functions. |
 | **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor on Cloudflare's network, independent of the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`; a stale or malformed `heartbeat_prober` also pages, an absent one is tolerated so an older delivery-api stays quiet), provisioning-api `/healthz` and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes plus a daily summary (16:00 UTC) to a dedicated Discord webhook. A failed probe is retried once after 30 s and only the retry's verdict can alert, so a transient failure (a stray 520, or the few seconds a production deploy takes to recreate the containers) stays quiet; each attempt (`watchdog: probe id=… attempt=… ok=… http=… duration_ms=…`) and each run (`watchdog: run state=… up=… down=… transitions=… discord=… kv_write=…`) is logged and kept by Workers Logs. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
 | **setup page**       | React/Vite → Cloudflare Pages (static)          | `notifs-setup.4irl.app`  | Public ntfy setup walkthrough linked from every app. No API calls, no Access. See "Setup page". |
 
@@ -323,7 +323,7 @@ graph TD
   end
   subgraph CF["Cloudflare"]
     ACC["Zero Trust Access<br/>(per-host apps + policies)"]
-    FN["Pages Functions<br/>/v1/* , /people , /apps , /delivery/* proxy"]
+    FN["Pages Functions<br/>/people , /apps , /delivery/* proxy"]
     WORKER["person-service Worker"]
     D1["D1: person(hash→email)"]
     TUN["Cloudflare Tunnel"]
@@ -380,7 +380,7 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 | App                       | Domain(s)                                      | AUD tag           | Policy                                                                               |
 | ------------------------- | ---------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------ |
 | `notifs-admin`            | `notifs-admin.4irl.app`                        | `907dc277…575f`   | `U4I Dev Policy` — **Allow**, GitHub org `4IRL` (human login)                        |
-| `notifs-admin` API bypass | `notifs-admin.4irl.app/v1`, `/people`, `/apps`, `/delivery` | —                 | **Bypass** (Everyone) — Access does NOT gate these paths; the Function authenticates |
+| `notifs-admin` API bypass | `notifs-admin.4irl.app/people`, `/apps`, `/delivery` | —                 | **Bypass** (Everyone) — Access does NOT gate these paths; the Function authenticates |
 | `notifs-delivery`         | `notifs-delivery.4irl.app`                     | (dashboard)       | **Service Auth** (proxy token only; per-app tokens, the `notifs-watchdog` token and a `/v1/admin` split come with the first onboarded app or the watchdog) |
 | `notifs-api`              | `notifs-api.4irl.app`                          | `91ad97d9…694150` | **Service Auth** (proxy token) only                                                  |
 | `notifs-people`           | `notifs-people.4irl.app`                       | `5a270164…658f5a` | **Service Auth** (VPS dual-write token + proxy token) only                           |
@@ -390,7 +390,7 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 - The AUD tag is per-app; `ACCESS_JWT_AUD` on the Pages project must equal `notifs-admin`'s AUD (`907dc277…`).
 - ⚠️ **The API-bypass path list is dashboard-managed and must include every same-origin API path.** When a
   new proxied path is added (e.g. `/apps` for the app registry, `/delivery` for delivery-api), the
-  operator must add it to this Bypass application alongside `/v1` and `/people` — otherwise Access edge-challenges non-GET requests to it
+  operator must add it to this Bypass application alongside `/people` — otherwise Access edge-challenges non-GET requests to it
   (`POST`/`PATCH`/`DELETE` → 302 login → 405), exactly the failure in the debugging table below. `GET`
   still works, so the symptom is "list renders but every mutation fails."
 
@@ -415,8 +415,8 @@ sequenceDiagram
   participant S as Backend (api/people)
   B->>A: GET / (page)  ── login (GitHub org 4IRL)
   A-->>B: CF_Authorization cookie (aud=notifs-admin)
-  B->>F: fetch /v1/*, /people, /apps or /delivery/* (same-origin, cookie)
-  Note over A: /v1 + /people + /apps + /delivery are Bypass → not challenged
+  B->>F: fetch /people, /apps or /delivery/* (same-origin, cookie)
+  Note over A: /people + /apps + /delivery are Bypass → not challenged
   F->>K: verify JWT (sig, iss, aud=907dc277…)
   alt invalid/missing
     F-->>B: 401 {"error":"unauthorized"}
@@ -430,7 +430,7 @@ sequenceDiagram
 
 **Why the design is shaped this way (hard-won, keep):**
 - Access **challenges same-origin `fetch` POSTs** (302→login, downgrading POST→GET → 405). Fix: the
-  **Bypass** app on `/v1`, `/people`, `/apps` and `/delivery` takes those paths off Access's edge; the **Function validates the
+  **Bypass** app on `/people`, `/apps` and `/delivery` takes those paths off Access's edge; the **Function validates the
   JWT itself** (`web/functions/_auth.ts`).
 - The backends' Access **Set-Cookie** (`CF_Authorization` for the service token) must be **stripped**
   by the proxy, or it overwrites the admin's human cookie on `notifs-admin.4irl.app` → 401 loop.
@@ -441,9 +441,9 @@ sequenceDiagram
 
 ## Admin-UI same-origin proxy
 
-- SPA calls **relative** `/v1/*`, `/people`, and `/apps` (same-origin) — no cross-origin browser requests.
-- `web/functions/`: `_proxy.ts` (shared helper), `v1/[[path]].ts`, `people.ts`, `apps/[[path]].ts`,
-  `_auth.ts` (JWT), `_http.ts`. `/v1/*` → provisioning-api; `/people` + `/apps` → person-service.
+- SPA calls **relative** `/delivery/*`, `/people`, and `/apps` (same-origin) — no cross-origin browser requests.
+- `web/functions/`: `_proxy.ts` (shared helper), `delivery/[[path]].ts`, `people.ts`, `apps/[[path]].ts`,
+  `_auth.ts` (JWT), `_http.ts`. `/delivery/*` → delivery-api (which relays provisioning actions to provisioning-api); `/people` + `/apps` → person-service.
 - Function: validate Access JWT → forward to backend with the proxy service token → strip upstream
   `Set-Cookie` → return. People view gated by `VITE_PEOPLE_ENABLED=true`, Apps view by `VITE_APPS_ENABLED=true`.
 - **Delivery proxy** (`web/functions/delivery/[[path]].ts`) → delivery-api at `DELIVERY_API_URL`, with the
@@ -472,7 +472,6 @@ sequenceDiagram
 
 | Binding                      | Type      | Value / purpose                                                    |
 | ---------------------------- | --------- | ------------------------------------------------------------------ |
-| `PROVISIONING_API_URL`       | plaintext | `https://notifs-api.4irl.app`                                      |
 | `PERSON_SERVICE_URL`         | plaintext | `https://notifs-people.4irl.app`                                   |
 | `DELIVERY_API_URL`           | plaintext | `https://notifs-delivery.4irl.app`                                     |
 | `PROXY_ACCESS_CLIENT_ID`     | secret    | proxy service token client id                                      |
@@ -480,6 +479,8 @@ sequenceDiagram
 | `ACCESS_TEAM_DOMAIN`         | plaintext | `urls4irl.cloudflareaccess.com` (JWKS host + issuer)               |
 | `ACCESS_JWT_AUD`             | plaintext | `notifs-admin` AUD (`907dc277…`)                                   |
 | `DISABLE_ACCESS_AUTH`        | plaintext | **local dev only** (`true` disables JWT check). Never set in prod. |
+
+The unused `PROVISIONING_API_URL` Pages binding and the `/v1` Access Bypass path can be removed from the Cloudflare dashboard after deploy.
 
 Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABLED=true`,
 `VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`, `VITE_PENDING_SENDS_ENABLED=true`, `VITE_HEARTBEATS_ENABLED=true`, `VITE_APP_IDENTITIES_ENABLED=true`.
@@ -992,9 +993,9 @@ account IDs stay in the Cloudflare dashboard and are never committed.
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Admin API `500 {"error":"proxy misconfigured"}`       | A Pages binding unset/misnamed, or `ACCESS_JWT_AUD` unset in prod (fail-closed).                                                                                                                     |
 | Admin API `502 {"error":"upstream auth failed"}`      | Proxy service token not on the backend's Service-Auth policy (or wrong policy action).                                                                                                               |
-| Admin API `502 {"error":"upstream unreachable"}`      | `PROVISIONING_API_URL`/`PERSON_SERVICE_URL` wrong/down, or Tunnel route missing.                                                                                                                     |
+| Admin API `502 {"error":"upstream unreachable"}`      | `DELIVERY_API_URL`/`PERSON_SERVICE_URL` wrong/down, or Tunnel route missing.                                                                                                                     |
 | Admin API `401 {"error":"unauthorized"}`              | JWT invalid/missing: `aud`≠`notifs-admin` AUD, wrong `ACCESS_TEAM_DOMAIN`, or expired session.                                                                                                       |
-| Provisioning/Apps POST/PATCH/DELETE → 302 login / 405 | The path (`/v1`, `/people`, `/apps`) is missing from the Access **Bypass** app → Access is edge-challenging the write. (Apps section lists via GET but every mutation fails until `/apps` is added.) |
+| Provisioning/Apps POST/PATCH/DELETE → 302 login / 405 | The path (`/delivery`, `/people`, `/apps`) is missing from the Access **Bypass** app → Access is edge-challenging the write. (Apps section lists via GET but every mutation fails until `/apps` is added.) |
 | `/delivery` `502 {"error":"upstream auth failed"}`    | Proxy token not on the `notifs-delivery` Service Auth policy, or `DELIVERY_API_URL` points at the wrong host.                                                             |
 | `/delivery` non-GET → 302 login / 405                 | `/delivery` is missing from the `notifs-admin` Access **Bypass** app (GETs still work, writes fail).                                                                                                 |
 | `/delivery/readyz` shows `schema_mismatch`            | The delivery-api binary and database schema differ: `schema_version` ≠ `expected_schema_version` (a migration not applied, or an old binary). Check `delivery-migrate` logs and the `last_migration_failure` the status card shows. |

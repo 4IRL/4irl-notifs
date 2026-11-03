@@ -79,7 +79,10 @@ for (const viewport of VIEWPORTS) {
       await appId.pressSequentially('TaskTracker');
       await addSection.getByLabel('Display name').fill('Task Tracker');
       await addSection.getByRole('button', { name: 'Add app' }).click();
-      await expect.poll(() => mock.mutations.length).toBeGreaterThan(0);
+      // The mint runs first; the app row is created only after it succeeds.
+      await expect
+        .poll(() => mock.mutations.some((request) => request.pathname === '/apps'))
+        .toBe(true);
       const create = mock.mutations.find((request) => request.pathname === '/apps');
       expect((create?.body as { app_id: string }).app_id).toBe('tasktracker');
     });
@@ -88,7 +91,7 @@ for (const viewport of VIEWPORTS) {
       const mock = await mockProvisioning(page);
       await mockDelivery(page);
       const provisions: unknown[] = [];
-      await page.route('**/v1/provision', async (route) => {
+      await page.route('**/delivery/v1/admin/provision', async (route) => {
         provisions.push(route.request().postDataJSON());
         await route.fulfill({
           status: 200,

@@ -23,7 +23,8 @@ const publisherResult = {
   appId: 'urls4irl',
   publisherUserId: 'urls4irl-publisher',
   topicPattern: 'urls4irl-*',
-  token: 'tk_fresh',
+  createdAt: '2026-11-03T10:00:00Z',
+  updatedAt: '2026-11-03T11:00:00Z',
 };
 
 function renderForm(overrides: Partial<ComponentProps<typeof EditAppForm>> = {}) {
@@ -66,14 +67,16 @@ describe('EditAppForm', () => {
     expect(onUpdateApp).not.toHaveBeenCalled();
   });
 
-  it('re-mint is additive: fires immediately with rotate=false and reveals the token', async () => {
+  it('re-mint is additive: fires immediately with rotate=false and announces it', async () => {
     const user = userEvent.setup();
     const { onRemintToken } = renderForm();
 
     await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
 
     expect(onRemintToken).toHaveBeenCalledWith({ appId: 'urls4irl', rotate: false });
-    expect(await screen.findByText('tk_fresh')).toBeInTheDocument();
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      strings.publisherRemintedResult({ appId: 'urls4irl' }),
+    );
   });
 
   it('revoke & re-mint asks the dialog for a confirm step, then fires with rotate=true', async () => {
@@ -93,22 +96,27 @@ describe('EditAppForm', () => {
     step.onConfirm();
     expect(onRemintToken).toHaveBeenCalledTimes(1);
     expect(onRemintToken).toHaveBeenCalledWith({ appId: 'urls4irl', rotate: true });
-    expect(await screen.findByText('tk_fresh')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(
+        strings.publisherRotatedResult({ appId: 'urls4irl' }),
+      ),
+    );
     expect(onUpdateApp).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('reports the token as shown, and as cleared when a new mint starts and on unmount', async () => {
+  it('clears the status when the next mint starts', async () => {
     const user = userEvent.setup();
-    const onTokenShownChange = vi.fn();
-    renderForm({ onTokenShownChange });
+    const onRemintToken = vi
+      .fn()
+      .mockResolvedValueOnce(publisherResult)
+      .mockReturnValueOnce(new Promise<never>(() => undefined));
+    renderForm({ onRemintToken });
 
     await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
-    await screen.findByText('tk_fresh');
-    expect(onTokenShownChange).toHaveBeenLastCalledWith(true);
-
-    cleanup();
-    expect(onTokenShownChange).toHaveBeenLastCalledWith(false);
+    await waitFor(() => expect(screen.getByRole('status')).not.toBeEmptyDOMElement());
+    await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
   });
 
   it('closes without a request or a result when Save is pressed on an untouched form', async () => {
@@ -119,7 +127,7 @@ describe('EditAppForm', () => {
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onUpdateApp).not.toHaveBeenCalled();
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
   });
 
   it('treats whitespace-only and empty-description differences as untouched', async () => {
@@ -183,25 +191,16 @@ describe('EditAppForm', () => {
     expect(onUpdateApp).not.toHaveBeenCalled();
   });
 
-  it('announces a save inside the form only while a token is shown', async () => {
+  it('clears a mint status when a save starts', async () => {
     const user = userEvent.setup();
     renderForm();
 
-    await user.type(screen.getByLabelText(strings.appDisplayNameLabel), '2');
-    await user.click(screen.getByRole('button', { name: strings.saveAction }));
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: strings.saveAction })).toBeInTheDocument(),
-    );
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
-
     await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
-    await screen.findByText('tk_fresh');
+    await waitFor(() => expect(screen.getByRole('status')).not.toBeEmptyDOMElement());
     await user.type(screen.getByLabelText(strings.appDisplayNameLabel), '3');
     await user.click(screen.getByRole('button', { name: strings.saveAction }));
 
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      strings.appSavedResult({ appId: 'urls4irl' }),
-    );
+    await waitFor(() => expect(screen.getByRole('status')).toBeEmptyDOMElement());
   });
 
   it('closes when the close button is clicked', async () => {
@@ -227,7 +226,7 @@ describe('EditAppForm', () => {
     expect(await screen.findByText('app not found')).toBeInTheDocument();
   });
 
-  it('shows the server error message and reveals no token when a re-mint fails', async () => {
+  it('shows the server error message and shows no status when a re-mint fails', async () => {
     const user = userEvent.setup();
     renderForm({
       onRemintToken: vi
@@ -238,6 +237,7 @@ describe('EditAppForm', () => {
     await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
 
     expect(await screen.findByText('upstream unreachable')).toBeInTheDocument();
-    expect(screen.queryByText('tk_fresh')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('upstream unreachable');
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
   });
 });

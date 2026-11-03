@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 
 import {
-  MINTED_TOKEN,
+  DECOY_TOKEN,
   appWire,
   destinationWire,
   expectDialogInViewport,
@@ -588,43 +588,41 @@ for (const viewport of VIEWPORTS) {
 
         await trigger.click();
         await confirm.click();
-        await expect(dialog.getByText(MINTED_TOKEN)).toBeVisible();
+        await expect(dialog.getByRole('status')).toHaveText(
+          'Publisher token for urls4irl revoked and re-minted. The old token no longer works.',
+        );
+        await expect(page.getByText(DECOY_TOKEN)).toHaveCount(0);
         await expect(trigger).toBeFocused();
         const mints = fixture.mutations.filter(
-          (request) => request.pathname === '/v1/provision-app',
+          (request) => request.pathname === '/delivery/v1/admin/apps/urls4irl/ntfy-publisher',
         );
         expect(mints).toHaveLength(1);
-        expect(mints[0].body).toEqual({ app_id: 'urls4irl', rotate: true });
+        expect(mints[0].body).toEqual({ rotate: true });
         expect(fixture.unmocked).toEqual([]);
       });
 
-      test('a shown token keeps the dialog open on Save and guards the close', async ({ page }) => {
+      test('after a re-mint a Save closes the dialog and a clean close needs no guard', async ({
+        page,
+      }) => {
         const { fixture, dialog } = await openApp(page);
         await dialog.getByRole('button', { name: 'Re-mint token', exact: true }).click();
-        await expect(dialog.getByText(MINTED_TOKEN)).toBeVisible();
-
-        await dialog.getByLabel('Display name').fill('URLs4IRL Renamed');
-        await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-        // Saved, but the token is on screen: the dialog stays open and announces inside itself.
-        await expect(dialog.getByRole('status')).toHaveText('Saved urls4irl.');
-        await expect(dialog).toBeVisible();
-        expect(patches(fixture.mutations)).toHaveLength(1);
-
-        const closeAnyway = dialog.getByRole('button', { name: 'Close anyway', exact: true });
-        const keepOpen = dialog.getByRole('button', { name: 'Keep open', exact: true });
-        await page.keyboard.press('Escape');
-        await expect(dialog.getByRole('alert')).toHaveText(
-          'This token is shown once. Close without copying it?',
+        await expect(dialog.getByRole('status')).toHaveText(
+          'Publisher token re-minted for urls4irl.',
         );
-        await expect(keepOpen).toBeFocused();
-        await keepOpen.click();
-        await expect(closeAnyway).toBeHidden();
-        await expect(dialog.getByText(MINTED_TOKEN)).toBeVisible();
+        await expect(page.getByText(DECOY_TOKEN)).toHaveCount(0);
 
+        // A clean form closes at once on Escape: the re-mint status guards nothing.
         await page.keyboard.press('Escape');
-        await closeAnyway.click();
         await expect(dialog).toBeHidden();
         await expect(APP_CASE.trigger({ page, compact })).toBeFocused();
+
+        await APP_CASE.open({ page, compact });
+        await dialog.getByRole('button', { name: 'Re-mint token', exact: true }).click();
+        await expect(dialog.getByRole('status')).not.toBeEmpty();
+        await dialog.getByLabel('Display name').fill('URLs4IRL Renamed');
+        await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+        await expect(dialog).toBeHidden();
+        expect(patches(fixture.mutations)).toHaveLength(1);
         expect(fixture.unmocked).toEqual([]);
       });
     });

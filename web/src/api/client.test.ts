@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ApiError, createApiClient } from './client';
+import { ApiError, createApiClient, isAppNotBound } from './client';
 
 describe('api client', () => {
   const fetchMock = vi.fn();
@@ -43,7 +43,7 @@ describe('api client', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
-    expect(calledUrl).toBe('https://api.test/v1/provision');
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/provision');
     expect(calledInit).toMatchObject({ method: 'POST' });
     expect(JSON.parse(calledInit.body as string)).toEqual({
       app_id: 'urls4irl',
@@ -112,7 +112,7 @@ describe('api client', () => {
     await client.deprovision({ appId: 'urls4irl', userId: 'alice' });
 
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
-    expect(calledUrl).toBe('https://api.test/v1/deprovision');
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/deprovision');
     expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl', user_id: 'alice' });
   });
 
@@ -132,7 +132,7 @@ describe('api client', () => {
 
     const users = await client.listUsers();
 
-    expect(fetchMock.mock.calls[0][0]).toBe('https://api.test/v1/users');
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.test/delivery/v1/admin/users');
     expect(users).toEqual([
       { userId: 'alice', apps: ['urls4irl'], topicPatterns: ['urls4irl-*'] },
       { userId: 'bob', apps: [], topicPatterns: [] },
@@ -148,57 +148,106 @@ describe('api client', () => {
     await client.deleteUser({ userId: 'alice' });
 
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
-    expect(calledUrl).toBe('https://api.test/v1/users/alice');
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/users/alice');
     expect(calledInit).toMatchObject({ method: 'DELETE' });
   });
 
-  it('provisionApp POSTs app_id/rotate and returns the parsed publisher token result', async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse({
-        status: 200,
-        body: {
-          app_id: 'urls4irl',
-          publisher_user_id: 'urls4irl-publisher',
-          topic_pattern: 'urls4irl-*',
-          token: 'tk_pub',
-        },
-      }),
+  it('deleteUser URL-encodes a user id with reserved characters', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    await client.deleteUser({ userId: 'a b+c' });
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.test/delivery/v1/admin/users/a%20b%2Bc');
+  });
+
+  it('sends X-Requested-With: admin-ui on every non-GET and omits it on GET', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        jsonResponse({
+          status: 200,
+          body: { users: [], results: [], user_id: 'u', app_id: 'a', password: 'p', token: 't' },
+        }),
+      ),
     );
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    await client.provision({ appId: 'a', email: 'x@y.z' });
+    await client.resetPassword({ appId: 'a', email: 'x@y.z' });
+    await client.deprovision({ appId: 'a', userId: 'u' });
+    await client.deleteUser({ userId: 'u' });
+    await client.testNotify({
+      appId: 'a',
+      recipients: ['r'],
+      channel: 'c',
+      message: 'm',
+      title: 't',
+    });
+    await client.listUsers();
+
+    const inits = fetchMock.mock.calls.map((call) => call[1] as RequestInit);
+    expect(inits).toHaveLength(6);
+    for (const init of inits.slice(0, 5)) {
+      expect((init.headers as Record<string, string>)['X-Requested-With']).toBe('admin-ui');
+    }
+    const getHeaders = (inits[5].headers ?? {}) as Record<string, string>;
+    expect(getHeaders['X-Requested-With']).toBeUndefined();
+  });
+
+  const PUBLISHER_BODY = {
+    publisher: {
+      app_id: 'urls4irl',
+      publisher_user_id: 'urls4irl-publisher',
+      topic_pattern: 'urls4irl-*',
+      created_at: '2026-11-03T10:00:00Z',
+      updated_at: '2026-11-03T11:00:00Z',
+      token: 'DECOY-TOKEN-SHOULD-NEVER-SURFACE',
+    },
+  };
+
+  it('provisionApp POSTs {rotate} to the delivery publisher route and never surfaces a token', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: PUBLISHER_BODY }));
     const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
 
     const result = await client.provisionApp({ appId: 'urls4irl', rotate: true });
 
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
-    expect(calledUrl).toBe('https://api.test/v1/provision-app');
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/apps/urls4irl/ntfy-publisher');
     expect(calledInit).toMatchObject({ method: 'POST' });
-    expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl', rotate: true });
+    expect(JSON.parse(calledInit.body as string)).toEqual({ rotate: true });
     expect(result).toEqual({
       appId: 'urls4irl',
       publisherUserId: 'urls4irl-publisher',
       topicPattern: 'urls4irl-*',
-      token: 'tk_pub',
+      createdAt: '2026-11-03T10:00:00Z',
+      updatedAt: '2026-11-03T11:00:00Z',
     });
+    expect(JSON.stringify(result)).not.toContain('DECOY');
   });
 
-  it('provisionApp defaults rotate to false when omitted', async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse({
-        status: 200,
-        body: {
-          app_id: 'urls4irl',
-          publisher_user_id: 'urls4irl-publisher',
-          topic_pattern: 'urls4irl-*',
-          token: 'tk_pub',
-        },
-      }),
-    );
+  it('provisionApp defaults rotate to false and percent-encodes the app id', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: PUBLISHER_BODY }));
     const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
 
-    await client.provisionApp({ appId: 'urls4irl' });
+    await client.provisionApp({ appId: 'a b' });
 
-    const [, calledInit] = fetchMock.mock.calls[0];
-    expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl', rotate: false });
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/apps/a%20b/ntfy-publisher');
+    expect(JSON.parse(calledInit.body as string)).toEqual({ rotate: false });
   });
+
+  it.each([404, 409, 503])(
+    'provisionApp maps a %i to an ApiError with the server message',
+    async (status) => {
+      fetchMock.mockResolvedValue(jsonResponse({ status, body: { error: 'server says no' } }));
+      const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+      await expect(client.provisionApp({ appId: 'urls4irl' })).rejects.toMatchObject({
+        status,
+        message: 'server says no',
+      });
+    },
+  );
 
   it('deprovisionApp POSTs the app_id', async () => {
     fetchMock.mockResolvedValue(
@@ -209,9 +258,34 @@ describe('api client', () => {
     await client.deprovisionApp({ appId: 'urls4irl' });
 
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
-    expect(calledUrl).toBe('https://api.test/v1/deprovision-app');
-    expect(calledInit).toMatchObject({ method: 'POST' });
-    expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl' });
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/apps/urls4irl/deprovision');
+    expect(calledInit).toMatchObject({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'admin-ui' },
+    });
+    expect(calledInit.body).toBe('{"app_id":"urls4irl"}');
+  });
+
+  it('deprovisionApp percent-encodes the app id in the path', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { app_id: 'a b' } }));
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    await expect(client.deprovisionApp({ appId: 'a b' })).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.test/delivery/v1/admin/apps/a%20b/deprovision',
+    );
+  });
+
+  it.each([409, 400])('deprovisionApp rejects a %i with the server error', async (status) => {
+    fetchMock.mockResolvedValue(jsonResponse({ status, body: { error: 'teardown busy' } }));
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    await expect(client.deprovisionApp({ appId: 'urls4irl' })).rejects.toMatchObject({
+      name: 'ApiError',
+      status,
+      message: 'teardown busy',
+    });
   });
 
   it('testNotify POSTs the snake_case body and maps the results to camelCase', async () => {
@@ -252,7 +326,7 @@ describe('api client', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
-    expect(calledUrl).toBe('https://api.test/v1/test-notify');
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/test-notify');
     expect(calledInit).toMatchObject({ method: 'POST' });
     expect(JSON.parse(calledInit.body as string)).toEqual({
       app_id: 'urls4irl',
@@ -335,7 +409,7 @@ describe('api client', () => {
       password: 'abcd-efgh-ijkm-npqr',
     });
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
-    expect(calledUrl).toBe('https://api.test/v1/reset-password');
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/reset-password');
     expect(calledInit.method).toBe('POST');
     expect(JSON.parse(calledInit.body as string)).toEqual({
       app_id: 'urls4irl',
@@ -398,6 +472,30 @@ describe('api client', () => {
 
     await client.listUsers();
 
-    expect(fetchMock.mock.calls[0][0]).toBe('/v1/users');
+    expect(fetchMock.mock.calls[0][0]).toBe('/delivery/v1/admin/users');
+  });
+
+  describe('isAppNotBound', () => {
+    it('is true for a 404 with the not-bound message', () => {
+      expect(
+        isAppNotBound(new ApiError({ status: 404, message: 'app has no approved binding' })),
+      ).toBe(true);
+    });
+
+    it('is false for a 404 with another message', () => {
+      expect(isAppNotBound(new ApiError({ status: 404, message: 'publisher not found' }))).toBe(
+        false,
+      );
+    });
+
+    it('is false for a 409 with the not-bound message', () => {
+      expect(
+        isAppNotBound(new ApiError({ status: 409, message: 'app has no approved binding' })),
+      ).toBe(false);
+    });
+
+    it('is false for a non-ApiError', () => {
+      expect(isAppNotBound(new Error('app has no approved binding'))).toBe(false);
+    });
   });
 });

@@ -29,8 +29,13 @@ interface AppsTableProps {
   error: string | null;
   onUpdateApp: (params: UpdateAppParams) => Promise<void>;
   onRemintToken: (params: { appId: string; rotate: boolean }) => Promise<ProvisionAppResult>;
-  onRemoveApp: (params: RemoveAppParams) => void;
+  /** Resolves true once the cascade succeeded, false on any failure; never rejects. */
+  onRemoveApp: (params: RemoveAppParams) => Promise<boolean>;
+  /** appIds with a removal in flight; their Remove controls are busy. */
+  removingAppIds?: ReadonlySet<string>;
 }
+
+const NO_REMOVING: ReadonlySet<string> = new Set();
 
 // Stamped on the edit dialog so a focused element inside it resolves to its app row.
 const ROW_ID_ATTRIBUTE = 'data-app-id';
@@ -43,6 +48,7 @@ export function AppsTable({
   onUpdateApp,
   onRemintToken,
   onRemoveApp,
+  removingAppIds = NO_REMOVING,
 }: AppsTableProps): JSX.Element {
   const compact = useCompactTable();
   const [editingAppId, setEditingAppId] = useState<string | null>(null);
@@ -51,13 +57,18 @@ export function AppsTable({
   const [editSnapshot, setEditSnapshot] = useState<AppSummary | null>(null);
   const [formDirty, setFormDirty] = useState(false);
   const [formBusy, setFormBusy] = useState(false);
-  const [tokenShown, setTokenShown] = useState(false);
   const [confirmStep, setConfirmStep] = useState<ConfirmStep | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [pendingResult, setPendingResult] = useState<string | null>(null);
+  // Removal hand-off: focus the heading once the removed row's control is gone, then announce.
+  const [pendingFocusAppId, setPendingFocusAppId] = useState<string | null>(null);
+  const [pendingRemovedResult, setPendingRemovedResult] = useState<string | null>(null);
+  const latestRef = useRef({ apps, error });
+  // Bumped by each removal start and each editor open; a stale continuation bails out.
+  const removalTokenRef = useRef(0);
+  const armedRef = useRef<{ apps: AppSummary[]; error: string | null } | null>(null);
   // Mirror state for async callbacks that outlive the render they started in.
   const editingAppIdRef = useRef<string | null>(null);
-  const tokenShownRef = useRef(false);
   const editReturnRef = useRef<HTMLElement | null>(null);
   const firstEditFieldRef = useRef<HTMLInputElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
@@ -74,19 +85,81 @@ export function AppsTable({
     }
   }, [editingAppId, pendingResult]);
 
+  useEffect(() => {
+    latestRef.current = { apps, error };
+  });
+
+  // Effect 1: once the post-removal refresh settled, move focus to the heading if the focused
+  // control unmounted with its row, then disarm.
+  useEffect(() => {
+    if (pendingFocusAppId === null) {
+      return;
+    }
+    const armed = armedRef.current;
+    const settled =
+      !apps.some((candidate) => candidate.appId === pendingFocusAppId) ||
+      armed === null ||
+      armed.apps !== apps ||
+      armed.error !== error;
+    if (!settled) {
+      return;
+    }
+    if (document.activeElement === null || document.activeElement === document.body) {
+      headingRef.current?.focus();
+    }
+    armedRef.current = null;
+    setPendingFocusAppId(null);
+  }, [apps, error, pendingFocusAppId]);
+
+  // Effect 2 (declared after effect 1, runs in a later render than the focus move): announce.
+  useEffect(() => {
+    if (pendingFocusAppId === null && pendingRemovedResult !== null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate post-focus hand-off
+      setResult(pendingRemovedResult);
+      setPendingRemovedResult(null);
+    }
+  }, [pendingFocusAppId, pendingRemovedResult]);
+
+  async function handleRemove(params: { appId: string }): Promise<void> {
+    const { appId } = params;
+    removalTokenRef.current += 1;
+    const token = removalTokenRef.current;
+    setPendingFocusAppId(null);
+    setPendingRemovedResult(null);
+    armedRef.current = null;
+    setResult(strings.removingResult({ appId }));
+    // Snapshot before the request: the post-removal refresh may land before this resumes, and
+    // it must still count as a change.
+    const startSnapshot = latestRef.current;
+    const removed = await onRemoveApp(params);
+    // A newer removal or an opened editor owns the status and focus now.
+    if (removalTokenRef.current !== token) {
+      return;
+    }
+    if (removed) {
+      setPendingRemovedResult(strings.appRemovedResult({ appId }));
+    } else {
+      setResult(null);
+    }
+    armedRef.current = startSnapshot;
+    setPendingFocusAppId(appId);
+  }
+
   /** Opens the editor for `appId` (or closes it with null) and resets every per-dialog flag. */
   function setEditor(appId: string | null) {
     editingAppIdRef.current = appId;
-    tokenShownRef.current = false;
     setEditingAppId(appId);
     setFormDirty(false);
     setFormBusy(false);
-    setTokenShown(false);
     setConfirmStep(null);
     if (appId === null) {
       setEditSnapshot(null);
     } else {
       setResult(null);
+      removalTokenRef.current += 1;
+      setPendingFocusAppId(null);
+      setPendingRemovedResult(null);
+      armedRef.current = null;
     }
   }
 
@@ -98,17 +171,11 @@ export function AppsTable({
 
   async function handleUpdate(params: UpdateAppParams): Promise<void> {
     await onUpdateApp(params);
-    // Close and announce only the dialog this save came from, and only with no token on screen:
-    // a shown token keeps the dialog open and the form announces inside it.
-    if (editingAppIdRef.current === params.appId && !tokenShownRef.current) {
+    // Close and announce only the dialog this save came from.
+    if (editingAppIdRef.current === params.appId) {
       setEditor(null);
       setPendingResult(strings.appSavedResult({ appId: params.appId }));
     }
-  }
-
-  function handleTokenShownChange(shown: boolean) {
-    tokenShownRef.current = shown;
-    setTokenShown(shown);
   }
 
   function handleRequestConfirm(step: ConfirmStep) {
@@ -198,6 +265,8 @@ export function AppsTable({
                 const removeLabel = `${strings.removeAction} ${app.displayName}`;
                 const confirmRemoveLabel = `${strings.confirmRemoveAction} ${app.displayName}`;
                 const cancelRemoveLabel = strings.cancelActionNamed({ subject: removeLabel });
+                const removing = removingAppIds.has(app.appId);
+                const removingLabel = strings.removingActionNamed({ name: app.displayName });
                 return (
                   <tr key={app.appId}>
                     {compact ? (
@@ -214,6 +283,7 @@ export function AppsTable({
                             rowLabel={app.displayName}
                             focusKeys={[`edit:${app.appId}`]}
                             registerControl={registerControl}
+                            busy={removing}
                             items={[
                               {
                                 id: 'edit',
@@ -223,9 +293,10 @@ export function AppsTable({
                               },
                               {
                                 id: 'remove',
-                                label: strings.removeAction,
-                                ariaLabel: removeLabel,
+                                label: removing ? strings.removingAction : strings.removeAction,
+                                ariaLabel: removing ? removingLabel : removeLabel,
                                 tone: 'danger',
+                                disabled: removing,
                                 confirm: {
                                   confirmLabel: strings.confirmRemoveAction,
                                   confirmAriaLabel: confirmRemoveLabel,
@@ -237,7 +308,7 @@ export function AppsTable({
                                     label: strings.dialogItemApp,
                                     value: app.displayName,
                                   },
-                                  onConfirm: () => onRemoveApp({ appId: app.appId }),
+                                  onConfirm: () => void handleRemove({ appId: app.appId }),
                                 },
                               },
                             ]}
@@ -274,7 +345,10 @@ export function AppsTable({
                               dialogItem={{ label: strings.dialogItemApp, value: app.displayName }}
                               confirmNotice={strings.removeAppNotice}
                               className="apps-table__button apps-table__button--danger"
-                              onConfirm={() => onRemoveApp({ appId: app.appId })}
+                              busy={removing}
+                              busyLabel={strings.removingAction}
+                              busyAriaLabel={removingLabel}
+                              onConfirm={() => void handleRemove({ appId: app.appId })}
                             />
                           </div>
                         </td>
@@ -291,11 +365,8 @@ export function AppsTable({
         open={editingAppId !== null}
         title={editingApp === null ? '' : strings.editAppNamed({ appId: editingApp.appId })}
         onClose={() => setEditor(null)}
-        dirty={formDirty || tokenShown}
+        dirty={formDirty}
         busy={formBusy}
-        guardMessage={tokenShown ? strings.tokenShownOnceGuard : undefined}
-        discardLabel={tokenShown ? strings.closeAnyway : undefined}
-        keepLabel={tokenShown ? strings.keepOpen : undefined}
         returnFocusRef={editReturnRef}
         fallbackFocusRef={headingRef}
         initialFocusRef={firstEditFieldRef}
@@ -316,7 +387,6 @@ export function AppsTable({
               onRequestConfirm={handleRequestConfirm}
               onDirtyChange={setFormDirty}
               onBusyChange={setFormBusy}
-              onTokenShownChange={handleTokenShownChange}
               firstFieldRef={firstEditFieldRef}
             />
           )

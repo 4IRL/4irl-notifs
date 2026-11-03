@@ -26,6 +26,10 @@ import './AppIdentities.css';
 
 interface AppIdentitiesProps {
   client: DeliveryApiClient;
+  /** Bumped by the owner when the lists may have changed server-side; a change reloads quietly. */
+  refreshSignal?: number;
+  /** Called once after an approval succeeds (never on a rejected approve). */
+  onBindingApproved?: () => void;
 }
 
 const REQUESTS_HEADING_KEY = 'requests-heading';
@@ -191,7 +195,11 @@ function renderRequestStatusPill(request: IdentityRequest): JSX.Element {
  * keys. Only a key's hint is ever shown. Reloads after a mutation are quiet (no
  * loading state) so open confirms and focus survive them.
  */
-export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
+export function AppIdentities({
+  client,
+  refreshSignal,
+  onBindingApproved,
+}: AppIdentitiesProps): JSX.Element {
   const [requests, setRequests] = useState<IdentityRequest[]>([]);
   const [bindings, setBindings] = useState<IdentityBinding[]>([]);
   const [loading, setLoading] = useState(true);
@@ -261,6 +269,16 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
     void loadAll({ quiet: false });
   }, [loadAll]);
 
+  // A refresh signal change after mount reloads quietly; the mount value triggers nothing extra.
+  const lastRefreshSignalRef = useRef(refreshSignal);
+  useEffect(() => {
+    if (lastRefreshSignalRef.current === refreshSignal) {
+      return;
+    }
+    lastRefreshSignalRef.current = refreshSignal;
+    void loadAll({ quiet: true });
+  }, [refreshSignal, loadAll]);
+
   function startRefresh() {
     setResult(null);
     commitLoading(true);
@@ -316,6 +334,7 @@ export function AppIdentities({ client }: AppIdentitiesProps): JSX.Element {
           );
           setNow(Date.now());
           setResult(strings.identityApproved({ app: appId, repository: binding.githubRepository }));
+          onBindingApproved?.();
           requestFocusIfRowOwnsIt({
             attribute: REQUEST_ROW_ATTRIBUTE,
             id: String(id),

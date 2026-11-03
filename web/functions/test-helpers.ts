@@ -1,12 +1,11 @@
 // Shared test helpers for the Pages Function proxy specs (`_proxy.test.ts`,
-// `people.test.ts`, `v1/[[path]].test.ts`).
+// `people.test.ts`, `delivery/[[path]].test.ts`).
 
 import type { Env } from './_proxy';
 
 /** Builds a test `Env` with the standard proxy bindings, overridable per field. */
 export function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
-    PROVISIONING_API_URL: 'https://notifs-api.4irl.app',
     PERSON_SERVICE_URL: 'https://notifs-people.4irl.app',
     DELIVERY_API_URL: 'https://notifs-send.4irl.app',
     PROXY_ACCESS_CLIENT_ID: 'id',

@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { webPorts } from './worktree-ports.ts';
 
-const { apiPort, webPort, deliveryPort } = webPorts();
+const { webPort, deliveryPort } = webPorts();
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -11,13 +11,12 @@ export default defineConfig({
   server: {
     port: webPort,
     // Dev-only: mirrors the production same-origin shape locally. In production
-    // the SPA calls relative `/v1/*` and `/people`, served by same-origin
+    // the SPA calls relative `/delivery/*` and `/people`, served by same-origin
     // Cloudflare Pages Functions (see web/functions/) that proxy to the
     // backends — so there is no cross-origin CORS in production. This dev-server
     // proxy reproduces that same-origin behavior for `npm run dev` and has no
     // effect on the production build.
     proxy: {
-      '/v1': `http://127.0.0.1:${apiPort}`,
       // Mirrors the production `/delivery/*` Pages Function, which strips the
       // `/delivery` prefix before calling delivery-api.
       '/delivery': {

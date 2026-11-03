@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,12 +28,15 @@ function buildFakeClient(overrides: Partial<ApiClient> = {}): ApiClient {
     deprovision: vi.fn().mockResolvedValue(undefined),
     listUsers: vi.fn().mockResolvedValue([]),
     deleteUser: vi.fn().mockResolvedValue(undefined),
-    provisionApp: vi.fn().mockResolvedValue({
-      appId: 'urls4irl',
-      publisherUserId: 'urls4irl-publisher',
-      topicPattern: 'urls4irl-*',
-      token: 'tk_publisher',
-    }),
+    provisionApp: vi.fn().mockImplementation(({ appId }: { appId: string }) =>
+      Promise.resolve({
+        appId,
+        publisherUserId: `${appId}-publisher`,
+        topicPattern: `${appId}-*`,
+        createdAt: '2026-11-03T10:00:00Z',
+        updatedAt: '2026-11-03T11:00:00Z',
+      }),
+    ),
     deprovisionApp: vi.fn().mockResolvedValue(undefined),
     testNotify: vi.fn().mockResolvedValue({ results: [] }),
     ...overrides,
@@ -176,6 +179,81 @@ describe('App', () => {
     );
     // list refreshed: mount call + post-provision refresh
     await waitFor(() => expect(listUsers.mock.calls.length).toBeGreaterThanOrEqual(2));
+  });
+
+  it('provision for an app with no approved binding shows the try-again copy and refreshes nothing', async () => {
+    const listUsers = vi.fn().mockResolvedValue([]);
+    const provision = vi
+      .fn()
+      .mockRejectedValue(new ApiError({ status: 404, message: 'app has no approved binding' }));
+    const personClient = buildFakePersonClient();
+    const client = buildFakeClient({ listUsers, provision });
+    render(<App client={client} personClient={personClient} />);
+    await waitFor(() => expect(personClient.listPeople).toHaveBeenCalledTimes(1));
+
+    await userEvent.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
+    await userEvent.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
+    await userEvent.click(screen.getByRole('button', { name: strings.provisionAction }));
+
+    expect(
+      await screen.findByText(strings.appNotBoundRetryError({ appId: 'urls4irl' })),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/add it again/)).not.toBeInTheDocument();
+    expect(listUsers).toHaveBeenCalledTimes(1);
+    expect(personClient.listPeople).toHaveBeenCalledTimes(1);
+  });
+
+  it('provision shows a 404 with any other message unchanged', async () => {
+    const provision = vi
+      .fn()
+      .mockRejectedValue(new ApiError({ status: 404, message: 'publisher not found' }));
+    render(<App client={buildFakeClient({ provision })} />);
+
+    await userEvent.type(screen.getByLabelText(strings.appIdLabel), 'urls4irl');
+    await userEvent.type(screen.getByLabelText(strings.emailLabel), 'alice@example.com');
+    await userEvent.click(screen.getByRole('button', { name: strings.provisionAction }));
+
+    expect(await screen.findByText('publisher not found')).toBeInTheDocument();
+  });
+
+  describe('test-notify errors', () => {
+    async function sendTest(testNotify: ApiClient['testNotify']) {
+      const client = buildFakeClient({
+        listUsers: vi
+          .fn()
+          .mockResolvedValue([
+            { userId: 'u_76gzqgp4byjl6dje', apps: ['urls4irl'], topicPatterns: ['urls4irl-*'] },
+          ]),
+        testNotify,
+      });
+      render(<App client={client} />);
+      await userEvent.click(
+        await screen.findByRole('checkbox', {
+          name: strings.sendTestSelectAria({ who: 'u_76gzqgp4byjl6dje' }),
+        }),
+      );
+      await userEvent.click(screen.getByRole('button', { name: strings.sendTestAction }));
+    }
+
+    it('shows the try-again copy for a not-bound 404', async () => {
+      await sendTest(
+        vi
+          .fn()
+          .mockRejectedValue(new ApiError({ status: 404, message: 'app has no approved binding' })),
+      );
+
+      expect(
+        await screen.findByText(strings.appNotBoundRetryError({ appId: 'urls4irl' })),
+      ).toBeInTheDocument();
+    });
+
+    it('shows a 404 with any other message unchanged', async () => {
+      await sendTest(
+        vi.fn().mockRejectedValue(new ApiError({ status: 404, message: 'publisher not found' })),
+      );
+
+      expect(await screen.findByText('publisher not found')).toBeInTheDocument();
+    });
   });
 
   it('deleting a user calls the client and refreshes', async () => {
@@ -637,10 +715,14 @@ describe('App', () => {
     expect(within(appRow).getByText('2')).toBeInTheDocument();
   });
 
-  it('adds an app: registers metadata, mints the publisher token, and reveals it', async () => {
+  it('adds an app: mints first, then registers metadata, and shows the minted confirmation', async () => {
     const client = buildFakeClient();
     const personClient = buildFakePersonClient();
     render(<App client={client} personClient={personClient} appsEnabled />);
+    await waitFor(() => expect(client.listUsers).toHaveBeenCalled());
+    await waitFor(() => expect(personClient.listApps).toHaveBeenCalled());
+    const listUsersCallsBefore = vi.mocked(client.listUsers).mock.calls.length;
+    const listAppsCallsBefore = vi.mocked(personClient.listApps).mock.calls.length;
 
     const addSection = screen
       .getByRole('heading', { name: strings.addAppHeading })
@@ -661,8 +743,19 @@ describe('App', () => {
       }),
     );
     expect(client.provisionApp).toHaveBeenCalledWith({ appId: 'tasktracker' });
-    expect(await screen.findByText('tk_publisher')).toBeInTheDocument();
+    expect(vi.mocked(client.provisionApp).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(personClient.createApp).mock.invocationCallOrder[0],
+    );
+    expect(
+      await screen.findByText(strings.publisherMintedResult({ appId: 'tasktracker' })),
+    ).toBeInTheDocument();
     expect(screen.queryByText(strings.appAlreadyRegisteredNote)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(vi.mocked(client.listUsers).mock.calls.length).toBe(listUsersCallsBefore + 1),
+    );
+    await waitFor(() =>
+      expect(vi.mocked(personClient.listApps).mock.calls.length).toBe(listAppsCallsBefore + 1),
+    );
   });
 
   async function submitAddApp(): Promise<void> {
@@ -686,10 +779,22 @@ describe('App', () => {
         .mockRejectedValue(new ApiError({ status: 409, message: 'app already exists' })),
     });
     render(<App client={client} personClient={personClient} appsEnabled />);
+    await waitFor(() => expect(client.listUsers).toHaveBeenCalled());
+    await waitFor(() => expect(personClient.listApps).toHaveBeenCalled());
+    const listUsersCallsBefore = vi.mocked(client.listUsers).mock.calls.length;
+    const listAppsCallsBefore = vi.mocked(personClient.listApps).mock.calls.length;
 
     await submitAddApp();
 
-    expect(await screen.findByText('tk_publisher')).toBeInTheDocument();
+    expect(
+      await screen.findByText(strings.publisherMintedResult({ appId: 'tasktracker' })),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(vi.mocked(client.listUsers).mock.calls.length).toBe(listUsersCallsBefore + 1),
+    );
+    await waitFor(() =>
+      expect(vi.mocked(personClient.listApps).mock.calls.length).toBe(listAppsCallsBefore + 1),
+    );
     expect(personClient.updateApp).toHaveBeenCalledWith({
       appId: 'tasktracker',
       displayName: 'Task Tracker',
@@ -708,7 +813,7 @@ describe('App', () => {
     expect(within(addSection).queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('add app with a non-409 createApp failure shows the error and never mints', async () => {
+  it('add app with a non-409 createApp failure after a mint shows the prefixed error', async () => {
     const client = buildFakeClient();
     const personClient = buildFakePersonClient({
       createApp: vi.fn().mockRejectedValue(new ApiError({ status: 500, message: 'registry down' })),
@@ -717,12 +822,62 @@ describe('App', () => {
 
     await submitAddApp();
 
-    expect(await screen.findByText('registry down')).toBeInTheDocument();
+    expect(
+      await screen.findByText(`${strings.publisherMintedButRegisterFailed}registry down`),
+    ).toBeInTheDocument();
     expect(personClient.updateApp).not.toHaveBeenCalled();
-    expect(client.provisionApp).not.toHaveBeenCalled();
+    expect(client.provisionApp).toHaveBeenCalledTimes(1);
   });
 
-  it('add app 409 then updateApp failure shows the error, never mints, and refreshes apps', async () => {
+  it('add app with a not-bound mint 404 shows the add-it-again copy and touches no registry or user list', async () => {
+    const client = buildFakeClient({
+      provisionApp: vi
+        .fn()
+        .mockRejectedValue(new ApiError({ status: 404, message: 'app has no approved binding' })),
+    });
+    const personClient = buildFakePersonClient();
+    render(<App client={client} personClient={personClient} appsEnabled />);
+    await waitFor(() => expect(client.listUsers).toHaveBeenCalled());
+    const listUsersCallsBefore = vi.mocked(client.listUsers).mock.calls.length;
+
+    await submitAddApp();
+
+    expect(
+      await screen.findByText(strings.appNotBoundError({ appId: 'tasktracker' })),
+    ).toBeInTheDocument();
+    expect(personClient.createApp).not.toHaveBeenCalled();
+    expect(personClient.updateApp).not.toHaveBeenCalled();
+    expect(vi.mocked(client.listUsers).mock.calls.length).toBe(listUsersCallsBefore);
+  });
+
+  it.each([
+    { status: 409, message: 'publisher mint in progress' },
+    { status: 503, message: 'upstream unavailable' },
+    { status: 404, message: 'publisher not found' },
+  ])(
+    'add app with a mint $status shows the server message and never registers',
+    async (failure) => {
+      const client = buildFakeClient({
+        provisionApp: vi.fn().mockRejectedValue(new ApiError(failure)),
+      });
+      const personClient = buildFakePersonClient();
+      render(<App client={client} personClient={personClient} appsEnabled />);
+      await waitFor(() => expect(client.listUsers).toHaveBeenCalled());
+      const listUsersCallsBefore = vi.mocked(client.listUsers).mock.calls.length;
+
+      await submitAddApp();
+
+      expect(await screen.findByText(failure.message)).toBeInTheDocument();
+      expect(vi.mocked(client.listUsers).mock.calls.length).toBe(listUsersCallsBefore);
+      expect(
+        screen.queryByText(strings.appNotBoundError({ appId: 'tasktracker' })),
+      ).not.toBeInTheDocument();
+      expect(personClient.createApp).not.toHaveBeenCalled();
+      expect(personClient.updateApp).not.toHaveBeenCalled();
+    },
+  );
+
+  it('add app 409 then updateApp failure after a mint shows the prefixed error and refreshes apps', async () => {
     const client = buildFakeClient();
     const personClient = buildFakePersonClient({
       createApp: vi
@@ -736,13 +891,64 @@ describe('App', () => {
 
     await submitAddApp();
 
-    expect(await screen.findByText('update failed')).toBeInTheDocument();
-    expect(client.provisionApp).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(`${strings.publisherMintedButRegisterFailed}update failed`),
+    ).toBeInTheDocument();
+    expect(client.provisionApp).toHaveBeenCalledTimes(1);
     await waitFor(() =>
       expect(vi.mocked(personClient.listApps).mock.calls.length).toBeGreaterThan(
         listAppsCallsBefore,
       ),
     );
+  });
+
+  describe('re-mint token failures', () => {
+    async function remintWith(provisionApp: ApiClient['provisionApp']) {
+      const client = buildFakeClient({ provisionApp });
+      const personClient = buildFakePersonClient({
+        listApps: vi.fn().mockResolvedValue([
+          {
+            appId: 'urls4irl',
+            displayName: 'URLs4IRL',
+            description: null,
+            createdAt: '2026-07-25T10:00:00Z',
+          },
+        ]),
+      });
+      render(<App client={client} personClient={personClient} appsEnabled />);
+      await userEvent.click(
+        await screen.findByRole('button', { name: `${strings.editAction} URLs4IRL` }),
+      );
+      const dialog = screen.getByRole('dialog');
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: strings.remintTokenAction }),
+      );
+      return dialog;
+    }
+
+    it('shows the try-again copy for a not-bound 404', async () => {
+      const dialog = await remintWith(
+        vi
+          .fn()
+          .mockRejectedValue(new ApiError({ status: 404, message: 'app has no approved binding' })),
+      );
+
+      await waitFor(() =>
+        expect(within(dialog).getByRole('alert')).toHaveTextContent(
+          strings.appNotBoundRetryError({ appId: 'urls4irl' }),
+        ),
+      );
+    });
+
+    it('shows a 404 with any other message unchanged', async () => {
+      const dialog = await remintWith(
+        vi.fn().mockRejectedValue(new ApiError({ status: 404, message: 'publisher not found' })),
+      );
+
+      await waitFor(() =>
+        expect(within(dialog).getByRole('alert')).toHaveTextContent('publisher not found'),
+      );
+    });
   });
 
   it('removes an app via the cascade after confirming', async () => {
@@ -771,6 +977,97 @@ describe('App', () => {
     );
 
     await waitFor(() => expect(client.deprovisionApp).toHaveBeenCalledWith({ appId: 'urls4irl' }));
+  });
+
+  describe('remove app failures', () => {
+    const urls4irlApp = {
+      appId: 'urls4irl',
+      displayName: 'URLs4IRL',
+      description: null,
+      createdAt: '2026-07-25T10:00:00Z',
+    };
+
+    async function removeApp({
+      rejection,
+    }: {
+      rejection: unknown;
+    }): Promise<{ client: ApiClient; personClient: PersonApiClient }> {
+      const client = buildFakeClient({ deprovisionApp: vi.fn().mockRejectedValue(rejection) });
+      const personClient = buildFakePersonClient({
+        listApps: vi.fn().mockResolvedValue([urls4irlApp]),
+      });
+      render(<App client={client} personClient={personClient} appsEnabled />);
+      await screen.findByText('URLs4IRL');
+      vi.mocked(client.listUsers).mockClear();
+      vi.mocked(personClient.listApps).mockClear();
+      await userEvent.click(
+        screen.getByRole('button', { name: `${strings.removeAction} URLs4IRL` }),
+      );
+      await userEvent.click(
+        screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+      );
+      return { client, personClient };
+    }
+
+    it.each([400, 502])('shows a %i message and refreshes nothing', async (status) => {
+      const { client, personClient } = await removeApp({
+        rejection: new ApiError({ status, message: `server said ${status}` }),
+      });
+
+      expect(await screen.findByText(`server said ${status}`)).toBeInTheDocument();
+      expect(client.listUsers).not.toHaveBeenCalled();
+      expect(personClient.listApps).not.toHaveBeenCalled();
+    });
+
+    it('shows the generic error for a non-ApiError rejection and refreshes nothing', async () => {
+      const { client, personClient } = await removeApp({ rejection: new Error('network') });
+
+      expect(await screen.findByText(strings.genericError)).toBeInTheDocument();
+      expect(client.listUsers).not.toHaveBeenCalled();
+      expect(personClient.listApps).not.toHaveBeenCalled();
+    });
+
+    it.each([409, 503])('shows a %i message and refreshes apps and users', async (status) => {
+      const { client, personClient } = await removeApp({
+        rejection: new ApiError({ status, message: `server said ${status}` }),
+      });
+
+      expect(await screen.findByText(`server said ${status}`)).toBeInTheDocument();
+      await waitFor(() => expect(client.listUsers).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(personClient.listApps).toHaveBeenCalledTimes(1));
+    });
+
+    it('disables Remove while pending, makes one request, then announces Removed', async () => {
+      let resolveFirst: () => void = () => undefined;
+      const client = buildFakeClient({
+        deprovisionApp: vi.fn().mockReturnValue(
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          }),
+        ),
+      });
+      const personClient = buildFakePersonClient({
+        // A fresh array per fetch, as the real client returns.
+        listApps: vi.fn().mockImplementation(() => Promise.resolve([{ ...urls4irlApp }])),
+      });
+      render(<App client={client} personClient={personClient} appsEnabled />);
+      await screen.findByText('URLs4IRL');
+      await userEvent.click(
+        screen.getByRole('button', { name: `${strings.removeAction} URLs4IRL` }),
+      );
+      await userEvent.click(
+        screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+      );
+
+      expect(await screen.findByRole('button', { name: 'Removing URLs4IRL' })).toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
+      expect(client.deprovisionApp).toHaveBeenCalledTimes(1);
+      resolveFirst();
+      expect(await screen.findByText('Removed urls4irl.')).toBeInTheDocument();
+      expect(client.deprovisionApp).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('lists an in-use-but-unregistered app under Unprovisioned apps with its subscriber count', async () => {
@@ -1430,5 +1727,187 @@ describe('App Delivery tab', () => {
         strings.addHeartbeatHintEmpty,
       );
     });
+  });
+});
+
+describe('App delivery refresh after Remove App and binding approval', () => {
+  const urls4irlApp = {
+    appId: 'urls4irl',
+    displayName: 'URLs4IRL',
+    description: null,
+    createdAt: '2026-07-25T10:00:00Z',
+  };
+  const pendingRequest = {
+    id: 1,
+    appId: 'app_1',
+    githubRepository: '4IRL/app_1',
+    githubRepositoryId: 812345601,
+    workflowPath: '.github/workflows/prod-deploy.yml',
+    gitRef: 'refs/heads/main',
+    environment: 'production',
+    githubRunId: '14022',
+    status: 'pending' as const,
+    createdAt: '2026-10-21T18:04:00Z',
+    updatedAt: '2026-10-21T18:04:00Z',
+  };
+
+  beforeEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  /** Renders every Delivery section, visits the Delivery tab, then returns to Provisioning. */
+  async function renderVisited({
+    client,
+    deliveryClient,
+    personClient,
+  }: {
+    client: ApiClient;
+    deliveryClient: DeliveryApiClient;
+    personClient: PersonApiClient;
+  }) {
+    const user = userEvent.setup();
+    render(
+      <App
+        client={client}
+        personClient={personClient}
+        deliveryClient={deliveryClient}
+        appsEnabled
+        destinationsEnabled
+        heartbeatsEnabled
+        appIdentitiesEnabled
+      />,
+    );
+    await screen.findByText('URLs4IRL');
+    await user.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+    await screen.findByText(strings.heartbeatsEmpty);
+    await screen.findByText(strings.identitiesRequestsEmpty);
+    await user.click(screen.getByRole('tab', { name: strings.tabProvisioning }));
+    return user;
+  }
+
+  async function removeUrls4irl(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole('button', { name: `${strings.removeAction} URLs4IRL` }));
+    await user.click(
+      screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+    );
+  }
+
+  /** Lets any stray follow-up fetch land so an "exactly N" count assertion is meaningful. */
+  async function settle() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+  }
+
+  function deliveryFetchCounts(deliveryClient: DeliveryApiClient) {
+    return [
+      vi.mocked(deliveryClient.listDestinations).mock.calls.length,
+      vi.mocked(deliveryClient.listRoutes).mock.calls.length,
+      vi.mocked(deliveryClient.listHeartbeats).mock.calls.length,
+      vi.mocked(deliveryClient.listIdentityRequests).mock.calls.length,
+      vi.mocked(deliveryClient.listIdentityBindings).mock.calls.length,
+    ];
+  }
+
+  it('re-requests destinations, routes, heartbeats and identities after a successful removal', async () => {
+    const deliveryClient = buildFakeDeliveryClient();
+    const user = await renderVisited({
+      client: buildFakeClient(),
+      deliveryClient,
+      personClient: buildFakePersonClient({
+        listApps: vi.fn().mockImplementation(() => Promise.resolve([{ ...urls4irlApp }])),
+      }),
+    });
+    expect(deliveryFetchCounts(deliveryClient)).toEqual([1, 1, 1, 1, 1]);
+
+    await removeUrls4irl(user);
+
+    await waitFor(() => expect(deliveryFetchCounts(deliveryClient)).toEqual([2, 2, 2, 2, 2]));
+    await settle();
+    expect(deliveryFetchCounts(deliveryClient)).toEqual([2, 2, 2, 2, 2]);
+  });
+
+  it.each([400, 502])('re-requests none of the lists after a %i failure', async (status) => {
+    const client = buildFakeClient({
+      deprovisionApp: vi
+        .fn()
+        .mockRejectedValue(new ApiError({ status, message: `said ${status}` })),
+    });
+    const deliveryClient = buildFakeDeliveryClient();
+    const user = await renderVisited({
+      client,
+      deliveryClient,
+      personClient: buildFakePersonClient({ listApps: vi.fn().mockResolvedValue([urls4irlApp]) }),
+    });
+
+    await removeUrls4irl(user);
+
+    expect(await screen.findByText(`said ${status}`)).toBeInTheDocument();
+    await settle();
+    expect(deliveryFetchCounts(deliveryClient)).toEqual([1, 1, 1, 1, 1]);
+  });
+
+  it.each([409, 503])('re-requests all four lists after a %i failure', async (status) => {
+    const client = buildFakeClient({
+      deprovisionApp: vi
+        .fn()
+        .mockRejectedValue(new ApiError({ status, message: `said ${status}` })),
+    });
+    const deliveryClient = buildFakeDeliveryClient();
+    const personClient = buildFakePersonClient({
+      listApps: vi.fn().mockImplementation(() => Promise.resolve([{ ...urls4irlApp }])),
+    });
+    const user = await renderVisited({ client, deliveryClient, personClient });
+
+    await removeUrls4irl(user);
+
+    await waitFor(() => expect(deliveryFetchCounts(deliveryClient)).toEqual([2, 2, 2, 2, 2]));
+    await settle();
+    expect(deliveryFetchCounts(deliveryClient)).toEqual([2, 2, 2, 2, 2]);
+    expect(personClient.listApps).toHaveBeenCalledTimes(2);
+    expect(client.listUsers).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes the Apps list when a binding is approved', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient({
+      listIdentityRequests: vi.fn().mockResolvedValue([pendingRequest]),
+      approveIdentityRequest: vi.fn().mockResolvedValue({
+        appId: 'app_1',
+        githubRepository: '4IRL/app_1',
+        githubRepositoryId: 812345601,
+        githubOwnerId: 55,
+        workflowPath: '.github/workflows/prod-deploy.yml',
+        gitRef: 'refs/heads/main',
+        environment: 'production',
+        approvedAt: '2026-10-21T18:10:00Z',
+        keys: [],
+      }),
+    });
+    const personClient = buildFakePersonClient();
+    render(
+      <App
+        client={buildFakeClient()}
+        personClient={personClient}
+        deliveryClient={deliveryClient}
+        appsEnabled
+        appIdentitiesEnabled
+      />,
+    );
+    await user.click(await screen.findByRole('tab', { name: strings.tabDelivery }));
+    const approve = await screen.findByRole('button', {
+      name: 'Approve identity request for app_1',
+    });
+    const before = vi.mocked(personClient.listApps).mock.calls.length;
+
+    await user.click(approve);
+
+    await waitFor(() =>
+      expect(vi.mocked(personClient.listApps).mock.calls.length).toBe(before + 1),
+    );
   });
 });

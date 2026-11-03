@@ -1,5 +1,6 @@
-// Typed client for the provisioning-api HTTP contract
-// (provisioning-api/internal/httpapi). The wire shape is snake_case Go JSON;
+// Typed client for the operator provisioning actions. Every call goes through
+// delivery-api's `/v1/admin/*` (via the same-origin `/delivery` Pages Function).
+// The wire shape is snake_case Go JSON;
 // this module maps it to camelCase TypeScript at the boundary so components
 // never touch snake_case.
 
@@ -40,12 +41,14 @@ export interface UserIdParam {
   userId: string;
 }
 
-/** The result of minting an app's publisher identity: the reveal-once token. */
+/** The result of minting an app's publisher identity. There is no token:
+ *  delivery-api stores it sealed and never returns it. */
 export interface ProvisionAppResult {
   appId: string;
   publisherUserId: string;
   topicPattern: string;
-  token: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** Parameters for minting/rotating an app's publisher token. `rotate` false
@@ -160,12 +163,15 @@ interface ProvisionResponseWire {
   password?: string;
 }
 
-/** Wire shape of a provision-app response. */
+/** Wire shape of an ntfy-publisher mint response (the token is never returned). */
 interface ProvisionAppResponseWire {
-  app_id: string;
-  publisher_user_id: string;
-  topic_pattern: string;
-  token: string;
+  publisher: {
+    app_id: string;
+    publisher_user_id: string;
+    topic_pattern: string;
+    created_at: string;
+    updated_at: string;
+  };
 }
 
 /** Wire shape of a test-notify response (snake_case per-recipient results). */
@@ -181,6 +187,30 @@ interface TestNotifyResponseWire {
 }
 
 const DEFAULT_BASE_URL = '';
+// Mirrors `DELIVERY_PREFIX` in deliveryClient.ts.
+const DELIVERY_PREFIX = '/delivery';
+const REQUESTED_WITH_VALUE = 'admin-ui';
+const APP_NOT_BOUND_MESSAGE = 'app has no approved binding';
+
+/**
+ * True only for the delivery-api "app has no approved binding" 404: an
+ * `ApiError` with status 404 AND exactly that message. Never a status-only
+ * check, because `writePublisherError` also returns 404 for
+ * `registry.ErrNoPublisher` with a different message.
+ *
+ * Keep in sync with delivery-api: the message is `errMsgAdminAppNotBound`
+ * (`internal/httpapi/admin_provisioning.go`, used by provision and test-notify
+ * via `requireBoundApp`) and `publisher.ErrAppNotBound`
+ * (`internal/publisher/types.go`, the mint), both "app has no approved
+ * binding". The sibling 404 that must NOT match is `errMsgPublisherNotFound`
+ * = "publisher not found" (`internal/httpapi/publishers.go`). Change the
+ * string here whenever those constants change.
+ */
+export function isAppNotBound(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 404 && error.message === APP_NOT_BOUND_MESSAGE
+  );
+}
 
 /** The provisioning API surface consumed by the admin UI. */
 export interface ApiClient {
@@ -208,15 +238,25 @@ export function createApiClient({
     method: string;
     body?: unknown;
   }): Promise<unknown> {
+    const headers: Record<string, string> = {};
+    if (body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+    }
+    // The delivery proxy's cross-site guard 403s a non-GET without this header
+    // (or Sec-Fetch-Site: same-origin); send it unconditionally.
+    if (method !== 'GET') {
+      headers['X-Requested-With'] = REQUESTED_WITH_VALUE;
+    }
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      headers: Object.keys(headers).length === 0 ? undefined : headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-      // The admin UI calls the provisioning API same-origin: in production via a
-      // Cloudflare Pages Function that proxies `/v1/*` to the provisioning API
-      // server-side (default empty baseUrl → relative `/v1/...`); locally the
-      // request stays on the dev origin. `credentials: 'include'` sends the
-      // admin app's own Access session cookie to the same-origin Function.
+      // The admin UI calls delivery-api same-origin: in production via the
+      // Cloudflare Pages Function that proxies `/delivery/*` to delivery-api
+      // server-side (default empty baseUrl → relative `/delivery/v1/admin/...`);
+      // locally the request stays on the dev origin.
+      // `credentials: 'include'` sends the admin app's own Access session
+      // cookie to the same-origin Function.
       credentials: 'include',
     });
 
@@ -238,7 +278,7 @@ export function createApiClient({
   return {
     async provision({ appId, email }: ProvisionParams): Promise<ProvisionResult> {
       const wire = (await request({
-        path: '/v1/provision',
+        path: `${DELIVERY_PREFIX}/v1/admin/provision`,
         method: 'POST',
         body: { app_id: appId, email },
       })) as ProvisionResponseWire;
@@ -257,7 +297,7 @@ export function createApiClient({
 
     async resetPassword({ appId, email }: ResetPasswordParams): Promise<ResetPasswordResult> {
       const wire = (await request({
-        path: '/v1/reset-password',
+        path: `${DELIVERY_PREFIX}/v1/admin/reset-password`,
         method: 'POST',
         body: { app_id: appId, email },
       })) as ResetPasswordResponseWire;
@@ -268,14 +308,17 @@ export function createApiClient({
     // user id — deprovision resolves against the already-derived ntfy user.
     async deprovision({ appId, userId }: AppUserPair): Promise<void> {
       await request({
-        path: '/v1/deprovision',
+        path: `${DELIVERY_PREFIX}/v1/admin/deprovision`,
         method: 'POST',
         body: { app_id: appId, user_id: userId },
       });
     },
 
     async listUsers(): Promise<UserSummary[]> {
-      const wire = (await request({ path: '/v1/users', method: 'GET' })) as UsersResponseWire;
+      const wire = (await request({
+        path: `${DELIVERY_PREFIX}/v1/admin/users`,
+        method: 'GET',
+      })) as UsersResponseWire;
       return wire.users.map((user) => ({
         userId: user.user_id,
         apps: user.apps,
@@ -284,25 +327,36 @@ export function createApiClient({
     },
 
     async deleteUser({ userId }: UserIdParam): Promise<void> {
-      await request({ path: `/v1/users/${userId}`, method: 'DELETE' });
+      await request({
+        path: `${DELIVERY_PREFIX}/v1/admin/users/${encodeURIComponent(userId)}`,
+        method: 'DELETE',
+      });
     },
 
     async provisionApp({ appId, rotate = false }: ProvisionAppParams): Promise<ProvisionAppResult> {
       const wire = (await request({
-        path: '/v1/provision-app',
+        path: `${DELIVERY_PREFIX}/v1/admin/apps/${encodeURIComponent(appId)}/ntfy-publisher`,
         method: 'POST',
-        body: { app_id: appId, rotate },
+        body: { rotate },
       })) as ProvisionAppResponseWire;
+      // Field-by-field on purpose: delivery-api keeps the token sealed, and a
+      // token-like field on the wire must never reach the UI.
       return {
-        appId: wire.app_id,
-        publisherUserId: wire.publisher_user_id,
-        topicPattern: wire.topic_pattern,
-        token: wire.token,
+        appId: wire.publisher.app_id,
+        publisherUserId: wire.publisher.publisher_user_id,
+        topicPattern: wire.publisher.topic_pattern,
+        createdAt: wire.publisher.created_at,
+        updatedAt: wire.publisher.updated_at,
       };
     },
 
     async deprovisionApp({ appId }: AppIdParam): Promise<void> {
-      await request({ path: '/v1/deprovision-app', method: 'POST', body: { app_id: appId } });
+      // delivery-api requires the body's app_id to equal the path id (400 otherwise).
+      await request({
+        path: `${DELIVERY_PREFIX}/v1/admin/apps/${encodeURIComponent(appId)}/deprovision`,
+        method: 'POST',
+        body: { app_id: appId },
+      });
     },
 
     async testNotify({
@@ -313,7 +367,7 @@ export function createApiClient({
       title,
     }: TestNotifyParams): Promise<TestNotifyResult> {
       const wire = (await request({
-        path: '/v1/test-notify',
+        path: `${DELIVERY_PREFIX}/v1/admin/test-notify`,
         method: 'POST',
         body: { app_id: appId, recipients, channel, message, title },
       })) as TestNotifyResponseWire;

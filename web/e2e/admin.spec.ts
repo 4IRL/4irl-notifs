@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 
 import {
+  DECOY_TOKEN,
   READY_BODY,
   TIMESTAMP,
   deliveryWire,
@@ -30,7 +31,7 @@ import type { DeliveryMockSeed } from './support/adminMocks';
 
 test.describe('admin UI critical flows', () => {
   test('lists users loaded from the API on page load', async ({ page }) => {
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -71,7 +72,7 @@ test.describe('admin UI critical flows', () => {
       page,
     }) => {
       let usersReturned = 0;
-      await page.route('**/v1/users', async (route) => {
+      await page.route('**/delivery/v1/admin/users', async (route) => {
         // Empty before provisioning, one user afterwards. The mobile-layout
         // case keeps the list empty: a user row widens the unrelated Send-test
         // table past 390px, which would mask the provision reveal's own layout.
@@ -92,7 +93,7 @@ test.describe('admin UI critical flows', () => {
           body: JSON.stringify({ users }),
         });
       });
-      await page.route('**/v1/provision', async (route) => {
+      await page.route('**/delivery/v1/admin/provision', async (route) => {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -162,7 +163,7 @@ test.describe('admin UI critical flows', () => {
     const EMAIL = 'alice@example.com';
 
     async function mockUsersWithEmail(page: Page): Promise<void> {
-      await page.route('**/v1/users', async (route) => {
+      await page.route('**/delivery/v1/admin/users', async (route) => {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -210,7 +211,7 @@ test.describe('admin UI critical flows', () => {
       await mockUsersWithEmail(page);
       let resetBody: unknown = null;
       let resetCalls = 0;
-      await page.route('**/v1/reset-password', async (route) => {
+      await page.route('**/delivery/v1/admin/reset-password', async (route) => {
         resetCalls += 1;
         resetBody = route.request().postDataJSON();
         await route.fulfill({
@@ -258,7 +259,7 @@ test.describe('admin UI critical flows', () => {
     }) => {
       await mockUsersWithEmail(page);
       let status = 429;
-      await page.route('**/v1/reset-password', async (route) => {
+      await page.route('**/delivery/v1/admin/reset-password', async (route) => {
         await route.fulfill({
           status,
           contentType: 'application/json',
@@ -297,7 +298,7 @@ test.describe('admin UI critical flows', () => {
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
-      await page.route('**/v1/reset-password', async (route) => {
+      await page.route('**/delivery/v1/admin/reset-password', async (route) => {
         await gate;
         await route.fulfill({
           status: 200,
@@ -355,7 +356,7 @@ test.describe('admin UI critical flows', () => {
   });
 
   test('lists people from the person service', async ({ page }) => {
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -389,46 +390,8 @@ test.describe('admin UI critical flows', () => {
     await expect(page.getByRole('cell', { name: 'alice@example.com', exact: true })).toBeVisible();
   });
 
-  test('adding an app registers it and reveals the publisher token', async ({ page }) => {
-    await page.route('**/v1/users', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ users: [] }),
-      });
-    });
-    await page.route('**/people', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
-    });
-    // GET lists apps (empty), POST registers a new one.
-    await page.route('**/apps', async (route) => {
-      if (route.request().method() === 'POST') {
-        await route.fulfill({
-          status: 201,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            app_id: 'tasktracker',
-            display_name: 'Task Tracker',
-            description: null,
-            created_at: '2026-07-25T10:00:00Z',
-          }),
-        });
-        return;
-      }
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"apps":[]}' });
-    });
-    await page.route('**/v1/provision-app', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          app_id: 'tasktracker',
-          publisher_user_id: 'tasktracker-publisher',
-          topic_pattern: 'tasktracker-*',
-          token: 'tk_pub_e2e_secret',
-        }),
-      });
-    });
+  test('adding an app mints first, registers it and never shows a token', async ({ page }) => {
+    const mock = await mockProvisioning(page);
 
     await page.goto('/');
 
@@ -441,11 +404,62 @@ test.describe('admin UI critical flows', () => {
     await addSection.getByLabel('Display name').fill('Task Tracker');
     await addSection.getByRole('button', { name: 'Add app' }).click();
 
-    await expect(page.getByText('tk_pub_e2e_secret')).toBeVisible();
+    await expect(addSection.getByRole('status')).toHaveText(
+      'Publisher token minted for tasktracker. delivery-api stores it sealed; it is never shown.',
+    );
+    await expect(page.getByText(DECOY_TOKEN)).toHaveCount(0);
+    const order = mock.mutations
+      .filter(
+        (request) =>
+          request.pathname === '/apps' ||
+          request.pathname === '/delivery/v1/admin/apps/tasktracker/ntfy-publisher',
+      )
+      .map((request) => request.pathname);
+    expect(order).toEqual(['/delivery/v1/admin/apps/tasktracker/ntfy-publisher', '/apps']);
+
+    // Re-mint and Revoke & re-mint keep the dialog open and never surface the token either.
+    await page.getByRole('button', { name: 'Edit Task Tracker', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Edit app tasktracker' });
+    await dialog.getByRole('button', { name: 'Re-mint token', exact: true }).click();
+    await expect(dialog.getByRole('status')).toHaveText(
+      'Publisher token re-minted for tasktracker.',
+    );
+    await expect(page.getByText(DECOY_TOKEN)).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Revoke & re-mint', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Confirm revoke & re-mint', exact: true }).click();
+    await expect(dialog.getByRole('status')).toHaveText(
+      'Publisher token for tasktracker revoked and re-minted. The old token no longer works.',
+    );
+    await expect(dialog).toBeVisible();
+    await expect(page.getByText(DECOY_TOKEN)).toHaveCount(0);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('adding an app with no approved delivery key shows the not-bound alert and registers nothing', async ({
+    page,
+  }) => {
+    const mock = await mockProvisioning(page, { unboundAppIds: ['tasktracker'] });
+
+    await page.goto('/');
+
+    const addSection = page
+      .locator('section')
+      .filter({ has: page.getByRole('heading', { name: 'Add an app' }) });
+    await addSection.getByLabel('App ID').fill('tasktracker');
+    await addSection.getByLabel('Display name').fill('Task Tracker');
+    await addSection.getByRole('button', { name: 'Add app' }).click();
+
+    await expect(addSection.getByRole('alert')).toHaveText(
+      'tasktracker has no approved delivery key yet. Approve its key request on the Delivery tab, then add it again.',
+    );
+    await expect(addSection.getByRole('status')).toBeEmpty();
+    expect(mock.mutations.filter((request) => request.pathname === '/apps')).toEqual([]);
+    expect(mock.apps).toEqual([]);
+    expect(mock.unmocked).toEqual([]);
   });
 
   test('removing an app cascades after confirming', async ({ page }) => {
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -476,11 +490,26 @@ test.describe('admin UI critical flows', () => {
         body: JSON.stringify({ apps }),
       });
     });
-    await page.route('**/v1/deprovision-app', async (route) => {
+    await page.route('**/delivery/v1/admin/apps/urls4irl/deprovision', async (route) => {
+      // delivery-api rejects a body whose app_id differs from the path id.
+      const sent = route.request().postDataJSON() as { app_id?: string } | null;
+      if (sent?.app_id !== 'urls4irl') {
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'app_id in body must match path' }),
+        });
+        return;
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ app_id: 'urls4irl', removed: true }),
+        body: JSON.stringify({
+          app_id: 'urls4irl',
+          removed: true,
+          unbound: true,
+          deleted: { checks: 0, routes: 0, destinations: 0 },
+        }),
       });
     });
 
@@ -495,10 +524,13 @@ test.describe('admin UI critical flows', () => {
     await dialog.getByRole('button', { name: 'Confirm remove URLs4IRL', exact: true }).click();
 
     await expect(page.getByText('No apps registered yet.')).toBeVisible();
+    await expect(page.locator('.apps-table__status[role="status"]')).toHaveText(
+      'Removed urls4irl.',
+    );
   });
 
   test('re-mint dialog Escape closes only the dialog', async ({ page }) => {
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -525,16 +557,19 @@ test.describe('admin UI critical flows', () => {
       });
     });
     let tokenCalls = 0;
-    await page.route('**/v1/provision-app', async (route) => {
+    await page.route('**/delivery/v1/admin/apps/urls4irl/ntfy-publisher', async (route) => {
       tokenCalls += 1;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          app_id: 'urls4irl',
-          publisher_user_id: 'urls4irl-publisher',
-          topic_pattern: 'urls4irl-*',
-          token: 'tk_remint_e2e',
+          publisher: {
+            app_id: 'urls4irl',
+            publisher_user_id: 'urls4irl-publisher',
+            topic_pattern: 'urls4irl-*',
+            created_at: '2026-11-03T10:00:00Z',
+            updated_at: '2026-11-03T10:00:00Z',
+          },
         }),
       });
     });
@@ -560,7 +595,7 @@ test.describe('admin UI critical flows', () => {
 
   test('remove app dialog is full screen at 390px', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -614,7 +649,7 @@ test.describe('admin UI critical flows', () => {
   }) => {
     // A user is provisioned into urls4irl (unregistered); tasktracker is the
     // only registered app.
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -674,7 +709,7 @@ test.describe('admin UI critical flows', () => {
 
   test('sends a test notification and shows a delivered result', async ({ page }) => {
     // Two subscribers on one app so the Send-test section has scoped rows.
-    await page.route('**/v1/users', async (route) => {
+    await page.route('**/delivery/v1/admin/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -705,7 +740,7 @@ test.describe('admin UI critical flows', () => {
       });
     });
     let testNotifyBody: unknown = null;
-    await page.route('**/v1/test-notify', async (route) => {
+    await page.route('**/delivery/v1/admin/test-notify', async (route) => {
       testNotifyBody = route.request().postDataJSON();
       await route.fulfill({
         status: 200,

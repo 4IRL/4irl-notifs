@@ -1443,3 +1443,15 @@ describe('overlapping refreshes', () => {
     expect(screen.getByText('fresh_one')).toBeInTheDocument();
   });
 });
+
+describe('refresh signal', () => {
+  it('fetches once on mount and exactly once more when the signal changes', async () => {
+    const client = buildClient();
+    const { rerender } = render(<DestinationsSection client={client} refreshSignal={0} />);
+    await waitFor(() => expect(client.listDestinations).toHaveBeenCalledTimes(1));
+
+    rerender(<DestinationsSection client={client} refreshSignal={1} />);
+
+    await waitFor(() => expect(client.listDestinations).toHaveBeenCalledTimes(2));
+  });
+});

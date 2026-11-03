@@ -2485,3 +2485,28 @@ describe('Heartbeats edit check', () => {
     expect(screen.getAllByRole('form')).toHaveLength(1);
   });
 });
+
+describe('Heartbeats refresh signal', () => {
+  it('loads once on mount, reloads quietly once on a signal change and keeps an open editor', async () => {
+    const user = userEvent.setup();
+    const client = buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1]) });
+    const { rerender } = render(
+      <Heartbeats client={client} destinationsState={READY_DESTINATIONS} refreshSignal={0} />,
+    );
+    await user.click(await screen.findByRole('button', { name: `Edit ${label(CHECK_1)}` }));
+    expect(client.listHeartbeats).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('dialog', { name: /^Edit / })).toBeInTheDocument();
+
+    rerender(
+      <Heartbeats client={client} destinationsState={READY_DESTINATIONS} refreshSignal={1} />,
+    );
+
+    await waitFor(() => expect(client.listHeartbeats).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(client.listHeartbeats).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('dialog', { name: /^Edit / })).toBeInTheDocument();
+    expect(screen.queryByText(strings.heartbeatsLoading)).toBeNull();
+  });
+});
