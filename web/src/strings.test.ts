@@ -30,7 +30,7 @@ describe('strings module', () => {
     );
     expect(strings.noPasswordReturned).toBe('No password was returned by this request.');
     expect(strings.noPasswordRecovery).toBe(
-      'If this person needs a new one, call POST /v1/reset-password from the app that serves them.',
+      'If this person needs a new one, call POST /v1/apps/{app_id}/reset-password from the app that serves them.',
     );
     expect(strings.passwordCopied).toBe('Copied');
     expect(strings.passwordCopyUnavailable).toBe(
@@ -229,10 +229,22 @@ describe('strings module', () => {
     expect(strings.editDestinationNamed({ name: 'ops' })).toBe('Edit destination ops');
     expect(strings.editRouteTitle).toBe('Edit route');
     expect(strings.editAppNamed({ appId: 'u4i' })).toBe('Edit app u4i');
-    expect(strings.tokenShownOnceGuard).toBe('This token is shown once. Close without copying it?');
-    expect(strings.closeAnyway).toBe('Close anyway');
-    expect(strings.keepOpen).toBe('Keep open');
     expect(strings.appSavedResult({ appId: 'u4i' })).toBe('Saved u4i.');
+    expect(strings.publisherMintedResult({ appId: 'u4i' })).toBe(
+      'Publisher token minted for u4i. delivery-api stores it sealed; it is never shown.',
+    );
+    expect(strings.publisherRemintedResult({ appId: 'u4i' })).toBe(
+      'Publisher token re-minted for u4i.',
+    );
+    expect(strings.publisherRotatedResult({ appId: 'u4i' })).toBe(
+      'Publisher token for u4i revoked and re-minted. The old token no longer works.',
+    );
+    expect(strings.publisherMintedButRegisterFailed).toBe(
+      'Publisher token minted, but registering the app failed: ',
+    );
+    expect(strings.unregisteredAppsHint).toContain('POST /v1/apps/{app_id}/provision');
+    expect(strings.unregisteredAppsHint).toContain('its own delivery key');
+    expect(strings.unregisteredAppsHint).not.toContain('provision-app');
   });
 
   it('exposes the people section heading, status copy, and column headers', () => {

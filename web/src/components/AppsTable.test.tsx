@@ -40,7 +40,8 @@ function renderTable(overrides: Partial<ComponentProps<typeof AppsTable>> = {}) 
       appId: 'urls4irl',
       publisherUserId: 'urls4irl-publisher',
       topicPattern: 'urls4irl-*',
-      token: 'tk_fresh',
+      createdAt: '2026-11-03T10:00:00Z',
+      updatedAt: '2026-11-03T11:00:00Z',
     }),
     onRemoveApp: vi.fn().mockResolvedValue(true),
     ...overrides,
@@ -189,7 +190,7 @@ describe('AppsTable', () => {
 
     // The next dialog clears it.
     await user.click(trigger);
-    expect(screen.getByRole('status', { hidden: true })).toBeEmptyDOMElement();
+    expect((document.querySelector('.apps-table__status') as HTMLElement).textContent).toBe('');
     root.remove();
   });
 
@@ -228,7 +229,7 @@ describe('AppsTable', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
-  it('is busy during a re-mint, and a token on screen guards every dismissal path', async () => {
+  it('is busy during a re-mint, then a clean form closes at once on Escape, X and Close', async () => {
     const user = userEvent.setup();
     let resolveMint!: (value: unknown) => void;
     const pending = new Promise((resolve) => {
@@ -241,58 +242,92 @@ describe('AppsTable', () => {
     await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
     await user.keyboard('{Escape}');
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.queryByText(strings.tokenShownOnceGuard)).not.toBeInTheDocument();
 
-    resolveMint({ appId: 'urls4irl', publisherUserId: 'p', topicPattern: 't', token: 'tk_fresh' });
-    expect(await screen.findByText('tk_fresh')).toBeInTheDocument();
+    resolveMint({
+      appId: 'urls4irl',
+      publisherUserId: 'p',
+      topicPattern: 't',
+      createdAt: '2026-11-03T10:00:00Z',
+      updatedAt: '2026-11-03T11:00:00Z',
+    });
+    const dialogStatus = within(screen.getByRole('dialog')).getByRole('status');
+    await waitFor(() =>
+      expect(dialogStatus).toHaveTextContent(
+        strings.publisherRemintedResult({ appId: 'urls4irl' }),
+      ),
+    );
     expect(onRemintToken).toHaveBeenCalledWith({ appId: 'urls4irl', rotate: false });
 
-    // Escape, then X, then the Close button: each asks with the token wording.
+    // The re-mint status does not guard a close: the form is clean.
     await user.keyboard('{Escape}');
-    expect(screen.getByText(strings.tokenShownOnceGuard)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: strings.keepOpen }));
-    expect(screen.queryByText(strings.tokenShownOnceGuard)).not.toBeInTheDocument();
-
-    await user.click(document.querySelector('.modal__close') as HTMLElement);
-    expect(screen.getByText(strings.tokenShownOnceGuard)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: strings.keepOpen }));
-
-    await user.click(formClose());
-    expect(screen.getByText(strings.tokenShownOnceGuard)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: strings.closeAnyway }));
-
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    await user.click(document.querySelector('.modal__close') as HTMLElement);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    await user.click(formClose());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText(strings.discardChangesMessage)).not.toBeInTheDocument();
   });
 
-  it('keeps the dialog open on a save while a token is shown, announces inside it and is clean after', async () => {
+  it('still guards a dirty form after a re-mint', async () => {
+    const user = userEvent.setup();
+    renderTable();
+
+    await user.click(screen.getByRole('button', { name: `${strings.editAction} URLs4IRL` }));
+    await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
+    await waitFor(() =>
+      expect(within(screen.getByRole('dialog')).getByRole('status')).not.toBeEmptyDOMElement(),
+    );
+    await user.type(screen.getByLabelText(strings.appDisplayNameLabel), '2');
+    await user.keyboard('{Escape}');
+
+    expect(screen.getByText(strings.discardChangesMessage)).toBeInTheDocument();
+  });
+
+  it('closes on a resolved save even after a re-mint and announces Saved in the table', async () => {
     const user = userEvent.setup();
     const { onUpdateApp } = renderTable();
 
     await user.click(screen.getByRole('button', { name: `${strings.editAction} URLs4IRL` }));
     await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
-    await screen.findByText('tk_fresh');
+    await waitFor(() =>
+      expect(within(screen.getByRole('dialog')).getByRole('status')).not.toBeEmptyDOMElement(),
+    );
     await user.type(screen.getByLabelText(strings.appDisplayNameLabel), '2');
     await user.click(screen.getByRole('button', { name: strings.saveAction }));
 
-    const dialog = screen.getByRole('dialog');
-    expect(await within(dialog).findByRole('status')).toHaveTextContent(
-      strings.appSavedResult({ appId: 'urls4irl' }),
-    );
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(onUpdateApp).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('tk_fresh')).toBeInTheDocument();
-    // The table's own line queued nothing.
-    expect(
-      within(document.querySelector('.apps-table') as HTMLElement).getAllByRole('status')[0],
-    ).toBeEmptyDOMElement();
-
-    // Only the token guards the close now: no "discard changes" wording.
-    await user.keyboard('{Escape}');
-    expect(screen.getByText(strings.tokenShownOnceGuard)).toBeInTheDocument();
-    expect(screen.queryByText(strings.discardChangesMessage)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(
+        strings.appSavedResult({ appId: 'urls4irl' }),
+      ),
+    );
   });
 
-  it('confirms Revoke & re-mint inside the dialog, keeps it open and shows the token under the guard', async () => {
+  it('keeps the dialog open after a failed mint, with the alert and no status text', async () => {
+    const user = userEvent.setup();
+    renderTable({ onRemintToken: vi.fn().mockRejectedValue(new Error('mint down')) });
+
+    await user.click(screen.getByRole('button', { name: `${strings.editAction} URLs4IRL` }));
+    await user.click(screen.getByRole('button', { name: strings.remintTokenAction }));
+
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() =>
+      expect(within(dialog).getByRole('alert')).toHaveTextContent(strings.genericError),
+    );
+    expect(within(dialog).getByRole('status')).toBeEmptyDOMElement();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    // The form is still clean, so Escape closes it at once.
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('confirms Revoke & re-mint inside the dialog, keeps it open and announces the rotation', async () => {
     const user = userEvent.setup();
     const { onRemintToken } = renderTable();
 
@@ -310,12 +345,13 @@ describe('AppsTable', () => {
     await user.click(revoke);
     await user.click(screen.getByRole('button', { name: strings.confirmRotateTokenAction }));
     expect(onRemintToken).toHaveBeenCalledWith({ appId: 'urls4irl', rotate: true });
-    expect(await screen.findByText('tk_fresh')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(screen.getByRole('dialog')).getByRole('status')).toHaveTextContent(
+        strings.publisherRotatedResult({ appId: 'urls4irl' }),
+      ),
+    );
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(revoke).toHaveFocus();
-
-    await user.keyboard('{Escape}');
-    expect(screen.getByText(strings.tokenShownOnceGuard)).toBeInTheDocument();
   });
 
   it("names each row's own app in its remove dialog and keeps the per-row cancel name", async () => {

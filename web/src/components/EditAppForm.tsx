@@ -21,8 +21,6 @@ interface EditAppFormProps {
   onDirtyChange?: (dirty: boolean) => void;
   /** True while a Save or a (re-)mint is in flight; false again on unmount. */
   onBusyChange?: (busy: boolean) => void;
-  /** True while a one-time token is displayed; false once cleared and on unmount. */
-  onTokenShownChange?: (shown: boolean) => void;
   /** The dialog's initial-focus target: the display-name input. */
   firstFieldRef?: RefObject<HTMLInputElement | null>;
 }
@@ -52,7 +50,7 @@ function normalised({
  * "Re-mint" is additive (zero-downtime — the old token stays valid); "Revoke &
  * re-mint" is a hard rotation gated behind the dialog's confirm step, because it
  * revokes the live token and breaks the app's publishing until it is redeployed.
- * Both reveal the new token inline (once).
+ * Both announce success in an in-form status region; the token is never shown.
  */
 export function EditAppForm({
   app,
@@ -62,7 +60,6 @@ export function EditAppForm({
   onRequestConfirm,
   onDirtyChange,
   onBusyChange,
-  onTokenShownChange,
   firstFieldRef,
 }: EditAppFormProps) {
   const [baseline, setBaseline] = useState<Baseline>(() =>
@@ -71,21 +68,18 @@ export function EditAppForm({
   const [displayName, setDisplayName] = useState(app.displayName);
   const [description, setDescription] = useState(app.description ?? '');
   const [error, setError] = useState<string | null>(null);
-  const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const [mintStatus, setMintStatus] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isMinting, setIsMinting] = useState(false);
-  const [token, setToken] = useState<string | null>(null);
-  // Read when a save resolves: whether the token is on screen then, not when Save was clicked.
-  const tokenRef = useRef<string | null>(null);
 
   const current = normalised({ displayName, description });
   const dirty =
     current.displayName !== baseline.displayName || current.description !== baseline.description;
   const busy = isSaving || isMinting;
 
-  const callbacks = useRef({ onDirtyChange, onBusyChange, onTokenShownChange });
+  const callbacks = useRef({ onDirtyChange, onBusyChange });
   useEffect(() => {
-    callbacks.current = { onDirtyChange, onBusyChange, onTokenShownChange };
+    callbacks.current = { onDirtyChange, onBusyChange };
   });
   useEffect(() => {
     callbacks.current.onDirtyChange?.(dirty);
@@ -97,16 +91,9 @@ export function EditAppForm({
     () => () => {
       callbacks.current.onDirtyChange?.(false);
       callbacks.current.onBusyChange?.(false);
-      callbacks.current.onTokenShownChange?.(false);
     },
     [],
   );
-
-  function showToken(next: string | null) {
-    tokenRef.current = next;
-    setToken(next);
-    onTokenShownChange?.(next !== null);
-  }
 
   function handleSave(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -121,7 +108,7 @@ export function EditAppForm({
     }
 
     setError(null);
-    setSavedMessage(null);
+    setMintStatus(null);
     // Nothing changed: close like the other forms, with no request and no result.
     if (!dirty) {
       onClose();
@@ -137,9 +124,6 @@ export function EditAppForm({
       .then(() => {
         // The saved values are the new baseline, so a dialog that stays open is clean again.
         setBaseline(saved);
-        if (tokenRef.current !== null) {
-          setSavedMessage(strings.appSavedResult({ appId: app.appId }));
-        }
       })
       .catch((rejection: unknown) => {
         setError(rejection instanceof ApiError ? rejection.message : strings.genericError);
@@ -154,12 +138,15 @@ export function EditAppForm({
       return;
     }
     setError(null);
-    setSavedMessage(null);
-    showToken(null);
+    setMintStatus(null);
     setIsMinting(true);
     onRemintToken({ appId: app.appId, rotate })
-      .then((result) => {
-        showToken(result.token);
+      .then(() => {
+        setMintStatus(
+          rotate
+            ? strings.publisherRotatedResult({ appId: app.appId })
+            : strings.publisherRemintedResult({ appId: app.appId }),
+        );
       })
       .catch((rejection: unknown) => {
         setError(rejection instanceof ApiError ? rejection.message : strings.genericError);
@@ -245,18 +232,10 @@ export function EditAppForm({
           </p>
         )}
 
-        {savedMessage !== null && (
-          <p role="status" className="edit-app-form__saved">
-            {savedMessage}
-          </p>
-        )}
-
-        {token !== null && (
-          <div className="edit-app-form__token-reveal">
-            <p>{strings.publisherTokenRevealLead({ appId: app.appId })}</p>
-            <p className="edit-app-form__token">{token}</p>
-          </div>
-        )}
+        {/* Always mounted so screen readers announce the text when it is filled. */}
+        <div role="status" aria-atomic="false" className="edit-app-form__status">
+          {mintStatus !== null && <p>{mintStatus}</p>}
+        </div>
       </form>
     </div>
   );

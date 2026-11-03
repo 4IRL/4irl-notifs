@@ -57,7 +57,6 @@ export function AppsTable({
   const [editSnapshot, setEditSnapshot] = useState<AppSummary | null>(null);
   const [formDirty, setFormDirty] = useState(false);
   const [formBusy, setFormBusy] = useState(false);
-  const [tokenShown, setTokenShown] = useState(false);
   const [confirmStep, setConfirmStep] = useState<ConfirmStep | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [pendingResult, setPendingResult] = useState<string | null>(null);
@@ -70,7 +69,6 @@ export function AppsTable({
   const armedRef = useRef<{ apps: AppSummary[]; error: string | null } | null>(null);
   // Mirror state for async callbacks that outlive the render they started in.
   const editingAppIdRef = useRef<string | null>(null);
-  const tokenShownRef = useRef(false);
   const editReturnRef = useRef<HTMLElement | null>(null);
   const firstEditFieldRef = useRef<HTMLInputElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
@@ -150,11 +148,9 @@ export function AppsTable({
   /** Opens the editor for `appId` (or closes it with null) and resets every per-dialog flag. */
   function setEditor(appId: string | null) {
     editingAppIdRef.current = appId;
-    tokenShownRef.current = false;
     setEditingAppId(appId);
     setFormDirty(false);
     setFormBusy(false);
-    setTokenShown(false);
     setConfirmStep(null);
     if (appId === null) {
       setEditSnapshot(null);
@@ -175,17 +171,11 @@ export function AppsTable({
 
   async function handleUpdate(params: UpdateAppParams): Promise<void> {
     await onUpdateApp(params);
-    // Close and announce only the dialog this save came from, and only with no token on screen:
-    // a shown token keeps the dialog open and the form announces inside it.
-    if (editingAppIdRef.current === params.appId && !tokenShownRef.current) {
+    // Close and announce only the dialog this save came from.
+    if (editingAppIdRef.current === params.appId) {
       setEditor(null);
       setPendingResult(strings.appSavedResult({ appId: params.appId }));
     }
-  }
-
-  function handleTokenShownChange(shown: boolean) {
-    tokenShownRef.current = shown;
-    setTokenShown(shown);
   }
 
   function handleRequestConfirm(step: ConfirmStep) {
@@ -375,11 +365,8 @@ export function AppsTable({
         open={editingAppId !== null}
         title={editingApp === null ? '' : strings.editAppNamed({ appId: editingApp.appId })}
         onClose={() => setEditor(null)}
-        dirty={formDirty || tokenShown}
+        dirty={formDirty}
         busy={formBusy}
-        guardMessage={tokenShown ? strings.tokenShownOnceGuard : undefined}
-        discardLabel={tokenShown ? strings.closeAnyway : undefined}
-        keepLabel={tokenShown ? strings.keepOpen : undefined}
         returnFocusRef={editReturnRef}
         fallbackFocusRef={headingRef}
         initialFocusRef={firstEditFieldRef}
@@ -400,7 +387,6 @@ export function AppsTable({
               onRequestConfirm={handleRequestConfirm}
               onDirtyChange={setFormDirty}
               onBusyChange={setFormBusy}
-              onTokenShownChange={handleTokenShownChange}
               firstFieldRef={firstEditFieldRef}
             />
           )

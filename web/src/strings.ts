@@ -60,9 +60,6 @@ export const strings = {
   editDestinationNamed: ({ name }: { name: string }): string => `Edit destination ${name}`,
   editRouteTitle: 'Edit route',
   editAppNamed: ({ appId }: { appId: string }): string => `Edit app ${appId}`,
-  tokenShownOnceGuard: 'This token is shown once. Close without copying it?',
-  closeAnyway: 'Close anyway',
-  keepOpen: 'Keep open',
   appSavedResult: ({ appId }: { appId: string }): string => `Saved ${appId}.`,
   dialogItemUser: 'User',
   dialogItemUserApp: 'User · app',
@@ -136,7 +133,7 @@ export const strings = {
   passwordCopyUnavailable: 'Copy not available. Select the password and copy it manually.',
   noPasswordReturned: 'No password was returned by this request.',
   noPasswordRecovery:
-    'If this person needs a new one, call POST /v1/reset-password from the app that serves them.',
+    'If this person needs a new one, call POST /v1/apps/{app_id}/reset-password from the app that serves them.',
 
   // Operator password reset (Users list row action).
   resetPasswordAction: 'Reset password',
@@ -258,8 +255,13 @@ export const strings = {
   rotateTokenWarning:
     'Revoking replaces the publisher token immediately — the app stops publishing until it is redeployed with the new token.',
 
-  publisherTokenRevealLead: ({ appId }: { appId: string }): string =>
-    `Publisher token for ${appId} (copy now — shown once):`,
+  publisherMintedResult: ({ appId }: { appId: string }): string =>
+    `Publisher token minted for ${appId}. delivery-api stores it sealed; it is never shown.`,
+  publisherRemintedResult: ({ appId }: { appId: string }): string =>
+    `Publisher token re-minted for ${appId}.`,
+  publisherRotatedResult: ({ appId }: { appId: string }): string =>
+    `Publisher token for ${appId} revoked and re-minted. The old token no longer works.`,
+  publisherMintedButRegisterFailed: 'Publisher token minted, but registering the app failed: ',
 
   appAlreadyRegisteredNote:
     'already registered; display name updated (description too if provided)',
@@ -274,7 +276,7 @@ export const strings = {
   unregisteredAppsHeading: 'Unprovisioned apps',
   unregisteredAppsLoading: 'Loading…',
   unregisteredAppsHint:
-    'These apps have users or topics but no registry entry. Have each app register itself with 4irl-notifs — its backend calls POST /v1/provision-app with its own service token (see docs/app-integration-guide.md) — or add it above via “Add an app”.',
+    'These apps have users or topics but no registry entry. Have each app register itself with 4irl-notifs — its backend calls POST /v1/apps/{app_id}/provision with its own delivery key (see docs/app-integration-guide.md) — or add it above via “Add an app”.',
   unregisteredAppsEmpty: 'None — every in-use app is registered.',
 
   // Page tabs.

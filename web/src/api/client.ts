@@ -1,6 +1,5 @@
 // Typed client for the operator provisioning actions. Most calls go through
-// delivery-api's `/v1/admin/*` (via the same-origin `/delivery` Pages Function);
-// only provisionApp still uses the old `/v1/*` provisioning proxy.
+// delivery-api's `/v1/admin/*` (via the same-origin `/delivery` Pages Function).
 // The wire shape is snake_case Go JSON;
 // this module maps it to camelCase TypeScript at the boundary so components
 // never touch snake_case.
@@ -42,12 +41,14 @@ export interface UserIdParam {
   userId: string;
 }
 
-/** The result of minting an app's publisher identity: the reveal-once token. */
+/** The result of minting an app's publisher identity. There is no token:
+ *  delivery-api stores it sealed and never returns it. */
 export interface ProvisionAppResult {
   appId: string;
   publisherUserId: string;
   topicPattern: string;
-  token: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** Parameters for minting/rotating an app's publisher token. `rotate` false
@@ -162,12 +163,15 @@ interface ProvisionResponseWire {
   password?: string;
 }
 
-/** Wire shape of a provision-app response. */
+/** Wire shape of an ntfy-publisher mint response (the token is never returned). */
 interface ProvisionAppResponseWire {
-  app_id: string;
-  publisher_user_id: string;
-  topic_pattern: string;
-  token: string;
+  publisher: {
+    app_id: string;
+    publisher_user_id: string;
+    topic_pattern: string;
+    created_at: string;
+    updated_at: string;
+  };
 }
 
 /** Wire shape of a test-notify response (snake_case per-recipient results). */
@@ -250,8 +254,7 @@ export function createApiClient({
       // The admin UI calls delivery-api same-origin: in production via the
       // Cloudflare Pages Function that proxies `/delivery/*` to delivery-api
       // server-side (default empty baseUrl → relative `/delivery/v1/admin/...`);
-      // locally the request stays on the dev origin. `provisionApp`
-      // still uses the old `/v1/*` proxy until a later step.
+      // locally the request stays on the dev origin.
       // `credentials: 'include'` sends the admin app's own Access session
       // cookie to the same-origin Function.
       credentials: 'include',
@@ -332,15 +335,18 @@ export function createApiClient({
 
     async provisionApp({ appId, rotate = false }: ProvisionAppParams): Promise<ProvisionAppResult> {
       const wire = (await request({
-        path: '/v1/provision-app',
+        path: `${DELIVERY_PREFIX}/v1/admin/apps/${encodeURIComponent(appId)}/ntfy-publisher`,
         method: 'POST',
-        body: { app_id: appId, rotate },
+        body: { rotate },
       })) as ProvisionAppResponseWire;
+      // Field-by-field on purpose: delivery-api keeps the token sealed, and a
+      // token-like field on the wire must never reach the UI.
       return {
-        appId: wire.app_id,
-        publisherUserId: wire.publisher_user_id,
-        topicPattern: wire.topic_pattern,
-        token: wire.token,
+        appId: wire.publisher.app_id,
+        publisherUserId: wire.publisher.publisher_user_id,
+        topicPattern: wire.publisher.topic_pattern,
+        createdAt: wire.publisher.created_at,
+        updatedAt: wire.publisher.updated_at,
       };
     },
 

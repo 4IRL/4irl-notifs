@@ -60,7 +60,23 @@
   opacity: 0.7;
 }
 
+/* Collapse without display:none, so the always-mounted live region stays in the
+   accessibility tree; the negative margin cancels the flex gap above it. */
 .add-app-form__status:empty {
+  height: 0;
+  overflow: hidden;
+  margin: calc(-1 * var(--space-2)) 0 0;
+}
+
+.add-app-form__status:not(:empty) {
+  border: 1px solid var(--ok);
+  background: var(--ok-bg);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  margin: 0;
+}
+
+.add-app-form__status p {
   margin: 0;
 }
 
@@ -71,22 +87,4 @@
   padding: var(--space-2) var(--space-3);
   color: var(--danger);
   margin: 0;
-}
-
-.add-app-form__token-reveal {
-  border: 1px solid var(--ok);
-  background: var(--ok-bg);
-  border-radius: var(--radius);
-  padding: var(--space-2) var(--space-3);
-  margin: 0;
-}
-
-.add-app-form__token-reveal p {
-  margin: 0;
-}
-
-.add-app-form__token-reveal .add-app-form__token {
-  font-family: var(--mono);
-  word-break: break-all;
-  margin-top: var(--space-1);
 }

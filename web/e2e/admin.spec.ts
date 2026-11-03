@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 
 import {
+  DECOY_TOKEN,
   READY_BODY,
   TIMESTAMP,
   deliveryWire,
@@ -389,46 +390,8 @@ test.describe('admin UI critical flows', () => {
     await expect(page.getByRole('cell', { name: 'alice@example.com', exact: true })).toBeVisible();
   });
 
-  test('adding an app registers it and reveals the publisher token', async ({ page }) => {
-    await page.route('**/delivery/v1/admin/users', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ users: [] }),
-      });
-    });
-    await page.route('**/people', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"people":[]}' });
-    });
-    // GET lists apps (empty), POST registers a new one.
-    await page.route('**/apps', async (route) => {
-      if (route.request().method() === 'POST') {
-        await route.fulfill({
-          status: 201,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            app_id: 'tasktracker',
-            display_name: 'Task Tracker',
-            description: null,
-            created_at: '2026-07-25T10:00:00Z',
-          }),
-        });
-        return;
-      }
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"apps":[]}' });
-    });
-    await page.route('**/v1/provision-app', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          app_id: 'tasktracker',
-          publisher_user_id: 'tasktracker-publisher',
-          topic_pattern: 'tasktracker-*',
-          token: 'tk_pub_e2e_secret',
-        }),
-      });
-    });
+  test('adding an app mints first, registers it and never shows a token', async ({ page }) => {
+    const mock = await mockProvisioning(page);
 
     await page.goto('/');
 
@@ -441,7 +404,58 @@ test.describe('admin UI critical flows', () => {
     await addSection.getByLabel('Display name').fill('Task Tracker');
     await addSection.getByRole('button', { name: 'Add app' }).click();
 
-    await expect(page.getByText('tk_pub_e2e_secret')).toBeVisible();
+    await expect(addSection.getByRole('status')).toHaveText(
+      'Publisher token minted for tasktracker. delivery-api stores it sealed; it is never shown.',
+    );
+    await expect(page.getByText(DECOY_TOKEN)).toHaveCount(0);
+    const order = mock.mutations
+      .filter(
+        (request) =>
+          request.pathname === '/apps' ||
+          request.pathname === '/delivery/v1/admin/apps/tasktracker/ntfy-publisher',
+      )
+      .map((request) => request.pathname);
+    expect(order).toEqual(['/delivery/v1/admin/apps/tasktracker/ntfy-publisher', '/apps']);
+
+    // Re-mint and Revoke & re-mint keep the dialog open and never surface the token either.
+    await page.getByRole('button', { name: 'Edit Task Tracker', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Edit app tasktracker' });
+    await dialog.getByRole('button', { name: 'Re-mint token', exact: true }).click();
+    await expect(dialog.getByRole('status')).toHaveText(
+      'Publisher token re-minted for tasktracker.',
+    );
+    await expect(page.getByText(DECOY_TOKEN)).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Revoke & re-mint', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Confirm revoke & re-mint', exact: true }).click();
+    await expect(dialog.getByRole('status')).toHaveText(
+      'Publisher token for tasktracker revoked and re-minted. The old token no longer works.',
+    );
+    await expect(dialog).toBeVisible();
+    await expect(page.getByText(DECOY_TOKEN)).toHaveCount(0);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('adding an app with no approved delivery key shows the not-bound alert and registers nothing', async ({
+    page,
+  }) => {
+    const mock = await mockProvisioning(page, { unboundAppIds: ['tasktracker'] });
+
+    await page.goto('/');
+
+    const addSection = page
+      .locator('section')
+      .filter({ has: page.getByRole('heading', { name: 'Add an app' }) });
+    await addSection.getByLabel('App ID').fill('tasktracker');
+    await addSection.getByLabel('Display name').fill('Task Tracker');
+    await addSection.getByRole('button', { name: 'Add app' }).click();
+
+    await expect(addSection.getByRole('alert')).toHaveText(
+      'tasktracker has no approved delivery key yet. Approve its key request on the Delivery tab, then add it again.',
+    );
+    await expect(addSection.getByRole('status')).toBeEmpty();
+    expect(mock.mutations.filter((request) => request.pathname === '/apps')).toEqual([]);
+    expect(mock.apps).toEqual([]);
+    expect(mock.unmocked).toEqual([]);
   });
 
   test('removing an app cascades after confirming', async ({ page }) => {
@@ -543,16 +557,19 @@ test.describe('admin UI critical flows', () => {
       });
     });
     let tokenCalls = 0;
-    await page.route('**/v1/provision-app', async (route) => {
+    await page.route('**/delivery/v1/admin/apps/urls4irl/ntfy-publisher', async (route) => {
       tokenCalls += 1;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          app_id: 'urls4irl',
-          publisher_user_id: 'urls4irl-publisher',
-          topic_pattern: 'urls4irl-*',
-          token: 'tk_remint_e2e',
+          publisher: {
+            app_id: 'urls4irl',
+            publisher_user_id: 'urls4irl-publisher',
+            topic_pattern: 'urls4irl-*',
+            created_at: '2026-11-03T10:00:00Z',
+            updated_at: '2026-11-03T10:00:00Z',
+          },
         }),
       });
     });

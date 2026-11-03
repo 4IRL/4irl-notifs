@@ -20,7 +20,7 @@ interface UnregisteredAppsProps {
  * Read-only view of "unprovisioned" apps — app_ids with users/topics but no
  * registry entry (the ghost-app case). Shows each with its subscriber count and
  * instructional copy on how to onboard it (the app registers itself via
- * POST /v1/provision-app, or the operator adds it via "Add an app").
+ * POST /v1/apps/{app_id}/provision, or the operator adds it via "Add an app").
  */
 export function UnregisteredApps({
   appIds,

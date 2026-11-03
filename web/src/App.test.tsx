@@ -28,12 +28,15 @@ function buildFakeClient(overrides: Partial<ApiClient> = {}): ApiClient {
     deprovision: vi.fn().mockResolvedValue(undefined),
     listUsers: vi.fn().mockResolvedValue([]),
     deleteUser: vi.fn().mockResolvedValue(undefined),
-    provisionApp: vi.fn().mockResolvedValue({
-      appId: 'urls4irl',
-      publisherUserId: 'urls4irl-publisher',
-      topicPattern: 'urls4irl-*',
-      token: 'tk_publisher',
-    }),
+    provisionApp: vi.fn().mockImplementation(({ appId }: { appId: string }) =>
+      Promise.resolve({
+        appId,
+        publisherUserId: `${appId}-publisher`,
+        topicPattern: `${appId}-*`,
+        createdAt: '2026-11-03T10:00:00Z',
+        updatedAt: '2026-11-03T11:00:00Z',
+      }),
+    ),
     deprovisionApp: vi.fn().mockResolvedValue(undefined),
     testNotify: vi.fn().mockResolvedValue({ results: [] }),
     ...overrides,
@@ -712,7 +715,7 @@ describe('App', () => {
     expect(within(appRow).getByText('2')).toBeInTheDocument();
   });
 
-  it('adds an app: registers metadata, mints the publisher token, and reveals it', async () => {
+  it('adds an app: mints first, then registers metadata, and shows the minted confirmation', async () => {
     const client = buildFakeClient();
     const personClient = buildFakePersonClient();
     render(<App client={client} personClient={personClient} appsEnabled />);
@@ -736,7 +739,12 @@ describe('App', () => {
       }),
     );
     expect(client.provisionApp).toHaveBeenCalledWith({ appId: 'tasktracker' });
-    expect(await screen.findByText('tk_publisher')).toBeInTheDocument();
+    expect(vi.mocked(client.provisionApp).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(personClient.createApp).mock.invocationCallOrder[0],
+    );
+    expect(
+      await screen.findByText(strings.publisherMintedResult({ appId: 'tasktracker' })),
+    ).toBeInTheDocument();
     expect(screen.queryByText(strings.appAlreadyRegisteredNote)).not.toBeInTheDocument();
   });
 
@@ -764,7 +772,9 @@ describe('App', () => {
 
     await submitAddApp();
 
-    expect(await screen.findByText('tk_publisher')).toBeInTheDocument();
+    expect(
+      await screen.findByText(strings.publisherMintedResult({ appId: 'tasktracker' })),
+    ).toBeInTheDocument();
     expect(personClient.updateApp).toHaveBeenCalledWith({
       appId: 'tasktracker',
       displayName: 'Task Tracker',
@@ -783,7 +793,7 @@ describe('App', () => {
     expect(within(addSection).queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('add app with a non-409 createApp failure shows the error and never mints', async () => {
+  it('add app with a non-409 createApp failure after a mint shows the prefixed error', async () => {
     const client = buildFakeClient();
     const personClient = buildFakePersonClient({
       createApp: vi.fn().mockRejectedValue(new ApiError({ status: 500, message: 'registry down' })),
@@ -792,12 +802,62 @@ describe('App', () => {
 
     await submitAddApp();
 
-    expect(await screen.findByText('registry down')).toBeInTheDocument();
+    expect(
+      await screen.findByText(`${strings.publisherMintedButRegisterFailed}registry down`),
+    ).toBeInTheDocument();
     expect(personClient.updateApp).not.toHaveBeenCalled();
-    expect(client.provisionApp).not.toHaveBeenCalled();
+    expect(client.provisionApp).toHaveBeenCalledTimes(1);
   });
 
-  it('add app 409 then updateApp failure shows the error, never mints, and refreshes apps', async () => {
+  it('add app with a not-bound mint 404 shows the add-it-again copy and touches no registry or user list', async () => {
+    const client = buildFakeClient({
+      provisionApp: vi
+        .fn()
+        .mockRejectedValue(new ApiError({ status: 404, message: 'app has no approved binding' })),
+    });
+    const personClient = buildFakePersonClient();
+    render(<App client={client} personClient={personClient} appsEnabled />);
+    await waitFor(() => expect(client.listUsers).toHaveBeenCalled());
+    const listUsersCallsBefore = vi.mocked(client.listUsers).mock.calls.length;
+
+    await submitAddApp();
+
+    expect(
+      await screen.findByText(strings.appNotBoundError({ appId: 'tasktracker' })),
+    ).toBeInTheDocument();
+    expect(personClient.createApp).not.toHaveBeenCalled();
+    expect(personClient.updateApp).not.toHaveBeenCalled();
+    expect(vi.mocked(client.listUsers).mock.calls.length).toBe(listUsersCallsBefore);
+  });
+
+  it.each([
+    { status: 409, message: 'publisher mint in progress' },
+    { status: 503, message: 'upstream unavailable' },
+    { status: 404, message: 'publisher not found' },
+  ])(
+    'add app with a mint $status shows the server message and never registers',
+    async (failure) => {
+      const client = buildFakeClient({
+        provisionApp: vi.fn().mockRejectedValue(new ApiError(failure)),
+      });
+      const personClient = buildFakePersonClient();
+      render(<App client={client} personClient={personClient} appsEnabled />);
+      await waitFor(() => expect(client.listUsers).toHaveBeenCalled());
+      const listUsersCallsBefore = vi.mocked(client.listUsers).mock.calls.length;
+
+      await submitAddApp();
+
+      expect(await screen.findByText(failure.message)).toBeInTheDocument();
+      expect(vi.mocked(client.listUsers).mock.calls.length).toBe(listUsersCallsBefore);
+      expect(
+        screen.queryByText(strings.appNotBoundError({ appId: 'tasktracker' })),
+      ).not.toBeInTheDocument();
+      expect(personClient.createApp).not.toHaveBeenCalled();
+      expect(personClient.updateApp).not.toHaveBeenCalled();
+    },
+  );
+
+  it('add app 409 then updateApp failure after a mint shows the prefixed error and refreshes apps', async () => {
     const client = buildFakeClient();
     const personClient = buildFakePersonClient({
       createApp: vi
@@ -811,8 +871,10 @@ describe('App', () => {
 
     await submitAddApp();
 
-    expect(await screen.findByText('update failed')).toBeInTheDocument();
-    expect(client.provisionApp).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(`${strings.publisherMintedButRegisterFailed}update failed`),
+    ).toBeInTheDocument();
+    expect(client.provisionApp).toHaveBeenCalledTimes(1);
     await waitFor(() =>
       expect(vi.mocked(personClient.listApps).mock.calls.length).toBeGreaterThan(
         listAppsCallsBefore,

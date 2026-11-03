@@ -199,7 +199,8 @@ describe('AddAppForm', () => {
       appId: 'tasktracker',
       publisherUserId: 'p',
       topicPattern: 't',
-      token: 'tk',
+      createdAt: '2026-11-03T10:00:00Z',
+      updatedAt: '2026-11-03T10:00:00Z',
     });
     render(<AddAppForm onAddApp={onAddApp} />);
     const appId = screen.getByLabelText(strings.appIdLabel);

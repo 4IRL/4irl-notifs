@@ -463,6 +463,8 @@ export interface ProvisioningSeed {
   people?: Json[];
   /** `{ app_id, display_name, description, created_at }` rows of `GET /apps`. */
   apps?: Json[];
+  /** App ids whose publisher mint returns 404 `app has no approved binding` (default none). */
+  unboundAppIds?: string[];
 }
 
 /** A request log like `DeliveryMock`'s, plus the live seeded state (mutated by the handlers). */
@@ -489,23 +491,27 @@ export function appWire({
   };
 }
 
-/** The reveal-once publisher token every mint and re-mint returns. */
-export const MINTED_TOKEN = 'tk_pub_e2e_minted_token';
+/**
+ * A fixture-only token-like field the mint mock adds to its response. The real wire shape has
+ * no token (delivery-api keeps it sealed), so a spec asserting this text is absent from the page
+ * proves the UI never surfaces a token-like field.
+ */
+export const DECOY_TOKEN = 'DECOY-TOKEN-SHOULD-NEVER-SURFACE';
 
 // The relayed calls live at `/delivery/v1/admin/...` (users, users/{id}, provision,
-// deprovision, reset-password, test-notify, apps/{id}/deprovision); provision-app still uses
-// the old `/v1/...` proxy until its step. `mockDelivery`'s `**/delivery/**` catch-all
+// deprovision, reset-password, test-notify, apps/{id}/deprovision, apps/{id}/ntfy-publisher).
+// `mockDelivery`'s `**/delivery/**` catch-all
 // defers these paths with `route.fallback()` (see RELAYED_ADMIN_PATH), so this mock serves
 // them whether it is registered before or after `mockDelivery`. Only users, people and apps
 // take an `/<id>` suffix (capture group 1). A spec that installs `mockDelivery` without
 // `mockProvisioning` and hits one of these paths reaches the network unrecorded, as it did
 // with the old `/v1/...` paths; such specs must also install `mockProvisioning`.
 const PROVISIONING_PATH =
-  /^\/(?:v1\/provision-app|delivery\/v1\/admin\/(?:provision|deprovision|reset-password|test-notify)|delivery\/v1\/admin\/apps\/[^/]+\/deprovision|(?:delivery\/v1\/admin\/users|people|apps)(?:\/([^/]+))?)$/;
+  /^\/(?:delivery\/v1\/admin\/(?:provision|deprovision|reset-password|test-notify)|delivery\/v1\/admin\/apps\/[^/]+\/(?:deprovision|ntfy-publisher)|(?:delivery\/v1\/admin\/users|people|apps)(?:\/([^/]+))?)$/;
 
-/** The six relayed `/delivery/v1/admin/*` paths `mockProvisioning` owns (keep in sync with PROVISIONING_PATH). */
+/** The relayed `/delivery/v1/admin/*` paths `mockProvisioning` owns (keep in sync with PROVISIONING_PATH). */
 const RELAYED_ADMIN_PATH =
-  /^\/delivery\/v1\/admin\/(?:users(?:\/[^/]+)?|provision|deprovision|reset-password|test-notify|apps\/[^/]+\/deprovision)$/;
+  /^\/delivery\/v1\/admin\/(?:users(?:\/[^/]+)?|provision|deprovision|reset-password|test-notify|apps\/[^/]+\/(?:deprovision|ntfy-publisher))$/;
 
 /**
  * A stateful fake of the provisioning API and the person service: list, edit and delete users,
@@ -525,6 +531,8 @@ export async function mockProvisioning(
     people: [...(seed.people ?? [])],
     apps: [...(seed.apps ?? [])],
   };
+  // Every other app id counts as bound and mints.
+  const unboundAppIds = seed.unboundAppIds ?? [];
 
   async function reply({
     route,
@@ -620,14 +628,25 @@ export async function mockProvisioning(
         await reply({ route, body: {} });
         return;
       }
-      if (method === 'POST' && url.pathname === '/v1/provision-app') {
+      const mint = /^\/delivery\/v1\/admin\/apps\/([^/]+)\/ntfy-publisher$/.exec(url.pathname);
+      if (method === 'POST' && mint !== null) {
+        const mintAppId = decodeURIComponent(mint[1]);
+        if (unboundAppIds.includes(mintAppId)) {
+          await reply({ route, status: 404, body: { error: 'app has no approved binding' } });
+          return;
+        }
         await reply({
           route,
           body: {
-            app_id: body.app_id,
-            publisher_user_id: `${body.app_id as string}-publisher`,
-            topic_pattern: `${body.app_id as string}-*`,
-            token: MINTED_TOKEN,
+            publisher: {
+              app_id: mintAppId,
+              publisher_user_id: `${mintAppId}-publisher`,
+              topic_pattern: `${mintAppId}-*`,
+              created_at: '2026-11-03T10:00:00Z',
+              updated_at: '2026-11-03T10:00:00Z',
+              // Deliberate fixture-only deviation from the real wire shape (see DECOY_TOKEN).
+              token: DECOY_TOKEN,
+            },
           },
         });
         return;

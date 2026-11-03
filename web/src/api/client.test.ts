@@ -194,53 +194,60 @@ describe('api client', () => {
     expect(getHeaders['X-Requested-With']).toBeUndefined();
   });
 
-  it('provisionApp POSTs app_id/rotate and returns the parsed publisher token result', async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse({
-        status: 200,
-        body: {
-          app_id: 'urls4irl',
-          publisher_user_id: 'urls4irl-publisher',
-          topic_pattern: 'urls4irl-*',
-          token: 'tk_pub',
-        },
-      }),
-    );
+  const PUBLISHER_BODY = {
+    publisher: {
+      app_id: 'urls4irl',
+      publisher_user_id: 'urls4irl-publisher',
+      topic_pattern: 'urls4irl-*',
+      created_at: '2026-11-03T10:00:00Z',
+      updated_at: '2026-11-03T11:00:00Z',
+      token: 'DECOY-TOKEN-SHOULD-NEVER-SURFACE',
+    },
+  };
+
+  it('provisionApp POSTs {rotate} to the delivery publisher route and never surfaces a token', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: PUBLISHER_BODY }));
     const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
 
     const result = await client.provisionApp({ appId: 'urls4irl', rotate: true });
 
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
-    expect(calledUrl).toBe('https://api.test/v1/provision-app');
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/apps/urls4irl/ntfy-publisher');
     expect(calledInit).toMatchObject({ method: 'POST' });
-    expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl', rotate: true });
+    expect(JSON.parse(calledInit.body as string)).toEqual({ rotate: true });
     expect(result).toEqual({
       appId: 'urls4irl',
       publisherUserId: 'urls4irl-publisher',
       topicPattern: 'urls4irl-*',
-      token: 'tk_pub',
+      createdAt: '2026-11-03T10:00:00Z',
+      updatedAt: '2026-11-03T11:00:00Z',
     });
+    expect(JSON.stringify(result)).not.toContain('DECOY');
   });
 
-  it('provisionApp defaults rotate to false when omitted', async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse({
-        status: 200,
-        body: {
-          app_id: 'urls4irl',
-          publisher_user_id: 'urls4irl-publisher',
-          topic_pattern: 'urls4irl-*',
-          token: 'tk_pub',
-        },
-      }),
-    );
+  it('provisionApp defaults rotate to false and percent-encodes the app id', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: PUBLISHER_BODY }));
     const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
 
-    await client.provisionApp({ appId: 'urls4irl' });
+    await client.provisionApp({ appId: 'a b' });
 
-    const [, calledInit] = fetchMock.mock.calls[0];
-    expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl', rotate: false });
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/apps/a%20b/ntfy-publisher');
+    expect(JSON.parse(calledInit.body as string)).toEqual({ rotate: false });
   });
+
+  it.each([404, 409, 503])(
+    'provisionApp maps a %i to an ApiError with the server message',
+    async (status) => {
+      fetchMock.mockResolvedValue(jsonResponse({ status, body: { error: 'server says no' } }));
+      const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+      await expect(client.provisionApp({ appId: 'urls4irl' })).rejects.toMatchObject({
+        status,
+        message: 'server says no',
+      });
+    },
+  );
 
   it('deprovisionApp POSTs the app_id', async () => {
     fetchMock.mockResolvedValue(
