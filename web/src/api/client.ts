@@ -1,4 +1,4 @@
-// Typed client for the operator provisioning actions. Most calls go through
+// Typed client for the operator provisioning actions. Every call goes through
 // delivery-api's `/v1/admin/*` (via the same-origin `/delivery` Pages Function).
 // The wire shape is snake_case Go JSON;
 // this module maps it to camelCase TypeScript at the boundary so components

@@ -42,7 +42,7 @@ import './App.css';
  * not-bound copy; any other rejection (including any other 404) is returned
  * untouched so the caller rethrows it as is.
  */
-function rethrowIfNotBound({ rejection, appId }: { rejection: unknown; appId: string }): unknown {
+function mapNotBoundRejection({ rejection, appId }: { rejection: unknown; appId: string }): unknown {
   if (isAppNotBound(rejection)) {
     return new ApiError({ status: 404, message: strings.appNotBoundRetryError({ appId }) });
   }
@@ -94,7 +94,7 @@ function App({
   });
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  // Bumped when a removal may have deleted checks/routes/destinations (Step 3 reads it).
+  // Bumped when a removal may have deleted checks/routes/destinations; the Delivery sections reload on change.
   const [appRemovedSignal, setAppRemovedSignal] = useState(0);
   // appIds with a removal running: the ref dedupes synchronously, the state drives rendering.
   const inFlightRemovalsRef = useRef<Set<string>>(new Set());
@@ -220,7 +220,7 @@ function App({
       try {
         result = await client.provision(params);
       } catch (rejection: unknown) {
-        throw rethrowIfNotBound({ rejection, appId: params.appId });
+        throw mapNotBoundRejection({ rejection, appId: params.appId });
       }
       await refreshUsers();
       await refreshPeople();
@@ -357,7 +357,7 @@ function App({
       try {
         return await client.testNotify(params);
       } catch (rejection: unknown) {
-        throw rethrowIfNotBound({ rejection, appId: params.appId });
+        throw mapNotBoundRejection({ rejection, appId: params.appId });
       }
     },
     [client],
@@ -370,7 +370,7 @@ function App({
       try {
         return await client.provisionApp({ appId, rotate });
       } catch (rejection: unknown) {
-        throw rethrowIfNotBound({ rejection, appId });
+        throw mapNotBoundRejection({ rejection, appId });
       }
     },
     [client],

@@ -2,7 +2,7 @@
 //
 // The admin SPA (notifs-admin.4irl.app) calls same-origin relative paths
 // (`/delivery/*` and `/people`); these Functions forward each request server-side to
-// the Access-gated backends (notifs-api / notifs-people) using the proxy's
+// the Access-gated backends (notifs-delivery / notifs-people) using the proxy's
 // Cloudflare Access **service token**, so the browser never makes a
 // cross-origin request. See the design doc + plan under
 // ~/code/plans/4irl-notifs/open/admin-ui-same-origin/.
