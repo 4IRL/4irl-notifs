@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ApiError, isAppNotBound } from './api/client';
 import type {
@@ -94,6 +94,11 @@ function App({
   });
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  // Bumped when a removal may have deleted checks/routes/destinations (Step 3 reads it).
+  const [, setAppRemovedSignal] = useState(0);
+  // appIds with a removal running: the ref dedupes synchronously, the state drives rendering.
+  const inFlightRemovalsRef = useRef<Set<string>>(new Set());
+  const [removingAppIds, setRemovingAppIds] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [people, setPeople] = useState<PersonSummary[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(personClient !== undefined);
@@ -357,21 +362,41 @@ function App({
     [client],
   );
 
-  // Remove app = full cascade (server-side): publisher identity + every
-  // subscriber grant + registry row. Refresh apps (row gone) and users (grants
-  // gone).
+  // Remove app = full cascade (server-side). Refresh apps (row gone) and users
+  // (grants gone). The cascade is not atomic, so a 409/503 may follow committed
+  // phases: show the message and refresh too. 400/502/other change nothing.
+  // Resolves true on success, false on any failure (never rejects).
   const handleRemoveApp = useCallback(
-    ({ appId }: { appId: string }) => {
-      void client
-        .deprovisionApp({ appId })
-        .then(() => {
-          setError(null);
-          return Promise.all([refreshApps(), refreshUsers()]);
-        })
-        .then(() => undefined)
-        .catch((rejection: unknown) => {
+    async ({ appId }: { appId: string }): Promise<boolean> => {
+      if (inFlightRemovalsRef.current.has(appId)) {
+        return false;
+      }
+      inFlightRemovalsRef.current.add(appId);
+      setRemovingAppIds(new Set(inFlightRemovalsRef.current));
+      // The id stays in flight through the refresh, so Remove is not re-enabled early.
+      try {
+        try {
+          await client.deprovisionApp({ appId });
+        } catch (rejection: unknown) {
+          if (
+            rejection instanceof ApiError &&
+            (rejection.status === 409 || rejection.status === 503)
+          ) {
+            setAppRemovedSignal((value) => value + 1);
+            await Promise.all([refreshApps(), refreshUsers()]);
+          }
+          // After the refresh, so a refresh failure cannot overwrite the server's reason.
           setError(rejection instanceof ApiError ? rejection.message : strings.genericError);
-        });
+          return false;
+        }
+        setError(null);
+        setAppRemovedSignal((value) => value + 1);
+        await Promise.all([refreshApps(), refreshUsers()]);
+        return true;
+      } finally {
+        inFlightRemovalsRef.current.delete(appId);
+        setRemovingAppIds(new Set(inFlightRemovalsRef.current));
+      }
     },
     [client, refreshApps, refreshUsers],
   );
@@ -414,6 +439,7 @@ function App({
           onUpdateApp={handleUpdateApp}
           onRemintToken={handleRemintToken}
           onRemoveApp={handleRemoveApp}
+          removingAppIds={removingAppIds}
         />
       )}
       {appsSectionEnabled && (

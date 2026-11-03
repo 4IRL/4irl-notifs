@@ -1,6 +1,6 @@
 // Typed client for the operator provisioning actions. Most calls go through
 // delivery-api's `/v1/admin/*` (via the same-origin `/delivery` Pages Function);
-// only provisionApp/deprovisionApp still use the old `/v1/*` provisioning proxy.
+// only provisionApp still uses the old `/v1/*` provisioning proxy.
 // The wire shape is snake_case Go JSON;
 // this module maps it to camelCase TypeScript at the boundary so components
 // never touch snake_case.
@@ -250,8 +250,8 @@ export function createApiClient({
       // The admin UI calls delivery-api same-origin: in production via the
       // Cloudflare Pages Function that proxies `/delivery/*` to delivery-api
       // server-side (default empty baseUrl → relative `/delivery/v1/admin/...`);
-      // locally the request stays on the dev origin. `provisionApp` and
-      // `deprovisionApp` still use the old `/v1/*` proxy until later steps.
+      // locally the request stays on the dev origin. `provisionApp`
+      // still uses the old `/v1/*` proxy until a later step.
       // `credentials: 'include'` sends the admin app's own Access session
       // cookie to the same-origin Function.
       credentials: 'include',
@@ -345,7 +345,12 @@ export function createApiClient({
     },
 
     async deprovisionApp({ appId }: AppIdParam): Promise<void> {
-      await request({ path: '/v1/deprovision-app', method: 'POST', body: { app_id: appId } });
+      // delivery-api requires the body's app_id to equal the path id (400 otherwise).
+      await request({
+        path: `${DELIVERY_PREFIX}/v1/admin/apps/${encodeURIComponent(appId)}/deprovision`,
+        method: 'POST',
+        body: { app_id: appId },
+      });
     },
 
     async testNotify({

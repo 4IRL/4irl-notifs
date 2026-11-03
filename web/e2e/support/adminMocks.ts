@@ -492,20 +492,20 @@ export function appWire({
 /** The reveal-once publisher token every mint and re-mint returns. */
 export const MINTED_TOKEN = 'tk_pub_e2e_minted_token';
 
-// The six relayed calls live at `/delivery/v1/admin/...` (users, users/{id}, provision,
-// deprovision, reset-password, test-notify); provision-app and deprovision-app still use
-// the old `/v1/...` proxy until their steps. `mockDelivery`'s `**/delivery/**` catch-all
+// The relayed calls live at `/delivery/v1/admin/...` (users, users/{id}, provision,
+// deprovision, reset-password, test-notify, apps/{id}/deprovision); provision-app still uses
+// the old `/v1/...` proxy until its step. `mockDelivery`'s `**/delivery/**` catch-all
 // defers these paths with `route.fallback()` (see RELAYED_ADMIN_PATH), so this mock serves
 // them whether it is registered before or after `mockDelivery`. Only users, people and apps
 // take an `/<id>` suffix (capture group 1). A spec that installs `mockDelivery` without
 // `mockProvisioning` and hits one of these paths reaches the network unrecorded, as it did
 // with the old `/v1/...` paths; such specs must also install `mockProvisioning`.
 const PROVISIONING_PATH =
-  /^\/(?:v1\/(?:provision-app|deprovision-app)|delivery\/v1\/admin\/(?:provision|deprovision|reset-password|test-notify)|(?:delivery\/v1\/admin\/users|people|apps)(?:\/([^/]+))?)$/;
+  /^\/(?:v1\/provision-app|delivery\/v1\/admin\/(?:provision|deprovision|reset-password|test-notify)|delivery\/v1\/admin\/apps\/[^/]+\/deprovision|(?:delivery\/v1\/admin\/users|people|apps)(?:\/([^/]+))?)$/;
 
 /** The six relayed `/delivery/v1/admin/*` paths `mockProvisioning` owns (keep in sync with PROVISIONING_PATH). */
 const RELAYED_ADMIN_PATH =
-  /^\/delivery\/v1\/admin\/(?:users(?:\/[^/]+)?|provision|deprovision|reset-password|test-notify)$/;
+  /^\/delivery\/v1\/admin\/(?:users(?:\/[^/]+)?|provision|deprovision|reset-password|test-notify|apps\/[^/]+\/deprovision)$/;
 
 /**
  * A stateful fake of the provisioning API and the person service: list, edit and delete users,
@@ -632,9 +632,24 @@ export async function mockProvisioning(
         });
         return;
       }
-      if (method === 'POST' && url.pathname === '/v1/deprovision-app') {
-        mock.apps = mock.apps.filter((candidate) => candidate.app_id !== body.app_id);
-        await reply({ route, body: { app_id: body.app_id, removed: true } });
+      const cascade = /^\/delivery\/v1\/admin\/apps\/([^/]+)\/deprovision$/.exec(url.pathname);
+      if (method === 'POST' && cascade !== null) {
+        const pathAppId = decodeURIComponent(cascade[1]);
+        // delivery-api requires the body's app_id to equal the path id.
+        if (body.app_id !== pathAppId) {
+          await reply({ route, status: 400, body: { error: 'app_id in body must match path' } });
+          return;
+        }
+        mock.apps = mock.apps.filter((candidate) => candidate.app_id !== pathAppId);
+        await reply({
+          route,
+          body: {
+            app_id: pathAppId,
+            removed: true,
+            unbound: true,
+            deleted: { checks: 0, routes: 0, destinations: 0 },
+          },
+        });
         return;
       }
       if (method === 'POST' && url.pathname === '/delivery/v1/admin/deprovision') {

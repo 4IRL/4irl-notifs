@@ -106,6 +106,24 @@ describe('RowActionsMenu kebab', () => {
     expect(trigger.parentElement?.children).toHaveLength(1);
   });
 
+  it.each([
+    { busy: true, expected: 'true' },
+    { busy: false, expected: null },
+    { busy: undefined, expected: null },
+  ])('renders aria-busy on the trigger only when busy is true ($busy)', ({ busy, expected }) => {
+    render(
+      <RowActionsMenu
+        rowLabel={ROW}
+        items={buildItems()}
+        focusKeys={[]}
+        registerControl={vi.fn()}
+        busy={busy}
+      />,
+    );
+
+    expect(kebab().getAttribute('aria-busy')).toBe(expected);
+  });
+
   it('registers under every focus key and unregisters on unmount', () => {
     const registerControl = vi.fn();
     const { unmount } = render(<Harness registerControl={registerControl} />);

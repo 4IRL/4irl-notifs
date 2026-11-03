@@ -77,7 +77,12 @@ export const strings = {
   deletePersonDialogTitle: 'Delete person?',
   deletePersonNotice: 'Deletes the person, every app grant and token.',
   removeAppDialogTitle: 'Remove app?',
-  removeAppNotice: 'Removes the app, its publisher identity and every subscriber grant.',
+  removeAppNotice:
+    'Removes the app, its publisher identity, every subscriber grant and delivery key, and the checks, routes and destinations it owns.',
+  removingAction: 'Removing',
+  removingActionNamed: ({ name }: { name: string }): string => `Removing ${name}`,
+  removingResult: ({ appId }: { appId: string }): string => `Removing ${appId}…`,
+  appRemovedResult: ({ appId }: { appId: string }): string => `Removed ${appId}.`,
   replayDeliveryDialogTitle: 'Replay delivery?',
   replayDeliveryNotice: 'Sends the same message to the destination again.',
   dialogItemDestination: 'Destination',

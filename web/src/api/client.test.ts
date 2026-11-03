@@ -251,9 +251,34 @@ describe('api client', () => {
     await client.deprovisionApp({ appId: 'urls4irl' });
 
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
-    expect(calledUrl).toBe('https://api.test/v1/deprovision-app');
-    expect(calledInit).toMatchObject({ method: 'POST' });
-    expect(JSON.parse(calledInit.body as string)).toEqual({ app_id: 'urls4irl' });
+    expect(calledUrl).toBe('https://api.test/delivery/v1/admin/apps/urls4irl/deprovision');
+    expect(calledInit).toMatchObject({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'admin-ui' },
+    });
+    expect(calledInit.body).toBe('{"app_id":"urls4irl"}');
+  });
+
+  it('deprovisionApp percent-encodes the app id in the path', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { app_id: 'a b' } }));
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    await expect(client.deprovisionApp({ appId: 'a b' })).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.test/delivery/v1/admin/apps/a%20b/deprovision',
+    );
+  });
+
+  it.each([409, 400])('deprovisionApp rejects a %i with the server error', async (status) => {
+    fetchMock.mockResolvedValue(jsonResponse({ status, body: { error: 'teardown busy' } }));
+    const client = createApiClient({ baseUrl: 'https://api.test', fetchImpl: fetchMock });
+
+    await expect(client.deprovisionApp({ appId: 'urls4irl' })).rejects.toMatchObject({
+      name: 'ApiError',
+      status,
+      message: 'teardown busy',
+    });
   });
 
   it('testNotify POSTs the snake_case body and maps the results to camelCase', async () => {

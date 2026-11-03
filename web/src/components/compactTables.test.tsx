@@ -1494,7 +1494,7 @@ function renderApps(overrides: Partial<ComponentProps<typeof AppsTable>> = {}) {
     error: null,
     onUpdateApp: vi.fn().mockResolvedValue(undefined),
     onRemintToken: vi.fn(),
-    onRemoveApp: vi.fn(),
+    onRemoveApp: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
   render(<AppsTable {...props} />);

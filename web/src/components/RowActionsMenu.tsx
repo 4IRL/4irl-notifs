@@ -54,6 +54,8 @@ interface RowActionsMenuProps {
   /** Every focus-registry key the row's inline controls would have, so focus lands on the kebab. */
   focusKeys: string[];
   registerControl: (params: { key: string; element: HTMLElement | null }) => void;
+  /** True while one of the row's actions is running: rendered as `aria-busy` on the kebab. */
+  busy?: boolean;
 }
 
 type FocusTarget = { kind: 'first' } | { kind: 'last' };
@@ -99,6 +101,7 @@ export function RowActionsMenu({
   errors = NO_ERRORS,
   focusKeys,
   registerControl,
+  busy,
 }: RowActionsMenuProps): JSX.Element {
   const [open, setOpen] = useState(false);
   // The chosen confirm item's id (not the item): resolved against the live items on each render.
@@ -399,6 +402,7 @@ export function RowActionsMenu({
         aria-label={name}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-busy={busy === true ? 'true' : undefined}
         aria-controls={menuId}
         aria-describedby={errors.length === 0 ? undefined : errorId}
         data-has-error={errors.length === 0 ? undefined : 'true'}

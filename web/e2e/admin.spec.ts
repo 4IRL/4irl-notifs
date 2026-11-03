@@ -476,11 +476,26 @@ test.describe('admin UI critical flows', () => {
         body: JSON.stringify({ apps }),
       });
     });
-    await page.route('**/v1/deprovision-app', async (route) => {
+    await page.route('**/delivery/v1/admin/apps/urls4irl/deprovision', async (route) => {
+      // delivery-api rejects a body whose app_id differs from the path id.
+      const sent = route.request().postDataJSON() as { app_id?: string } | null;
+      if (sent?.app_id !== 'urls4irl') {
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'app_id in body must match path' }),
+        });
+        return;
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ app_id: 'urls4irl', removed: true }),
+        body: JSON.stringify({
+          app_id: 'urls4irl',
+          removed: true,
+          unbound: true,
+          deleted: { checks: 0, routes: 0, destinations: 0 },
+        }),
       });
     });
 
@@ -495,6 +510,9 @@ test.describe('admin UI critical flows', () => {
     await dialog.getByRole('button', { name: 'Confirm remove URLs4IRL', exact: true }).click();
 
     await expect(page.getByText('No apps registered yet.')).toBeVisible();
+    await expect(page.locator('.apps-table__status[role="status"]')).toHaveText(
+      'Removed urls4irl.',
+    );
   });
 
   test('re-mint dialog Escape closes only the dialog', async ({ page }) => {

@@ -1,5 +1,5 @@
 import type { ComponentProps } from 'react';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,7 +42,7 @@ function renderTable(overrides: Partial<ComponentProps<typeof AppsTable>> = {}) 
       topicPattern: 'urls4irl-*',
       token: 'tk_fresh',
     }),
-    onRemoveApp: vi.fn(),
+    onRemoveApp: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
   render(<AppsTable {...props} />);
@@ -162,7 +162,7 @@ describe('AppsTable', () => {
       error: null,
       onUpdateApp: vi.fn().mockResolvedValue(undefined),
       onRemintToken: vi.fn(),
-      onRemoveApp: vi.fn(),
+      onRemoveApp: vi.fn().mockResolvedValue(true),
     };
     render(<AppsTable {...props} />, { container: root });
 
@@ -358,5 +358,220 @@ describe('AppsTable', () => {
       screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
     );
     expect(onRemoveApp).toHaveBeenCalledWith({ appId: 'urls4irl' });
+  });
+
+  it('shows the cascade notice in the compact remove confirm', async () => {
+    setCompactViewport(true);
+    const user = userEvent.setup();
+    renderTable();
+
+    await user.click(
+      screen.getByRole('button', { name: strings.rowActionsFor({ row: 'URLs4IRL' }) }),
+    );
+    await user.click(screen.getByRole('menuitem', { name: `${strings.removeAction} URLs4IRL` }));
+
+    const dialog = screen.getByRole('dialog', { name: strings.removeAppDialogTitle });
+    expect(within(dialog).getByText(strings.removeAppNotice)).toBeInTheDocument();
+    expect(strings.removeAppNotice).toMatch(/checks, routes and destinations/);
+  });
+
+  describe('removal feedback', () => {
+    it('puts the wide Remove button in its busy state while the app is removing', () => {
+      renderTable({ removingAppIds: new Set(['urls4irl']) });
+
+      const busy = screen.getByRole('button', { name: 'Removing URLs4IRL' });
+      expect(busy).toHaveTextContent(/^Removing$/);
+      expect(busy).toHaveAttribute('aria-disabled', 'true');
+    });
+
+    it('disables the compact Remove item and marks the kebab busy while removing', async () => {
+      setCompactViewport(true);
+      const user = userEvent.setup();
+      renderTable({ removingAppIds: new Set(['urls4irl']) });
+
+      const kebab = screen.getByRole('button', {
+        name: strings.rowActionsFor({ row: 'URLs4IRL' }),
+      });
+      expect(kebab).toHaveAttribute('aria-busy', 'true');
+      await user.click(kebab);
+      const item = screen.getByRole('menuitem', { name: 'Removing URLs4IRL' });
+      expect(item).toHaveTextContent(/^Removing$/);
+      expect(item).toHaveAttribute('aria-disabled', 'true');
+    });
+
+    it('leaves the kebab without aria-busy when nothing is removing', () => {
+      setCompactViewport(true);
+      renderTable();
+
+      expect(
+        screen.getByRole('button', { name: strings.rowActionsFor({ row: 'URLs4IRL' }) }),
+      ).not.toHaveAttribute('aria-busy');
+    });
+
+    async function confirmRemove(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByRole('button', { name: `${strings.removeAction} URLs4IRL` }));
+      await user.click(
+        screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+      );
+    }
+
+    it('announces Removing while pending, then Removed with focus on the heading first', async () => {
+      const user = userEvent.setup();
+      let resolveRemoval: (value: boolean) => void = () => undefined;
+      const onRemoveApp = vi.fn().mockReturnValue(
+        new Promise<boolean>((resolve) => {
+          resolveRemoval = resolve;
+        }),
+      );
+      const props: ComponentProps<typeof AppsTable> = {
+        apps,
+        subscriberCountByApp: new Map(),
+        loading: false,
+        error: null,
+        onUpdateApp: vi.fn(),
+        onRemintToken: vi.fn(),
+        onRemoveApp,
+      };
+      const { rerender } = render(<AppsTable {...props} />);
+
+      await confirmRemove(user);
+      expect(screen.getByRole('status')).toHaveTextContent('Removing urls4irl…');
+
+      // Focus-order spy: what the status read at the moment the heading took focus.
+      const heading = screen.getByRole('heading', { name: strings.appsHeading });
+      let statusAtFocus: string | null = null;
+      heading.addEventListener('focus', () => {
+        statusAtFocus = screen.getByRole('status').textContent;
+      });
+
+      await act(async () => {
+        resolveRemoval(true);
+      });
+      // The row's control unmounts with the refreshed list; focus is lost to <body>.
+      (document.activeElement as HTMLElement | null)?.blur();
+      rerender(<AppsTable {...props} apps={[]} />);
+
+      await waitFor(() =>
+        expect(screen.getByRole('status')).toHaveTextContent('Removed urls4irl.'),
+      );
+      expect(heading).toHaveFocus();
+      expect(statusAtFocus).toBe('Removing urls4irl…');
+    });
+
+    it('clears the in-flight text on failure and writes no Removed message', async () => {
+      const user = userEvent.setup();
+      const onRemoveApp = vi.fn().mockResolvedValue(false);
+      renderTable({ onRemoveApp });
+
+      await confirmRemove(user);
+
+      await waitFor(() => expect(onRemoveApp).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.getByRole('status')).toBeEmptyDOMElement());
+      expect(screen.getByRole('status')).not.toHaveTextContent('Removed');
+    });
+
+    it('does not move focus after a failure while the row remains', async () => {
+      const user = userEvent.setup();
+      renderTable({ onRemoveApp: vi.fn().mockResolvedValue(false) });
+
+      await confirmRemove(user);
+
+      await waitFor(() => expect(screen.getByRole('status')).toBeEmptyDOMElement());
+      expect(screen.getByRole('heading', { name: strings.appsHeading })).not.toHaveFocus();
+    });
+
+    it('moves focus to the heading when a failed removal refresh drops the row', async () => {
+      const user = userEvent.setup();
+      const onRemoveApp = vi.fn().mockResolvedValue(false);
+      const props: ComponentProps<typeof AppsTable> = {
+        apps,
+        subscriberCountByApp: new Map(),
+        loading: false,
+        error: null,
+        onUpdateApp: vi.fn(),
+        onRemintToken: vi.fn(),
+        onRemoveApp,
+      };
+      const { rerender } = render(<AppsTable {...props} />);
+
+      await confirmRemove(user);
+      await waitFor(() => expect(onRemoveApp).toHaveBeenCalledTimes(1));
+      (document.activeElement as HTMLElement | null)?.blur();
+      rerender(<AppsTable {...props} apps={[]} />);
+
+      await waitFor(() =>
+        expect(screen.getByRole('heading', { name: strings.appsHeading })).toHaveFocus(),
+      );
+      expect(screen.getByRole('status')).not.toHaveTextContent('Removed');
+    });
+
+    it('does not steal focus later when the refresh failed and the row stayed', async () => {
+      const user = userEvent.setup();
+      const props: ComponentProps<typeof AppsTable> = {
+        apps,
+        subscriberCountByApp: new Map(),
+        loading: false,
+        error: null,
+        onUpdateApp: vi.fn(),
+        onRemintToken: vi.fn(),
+        onRemoveApp: vi.fn().mockResolvedValue(true),
+      };
+      const { rerender } = render(<AppsTable {...props} />);
+
+      await confirmRemove(user);
+      // The row stays (a fresh list that still has it) and focus stays on its control.
+      const control = screen.getByRole('button', { name: `${strings.removeAction} URLs4IRL` });
+      control.focus();
+      rerender(<AppsTable {...props} apps={[...apps]} />);
+      await waitFor(() =>
+        expect(screen.getByRole('status')).toHaveTextContent('Removed urls4irl.'),
+      );
+      const heading = screen.getByRole('heading', { name: strings.appsHeading });
+      expect(heading).not.toHaveFocus();
+      expect(control).toHaveFocus();
+      // The armed state is cleared: a later refresh with focus on <body> must not focus the heading.
+      control.blur();
+      rerender(<AppsTable {...props} apps={[...apps]} />);
+      expect(heading).not.toHaveFocus();
+    });
+
+    it('replaces the previous Removed message with the next in-flight text', async () => {
+      const user = userEvent.setup();
+      const twoApps: AppSummary[] = [
+        ...apps,
+        {
+          appId: 'chores4irl',
+          displayName: 'Chores4IRL',
+          description: null,
+          createdAt: '2026-07-26T10:00:00Z',
+        },
+      ];
+      const onRemoveApp = vi
+        .fn()
+        .mockResolvedValueOnce(true)
+        .mockReturnValueOnce(new Promise<boolean>(() => undefined));
+      const props: ComponentProps<typeof AppsTable> = {
+        apps: twoApps,
+        subscriberCountByApp: new Map(),
+        loading: false,
+        error: null,
+        onUpdateApp: vi.fn(),
+        onRemintToken: vi.fn(),
+        onRemoveApp,
+      };
+      const { rerender } = render(<AppsTable {...props} />);
+
+      await confirmRemove(user);
+      // The post-removal refresh lands with a fresh list that still has the other app.
+      rerender(<AppsTable {...props} apps={[twoApps[1]]} />);
+      await waitFor(() =>
+        expect(screen.getByRole('status')).toHaveTextContent('Removed urls4irl.'),
+      );
+      await user.click(screen.getByRole('button', { name: 'Remove Chores4IRL' }));
+      await user.click(screen.getByRole('button', { name: 'Confirm remove Chores4IRL' }));
+
+      expect(screen.getByRole('status')).toHaveTextContent('Removing chores4irl…');
+      expect(screen.getByRole('status')).not.toHaveTextContent('Removed');
+    });
   });
 });

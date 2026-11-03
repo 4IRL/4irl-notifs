@@ -159,7 +159,7 @@ test.describe('Provisioning at 420px', () => {
       title: 'Remove app?',
       cancel: 'Cancel Remove URLs4IRL',
       confirm: 'Confirm remove URLs4IRL',
-      request: 'POST /v1/deprovision-app',
+      request: 'POST /delivery/v1/admin/apps/urls4irl/deprovision',
       body: { app_id: 'urls4irl' },
     },
   ] as const;

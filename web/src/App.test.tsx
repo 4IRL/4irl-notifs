@@ -848,6 +848,97 @@ describe('App', () => {
     await waitFor(() => expect(client.deprovisionApp).toHaveBeenCalledWith({ appId: 'urls4irl' }));
   });
 
+  describe('remove app failures', () => {
+    const urls4irlApp = {
+      appId: 'urls4irl',
+      displayName: 'URLs4IRL',
+      description: null,
+      createdAt: '2026-07-25T10:00:00Z',
+    };
+
+    async function removeApp({
+      rejection,
+    }: {
+      rejection: unknown;
+    }): Promise<{ client: ApiClient; personClient: PersonApiClient }> {
+      const client = buildFakeClient({ deprovisionApp: vi.fn().mockRejectedValue(rejection) });
+      const personClient = buildFakePersonClient({
+        listApps: vi.fn().mockResolvedValue([urls4irlApp]),
+      });
+      render(<App client={client} personClient={personClient} appsEnabled />);
+      await screen.findByText('URLs4IRL');
+      vi.mocked(client.listUsers).mockClear();
+      vi.mocked(personClient.listApps).mockClear();
+      await userEvent.click(
+        screen.getByRole('button', { name: `${strings.removeAction} URLs4IRL` }),
+      );
+      await userEvent.click(
+        screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+      );
+      return { client, personClient };
+    }
+
+    it.each([400, 502])('shows a %i message and refreshes nothing', async (status) => {
+      const { client, personClient } = await removeApp({
+        rejection: new ApiError({ status, message: `server said ${status}` }),
+      });
+
+      expect(await screen.findByText(`server said ${status}`)).toBeInTheDocument();
+      expect(client.listUsers).not.toHaveBeenCalled();
+      expect(personClient.listApps).not.toHaveBeenCalled();
+    });
+
+    it('shows the generic error for a non-ApiError rejection and refreshes nothing', async () => {
+      const { client, personClient } = await removeApp({ rejection: new Error('network') });
+
+      expect(await screen.findByText(strings.genericError)).toBeInTheDocument();
+      expect(client.listUsers).not.toHaveBeenCalled();
+      expect(personClient.listApps).not.toHaveBeenCalled();
+    });
+
+    it.each([409, 503])('shows a %i message and refreshes apps and users', async (status) => {
+      const { client, personClient } = await removeApp({
+        rejection: new ApiError({ status, message: `server said ${status}` }),
+      });
+
+      expect(await screen.findByText(`server said ${status}`)).toBeInTheDocument();
+      await waitFor(() => expect(client.listUsers).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(personClient.listApps).toHaveBeenCalledTimes(1));
+    });
+
+    it('disables Remove while pending, makes one request, then announces Removed', async () => {
+      let resolveFirst: () => void = () => undefined;
+      const client = buildFakeClient({
+        deprovisionApp: vi.fn().mockReturnValue(
+          new Promise<void>((resolve) => {
+            resolveFirst = resolve;
+          }),
+        ),
+      });
+      const personClient = buildFakePersonClient({
+        // A fresh array per fetch, as the real client returns.
+        listApps: vi.fn().mockImplementation(() => Promise.resolve([{ ...urls4irlApp }])),
+      });
+      render(<App client={client} personClient={personClient} appsEnabled />);
+      await screen.findByText('URLs4IRL');
+      await userEvent.click(
+        screen.getByRole('button', { name: `${strings.removeAction} URLs4IRL` }),
+      );
+      await userEvent.click(
+        screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+      );
+
+      expect(await screen.findByRole('button', { name: 'Removing URLs4IRL' })).toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
+      expect(client.deprovisionApp).toHaveBeenCalledTimes(1);
+      resolveFirst();
+      expect(await screen.findByText('Removed urls4irl.')).toBeInTheDocument();
+      expect(client.deprovisionApp).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('lists an in-use-but-unregistered app under Unprovisioned apps with its subscriber count', async () => {
     const client = buildFakeClient({
       listUsers: vi.fn().mockResolvedValue([

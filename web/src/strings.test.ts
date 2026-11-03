@@ -60,8 +60,12 @@ describe('strings module', () => {
     expect(strings.deletePersonNotice).toBe('Deletes the person, every app grant and token.');
     expect(strings.removeAppDialogTitle).toBe('Remove app?');
     expect(strings.removeAppNotice).toBe(
-      'Removes the app, its publisher identity and every subscriber grant.',
+      'Removes the app, its publisher identity, every subscriber grant and delivery key, and the checks, routes and destinations it owns.',
     );
+    expect(strings.removingAction).toBe('Removing');
+    expect(strings.removingActionNamed({ name: 'U4I' })).toBe('Removing U4I');
+    expect(strings.removingResult({ appId: 'u4i' })).toBe('Removing u4i…');
+    expect(strings.appRemovedResult({ appId: 'u4i' })).toBe('Removed u4i.');
     expect(strings.appNotBoundError({ appId: 'zapp' })).toBe(
       'zapp has no approved delivery key yet. Approve its key request on the Delivery tab, then add it again.',
     );
