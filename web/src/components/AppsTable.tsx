@@ -136,12 +136,11 @@ export function AppsTable({
     if (removalTokenRef.current !== token) {
       return;
     }
-    if (!removed) {
-      // Nothing was removed: no focus hand-off to arm.
+    if (removed) {
+      setPendingRemovedResult(strings.appRemovedResult({ appId }));
+    } else {
       setResult(null);
-      return;
     }
-    setPendingRemovedResult(strings.appRemovedResult({ appId }));
     armedRef.current = startSnapshot;
     setPendingFocusAppId(appId);
   }
