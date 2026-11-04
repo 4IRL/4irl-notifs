@@ -137,14 +137,8 @@ go-test: ## Run Go unit tests
 go-test-race: ## Run Go unit tests under the race detector
 	cd provisioning-api && go test -race ./...
 
-# Shell snippet (expand inside a recipe) that sets CRED to the internal credential
-# harnesses send to provisioning-api: an already-set NOTIFS_INTERNAL_CREDENTIAL wins,
-# else it is read from the running provisioning-api container's environment
-# (PROVISIONING_INTERNAL_CREDENTIAL), so it stays in lockstep with the stack. Never echoed.
-CREDENTIAL_LOOKUP = CRED="$${NOTIFS_INTERNAL_CREDENTIAL:-}"; if [ -z "$$CRED" ]; then CID="$$($(COMPOSE) ps -q provisioning-api)"; if [ -n "$$CID" ]; then CRED="$$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$$CID" | sed -n 's/^PROVISIONING_INTERNAL_CREDENTIAL=//p')"; fi; fi; if [ -z "$$CRED" ]; then echo "NOTIFS_INTERNAL_CREDENTIAL not found: run make local-up first"; exit 1; fi;
-
 go-integration-test: ## Run Go integration tests (local stack must be up)
-	@$(CREDENTIAL_LOOKUP) C="$$($(COMPOSE) ps -q provisioning-api)"; cd provisioning-api && NOTIFS_INTERNAL_CREDENTIAL="$$CRED" NOTIFS_API_CONTAINER="$$C" NOTIFS_API_URL=$(API_URL) NTFY_URL=$(NTFY_URL) go test -tags integration ./...
+	@$(INTERNAL_CREDENTIAL_LOOKUP); C="$$($(COMPOSE) ps -q provisioning-api)"; cd provisioning-api && NOTIFS_INTERNAL_CREDENTIAL="$$CRED" NOTIFS_API_CONTAINER="$$C" NOTIFS_API_URL=$(API_URL) NTFY_URL=$(NTFY_URL) go test -tags integration ./...
 
 go-lint: golangci-pin-check ## Check Go formatting and lint
 	@UNFORMATTED="$$(cd provisioning-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }
@@ -263,6 +257,20 @@ onboard: ## Plan/apply/verify app onboarding: make onboard app=<app_id|_platform
 onboard-lint: ## Offline lint of every manifest under apps/ (no network call; part of `make lint`)
 	node scripts/onboard.mjs lint apps
 
+# Shared shell lookup of the harness credential: an already-set NOTIFS_INTERNAL_CREDENTIAL wins as
+# is; otherwise read PROVISIONING_INTERNAL_CREDENTIAL from the running provisioning-api container's
+# environment. Empty either way fails closed. Never echoes the value.
+INTERNAL_CREDENTIAL_LOOKUP = CRED="$${NOTIFS_INTERNAL_CREDENTIAL:-}"; \
+	if [ -z "$$CRED" ]; then \
+		CID="$$($(COMPOSE) ps -q provisioning-api)"; \
+		if [ -n "$$CID" ]; then CRED="$$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$$CID" | sed -n 's/^PROVISIONING_INTERNAL_CREDENTIAL=//p')"; fi; \
+	fi; \
+	[ -n "$$CRED" ] || { echo "no internal credential: run 'make local-up' first (or export NOTIFS_INTERNAL_CREDENTIAL)"; exit 1; }
+
+credential-audit: SHELL := /bin/bash
+credential-audit: ## Fail if provisioning-api logged any request the internal-credential check would reject (SINCE=<docker --since value> to scope)
+	@set -o pipefail; $(COMPOSE) logs --no-color $(if $(SINCE),--since '$(SINCE)') provisioning-api | node scripts/credential-audit.mjs
+
 # Needs the local stack, like delivery-integration-test. Sets ONBOARD_INTEGRATION_URL so
 # scripts/onboard.integration.test.mjs runs instead of skipping; `make scripts-test` (no env set)
 # stays skipped-green with no stack. ONBOARD_INTEGRATION_PROVISIONING_URL lets the test mint (and
@@ -271,20 +279,5 @@ onboard-lint: ## Offline lint of every manifest under apps/ (no network call; pa
 # NOTIFS_INTERNAL_CREDENTIAL (looked up below), and the test's teardown goes through the door's
 # operator deprovision instead of provisioning-api. Runs only that one file, not the whole scripts/
 # glob.
-#
-# Shared shell lookup of the harness credential: an already-set NOTIFS_INTERNAL_CREDENTIAL wins as
-# is; otherwise read PROVISIONING_INTERNAL_CREDENTIAL from the running provisioning-api container's
-# environment. Empty either way fails closed. Never echoes the value.
-INTERNAL_CREDENTIAL_LOOKUP = CRED="$${NOTIFS_INTERNAL_CREDENTIAL:-}"; \
-	if [ -z "$$CRED" ]; then \
-		CID="$$($(COMPOSE) ps -q provisioning-api)"; \
-		if [ -n "$$CID" ]; then CRED="$$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$$CID" | sed -n 's/^PROVISIONING_INTERNAL_CREDENTIAL=//p')"; fi; \
-	fi; \
-	[ -n "$$CRED" ] || { echo "no internal credential: run 'make local-up' first (or export NOTIFS_INTERNAL_CREDENTIAL)"; exit 1; }
-
-credential-audit: SHELL := /bin/bash
-credential-audit: ## Fail if provisioning-api logged any request the internal-credential check would reject (SINCE=<docker --since value> to scope)
-	@set -o pipefail; $(COMPOSE) logs --no-color $(if $(SINCE),--since '$(SINCE)') provisioning-api | node scripts/credential-audit.mjs
-
 onboard-integration-test: ## Run the live app onboarding integration test (local stack must be up)
 	@$(INTERNAL_CREDENTIAL_LOOKUP); ONBOARD_INTEGRATION_URL=$(DELIVERY_URL) ONBOARD_INTEGRATION_PROVISIONING_URL=$(API_URL) NOTIFS_INTERNAL_CREDENTIAL="$$CRED" node --test scripts/onboard.integration.test.mjs

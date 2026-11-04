@@ -9,7 +9,7 @@
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-import { mintAppKey, unbindApp } from './dev-app-key.mjs';
+import { errorSummary, mintAppKey, unbindApp } from './dev-app-key.mjs';
 
 export const SMOKE_APP_ID = 'smoketest';
 export const SMOKE_EMAIL = 'smoketest@example.com';
@@ -65,13 +65,6 @@ export function buildEnvelope({ appId, email, channel, idempotencyKey, body }) {
 /** The final PASS/FAIL line. */
 export function resultLine({ ok, id, topic, step, detail }) {
   return ok ? `PASS: ${id} delivered on ${topic}` : `FAIL: ${step}: ${detail}`;
-}
-
-/** Status plus only the response's `error` string, never the whole payload (it could hold a key). */
-function summarize(result) {
-  return typeof result.payload?.error === 'string'
-    ? `${result.status} ${result.payload.error}`
-    : `${result.status}`;
 }
 
 class StepError extends Error {
@@ -168,7 +161,7 @@ export async function runSmokeTest({
           body: { app_id: SMOKE_APP_ID },
         },
       );
-      log(`pre-clean teardown: ${summarize(preClean)}`);
+      log(`pre-clean teardown: ${errorSummary(preClean)}`);
     } catch (error) {
       log(`pre-clean teardown: ${error.message}`);
     }
@@ -195,7 +188,7 @@ export async function runSmokeTest({
       state.provisioned = true;
     }
     if (provisioned.status !== 200 || typeof provisioned.payload?.token !== 'string') {
-      throw new StepError('provision', summarize(provisioned));
+      throw new StepError('provision', errorSummary(provisioned));
     }
     state.userId = provisioned.payload.user_id ?? null;
     const subscriberToken = provisioned.payload.token;
@@ -207,7 +200,7 @@ export async function runSmokeTest({
       `${deliveryUrl}/v1/admin/apps/${SMOKE_APP_ID}/ntfy-publisher`,
     );
     if (publisher.status !== 200) {
-      throw new StepError('mint publisher', summarize(publisher));
+      throw new StepError('mint publisher', errorSummary(publisher));
     }
     if (!publisher.payload || typeof publisher.payload !== 'object') {
       throw new StepError('mint publisher', '200 response is not a JSON object');
@@ -236,7 +229,7 @@ export async function runSmokeTest({
       timeoutMs: SUBMIT_WAIT_SECONDS * 1000 + SUBMIT_EXTRA_TIMEOUT_MS,
     });
     if (submitted.status !== 202) {
-      throw new StepError('submit message', summarize(submitted));
+      throw new StepError('submit message', errorSummary(submitted));
     }
     const deliveries = submitted.payload?.message?.deliveries;
     if (!Array.isArray(deliveries) || deliveries.length !== 1) {
@@ -294,8 +287,8 @@ export async function runSmokeTest({
     try {
       const result = await action();
       if (result.status !== 200) {
-        log(`cleanup ${label}: ${summarize(result)}`);
-        failStep(`cleanup ${label}`, summarize(result));
+        log(`cleanup ${label}: ${errorSummary(result)}`);
+        failStep(`cleanup ${label}`, errorSummary(result));
       } else {
         log(`cleanup ${label}: 200`);
       }

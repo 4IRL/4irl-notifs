@@ -73,6 +73,16 @@ test('output never contains fields beyond method, path and reason', () => {
   assert.ok(!result.lines.join('\n').includes('SHOULD-NOT-PRINT'));
 });
 
+test('a hit missing method, path and reason still counts with stable output', () => {
+  const bare = JSON.stringify({ level: 'WARN', msg: 'internal credential would reject' });
+  const result = auditLog(bare + '\n');
+  assert.equal(result.code, 1);
+  assert.deepEqual(result.lines, [
+    'undefined undefined reason=undefined',
+    'credential audit: 1 hit(s)',
+  ]);
+});
+
 test('empty input fails with the distinct no-lines message', () => {
   const result = auditLog('');
   assert.equal(result.code, 1);

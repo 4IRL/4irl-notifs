@@ -95,7 +95,7 @@ export async function deliveryRequest({ deliveryUrl, method, pathname, body }) {
 }
 
 /** Status plus only the response's `error` string, never the whole payload (it could hold a key). */
-function errorSummary({ status, payload }) {
+export function errorSummary({ status, payload }) {
   return typeof payload?.error === 'string' ? `${status} ${payload.error}` : `${status}`;
 }
 

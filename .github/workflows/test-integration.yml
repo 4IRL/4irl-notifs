@@ -107,9 +107,13 @@ jobs:
         run: |
           set -o pipefail
           CID="$(docker compose --project-directory . -f docker-compose.yml ps -q provisioning-api)"
-          CRED="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CID" | sed -n 's/^PROVISIONING_INTERNAL_CREDENTIAL=//p')"
+          if [ -z "$CID" ]; then
+            echo "provisioning-api container not found" >&2
+            exit 1
+          fi
+          CRED="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$CID" | sed -n 's/^PROVISIONING_INTERNAL_CREDENTIAL=//p')"
           if [ -z "$CRED" ]; then
-            echo "provisioning-api has no PROVISIONING_INTERNAL_CREDENTIAL in its environment"
+            echo "PROVISIONING_INTERNAL_CREDENTIAL is empty in the provisioning-api container" >&2
             exit 1
           fi
           echo "::add-mask::$CRED"

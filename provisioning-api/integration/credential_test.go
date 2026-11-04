@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,17 +22,11 @@ func TestEveryRequestCarriesTheInternalCredential(t *testing.T) {
 	defer server.Close()
 
 	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
-		var body *strings.Reader
+		var body io.Reader
 		if method == http.MethodPost {
 			body = strings.NewReader(`{}`)
 		}
-		var request *http.Request
-		var buildErr error
-		if body != nil {
-			request, buildErr = newProvisioningRequest(method, server.URL+"/v1/x", body)
-		} else {
-			request, buildErr = newProvisioningRequest(method, server.URL+"/v1/x", nil)
-		}
+		request, buildErr := newProvisioningRequest(method, server.URL+"/v1/x", body)
 		if buildErr != nil {
 			t.Fatalf("%s build: %v", method, buildErr)
 		}
