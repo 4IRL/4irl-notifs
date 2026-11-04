@@ -308,7 +308,20 @@ onboard-lint: ## Offline lint of every manifest under apps/ (no network call; pa
 # scripts/onboard.integration.test.mjs runs instead of skipping; `make scripts-test` (no env set)
 # stays skipped-green with no stack. ONBOARD_INTEGRATION_PROVISIONING_URL lets the test mint (and
 # revoke) a real ntfy publisher token via provisioning-api, so its owned ntfy destination actually
-# authenticates against ntfy's auth-default-access: deny-all. Runs only that one file, not the
-# whole scripts/ glob.
+# authenticates against ntfy's auth-default-access: deny-all; that one direct call carries
+# NOTIFS_INTERNAL_CREDENTIAL (looked up below), and the test's teardown goes through the door's
+# operator deprovision instead of provisioning-api. Runs only that one file, not the whole scripts/
+# glob.
+#
+# Shared shell lookup of the harness credential: an already-set NOTIFS_INTERNAL_CREDENTIAL wins as
+# is; otherwise read PROVISIONING_INTERNAL_CREDENTIAL from the running provisioning-api container's
+# environment. Empty either way fails closed. Never echoes the value.
+INTERNAL_CREDENTIAL_LOOKUP = CRED="$${NOTIFS_INTERNAL_CREDENTIAL:-}"; \
+	if [ -z "$$CRED" ]; then \
+		CID="$$($(COMPOSE) ps -q provisioning-api)"; \
+		if [ -n "$$CID" ]; then CRED="$$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$$CID" | sed -n 's/^PROVISIONING_INTERNAL_CREDENTIAL=//p')"; fi; \
+	fi; \
+	[ -n "$$CRED" ] || { echo "no internal credential: run 'make local-up' first (or export NOTIFS_INTERNAL_CREDENTIAL)"; exit 1; }
+
 onboard-integration-test: ## Run the live app onboarding integration test (local stack must be up)
-	ONBOARD_INTEGRATION_URL=$(DELIVERY_URL) ONBOARD_INTEGRATION_PROVISIONING_URL=$(API_URL) node --test scripts/onboard.integration.test.mjs
+	@$(INTERNAL_CREDENTIAL_LOOKUP); ONBOARD_INTEGRATION_URL=$(DELIVERY_URL) ONBOARD_INTEGRATION_PROVISIONING_URL=$(API_URL) NOTIFS_INTERNAL_CREDENTIAL="$$CRED" node --test scripts/onboard.integration.test.mjs

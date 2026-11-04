@@ -10,44 +10,39 @@
 // onboard-client.mjs's resolveTarget fail-closed rules.
 //
 // ntfy/server.yml runs `auth-default-access: deny-all`, so a real delivery to the owned ntfy
-// destination needs a real write grant on its topic, not just a reachable server. This test mints
-// one the same way `make notif-smoke-test` does: POST /v1/provision-app on provisioning-api grants
-// the app's publisher identity write-only access to "<app_id>-*" (provisioning-api/internal/ntfycli
-// `PublisherTopicPattern`), so the manifest's owned destination topic is "<app_id>-push" and its
-// `secrets.access_token` resolves to that minted token. /v1/deprovision-app removes the publisher
-// identity again during cleanup.
+// destination needs a real write grant on its topic, not just a reachable server. The door never
+// returns a plaintext publisher token, so this test keeps ONE direct call: POST /v1/provision-app on
+// provisioning-api, which grants the app's publisher identity write-only access to "<app_id>-*"
+// (provisioning-api/internal/ntfycli `PublisherTopicPattern`). The manifest's owned destination
+// topic is "<app_id>-push" and its `secrets.access_token` resolves to that minted token. That call
+// carries the internal credential (X-Notifs-Internal-Credential, from NOTIFS_INTERNAL_CREDENTIAL);
+// the suite fails before sending any request when the variable is empty. Cleanup goes through the
+// door: the operator teardown POST /v1/admin/apps/<app_id>/deprovision removes the publisher
+// identity, any sealed publisher and the binding, so no provisioning-api call remains in teardown.
 //
 // `verify` sends and pings through the app-facing endpoints, which require the app's delivery key
-// (ONBOARD_APP_KEY). This test gets one the way the stack's dev mode allows and production never
-// does for an operator-run verify: it signs a GitHub-shaped OIDC token with the throwaway key
-// `make local-up` generated in .local/dev-oidc/, exchanges it (the first exchange files a pending
-// request), approves the request through the operator API, and exchanges again for the key.
+// (ONBOARD_APP_KEY). This test gets one through scripts/dev-app-key.mjs, the way the stack's dev
+// mode allows and production never does for an operator-run verify: it signs a GitHub-shaped OIDC
+// token with the throwaway key `make local-up` generated in .local/dev-oidc/, exchanges it, approves
+// the request through the operator API, and exchanges again for the key.
 //
 // Two flows are covered: the operator mode (`main(['plan', <manifest>])`, `/v1/admin`) and the app
 // repo mode (`--manifest <path> --target app`, `/v1/apps/{app_id}` with that key), plus the
 // negative case that one app's key cannot apply another app's manifest.
-import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, afterEach, before, describe, it } from 'node:test';
 
-import { DEFAULT_DIR, JWKS_FILE, PRIVATE_KEY_FILE } from './dev-oidc-keys.mjs';
+import { deliveryRequest, mintAppKey, unbindApp } from './dev-app-key.mjs';
 import { main } from './onboard.mjs';
 
 const INTEGRATION_URL = process.env.ONBOARD_INTEGRATION_URL;
 const PROVISIONING_URL = process.env.ONBOARD_INTEGRATION_PROVISIONING_URL;
+const INTERNAL_CREDENTIAL = process.env.NOTIFS_INTERNAL_CREDENTIAL;
+const INTERNAL_CREDENTIAL_HEADER = 'X-Notifs-Internal-Credential';
 const PROVISIONING_TIMEOUT_MS = 15000;
-const IDENTITY_TIMEOUT_MS = 15000;
-
-const GITHUB_ISSUER = 'https://token.actions.githubusercontent.com';
-const OIDC_AUDIENCE = 'notifs-delivery';
-const OIDC_WORKFLOW = '.github/workflows/prod-deploy.yml';
-const OIDC_REF = 'refs/heads/main';
-// Made-up GitHub ids for the throwaway workflow identity this test binds; not real accounts.
-const OIDC_REPOSITORY_ID = '8800000001';
-const OIDC_OWNER_ID = '8800000002';
 
 const APP_ID = 'onboard_it';
 // A second app id, deliberately not prefixed by APP_ID, whose manifest the first app's key must not
@@ -92,12 +87,28 @@ function envFor(ntfyToken) {
   return { ONBOARD_URL: INTEGRATION_URL, [NTFY_TOKEN_ENV_VAR]: ntfyToken };
 }
 
+/** The operator's view of one registry resource (`destinations`, `routes`, `heartbeats`), with the
+ * server-side `owner_kind`/`owner_app_id` that only the server can set. */
+async function adminList(resource) {
+  const result = await deliveryRequest({
+    deliveryUrl: INTEGRATION_URL,
+    method: 'GET',
+    pathname: `/v1/admin/${resource}`,
+  });
+  assert.equal(result.status, 200, `list ${resource}: ${JSON.stringify(result.payload)}`);
+  return result.payload[resource === 'heartbeats' ? 'checks' : resource];
+}
+
 /** Mints (or reuses) the app's ntfy publisher identity via provisioning-api, returning the
- * write-only token the manifest's destination resolves as its `access_token` secret. */
+ * write-only token the manifest's destination resolves as its `access_token` secret. This is the
+ * suite's one direct provisioning-api call, so it carries the internal credential. */
 async function provisionPublisherToken() {
   const response = await fetch(`${PROVISIONING_URL}/v1/provision-app`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      [INTERNAL_CREDENTIAL_HEADER]: INTERNAL_CREDENTIAL,
+    },
     body: JSON.stringify({ app_id: APP_ID }),
     signal: AbortSignal.timeout(PROVISIONING_TIMEOUT_MS),
   });
@@ -108,112 +119,31 @@ async function provisionPublisherToken() {
   return body.token;
 }
 
-/** Removes the app's publisher identity (and its registry row) via provisioning-api. Best-effort:
- * swallows a failure so the caller's own cleanup still runs when the server is unreachable. */
-async function deprovisionPublisher() {
-  try {
-    await fetch(`${PROVISIONING_URL}/v1/deprovision-app`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: APP_ID }),
-      signal: AbortSignal.timeout(PROVISIONING_TIMEOUT_MS),
-    });
-  } catch {
-    // Best-effort cleanup; the test itself already reported the real failure.
-  }
-}
-
-function base64url(value) {
-  return Buffer.from(typeof value === 'string' ? value : JSON.stringify(value)).toString(
-    'base64url',
-  );
-}
-
-/** Signs a GitHub-shaped OIDC token for APP_ID's throwaway workflow identity with the dev key. */
-function signDevOidcToken() {
-  let privateKey;
-  let jwks;
-  try {
-    privateKey = crypto.createPrivateKey(fs.readFileSync(path.join(DEFAULT_DIR, PRIVATE_KEY_FILE)));
-    jwks = JSON.parse(fs.readFileSync(path.join(DEFAULT_DIR, JWKS_FILE), 'utf8'));
-  } catch (error) {
-    throw new Error(
-      `cannot read the dev OIDC key pair in ${DEFAULT_DIR} (${error.message}): ` +
-        'run make dev-oidc-keys and make local-up',
-    );
-  }
-  const repository = `4IRL/${APP_ID.replaceAll('_', '-')}`;
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: 'RS256', typ: 'JWT', kid: jwks.keys[0].kid };
-  const claims = {
-    iss: GITHUB_ISSUER,
-    aud: OIDC_AUDIENCE,
-    iat: now - 60,
-    nbf: now - 60,
-    exp: now + 600,
-    jti: `onboard-it-${crypto.randomUUID()}`,
-    repository,
-    repository_id: OIDC_REPOSITORY_ID,
-    repository_owner_id: OIDC_OWNER_ID,
-    workflow_ref: `${repository}/${OIDC_WORKFLOW}@${OIDC_REF}`,
-    ref: OIDC_REF,
-    run_id: '1',
-  };
-  const signingInput = `${base64url(header)}.${base64url(claims)}`;
-  const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput), privateKey);
-  return `${signingInput}.${signature.toString('base64url')}`;
-}
-
-async function identityRequest({ method, pathname, body }) {
-  const response = await fetch(`${INTEGRATION_URL}${pathname}`, {
-    method,
-    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(IDENTITY_TIMEOUT_MS),
+/** The door's operator teardown: removes the app's ntfy publisher user, any sealed publisher and
+ * its binding. Returns the raw result; callers decide how strictly to read it. */
+function operatorDeprovision() {
+  return deliveryRequest({
+    deliveryUrl: INTEGRATION_URL,
+    method: 'POST',
+    pathname: `/v1/admin/apps/${APP_ID}/deprovision`,
+    body: { app_id: APP_ID },
   });
-  return { status: response.status, payload: await response.json().catch(() => null) };
 }
 
-/** Binds APP_ID to the throwaway workflow identity (exchange -> approve) and returns its delivery
- * key from a second exchange. Reuses an existing binding of the same identity (an interrupted
- * earlier run), which answers the first exchange with a key at once. */
-async function mintAppKey() {
-  const exchange = () =>
-    identityRequest({
-      method: 'POST',
-      pathname: '/v1/app-identity/exchange',
-      body: { app_id: APP_ID, token: signDevOidcToken() },
-    });
-  let result = await exchange();
-  if (result.status === 202) {
-    const approved = await identityRequest({
-      method: 'POST',
-      pathname: `/v1/admin/app-identity/requests/${result.payload.request_id}/approve`,
-    });
-    assert.equal(approved.status, 201, `approve: ${JSON.stringify(approved.payload)}`);
-    result = await exchange();
-  }
-  assert.equal(result.status, 200, `exchange: ${JSON.stringify(result.payload)}`);
-  return result.payload.key;
-}
-
-/** The operator's view of one registry resource (`destinations`, `routes`, `heartbeats`), with the
- * server-side `owner_kind`/`owner_app_id` that only the server can set. */
-async function adminList(resource) {
-  const result = await identityRequest({ method: 'GET', pathname: `/v1/admin/${resource}` });
-  assert.equal(result.status, 200, `list ${resource}: ${JSON.stringify(result.payload)}`);
-  return result.payload[resource === 'heartbeats' ? 'checks' : resource];
-}
-
-/** Unbinds APP_ID (revoking its keys). Best-effort, like the other cleanup. */
-async function unbindApp() {
+/** Clears leftovers of an interrupted run. Outcomes are logged, never thrown: the real checks
+ * follow and fail on their own. */
+async function preClean() {
   try {
-    await identityRequest({
-      method: 'DELETE',
-      pathname: `/v1/admin/app-identity/bindings/${APP_ID}`,
-    });
-  } catch {
-    // Best-effort cleanup; the test itself already reported the real failure.
+    const result = await operatorDeprovision();
+    console.log(`pre-clean: operator deprovision answered ${result.status}`);
+  } catch (error) {
+    console.log(`pre-clean: operator deprovision failed: ${error.message}`);
+  }
+  try {
+    const result = await unbindApp({ deliveryUrl: INTEGRATION_URL, appId: APP_ID });
+    console.log(`pre-clean: unbind deleted=${result.deleted}`);
+  } catch (error) {
+    console.log(`pre-clean: unbind failed: ${error.message}`);
   }
 }
 
@@ -260,14 +190,26 @@ describe(
     let appDir;
     let ntfyToken;
     let appKey;
+    // False until the credential check passed: a suite that failed it sends no request at all,
+    // cleanup included.
+    let credentialChecked = false;
 
     before(async () => {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 'notifs-onboard-it-'));
       // The --target app tests keep their manifests apart from `dir`: the operator cleanup in
       // `after` runs `apply --prune` there, whose directory lint refuses any stray sibling file.
       appDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notifs-onboard-it-app-'));
+      if (!INTERNAL_CREDENTIAL) {
+        throw new Error(
+          'NOTIFS_INTERNAL_CREDENTIAL is empty: set it to the provisioning-api internal ' +
+            'credential (make onboard-integration-test reads it from the running container; ' +
+            'run make local-up first)',
+        );
+      }
+      credentialChecked = true;
+      await preClean();
       ntfyToken = await provisionPublisherToken();
-      appKey = await mintAppKey();
+      appKey = await mintAppKey({ deliveryUrl: INTEGRATION_URL, appId: APP_ID });
       // A previous failed or killed run may have left onboard_it* objects behind (the cleanup in
       // `after` never ran); start from a clean server so they cannot turn a create into a 409.
       await pruneToEmpty(dir, ntfyToken);
@@ -276,11 +218,49 @@ describe(
     after(async () => {
       // Cleans up after itself so repeated runs start clean, even when the test below failed
       // partway through, before reaching its own apply --prune step.
-      await pruneToEmpty(dir, ntfyToken);
-      await deprovisionPublisher();
-      await unbindApp();
-      fs.rmSync(dir, { recursive: true, force: true });
-      fs.rmSync(appDir, { recursive: true, force: true });
+      // Cleanup is not best-effort: every step runs even when an earlier one failed, the temp dirs
+      // are always removed, and the first failure is re-thrown at the end.
+      const failures = [];
+      const runStep = async (step) => {
+        try {
+          await step();
+        } catch (error) {
+          failures.push(error);
+        }
+      };
+      try {
+        if (credentialChecked) {
+          if (ntfyToken) {
+            await runStep(() => pruneToEmpty(dir, ntfyToken));
+          }
+          await runStep(async () => {
+            const teardown = await operatorDeprovision();
+            const shown = JSON.stringify(teardown.payload);
+            assert.equal(teardown.status, 200, `teardown: ${shown}`);
+            assert.equal(teardown.payload?.app_id, APP_ID, `teardown app_id: ${shown}`);
+            assert.equal(teardown.payload?.removed, true, `teardown removed: ${shown}`);
+            assert.equal(teardown.payload?.unbound, true, `teardown unbound: ${shown}`);
+          });
+          await runStep(async () => {
+            const unbound = await unbindApp({ deliveryUrl: INTEGRATION_URL, appId: APP_ID });
+            assert.equal(
+              unbound.deleted,
+              false,
+              'the teardown should already have unbound the app',
+            );
+          });
+        }
+      } finally {
+        if (dir) {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+        if (appDir) {
+          fs.rmSync(appDir, { recursive: true, force: true });
+        }
+      }
+      if (failures.length > 0) {
+        throw failures[0];
+      }
     });
 
     afterEach(() => {
