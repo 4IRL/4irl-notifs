@@ -1,0 +1,98 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { auditLog, NO_LINES_MESSAGE } from './credential-audit.mjs';
+
+const SCRIPT = fileURLToPath(new URL('./credential-audit.mjs', import.meta.url));
+
+const wouldReject = JSON.stringify({
+  level: 'WARN',
+  msg: 'internal credential would reject',
+  reason: 'missing',
+  method: 'POST',
+  path: '/v1/provision',
+  secret: 'SHOULD-NOT-PRINT',
+});
+const rejected = JSON.stringify({
+  level: 'WARN',
+  msg: 'internal credential rejected',
+  reason: 'mismatch',
+  method: 'DELETE',
+  path: '/v1/users/abc',
+  secret: 'SHOULD-NOT-PRINT',
+});
+const otherWarn = JSON.stringify({
+  level: 'WARN',
+  msg: 'something else',
+  method: 'GET',
+  path: '/x',
+});
+const info = JSON.stringify({ level: 'INFO', msg: 'request' });
+
+test('would-reject line is a hit', () => {
+  const result = auditLog(wouldReject + '\n');
+  assert.equal(result.code, 1);
+  assert.deepEqual(result.lines, [
+    'POST /v1/provision reason=missing',
+    'credential audit: 1 hit(s)',
+  ]);
+});
+
+test('rejected line is a hit', () => {
+  const result = auditLog(rejected + '\n');
+  assert.equal(result.code, 1);
+  assert.deepEqual(result.lines, [
+    'DELETE /v1/users/abc reason=mismatch',
+    'credential audit: 1 hit(s)',
+  ]);
+});
+
+test('compose-prefixed line is parsed and counted', () => {
+  const result = auditLog(`provisioning-api-1  | ${wouldReject}\n`);
+  assert.equal(result.code, 1);
+  assert.equal(result.lines[0], 'POST /v1/provision reason=missing');
+});
+
+test('non-JSON lines and other msgs are skipped; JSON without hits is clean', () => {
+  const result = auditLog(`starting up\n${otherWarn}\nnot {json}\n${info}\n`);
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.lines, ['credential audit: clean']);
+});
+
+test('multiple hits are all counted', () => {
+  const result = auditLog([wouldReject, rejected, info].join('\n'));
+  assert.equal(result.code, 1);
+  assert.equal(result.lines.length, 3);
+  assert.equal(result.lines[2], 'credential audit: 2 hit(s)');
+});
+
+test('output never contains fields beyond method, path and reason', () => {
+  const result = auditLog([wouldReject, rejected].join('\n'));
+  assert.ok(!result.lines.join('\n').includes('SHOULD-NOT-PRINT'));
+});
+
+test('empty input fails with the distinct no-lines message', () => {
+  const result = auditLog('');
+  assert.equal(result.code, 1);
+  assert.deepEqual(result.lines, [NO_LINES_MESSAGE]);
+});
+
+test('input with no parseable JSON line fails with the no-lines message', () => {
+  const result = auditLog('plain text\nprovisioning-api-1  | still plain\n');
+  assert.equal(result.code, 1);
+  assert.deepEqual(result.lines, [NO_LINES_MESSAGE]);
+});
+
+test('CLI exit codes follow stdin', () => {
+  const clean = spawnSync('node', [SCRIPT], { input: info + '\n', encoding: 'utf8' });
+  assert.equal(clean.status, 0);
+  assert.match(clean.stdout, /credential audit: clean/);
+  const hit = spawnSync('node', [SCRIPT], { input: wouldReject + '\n', encoding: 'utf8' });
+  assert.equal(hit.status, 1);
+  assert.match(hit.stderr, /POST \/v1\/provision reason=missing/);
+  const empty = spawnSync('node', [SCRIPT], { input: '', encoding: 'utf8' });
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /no JSON log lines parsed/);
+});

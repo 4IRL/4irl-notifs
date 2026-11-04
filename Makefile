@@ -4,7 +4,7 @@
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	setup-web-dev setup-web-test setup-web-e2e setup-web-build setup-web-lint setup-web-format setup-web-pages-dev \
 	worker-test worker-build worker-deploy watchdog-test watchdog-build scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm \
-	onboard onboard-lint onboard-integration-test
+	onboard onboard-lint onboard-integration-test credential-audit
 
 .DEFAULT_GOAL := help
 
@@ -281,6 +281,10 @@ INTERNAL_CREDENTIAL_LOOKUP = CRED="$${NOTIFS_INTERNAL_CREDENTIAL:-}"; \
 		if [ -n "$$CID" ]; then CRED="$$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$$CID" | sed -n 's/^PROVISIONING_INTERNAL_CREDENTIAL=//p')"; fi; \
 	fi; \
 	[ -n "$$CRED" ] || { echo "no internal credential: run 'make local-up' first (or export NOTIFS_INTERNAL_CREDENTIAL)"; exit 1; }
+
+credential-audit: SHELL := /bin/bash
+credential-audit: ## Fail if provisioning-api logged any request the internal-credential check would reject (SINCE=<docker --since value> to scope)
+	@set -o pipefail; $(COMPOSE) logs --no-color $(if $(SINCE),--since '$(SINCE)') provisioning-api | node scripts/credential-audit.mjs
 
 onboard-integration-test: ## Run the live app onboarding integration test (local stack must be up)
 	@$(INTERNAL_CREDENTIAL_LOOKUP); ONBOARD_INTEGRATION_URL=$(DELIVERY_URL) ONBOARD_INTEGRATION_PROVISIONING_URL=$(API_URL) NOTIFS_INTERNAL_CREDENTIAL="$$CRED" node --test scripts/onboard.integration.test.mjs

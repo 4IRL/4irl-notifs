@@ -116,6 +116,13 @@ jobs:
           export NOTIFS_INTERNAL_CREDENTIAL="$CRED"
           make onboard-integration-test
 
+      # Fails if any harness above reached provisioning-api without the internal credential (or if the
+      # log is empty), so master Step 8's enforcement flip cannot break this job.
+      - name: Audit provisioning-api for missing internal credentials
+        run: |
+          set -o pipefail
+          docker compose --project-directory . -f docker-compose.yml logs --no-color provisioning-api | node scripts/credential-audit.mjs
+
       - name: Dump container state on failure
         if: failure()
         run: |
