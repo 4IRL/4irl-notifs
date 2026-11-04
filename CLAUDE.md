@@ -35,7 +35,7 @@ Guidance for Claude Code when working in this repository.
   | Setup page (`setup-web/`) | `make setup-web-dev` (dev server) / `make setup-web-test` (Vitest) / `make setup-web-e2e` (Playwright) / `make setup-web-build` / `make setup-web-lint` / `make setup-web-format` / `make setup-web-pages-dev` (wrangler Pages parity) |
   | Workflow YAML lint | `make workflows-lint` (actionlint, pinned; part of `make lint`; also lints composite actions under `.github/actions/*/action.yml` through generated wrappers in `.local/action-lint/`; needs node (wrapper generation) and Go (actionlint), no npm install) |
   | Admin UI dev server | `make dev-web` (foreground) / `make dev-web-bg` + `make dev-web-stop` (detached) |
-  | End-to-end smoke test | `make notif-smoke-test` |
+  | End-to-end smoke test | `make notif-smoke-test` (`scripts/notif-smoke-test.mjs`: provision → `to.recipient` message → subscriber delivery, all through delivery-api) |
   | Help / all lint / all unit tests | `make help` / `make lint` / `make test` |
   | Script tests | `make scripts-test` (`scripts/*.test.mjs`, node:test) |
   | Watchdog Worker tests / build | `make watchdog-test` (`npm test` in `watchdog/`, Vitest + workers pool) / `make watchdog-build` (tsc + `wrangler deploy --dry-run`) |
@@ -145,7 +145,7 @@ shown for reference only.
 | `make setup-web-e2e` (`npx playwright test` in `setup-web/`) | Run setup page e2e tests (Playwright; iPhone/Android/desktop projects) |
 | `make setup-web-build` (`npm run build`) | Production build of the setup page (`tsc -b` + Vite → `dist/`) |
 | `make setup-web-lint` / `make setup-web-format` (`npx eslint` + `npx prettier`) | Lint and format-check / auto-format the setup page |
-| `make notif-smoke-test` | End-to-end provision → publish → deliver smoke test |
+| `make notif-smoke-test` | End-to-end smoke test through delivery-api: provision → `to.recipient` message → subscriber delivery (no direct provisioning-api calls) |
 | `make help` | List all targets |
 | `make lint` | Run all linters (both Go modules, both frontends, scripts, workflow YAML) |
 | `make test` | Run all unit tests (both Go modules, web + setup-web Vitest, worker Vitest, watchdog Vitest, scripts) |
