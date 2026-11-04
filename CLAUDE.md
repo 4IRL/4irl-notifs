@@ -25,7 +25,7 @@ Guidance for Claude Code when working in this repository.
   | Local stack up / down / logs | `make local-up` / `make local-down` / `make local-logs` |
   | Dev/CI OIDC signing keys | `make dev-oidc-keys` (`node scripts/dev-oidc-keys.mjs`; writes gitignored `.local/dev-oidc/`; `make local-up` runs it first) |
   | Go tests | `make go-test` (`go test ./...` in `provisioning-api/`) |
-  | Go integration tests | `make go-integration-test` (needs local stack up) |
+  | Go integration tests | `make go-integration-test` (needs local stack up; sends `NOTIFS_INTERNAL_CREDENTIAL`, auto-read from the running provisioning-api container or exported to override) |
   | Delivery Go tests | `make delivery-test` (`go test ./...` in `delivery-api/`) |
   | Delivery integration tests | `make delivery-integration-test` (needs local stack up; `go test -p 1 -tags integration ./...`) |
   | UI/e2e tests | `make web-e2e` (`npx playwright test` in `web/`; `E2E_ARGS=...` passes extra args) |
@@ -35,12 +35,13 @@ Guidance for Claude Code when working in this repository.
   | Setup page (`setup-web/`) | `make setup-web-dev` (dev server) / `make setup-web-test` (Vitest) / `make setup-web-e2e` (Playwright) / `make setup-web-build` / `make setup-web-lint` / `make setup-web-format` / `make setup-web-pages-dev` (wrangler Pages parity) |
   | Workflow YAML lint | `make workflows-lint` (actionlint, pinned; part of `make lint`; also lints composite actions under `.github/actions/*/action.yml` through generated wrappers in `.local/action-lint/`; needs node (wrapper generation) and Go (actionlint), no npm install) |
   | Admin UI dev server | `make dev-web` (foreground) / `make dev-web-bg` + `make dev-web-stop` (detached) |
-  | End-to-end smoke test | `make notif-smoke-test` |
+  | End-to-end smoke test | `make notif-smoke-test` (`scripts/notif-smoke-test.mjs`: provision → `to.recipient` message → subscriber delivery, all through delivery-api) |
   | Help / all lint / all unit tests | `make help` / `make lint` / `make test` |
   | Script tests | `make scripts-test` (`scripts/*.test.mjs`, node:test) |
   | Watchdog Worker tests / build | `make watchdog-test` (`npm test` in `watchdog/`, Vitest + workers pool) / `make watchdog-build` (tsc + `wrangler deploy --dry-run`) |
   | App onboarding (plan/apply/verify) / manifest lint | `make onboard app=<app_id\|_platform> [cmd=plan\|apply\|verify] [env=<name>] [prune=1] [resend_secrets=1]` / `make onboard-lint` (`node scripts/onboard.mjs lint apps`, part of `make lint`) |
-  | App onboarding integration test | `make onboard-integration-test` (needs local stack up; `node --test scripts/onboard.integration.test.mjs`; also runs in CI's integration job) |
+  | App onboarding integration test | `make onboard-integration-test` (needs local stack up; sends `NOTIFS_INTERNAL_CREDENTIAL`, auto-read from the running provisioning-api container or exported to override; `node --test scripts/onboard.integration.test.mjs`; also runs in CI's integration job) |
+  | Credential audit | `make credential-audit [SINCE=<docker --since value>]` (fails if provisioning-api logged any request the internal-credential check would reject; run after the integration targets and `make notif-smoke-test` on a stack started fresh, or set `SINCE` to the harness start time; also runs in CI) |
   | New worktree | `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` |
   | Remove worktree | `make worktree-rm` (run inside the worktree) |
   | Resolved ports | `make worktree-ports` |
@@ -128,7 +129,7 @@ shown for reference only.
 | `make local-up` / `make local-down` / `make local-logs` | Start / stop / follow-logs for the local stack (ntfy + person-service + provisioning-api + delivery-postgres / delivery-migrate / delivery-api) |
 | `make dev-oidc-keys` (`node scripts/dev-oidc-keys.mjs`) | Generate the throwaway OIDC signing key pair in gitignored `.local/dev-oidc/` that the local/CI delivery-api trusts in dev mode (`make local-up` runs it first; idempotent) |
 | `make go-test` (`go test ./...`) | Run Go unit tests |
-| `make go-integration-test` (`go test -tags integration ./...`) | Run Go integration tests (local stack must be up) |
+| `make go-integration-test` (`go test -tags integration ./...`) | Run Go integration tests (local stack must be up; sends `NOTIFS_INTERNAL_CREDENTIAL`, auto-read from the running provisioning-api container or exported to override) |
 | `make go-lint` (`gofmt -l .` + pinned `golangci-lint run`) | Check Go formatting + lint; golangci-lint is pinned in the Makefile to CI's version (`golangci-pin-check` fails on drift from `.github/workflows/lint.yml`) |
 | `make delivery-test` (`go test ./...` in `delivery-api/`) | Run delivery-api Go unit tests |
 | `make delivery-integration-test` (`go test -p 1 -tags integration ./...`) | Run delivery-api integration tests (local stack must be up) |
@@ -145,7 +146,7 @@ shown for reference only.
 | `make setup-web-e2e` (`npx playwright test` in `setup-web/`) | Run setup page e2e tests (Playwright; iPhone/Android/desktop projects) |
 | `make setup-web-build` (`npm run build`) | Production build of the setup page (`tsc -b` + Vite → `dist/`) |
 | `make setup-web-lint` / `make setup-web-format` (`npx eslint` + `npx prettier`) | Lint and format-check / auto-format the setup page |
-| `make notif-smoke-test` | End-to-end provision → publish → deliver smoke test |
+| `make notif-smoke-test` | End-to-end smoke test through delivery-api: provision → `to.recipient` message → subscriber delivery (no direct provisioning-api calls) |
 | `make help` | List all targets |
 | `make lint` | Run all linters (both Go modules, both frontends, scripts, workflow YAML) |
 | `make test` | Run all unit tests (both Go modules, web + setup-web Vitest, worker Vitest, watchdog Vitest, scripts) |
@@ -153,7 +154,8 @@ shown for reference only.
 | `make watchdog-test` / `make watchdog-build` | Run the watchdog Worker tests (Vitest + workers pool) / typecheck and dry-run bundle it |
 | `make onboard app=<app_id\|_platform> [cmd=plan\|apply\|verify] [env=<name>] [prune=1] [resend_secrets=1]` | Plan/apply/verify an app's (or `_platform`'s) declarative onboarding manifest under `apps/` |
 | `make onboard-lint` (`node scripts/onboard.mjs lint apps`) | Offline schema + cross-manifest lint of every manifest under `apps/` (part of `make lint`, run in CI) |
-| `make onboard-integration-test` (`node --test scripts/onboard.integration.test.mjs`) | Live plan/apply/verify/prune of a throwaway app manifest against the local stack (local stack must be up; also runs in CI's integration job) |
+| `make onboard-integration-test` (`node --test scripts/onboard.integration.test.mjs`) | Live plan/apply/verify/prune of a throwaway app manifest against the local stack (local stack must be up; sends `NOTIFS_INTERNAL_CREDENTIAL`, auto-read from the running provisioning-api container or exported to override; also runs in CI's integration job) |
+| `make credential-audit` (`docker compose logs provisioning-api \| node scripts/credential-audit.mjs`) | Fail if provisioning-api logged any request the internal-credential check would reject; run after the integration targets and `make notif-smoke-test` on a fresh stack (or `SINCE=<docker --since value>`); also runs in CI's integration job |
 | `make scripts-lint` / `make scripts-format` (`npx prettier` with `web/.prettierrc`) | Check / format `scripts/*.mjs` |
 | `make worktree-new name=<slug> [b=<branch>] [base=<ref>]` | Create an isolated worktree with its own compose project and ports (see [`docs/worktrees.md`](docs/worktrees.md)) |
 | `make worktree-rm` | Remove the current worktree (run inside it; branch kept) |

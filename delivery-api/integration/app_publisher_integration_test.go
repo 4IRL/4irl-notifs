@@ -62,7 +62,7 @@ func newPublisherApp(testInstance *testing.T) (string, string) {
 }
 
 // registerPublisherAppCleanup removes the app's stored publisher, mint-limiter rows and messages
-// and its ntfy publisher user. The ntfy removal ignores 4xx, so its status is not asserted.
+// and its ntfy publisher user.
 func registerPublisherAppCleanup(testInstance *testing.T, appID string) {
 	testInstance.Helper()
 	testInstance.Cleanup(func() { deprovisionUser(testInstance, appID+"-publisher") })

@@ -4,7 +4,7 @@
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	setup-web-dev setup-web-test setup-web-e2e setup-web-build setup-web-lint setup-web-format setup-web-pages-dev \
 	worker-test worker-build worker-deploy watchdog-test watchdog-build scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm \
-	onboard onboard-lint onboard-integration-test
+	onboard onboard-lint onboard-integration-test credential-audit
 
 .DEFAULT_GOAL := help
 
@@ -46,8 +46,6 @@ COMPOSE := docker compose -p $(COMPOSE_PROJECT_NAME) --project-directory . -f do
 API_URL := http://127.0.0.1:$(API_PORT)
 DELIVERY_URL := http://127.0.0.1:$(DELIVERY_PORT)
 NTFY_URL := http://127.0.0.1:$(NTFY_PORT)
-SMOKE_APP_ID := smoketest
-SMOKE_EMAIL := smoketest@example.com
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -114,53 +112,8 @@ dev-web-stop: ## Stop the detached admin UI dev server started by dev-web-bg
 		echo "dev server stopped"; \
 	else echo "no dev server pid file found"; fi
 
-notif-smoke-test: ## Provision an app publisher and a test user, publish as the publisher, confirm subscriber delivery via ntfy's cache, then clean up
-	@echo "Waiting for provisioning-api health..."
-	@for i in $$(seq 1 30); do \
-		curl -sf $(API_URL)/healthz >/dev/null 2>&1 && break; \
-		sleep 1; \
-	done
-	@curl -sf $(API_URL)/healthz >/dev/null || { echo "provisioning-api not healthy at $(API_URL) — run 'make local-up' first"; exit 1; }
-	@echo "Provisioning publisher for $(SMOKE_APP_ID)..."
-	@PUB_TOKEN=$$(curl -s -X POST $(API_URL)/v1/provision-app \
-		-H 'Content-Type: application/json' \
-		-d '{"app_id":"$(SMOKE_APP_ID)"}' | jq -r '.token'); \
-	if [ -z "$$PUB_TOKEN" ] || [ "$$PUB_TOKEN" = "null" ]; then echo "provision-app failed"; exit 1; fi; \
-	echo "Provisioning $(SMOKE_EMAIL) into $(SMOKE_APP_ID)..."; \
-	PROVISION_RESPONSE=$$(curl -s -X POST $(API_URL)/v1/provision \
-		-H 'Content-Type: application/json' \
-		-d '{"app_id":"$(SMOKE_APP_ID)","email":"$(SMOKE_EMAIL)"}'); \
-	TOKEN=$$(echo "$$PROVISION_RESPONSE" | jq -r '.token'); \
-	HASH=$$(echo "$$PROVISION_RESPONSE" | jq -r '.person_hash'); \
-	NTFY_USER=$$(echo "$$PROVISION_RESPONSE" | jq -r '.user_id'); \
-	if [ -z "$$TOKEN" ] || [ "$$TOKEN" = "null" ]; then \
-		echo "provision failed"; \
-		curl -s -X DELETE $(API_URL)/v1/users/$(SMOKE_APP_ID)-publisher >/dev/null; \
-		exit 1; \
-	fi; \
-	SMOKE_TOPIC="$(SMOKE_APP_ID)-$$HASH-all"; \
-	echo "Publishing test notification to $$SMOKE_TOPIC as publisher..."; \
-	MSG_ID=$$(curl -s -H "Authorization: Bearer $$PUB_TOKEN" \
-		-H "Title: 4IRL smoke test" \
-		-d "notif-smoke-test $$(date +%s)" \
-		$(NTFY_URL)/$$SMOKE_TOPIC | jq -r '.id'); \
-	if [ -z "$$MSG_ID" ] || [ "$$MSG_ID" = "null" ]; then \
-		echo "publish failed"; \
-		curl -s -X DELETE $(API_URL)/v1/users/$$NTFY_USER >/dev/null; \
-		curl -s -X DELETE $(API_URL)/v1/users/$(SMOKE_APP_ID)-publisher >/dev/null; \
-		exit 1; \
-	fi; \
-	echo "Polling ntfy cache for delivery..."; \
-	sleep 1; \
-	FOUND=$$(curl -s -H "Authorization: Bearer $$TOKEN" \
-		"$(NTFY_URL)/$$SMOKE_TOPIC/json?poll=1&since=all" | jq -r "select(.id == \"$$MSG_ID\" and .title == \"4IRL smoke test\") | .id"); \
-	curl -s -X DELETE $(API_URL)/v1/users/$$NTFY_USER >/dev/null; \
-	curl -s -X DELETE $(API_URL)/v1/users/$(SMOKE_APP_ID)-publisher >/dev/null; \
-	if [ "$$FOUND" = "$$MSG_ID" ]; then \
-		echo "PASS: message $$MSG_ID delivered on $$SMOKE_TOPIC"; \
-	else \
-		echo "FAIL: message $$MSG_ID not found in cache"; exit 1; \
-	fi
+notif-smoke-test: ## Provision a test subscriber, deliver a to.recipient message and confirm subscriber delivery, all through delivery-api, then clean up
+	@NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_NTFY_URL=$(NTFY_URL) node scripts/notif-smoke-test.mjs
 
 ## Go (provisioning-api)
 
@@ -185,7 +138,7 @@ go-test-race: ## Run Go unit tests under the race detector
 	cd provisioning-api && go test -race ./...
 
 go-integration-test: ## Run Go integration tests (local stack must be up)
-	@C="$$($(COMPOSE) ps -q provisioning-api)"; cd provisioning-api && NOTIFS_API_CONTAINER="$$C" NOTIFS_API_URL=$(API_URL) NTFY_URL=$(NTFY_URL) go test -tags integration ./...
+	@$(INTERNAL_CREDENTIAL_LOOKUP); C="$$($(COMPOSE) ps -q provisioning-api)"; cd provisioning-api && NOTIFS_INTERNAL_CREDENTIAL="$$CRED" NOTIFS_API_CONTAINER="$$C" NOTIFS_API_URL=$(API_URL) NTFY_URL=$(NTFY_URL) go test -tags integration ./...
 
 go-lint: golangci-pin-check ## Check Go formatting and lint
 	@UNFORMATTED="$$(cd provisioning-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }
@@ -205,7 +158,7 @@ delivery-test: ## Run delivery-api Go unit tests
 # DELIVERY_MAX_SCHEDULED_PER_APP for `make local-up` and this target) so the live 429 test
 # can fill a small cap; it skips when the cap is not small.
 delivery-integration-test: ## Run delivery-api integration tests (local stack must be up)
-	@C="$$($(COMPOSE) ps -q delivery-api)"; D="$$($(COMPOSE) ps -q delivery-postgres)"; cd delivery-api && NOTIFS_DELIVERY_CONTAINER="$$C" NOTIFS_DELIVERY_DB_CONTAINER="$$D" NOTIFS_DELIVERY_MAX_SCHEDULED="$${DELIVERY_MAX_SCHEDULED_PER_APP:-1000}" NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_NTFY_URL=$(NTFY_URL) NOTIFS_API_URL=$(API_URL) NOTIFS_DELIVERY_TEST_DSN="postgres://delivery:delivery-local-dev@127.0.0.1:$(DELIVERY_DB_PORT_HOST)/delivery?sslmode=disable" go test -p 1 -tags integration ./...
+	@C="$$($(COMPOSE) ps -q delivery-api)"; D="$$($(COMPOSE) ps -q delivery-postgres)"; cd delivery-api && NOTIFS_DELIVERY_CONTAINER="$$C" NOTIFS_DELIVERY_DB_CONTAINER="$$D" NOTIFS_DELIVERY_MAX_SCHEDULED="$${DELIVERY_MAX_SCHEDULED_PER_APP:-1000}" NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_NTFY_URL=$(NTFY_URL) NOTIFS_DELIVERY_TEST_DSN="postgres://delivery:delivery-local-dev@127.0.0.1:$(DELIVERY_DB_PORT_HOST)/delivery?sslmode=disable" go test -p 1 -tags integration ./...
 
 delivery-lint: golangci-pin-check ## Check delivery-api Go formatting and lint
 	@UNFORMATTED="$$(cd delivery-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }
@@ -304,11 +257,23 @@ onboard: ## Plan/apply/verify app onboarding: make onboard app=<app_id|_platform
 onboard-lint: ## Offline lint of every manifest under apps/ (no network call; part of `make lint`)
 	node scripts/onboard.mjs lint apps
 
+# Shared shell lookup of the harness credential (scripts/internal-credential.sh, unit-tested by
+# internal-credential.test.mjs): an already-set NOTIFS_INTERNAL_CREDENTIAL wins as is; otherwise the
+# script reads PROVISIONING_INTERNAL_CREDENTIAL from the running provisioning-api container. Empty
+# either way fails closed. Never echoes the value.
+INTERNAL_CREDENTIAL_LOOKUP = CRED="$$(COMPOSE='$(COMPOSE)' sh scripts/internal-credential.sh)" || exit 1
+
+credential-audit: SHELL := /bin/bash
+credential-audit: ## Fail if provisioning-api logged any request the internal-credential check would reject (SINCE=<docker --since value> to scope)
+	@set -o pipefail; $(COMPOSE) logs --no-color $(if $(SINCE),--since '$(SINCE)') provisioning-api | node scripts/credential-audit.mjs
+
 # Needs the local stack, like delivery-integration-test. Sets ONBOARD_INTEGRATION_URL so
 # scripts/onboard.integration.test.mjs runs instead of skipping; `make scripts-test` (no env set)
 # stays skipped-green with no stack. ONBOARD_INTEGRATION_PROVISIONING_URL lets the test mint (and
 # revoke) a real ntfy publisher token via provisioning-api, so its owned ntfy destination actually
-# authenticates against ntfy's auth-default-access: deny-all. Runs only that one file, not the
-# whole scripts/ glob.
+# authenticates against ntfy's auth-default-access: deny-all; that one direct call carries
+# NOTIFS_INTERNAL_CREDENTIAL (looked up below), and the test's teardown goes through the door's
+# operator deprovision instead of provisioning-api. Runs only that one file, not the whole scripts/
+# glob.
 onboard-integration-test: ## Run the live app onboarding integration test (local stack must be up)
-	ONBOARD_INTEGRATION_URL=$(DELIVERY_URL) ONBOARD_INTEGRATION_PROVISIONING_URL=$(API_URL) node --test scripts/onboard.integration.test.mjs
+	@$(INTERNAL_CREDENTIAL_LOOKUP); ONBOARD_INTEGRATION_URL=$(DELIVERY_URL) ONBOARD_INTEGRATION_PROVISIONING_URL=$(API_URL) NOTIFS_INTERNAL_CREDENTIAL="$$CRED" node --test scripts/onboard.integration.test.mjs

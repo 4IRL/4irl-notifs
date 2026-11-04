@@ -76,8 +76,11 @@ jobs:
           echo "delivery-migrate exited 0"
 
       - name: Run Go integration tests
-        working-directory: provisioning-api
-        run: go test -tags integration ./...
+        run: |
+          CRED="$(COMPOSE='docker compose --project-directory . -f docker-compose.yml' sh scripts/internal-credential.sh)"
+          echo "::add-mask::$CRED"
+          cd provisioning-api
+          NOTIFS_INTERNAL_CREDENTIAL="$CRED" go test -tags integration ./...
 
       - name: Run delivery-api integration tests
         working-directory: delivery-api
@@ -89,8 +92,22 @@ jobs:
         # -p 1: the packages share one database, and the pgstore test writes a transient failure row that /readyz would report
         run: go test -p 1 -tags integration ./...
 
+      # The make target cannot find this stack (different compose project name), so hand it the
+      # provisioning-api credential straight from the running container, masked.
       - name: Run app onboarding integration test
-        run: make onboard-integration-test
+        run: |
+          set -o pipefail
+          CRED="$(COMPOSE='docker compose --project-directory . -f docker-compose.yml' sh scripts/internal-credential.sh)"
+          echo "::add-mask::$CRED"
+          export NOTIFS_INTERNAL_CREDENTIAL="$CRED"
+          make onboard-integration-test
+
+      # Fails if any harness above reached provisioning-api without the internal credential (or if the
+      # log is empty), so master Step 8's enforcement flip cannot break this job.
+      - name: Audit provisioning-api for missing internal credentials
+        run: |
+          set -o pipefail
+          docker compose --project-directory . -f docker-compose.yml logs --no-color provisioning-api | node scripts/credential-audit.mjs
 
       - name: Dump container state on failure
         if: failure()

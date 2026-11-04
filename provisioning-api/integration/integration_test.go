@@ -1,7 +1,12 @@
 //go:build integration
 
 // Package integration exercises the provisioning-api against a live
-// docker-compose stack (ntfy + provisioning-api). Prefer make go-integration-test,
+// docker-compose stack (ntfy + provisioning-api). This suite is a deliberately
+// direct caller of provisioning-api, authenticated with the internal credential
+// (NOTIFS_INTERNAL_CREDENTIAL, sent as X-Notifs-Internal-Credential on every
+// request except GET /healthz); most of what it checks is unreachable through
+// the delivery-api front door, whose own coverage lives in delivery-api/integration.
+// Prefer make go-integration-test,
 // which resolves the stack's ports and container id and passes them in via
 // NOTIFS_API_URL, NTFY_URL and NOTIFS_API_CONTAINER. Running by hand:
 //
@@ -19,6 +24,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -36,6 +42,16 @@ const (
 	defaultAPIBaseURL = "http://127.0.0.1:8091"
 	defaultNtfyURL    = "http://127.0.0.1:8090"
 )
+
+// TestMain fails the whole package fast, before any request, when the internal
+// credential is missing.
+func TestMain(m *testing.M) {
+	if _, credentialErr := internalCredential(); credentialErr != nil {
+		fmt.Fprintln(os.Stderr, credentialErr)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
 
 func apiBaseURL() string {
 	if value := os.Getenv("NOTIFS_API_URL"); value != "" {
@@ -116,13 +132,33 @@ func postJSON(t *testing.T, path string, payload map[string]string) (int, []byte
 	if marshalErr != nil {
 		t.Fatalf("marshaling payload: %v", marshalErr)
 	}
-	response, postErr := http.Post(apiBaseURL()+path, "application/json", bytes.NewReader(encoded))
-	if postErr != nil {
-		t.Fatalf("POST %s: %v", path, postErr)
-	}
+	response := doProvisioning(t, http.MethodPost, path, encoded)
 	defer closeBody(t, response)
 	body := readBody(t, response)
 	return response.StatusCode, body
+}
+
+// doProvisioning sends one credential-carrying request to provisioning-api
+// (every non-healthz call in this suite goes through it) and fails the test on
+// a transport error. A nil body sends no body and no Content-Type.
+func doProvisioning(t *testing.T, method string, path string, body []byte) *http.Response {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	request, buildErr := newProvisioningRequest(method, apiBaseURL()+path, reader)
+	if buildErr != nil {
+		t.Fatalf("building %s %s: %v", method, path, buildErr)
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, doErr := http.DefaultClient.Do(request)
+	if doErr != nil {
+		t.Fatalf("%s %s: %v", method, path, doErr)
+	}
+	return response
 }
 
 // postJSONBody issues a POST with an arbitrary JSON-serializable payload and
@@ -135,10 +171,7 @@ func postJSONBody(t *testing.T, path string, payload any) (int, []byte) {
 	if marshalErr != nil {
 		t.Fatalf("marshaling payload: %v", marshalErr)
 	}
-	response, postErr := http.Post(apiBaseURL()+path, "application/json", bytes.NewReader(encoded))
-	if postErr != nil {
-		t.Fatalf("POST %s: %v", path, postErr)
-	}
+	response := doProvisioning(t, http.MethodPost, path, encoded)
 	defer closeBody(t, response)
 	body := readBody(t, response)
 	return response.StatusCode, body
@@ -299,15 +332,7 @@ func cachedMessage(t *testing.T, topic string, token string, messageID string) (
 // deleteUser removes a user via the API; used for cleanup.
 func deleteUser(t *testing.T, userID string) {
 	t.Helper()
-	request, buildErr := http.NewRequest(http.MethodDelete, apiBaseURL()+"/v1/users/"+userID, nil)
-	if buildErr != nil {
-		t.Fatalf("building delete request: %v", buildErr)
-	}
-	response, deleteErr := http.DefaultClient.Do(request)
-	if deleteErr != nil {
-		t.Fatalf("deleting %s: %v", userID, deleteErr)
-	}
-	closeBody(t, response)
+	closeBody(t, doProvisioning(t, http.MethodDelete, "/v1/users/"+userID, nil))
 }
 
 // waitForHealth blocks until the API health endpoint returns 200 or times out.
@@ -451,10 +476,7 @@ func TestDeprovisionLeavesTheWholeFamilyOnLastApp(t *testing.T) {
 // userIsListed reports whether userID appears in GET /v1/users.
 func userIsListed(t *testing.T, userID string) bool {
 	t.Helper()
-	response, getErr := http.Get(apiBaseURL() + "/v1/users")
-	if getErr != nil {
-		t.Fatalf("GET /v1/users: %v", getErr)
-	}
+	response := doProvisioning(t, http.MethodGet, "/v1/users", nil)
 	defer closeBody(t, response)
 	var users userListResponse
 	if err := json.Unmarshal(readBody(t, response), &users); err != nil {
@@ -476,14 +498,7 @@ func userIsListed(t *testing.T, userID string) bool {
 func TestDeleteUnknownUserIsIdempotent(t *testing.T) {
 	waitForHealth(t)
 	const unknownUserID = "u_00000000000000ge"
-	request, buildErr := http.NewRequest(http.MethodDelete, apiBaseURL()+"/v1/users/"+unknownUserID, nil)
-	if buildErr != nil {
-		t.Fatalf("building request: %v", buildErr)
-	}
-	response, deleteErr := http.DefaultClient.Do(request)
-	if deleteErr != nil {
-		t.Fatalf("delete request: %v", deleteErr)
-	}
+	response := doProvisioning(t, http.MethodDelete, "/v1/users/"+unknownUserID, nil)
 	defer closeBody(t, response)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("delete unknown user status = %d, expected 200 (idempotent full teardown)", response.StatusCode)
@@ -1157,10 +1172,7 @@ func postJSONFull(t *testing.T, path string, payload map[string]string) (int, ht
 	if marshalErr != nil {
 		t.Fatalf("marshaling payload: %v", marshalErr)
 	}
-	response, postErr := http.Post(apiBaseURL()+path, "application/json", bytes.NewReader(encoded))
-	if postErr != nil {
-		t.Fatalf("POST %s: %v", path, postErr)
-	}
+	response := doProvisioning(t, http.MethodPost, path, encoded)
 	defer closeBody(t, response)
 	body := readBody(t, response)
 	return response.StatusCode, response.Header, body
