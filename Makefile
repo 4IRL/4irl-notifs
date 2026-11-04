@@ -137,8 +137,14 @@ go-test: ## Run Go unit tests
 go-test-race: ## Run Go unit tests under the race detector
 	cd provisioning-api && go test -race ./...
 
+# Shell snippet (expand inside a recipe) that sets CRED to the internal credential
+# harnesses send to provisioning-api: an already-set NOTIFS_INTERNAL_CREDENTIAL wins,
+# else it is read from the running provisioning-api container's environment
+# (PROVISIONING_INTERNAL_CREDENTIAL), so it stays in lockstep with the stack. Never echoed.
+CREDENTIAL_LOOKUP = CRED="$${NOTIFS_INTERNAL_CREDENTIAL:-}"; if [ -z "$$CRED" ]; then CID="$$($(COMPOSE) ps -q provisioning-api)"; if [ -n "$$CID" ]; then CRED="$$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$$CID" | sed -n 's/^PROVISIONING_INTERNAL_CREDENTIAL=//p')"; fi; fi; if [ -z "$$CRED" ]; then echo "NOTIFS_INTERNAL_CREDENTIAL not found: run make local-up first"; exit 1; fi;
+
 go-integration-test: ## Run Go integration tests (local stack must be up)
-	@C="$$($(COMPOSE) ps -q provisioning-api)"; cd provisioning-api && NOTIFS_API_CONTAINER="$$C" NOTIFS_API_URL=$(API_URL) NTFY_URL=$(NTFY_URL) go test -tags integration ./...
+	@$(CREDENTIAL_LOOKUP) C="$$($(COMPOSE) ps -q provisioning-api)"; cd provisioning-api && NOTIFS_INTERNAL_CREDENTIAL="$$CRED" NOTIFS_API_CONTAINER="$$C" NOTIFS_API_URL=$(API_URL) NTFY_URL=$(NTFY_URL) go test -tags integration ./...
 
 go-lint: golangci-pin-check ## Check Go formatting and lint
 	@UNFORMATTED="$$(cd provisioning-api && gofmt -l .)"; test -z "$$UNFORMATTED" || { echo "Files need gofmt:"; echo "$$UNFORMATTED"; exit 1; }

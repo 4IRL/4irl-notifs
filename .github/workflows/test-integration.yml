@@ -76,8 +76,20 @@ jobs:
           echo "delivery-migrate exited 0"
 
       - name: Run Go integration tests
-        working-directory: provisioning-api
-        run: go test -tags integration ./...
+        run: |
+          CID="$(docker compose --project-directory . -f docker-compose.yml ps -q provisioning-api)"
+          if [ -z "$CID" ]; then
+            echo "provisioning-api container not found" >&2
+            exit 1
+          fi
+          CRED="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$CID" | sed -n 's/^PROVISIONING_INTERNAL_CREDENTIAL=//p')"
+          if [ -z "$CRED" ]; then
+            echo "PROVISIONING_INTERNAL_CREDENTIAL is empty in the provisioning-api container" >&2
+            exit 1
+          fi
+          echo "::add-mask::$CRED"
+          cd provisioning-api
+          NOTIFS_INTERNAL_CREDENTIAL="$CRED" go test -tags integration ./...
 
       - name: Run delivery-api integration tests
         working-directory: delivery-api
