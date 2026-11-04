@@ -9,6 +9,7 @@
       "make dev-web-bg",
       "make dev-web-stop",
       "make notif-smoke-test",
+      "make credential-audit",
       "make go-test",
       "make go-integration-test",
       "make go-lint",
