@@ -3,19 +3,17 @@
 package integration
 
 // End-to-end test of the ntfy recipient path against the live compose stack:
-// provisioning-api provisions a subscriber, delivery-api mints the app's ntfy
-// publisher through provisioning-api, a to.recipient envelope is submitted, and
+// delivery-api provisions a subscriber through the app door, mints the app's ntfy
+// publisher, a to.recipient envelope is submitted, and
 // the title and body are read back from the subscriber's real ntfy topic using
 // the subscriber's own token. It also proves an app with no publisher fails
 // closed with 422 at submit.
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"regexp"
@@ -27,8 +25,7 @@ import (
 )
 
 const (
-	defaultAPIBaseURL = "http://127.0.0.1:8091"
-	defaultNtfyURL    = "http://127.0.0.1:8090"
+	defaultNtfyURL = "http://127.0.0.1:8090"
 
 	sinkChannel          = "all"
 	sinkDeliveredState   = "delivered"
@@ -43,7 +40,7 @@ const (
 // but the test's own generated app id.
 var sinkAppIDPattern = regexp.MustCompile(`^it[0-9a-f]{12}$`)
 
-// sinkHTTPClient bounds each call to provisioning-api and ntfy so a hung peer fails the test.
+// sinkHTTPClient bounds each ntfy call so a hung peer fails the test.
 var sinkHTTPClient = &http.Client{Timeout: httpRequestTimeout}
 
 // publisherMintResponse mirrors the publisher view of the mint endpoint. It carries no token.
@@ -55,7 +52,7 @@ type publisherMintResponse struct {
 	} `json:"publisher"`
 }
 
-// provisionedSubscriber mirrors the fields of provisioning-api's /v1/provision body the test needs.
+// provisionedSubscriber mirrors the fields of the app-door /v1/apps/{app_id}/provision body the test needs.
 type provisionedSubscriber struct {
 	PersonHash string `json:"person_hash"`
 	Token      string `json:"token"`
@@ -68,13 +65,6 @@ type ntfyEvent struct {
 	Message string `json:"message"`
 }
 
-func provisioningAPIURL() string {
-	if value := os.Getenv("NOTIFS_API_URL"); value != "" {
-		return value
-	}
-	return defaultAPIBaseURL
-}
-
 func ntfyBaseURL() string {
 	if value := os.Getenv("NOTIFS_NTFY_URL"); value != "" {
 		return value
@@ -82,46 +72,20 @@ func ntfyBaseURL() string {
 	return defaultNtfyURL
 }
 
-// provisioningRequest sends one request to provisioning-api and returns the status and raw body.
-func provisioningRequest(testInstance *testing.T, method, path string, body any) (int, []byte) {
-	testInstance.Helper()
-	var requestBody io.Reader
-	if body != nil {
-		encoded, marshalErr := json.Marshal(body)
-		if marshalErr != nil {
-			testInstance.Fatalf("encoding %s %s body: %v", method, path, marshalErr)
-		}
-		requestBody = bytes.NewReader(encoded)
-	}
-	request, requestErr := http.NewRequestWithContext(context.Background(), method, provisioningAPIURL()+path, requestBody)
-	if requestErr != nil {
-		testInstance.Fatalf("building %s %s request: %v", method, path, requestErr)
-	}
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	response, doErr := sinkHTTPClient.Do(request)
-	if doErr != nil {
-		testInstance.Fatalf("%s %s: %v", method, path, doErr)
-	}
-	defer func() {
-		if closeErr := response.Body.Close(); closeErr != nil {
-			testInstance.Errorf("closing %s %s body: %v", method, path, closeErr)
-		}
-	}()
-	responseBody, readErr := io.ReadAll(response.Body)
-	if readErr != nil {
-		testInstance.Fatalf("reading %s %s body: %v", method, path, readErr)
-	}
-	return response.StatusCode, responseBody
-}
-
-// deprovisionUser removes an ntfy user through provisioning-api, as provisioning-api's own suite does.
+// deprovisionUser removes an ntfy user through the operator door. The route is idempotent, so an
+// unknown user still answers 200; any other status (including a transient 502) fails the cleanup.
 func deprovisionUser(testInstance *testing.T, userID string) {
 	testInstance.Helper()
-	status, body := provisioningRequest(testInstance, http.MethodDelete, "/v1/users/"+userID, nil)
-	if status >= http.StatusInternalServerError {
-		testInstance.Errorf("deprovisioning %s status = %d (body: %s)", userID, status, body)
+	status, body := adminRequest(testInstance, http.MethodDelete, "/users/"+userID, nil)
+	if status != http.StatusOK {
+		testInstance.Errorf("deprovisioning %s status = %d, want 200 (body: %s)", userID, status, body)
+		return
+	}
+	var deleted struct {
+		Deleted bool `json:"deleted"`
+	}
+	if decodeErr := json.Unmarshal(body, &deleted); decodeErr != nil || !deleted.Deleted {
+		testInstance.Errorf("deprovisioning %s body = %s, want deleted: true (decode error: %v)", userID, body, decodeErr)
 	}
 }
 
@@ -201,26 +165,20 @@ func TestRecipientDeliveryThroughNtfy(testInstance *testing.T) {
 	registerSinkAppCleanup(testInstance, appID)
 
 	// Registered first so (LIFO) they run after the delivery-database cleanup.
-	subscriberUserID := personhash.NtfyUser(email)
 	publisherUserID := appID + "-publisher"
 	testInstance.Cleanup(func() { deprovisionUser(testInstance, publisherUserID) })
-	testInstance.Cleanup(func() { deprovisionUser(testInstance, subscriberUserID) })
 
-	// 1. Provision the subscriber.
-	status, body := provisioningRequest(testInstance, http.MethodPost, "/v1/provision",
-		map[string]string{"app_id": appID, "email": email})
-	requireStatus(testInstance, "POST provision", status, http.StatusOK, body)
-	var subscriber provisionedSubscriber
-	decodeBody(testInstance, "POST provision", body, &subscriber)
-	if subscriber.Token == "" || subscriber.PersonHash != personhash.Hash(email) {
-		testInstance.Fatalf("provision returned person_hash %q (want %q) and token set=%v",
-			subscriber.PersonHash, personhash.Hash(email), subscriber.Token != "")
+	// 1. Bind the app (publisher mint refuses an app with no approved binding), then provision the
+	// subscriber through the app door with the app's own key (provisionSubscriber registers the
+	// subscriber's removal).
+	key := appKeyFor(testInstance, appID)
+	subscriber := provisionSubscriber(testInstance, appID, key, email)
+	if subscriber.PersonHash != personhash.Hash(email) {
+		testInstance.Fatalf("provision returned person_hash %q, want %q", subscriber.PersonHash, personhash.Hash(email))
 	}
 
-	// 2. Bind the app (publisher mint refuses an app with no approved binding), then mint the app's
-	// publisher through delivery-api.
-	appKeyFor(testInstance, appID)
-	status, body = apiRequest(testInstance, http.MethodPost, adminBasePath+"/apps/"+appID+"/ntfy-publisher", nil)
+	// 2. Mint the app's publisher through delivery-api.
+	status, body := apiRequest(testInstance, http.MethodPost, adminBasePath+"/apps/"+appID+"/ntfy-publisher", nil)
 	requireStatus(testInstance, "POST ntfy-publisher", status, http.StatusOK, body)
 	var minted publisherMintResponse
 	decodeBody(testInstance, "POST ntfy-publisher", body, &minted)
