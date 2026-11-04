@@ -36,6 +36,7 @@ import path from 'node:path';
 import { after, afterEach, before, describe, it } from 'node:test';
 
 import { deliveryRequest, mintAppKey, unbindApp } from './dev-app-key.mjs';
+import { requireInternalCredential } from './internal-credential-guard.mjs';
 import { main } from './onboard.mjs';
 
 const INTEGRATION_URL = process.env.ONBOARD_INTEGRATION_URL;
@@ -199,13 +200,7 @@ describe(
       // The --target app tests keep their manifests apart from `dir`: the operator cleanup in
       // `after` runs `apply --prune` there, whose directory lint refuses any stray sibling file.
       appDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notifs-onboard-it-app-'));
-      if (!INTERNAL_CREDENTIAL) {
-        throw new Error(
-          'NOTIFS_INTERNAL_CREDENTIAL is empty: set it to the provisioning-api internal ' +
-            'credential (make onboard-integration-test reads it from the running container; ' +
-            'run make local-up first)',
-        );
-      }
+      requireInternalCredential(INTERNAL_CREDENTIAL);
       credentialChecked = true;
       await preClean();
       ntfyToken = await provisionPublisherToken();
