@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   SMOKE_APP_ID,
@@ -509,5 +511,17 @@ describe('runSmokeTest', () => {
     for (const secret of [DAK, SUBSCRIBER_TOKEN, 'tk_leak']) {
       assert.ok(!everything.includes(secret), secret);
     }
+  });
+});
+
+describe('CLI entry', () => {
+  it('exits 1 and names the missing variable when the env is unset', () => {
+    const script = fileURLToPath(new URL('./notif-smoke-test.mjs', import.meta.url));
+    const result = spawnSync('node', [script], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /FAIL: NOTIFS_DELIVERY_URL is not set/);
   });
 });
