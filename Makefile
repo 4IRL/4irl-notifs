@@ -257,15 +257,11 @@ onboard: ## Plan/apply/verify app onboarding: make onboard app=<app_id|_platform
 onboard-lint: ## Offline lint of every manifest under apps/ (no network call; part of `make lint`)
 	node scripts/onboard.mjs lint apps
 
-# Shared shell lookup of the harness credential: an already-set NOTIFS_INTERNAL_CREDENTIAL wins as
-# is; otherwise read PROVISIONING_INTERNAL_CREDENTIAL from the running provisioning-api container's
-# environment. Empty either way fails closed. Never echoes the value.
-INTERNAL_CREDENTIAL_LOOKUP = CRED="$${NOTIFS_INTERNAL_CREDENTIAL:-}"; \
-	if [ -z "$$CRED" ]; then \
-		CID="$$($(COMPOSE) ps -q provisioning-api)"; \
-		if [ -n "$$CID" ]; then CRED="$$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$$CID" | sed -n 's/^PROVISIONING_INTERNAL_CREDENTIAL=//p')"; fi; \
-	fi; \
-	[ -n "$$CRED" ] || { echo "no internal credential: run 'make local-up' first (or export NOTIFS_INTERNAL_CREDENTIAL)"; exit 1; }
+# Shared shell lookup of the harness credential (scripts/internal-credential.sh, unit-tested by
+# internal-credential.test.mjs): an already-set NOTIFS_INTERNAL_CREDENTIAL wins as is; otherwise the
+# script reads PROVISIONING_INTERNAL_CREDENTIAL from the running provisioning-api container. Empty
+# either way fails closed. Never echoes the value.
+INTERNAL_CREDENTIAL_LOOKUP = CRED="$$(COMPOSE='$(COMPOSE)' sh scripts/internal-credential.sh)" || exit 1
 
 credential-audit: SHELL := /bin/bash
 credential-audit: ## Fail if provisioning-api logged any request the internal-credential check would reject (SINCE=<docker --since value> to scope)
