@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { auditLog, NO_LINES_MESSAGE } from './credential-audit.mjs';
+import { auditLog, HIT_MESSAGES, NO_LINES_MESSAGE } from './credential-audit.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./credential-audit.mjs', import.meta.url));
+const MIDDLEWARE_SOURCE = fileURLToPath(
+  new URL('../provisioning-api/internal/httpapi/middleware.go', import.meta.url),
+);
 
 const wouldReject = JSON.stringify({
   level: 'WARN',
@@ -105,4 +109,15 @@ test('CLI exit codes follow stdin', () => {
   const empty = spawnSync('node', [SCRIPT], { input: '', encoding: 'utf8' });
   assert.equal(empty.status, 1);
   assert.match(empty.stderr, /no JSON log lines parsed/);
+});
+
+test('every HIT_MESSAGES entry is still logged by the provisioning-api middleware', () => {
+  const source = fs.readFileSync(MIDDLEWARE_SOURCE, 'utf8');
+  assert.ok(HIT_MESSAGES.size > 0);
+  for (const message of HIT_MESSAGES) {
+    assert.ok(
+      source.includes(`"${message}"`),
+      `middleware.go no longer logs "${message}"; update HIT_MESSAGES in credential-audit.mjs`,
+    );
+  }
 });
