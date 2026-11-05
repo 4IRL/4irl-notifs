@@ -486,6 +486,31 @@ func TestProvisionInterfaces(testInstance *testing.T) {
 	}
 }
 
+func TestBuildProvisioningHealth(testInstance *testing.T) {
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	// Unconfigured: an untyped nil, so the route answers 503.
+	nilHealth := buildProvisioningHealth(nil)
+	if nilHealth != nil {
+		testInstance.Fatalf("nil client gave %#v, want an untyped nil interface", nilHealth)
+	}
+	unconfigured := httptest.NewRecorder()
+	httpapi.NewServer(httpapi.ServerConfig{ProvisioningHealth: nilHealth}).Handler().
+		ServeHTTP(unconfigured, httptest.NewRequest(http.MethodGet, "/healthz/provisioning", nil))
+	if unconfigured.Code != http.StatusServiceUnavailable {
+		testInstance.Errorf("unconfigured status = %d, want 503", unconfigured.Code)
+	}
+
+	resolver := func(string) (string, error) { return "fake-credential", nil }
+	client, clientErr := buildProvisionClient("http://provisioning-api:8080", resolver, logger)
+	if clientErr != nil || client == nil {
+		testInstance.Fatalf("client = %v, err = %v; want a client", client, clientErr)
+	}
+	if got := buildProvisioningHealth(client); got == nil {
+		testInstance.Error("client gave nil, want a health backend")
+	}
+}
+
 func TestBuildAppTeardown(testInstance *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 

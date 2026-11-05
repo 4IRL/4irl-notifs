@@ -155,6 +155,10 @@ type ServerConfig struct {
 	// heartbeat pings). When nil, every one of those routes answers 503 (fail closed;
 	// there is no bypass). The same typed-nil caveat as Registry applies.
 	AppIdentity AppIdentity
+	// ProvisioningHealth backs GET /healthz/provisioning. When nil, that route answers 503
+	// unavailable (fail closed). Callers must leave this an untyped nil when no provisioning client
+	// exists: a typed-nil pointer stored here is a non-nil interface and would bypass that guard.
+	ProvisioningHealth ProvisioningHealth
 	// Now supplies the time the heartbeat views derive their state at; defaults to
 	// time.Now. Tests set it to run on a fixed clock.
 	Now func() time.Time
@@ -184,8 +188,10 @@ type Server struct {
 	publishers  Publishers
 	heartbeats  Heartbeats
 	appIdentity AppIdentity
-	now         func() time.Time
-	mux         *http.ServeMux
+	// provisioningHealth backs GET /healthz/provisioning.
+	provisioningHealth ProvisioningHealth
+	now                func() time.Time
+	mux                *http.ServeMux
 }
 
 // readinessResponseBody is the /readyz JSON body when the database answered.
@@ -230,24 +236,25 @@ func NewServer(config ServerConfig) *Server {
 	}
 
 	server := &Server{
-		logger:            logger,
-		readiness:         config.Readiness,
-		checker:           config.HeartbeatChecker,
-		prober:            config.HeartbeatProber,
-		registry:          config.Registry,
-		appRegistry:       config.AppRegistry,
-		appHeartbeats:     config.AppHeartbeats,
-		appProvisioning:   config.AppProvisioning,
-		resetLimiter:      config.ResetLimiter,
-		adminProvisioning: config.AdminProvisioning,
-		bindingChecker:    config.BindingChecker,
-		appTeardown:       config.AppTeardown,
-		messages:          config.Messages,
-		publishers:        config.Publishers,
-		heartbeats:        config.Heartbeats,
-		appIdentity:       config.AppIdentity,
-		now:               config.Now,
-		mux:               http.NewServeMux(),
+		logger:             logger,
+		readiness:          config.Readiness,
+		checker:            config.HeartbeatChecker,
+		prober:             config.HeartbeatProber,
+		registry:           config.Registry,
+		appRegistry:        config.AppRegistry,
+		appHeartbeats:      config.AppHeartbeats,
+		appProvisioning:    config.AppProvisioning,
+		resetLimiter:       config.ResetLimiter,
+		adminProvisioning:  config.AdminProvisioning,
+		bindingChecker:     config.BindingChecker,
+		appTeardown:        config.AppTeardown,
+		messages:           config.Messages,
+		publishers:         config.Publishers,
+		heartbeats:         config.Heartbeats,
+		appIdentity:        config.AppIdentity,
+		provisioningHealth: config.ProvisioningHealth,
+		now:                config.Now,
+		mux:                http.NewServeMux(),
 	}
 	if server.now == nil {
 		server.now = time.Now
@@ -265,6 +272,7 @@ func (server *Server) Handler() http.Handler {
 func (server *Server) routes() {
 	server.mux.HandleFunc("GET /healthz", server.handleHealthz)
 	server.mux.HandleFunc("GET /readyz", server.handleReadyz)
+	server.mux.HandleFunc("GET /healthz/provisioning", server.handleProvisioningHealth)
 
 	server.mux.HandleFunc("POST /v1/admin/destinations", server.requireRegistry(server.handleCreateDestination))
 	server.mux.HandleFunc("GET /v1/admin/destinations", server.requireRegistry(server.handleListDestinations))
@@ -372,6 +380,35 @@ func (server *Server) handleHealthz(responseWriter http.ResponseWriter, request 
 	responseWriter.Header().Set("Content-Type", "text/plain")
 	responseWriter.WriteHeader(http.StatusOK)
 	_, _ = responseWriter.Write([]byte("ok"))
+}
+
+// ProvisioningHealth reports whether provisioning-api answers its health check. The check applies its own
+// deadline; it proves reachability only, not that the internal credential matches.
+type ProvisioningHealth interface {
+	Healthz(ctx context.Context) error
+}
+
+// handleProvisioningHealth answers GET /healthz/provisioning: 200 {"status":"ok"} when provisioning-api's
+// /healthz answered 200, otherwise 503 {"status":"unavailable"} with no upstream detail. A failure is
+// logged at WARN; a success is not (the watchdog polls this every few minutes).
+func (server *Server) handleProvisioningHealth(responseWriter http.ResponseWriter, request *http.Request) {
+	responseWriter.Header().Set("Content-Type", "application/json")
+	responseWriter.Header().Set("Cache-Control", "no-store")
+	if server.provisioningHealth == nil {
+		responseWriter.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = responseWriter.Write([]byte(`{"status":"unavailable"}`))
+		return
+	}
+	started := time.Now()
+	if healthErr := server.provisioningHealth.Healthz(request.Context()); healthErr != nil {
+		server.logger.Warn("provisioning health check failed",
+			"duration_ms", time.Since(started).Milliseconds(), "error", healthErr.Error())
+		responseWriter.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = responseWriter.Write([]byte(`{"status":"unavailable"}`))
+		return
+	}
+	responseWriter.WriteHeader(http.StatusOK)
+	_, _ = responseWriter.Write([]byte(`{"status":"ok"}`))
 }
 
 // handleReadyz reports database reachability and schema state. A missing

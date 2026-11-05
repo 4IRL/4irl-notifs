@@ -98,6 +98,15 @@ func provisionInterfaces(client *provisionclient.Client) (publisher.Minter, http
 	return client, client, client
 }
 
+// buildProvisioningHealth returns the client as the GET /healthz/provisioning backend, or an untyped nil
+// (never a typed-nil *provisionclient.Client) when there is no client, so the route answers 503.
+func buildProvisioningHealth(client *provisionclient.Client) httpapi.ProvisioningHealth {
+	if client == nil {
+		return nil
+	}
+	return client
+}
+
 // buildAppTeardown wires the deprovision-app cascade. Without a provisioning client it returns an untyped
 // nil (never a typed-nil *appteardown.Service), so the cascade route answers 503.
 func buildAppTeardown(
@@ -390,22 +399,23 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	prober := newProberWiring(heartbeatStore, heartbeatService.HoldOffUntil, guardedClient, sealer, logger)
 	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
-		Logger:            logger,
-		Readiness:         checker,
-		HeartbeatChecker:  heartbeatFreshness,
-		HeartbeatProber:   prober.freshness,
-		Registry:          registryService,
-		AppRegistry:       registryService,
-		Messages:          messageService,
-		Publishers:        publisherService,
-		Heartbeats:        heartbeatService,
-		AppHeartbeats:     heartbeatService,
-		AppProvisioning:   appProvisioning,
-		ResetLimiter:      resetWired.limiter,
-		AdminProvisioning: adminProvisioning,
-		BindingChecker:    appIdentityService,
-		AppTeardown:       appTeardown,
-		AppIdentity:       appIdentityService,
+		Logger:             logger,
+		Readiness:          checker,
+		HeartbeatChecker:   heartbeatFreshness,
+		HeartbeatProber:    prober.freshness,
+		Registry:           registryService,
+		AppRegistry:        registryService,
+		Messages:           messageService,
+		Publishers:         publisherService,
+		Heartbeats:         heartbeatService,
+		AppHeartbeats:      heartbeatService,
+		AppProvisioning:    appProvisioning,
+		ResetLimiter:       resetWired.limiter,
+		AdminProvisioning:  adminProvisioning,
+		BindingChecker:     appIdentityService,
+		AppTeardown:        appTeardown,
+		AppIdentity:        appIdentityService,
+		ProvisioningHealth: buildProvisioningHealth(provisionClient),
 	}).Handler()
 
 	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)

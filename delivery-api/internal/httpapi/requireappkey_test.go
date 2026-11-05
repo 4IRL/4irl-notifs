@@ -623,6 +623,8 @@ func TestAdminMessagesAndOtherRoutesNeedNoKey(testInstance *testing.T) {
 		{name: "admin scheduled", method: http.MethodGet, path: "/v1/admin/scheduled-messages"},
 		{name: "admin heartbeats", method: http.MethodGet, path: "/v1/admin/heartbeats"},
 		{name: "healthz", method: http.MethodGet, path: "/healthz"},
+		// No ProvisioningHealth is configured in this rig, so the route answers its own 503 (never a 401).
+		{name: "provisioning health", method: http.MethodGet, path: "/healthz/provisioning", wantStatus: http.StatusServiceUnavailable},
 	}
 	for _, route := range routes {
 		testInstance.Run(route.name, func(subTest *testing.T) {

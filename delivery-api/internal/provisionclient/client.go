@@ -44,6 +44,11 @@ const (
 
 	provisionAppPath = "/v1/provision-app"
 
+	healthzPath = "/healthz"
+
+	// defaultHealthTimeout bounds Healthz; it must stay well under the watchdog's 10 s probe timeout.
+	defaultHealthTimeout = 3 * time.Second
+
 	// maxResponseBytes caps how much of a response is read, for a mint and for a pass-through; a real
 	// grant is a few hundred bytes. A mint truncates at the cap (and then fails to decode); a
 	// pass-through over the cap is an error, never a truncated answer.
@@ -95,6 +100,38 @@ type Client struct {
 	httpClient *http.Client
 	// longHTTPClient is used only by DeprovisionApp; same redirect refusal, longer timeout.
 	longHTTPClient *http.Client
+	// healthClient is used only by Healthz: no redirects and no client-level timeout (healthTimeout is
+	// applied as a per-call deadline).
+	healthClient *http.Client
+	// healthTimeout bounds one Healthz call. New sets it to defaultHealthTimeout whatever Config.Timeout is;
+	// tests override it.
+	healthTimeout time.Duration
+}
+
+// Healthz reports whether provisioning-api answers GET /healthz with 200 within healthTimeout. It proves
+// reachability only: that route is exempt from the internal credential, so a credential mismatch is not
+// detected, and the credential header is deliberately not sent (least exposure). No redirect is followed and
+// there is no retry. Error text never contains the credential.
+func (client *Client) Healthz(ctx context.Context) error {
+	if !client.Configured() {
+		return ErrNotConfigured
+	}
+	callCtx, cancel := context.WithTimeout(ctx, client.healthTimeout)
+	defer cancel()
+	request, requestErr := http.NewRequestWithContext(callCtx, http.MethodGet, client.baseURL+healthzPath, nil)
+	if requestErr != nil {
+		return errors.New("healthz: build request failed")
+	}
+	response, doErr := client.healthClient.Do(request)
+	if doErr != nil {
+		return fmt.Errorf("healthz: request failed: %w", doErr)
+	}
+	defer func() { _ = response.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthz: unexpected status %d", response.StatusCode)
+	}
+	return nil
 }
 
 // New builds a Client from config.
@@ -115,6 +152,8 @@ func New(config Config) *Client {
 		credential:     config.Credential,
 		httpClient:     &http.Client{Timeout: timeout, CheckRedirect: noRedirect},
 		longHTTPClient: &http.Client{Timeout: longTimeout, CheckRedirect: noRedirect},
+		healthClient:   &http.Client{CheckRedirect: noRedirect},
+		healthTimeout:  defaultHealthTimeout,
 	}
 }
 
