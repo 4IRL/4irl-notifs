@@ -22,6 +22,13 @@ services:
       # Overrides ntfy/server.yml's base-url (shared with prod) so the local
       # stack advertises the host port this project actually published.
       NTFY_BASE_URL: http://localhost:${NTFY_PORT:-8090}
+      # Take the visitor address from X-Forwarded-For so a harness can present its own address
+      # and get its own per-IP limiter buckets. ntfy's auth-failure limiter (30 burst, +1 per
+      # minute, not configurable) otherwise drains across runs on a long-lived stack, because
+      # every harness shares one source IP, and Basic-Auth reads then fail with a 429. Safe: the
+      # port is published on 127.0.0.1 only. LOCKSTEP: prod sets the same in
+      # docker-compose.prod.yml; callers that send no header fall back to their remote address.
+      NTFY_BEHIND_PROXY: "true"
     ports:
       - "127.0.0.1:${NTFY_PORT:-8090}:80"
     depends_on:
@@ -98,10 +105,11 @@ services:
       # LOCKSTEP: keep equal to delivery-api's DELIVERY_PROVISIONING_CREDENTIAL below; prod uses the
       # persistent file secret in docker-compose.prod.yml.
       - PROVISIONING_INTERNAL_CREDENTIAL=fedcba98765432100123456789abcdeffedcba98765432100123456789abcdef # dev-only credential; prod uses a persistent file secret
-      # Local keeps the credential check log-only until master Step 8 (the harnesses now carry the credential or use the door; `make credential-audit` proves it) and
-      # runs the per-app grant check for real so the integration suite exercises it. LOCKSTEP: prod
+      # Both checks enforce (credential check enforced since one-door master Step 8; the harnesses carry
+      # the credential or use the door, and `make credential-audit` still flags any caller without it),
+      # so the integration suite exercises them for real. LOCKSTEP: prod
       # (docker-compose.prod.yml) runs the same two modes.
-      - PROVISIONING_INTERNAL_CREDENTIAL_MODE=log-only
+      - PROVISIONING_INTERNAL_CREDENTIAL_MODE=enforce
       - PROVISIONING_APP_GRANT_MODE=enforce
     volumes:
       - ntfy-auth:/var/lib/ntfy

@@ -102,8 +102,8 @@ jobs:
           export NOTIFS_INTERNAL_CREDENTIAL="$CRED"
           make onboard-integration-test
 
-      # Fails if any harness above reached provisioning-api without the internal credential (or if the
-      # log is empty), so master Step 8's enforcement flip cannot break this job.
+      # Enforcement is live in this job, so a credential-less harness fails twice: as a 401 in its own
+      # test and here as an audit hit (the audit also fails if the log is empty).
       - name: Audit provisioning-api for missing internal credentials
         run: |
           set -o pipefail

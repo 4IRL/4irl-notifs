@@ -302,6 +302,18 @@ describe('probe verdicts', () => {
   });
 
   it.each([
+    ['503', () => new Response('x', { status: 503 }), 'HTTP 503'],
+    ['404 (older delivery-api)', () => new Response('x', { status: 404 }), 'HTTP 404'],
+    ['200 status unavailable', () => Response.json({ status: 'unavailable' }), 'provisioning status unavailable'],
+    ['200 non-JSON body', () => new Response('ok'), 'invalid JSON response'],
+    ['200 non-object JSON body', () => Response.json([]), 'invalid JSON response'],
+    ['200 body without status', () => Response.json({}), 'provisioning status missing'],
+  ])('treats provisioning-api %s as down', async (_name, provisioning, detail) => {
+    const routes = { ...healthyRoutes(MORNING), provisioning };
+    expect(await firstDetail(routes, 'provisioning-api')).toBe(detail);
+  });
+
+  it.each([
     ['healthy:false', () => Response.json({ healthy: false }), 'reported unhealthy'],
     ['missing healthy', () => Response.json({ other: true }), 'reported unhealthy'],
     ['non-boolean healthy', () => Response.json({ healthy: 'true' }), 'reported unhealthy'],
@@ -571,7 +583,7 @@ describe('retry before alerting', () => {
   it('retries an Access 403 first attempt and stays quiet when the retry passes', async () => {
     const routes = {
       ...healthyRoutes(MORNING),
-      provisioning: failThenRecover({ status: 403, after: () => new Response('ok') }),
+      provisioning: failThenRecover({ status: 403, after: () => Response.json({ status: 'ok' }) }),
     };
     const result = await run({ at: MORNING, routes });
     expect(result.stub.discordPosts()).toHaveLength(0);

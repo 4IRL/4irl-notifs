@@ -72,8 +72,8 @@ services:
     restart: unless-stopped
     image: ghcr.io/4irl/4irl-notifs-provisioning-api:latest
     container_name: 4irl-notifs-provisioning-api
-    ports:
-      - "127.0.0.1:8091:8080"
+    # No host port: provisioning-api is reachable only on the compose network (delivery-api calls it
+    # at http://provisioning-api:8080). The old 127.0.0.1:8091 mapping fed the removed public hostname.
     depends_on:
       ntfy:
         condition: service_healthy
@@ -106,11 +106,10 @@ services:
       # DELIVERY_PROVISIONING_CREDENTIAL_FILE.
       - PROVISIONING_INTERNAL_CREDENTIAL_FILE=/run/secrets/PROVISIONING_INTERNAL_CREDENTIAL
       # The grant check enforces (operator decision 2026-10-26: no app calls provisioning-api, so
-      # no log-only audit window). The credential check stays log-only because the admin UI proxy
-      # reaches provisioning-api without the credential until it is re-homed under delivery-api
-      # (one-door master Steps 5-6, flipped in Step 8). LOCKSTEP: docker-compose.yml runs the
-      # credential check log-only and the grant check enforce.
-      - PROVISIONING_INTERNAL_CREDENTIAL_MODE=log-only
+      # no log-only audit window). The credential check enforces since one-door master Step 8: only
+      # delivery-api, holding the shared secret, can call provisioning-api. LOCKSTEP: docker-compose.yml
+      # runs the same two modes.
+      - PROVISIONING_INTERNAL_CREDENTIAL_MODE=enforce
       - PROVISIONING_APP_GRANT_MODE=enforce
     secrets:
       - PERSON_SERVICE_ACCESS_CLIENT_ID

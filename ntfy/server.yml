@@ -39,8 +39,9 @@ cache-file: /var/cache/ntfy/cache.db
 # catch up via `since=` for up to 24h.
 cache-duration: "24h"
 
-# Local stack runs without a reverse proxy; the production deployment sits behind a
-# Cloudflare Tunnel and overrides this with NTFY_BEHIND_PROXY=true.
+# Base default only. The production deployment sits behind a Cloudflare Tunnel, and the local
+# compose lets test harnesses choose their per-IP limiter bucket via X-Forwarded-For; both
+# override this with NTFY_BEHIND_PROXY=true.
 behind-proxy: false
 
 # iOS background push. iOS forbids the long-lived background connection the Android app

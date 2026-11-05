@@ -8,7 +8,7 @@ export const ACCESS_ID = 'access-id-123';
 export const ACCESS_SECRET = 'access-secret-456';
 
 export const DELIVERY_URL = 'https://notifs-delivery.4irl.app/readyz';
-export const PROVISIONING_URL = 'https://notifs-api.4irl.app/healthz';
+export const PROVISIONING_URL = 'https://notifs-delivery.4irl.app/healthz/provisioning';
 export const NTFY_URL = 'https://notifs.4irl.app/v1/health';
 
 export const MINUTE = 60_000;
@@ -40,7 +40,7 @@ export function healthyDelivery(now: number): Route {
 export function healthyRoutes(now: number): Routes {
   return {
     delivery: healthyDelivery(now),
-    provisioning: () => new Response('ok'),
+    provisioning: () => Response.json({ status: 'ok' }),
     ntfy: () => Response.json({ healthy: true }),
     discord: () => new Response(null, { status: 204 }),
   };
