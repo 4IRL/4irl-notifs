@@ -98,9 +98,20 @@ async function evaluateDeliveryApi({
   return problems.length === 0 ? OK : down(problems.join('; '));
 }
 
-/** provisioning-api `/healthz`: ok iff HTTP 200. */
+/**
+ * delivery-api `/healthz/provisioning` (delivery-api's own reachability check of provisioning-api):
+ * ok iff HTTP 200 and the JSON body has `status` exactly `ok`. Fails closed on a malformed body or
+ * any other status.
+ */
 async function evaluateProvisioningApi({ response }: { response: Response }): Promise<ProbeVerdict> {
-  return response.status === STATUS_OK ? OK : down(`HTTP ${response.status}`);
+  if (response.status !== STATUS_OK) {
+    return down(`HTTP ${response.status}`);
+  }
+  const body = asRecord(await readJson(response));
+  if (body === null) {
+    return down('invalid JSON response');
+  }
+  return body.status === 'ok' ? OK : down(`provisioning status ${describeValue(body.status)}`);
 }
 
 /** ntfy `/v1/health`: ok iff HTTP 200 and `healthy` is exactly the boolean `true`. */
@@ -128,7 +139,7 @@ export const TARGETS: readonly Target[] = [
   },
   {
     id: 'provisioning-api',
-    url: 'https://notifs-api.4irl.app/healthz',
+    url: 'https://notifs-delivery.4irl.app/healthz/provisioning',
     access: true,
     evaluate: evaluateProvisioningApi,
   },
