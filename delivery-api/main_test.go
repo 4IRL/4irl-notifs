@@ -867,6 +867,74 @@ func composeEnvValue(lines []string, name string) (string, bool) {
 	return "", false
 }
 
+// composePublishedPorts returns the entries under the service's `ports:` key (unquoted); nil when
+// the service publishes no host port.
+func composePublishedPorts(lines []string) []string {
+	var ports []string
+	inPorts := false
+	for _, line := range lines {
+		if line == "ports:" {
+			inPorts = true
+			continue
+		}
+		if strings.HasPrefix(line, "ports:") {
+			// Flow style (`ports: ["a:b"]`): report the remainder so it cannot hide a published port.
+			ports = append(ports, strings.TrimSpace(strings.TrimPrefix(line, "ports:")))
+			continue
+		}
+		if line == "network_mode: host" {
+			ports = append(ports, line)
+			continue
+		}
+		if !inPorts {
+			continue
+		}
+		if !strings.HasPrefix(line, "- ") {
+			break
+		}
+		ports = append(ports, strings.Trim(strings.TrimPrefix(line, "- "), `"'`))
+	}
+	return ports
+}
+
+// TestProvisioningAPIHostPortOnlyPublishedLocally pins the one-door port closure: the prod
+// provisioning-api service publishes no host port (reachable only on the compose network), while the
+// local one still publishes the API_PORT mapping the integration targets need. The prod delivery-api
+// block is the positive control, so the absence check cannot pass vacuously on an emptied block.
+func TestProvisioningAPIHostPortOnlyPublishedLocally(testInstance *testing.T) {
+	prodDeliveryPorts := composePublishedPorts(composeServiceLines(testInstance, "docker-compose.prod.yml", "delivery-api"))
+	wantDeliveryPort := "127.0.0.1:8300:8080"
+	foundDeliveryPort := false
+	for _, port := range prodDeliveryPorts {
+		if port == wantDeliveryPort {
+			foundDeliveryPort = true
+		}
+	}
+	if !foundDeliveryPort {
+		testInstance.Fatalf("docker-compose.prod.yml delivery-api ports = %v, want to include %q (positive control)", prodDeliveryPorts, wantDeliveryPort)
+	}
+
+	prodProvisioningLines := composeServiceLines(testInstance, "docker-compose.prod.yml", "provisioning-api")
+	if len(prodProvisioningLines) == 0 {
+		testInstance.Fatal("docker-compose.prod.yml provisioning-api block is empty")
+	}
+	if prodPorts := composePublishedPorts(prodProvisioningLines); len(prodPorts) != 0 {
+		testInstance.Errorf("docker-compose.prod.yml provisioning-api publishes host ports %v; it must be reachable only on the compose network", prodPorts)
+	}
+
+	localPorts := composePublishedPorts(composeServiceLines(testInstance, "docker-compose.yml", "provisioning-api"))
+	wantLocalPort := "127.0.0.1:${API_PORT:-8091}:8080"
+	foundLocalPort := false
+	for _, port := range localPorts {
+		if port == wantLocalPort {
+			foundLocalPort = true
+		}
+	}
+	if !foundLocalPort {
+		testInstance.Errorf("docker-compose.yml provisioning-api ports = %v, want to include %q", localPorts, wantLocalPort)
+	}
+}
+
 // composeListsSecret reports whether the lines hold "- secretName" under the service's `secrets:` key.
 func composeListsSecret(lines []string, secretName string) bool {
 	inSecrets := false
@@ -917,8 +985,8 @@ func TestLocalComposeWiresDeliveryAPIToPersonService(testInstance *testing.T) {
 }
 
 // TestLocalComposeWiresTheInternalCredentialAndModes pins the local stack: provisioning-api and
-// delivery-api carry the same obviously-fake dev credential, the credential check is log-only and
-// the grant check is enforce (so the integration suite exercises the real grant check).
+// delivery-api carry the same obviously-fake dev credential, and both the credential check and the
+// grant check are enforce (so the integration suite exercises the real checks).
 func TestLocalComposeWiresTheInternalCredentialAndModes(testInstance *testing.T) {
 	provisioningLines := composeServiceLines(testInstance, "docker-compose.yml", "provisioning-api")
 	deliveryLines := composeServiceLines(testInstance, "docker-compose.yml", "delivery-api")
@@ -942,7 +1010,7 @@ func TestLocalComposeWiresTheInternalCredentialAndModes(testInstance *testing.T)
 	}
 
 	wantModes := map[string]string{
-		"PROVISIONING_INTERNAL_CREDENTIAL_MODE": "log-only",
+		"PROVISIONING_INTERNAL_CREDENTIAL_MODE": "enforce",
 		"PROVISIONING_APP_GRANT_MODE":           "enforce",
 	}
 	for name, wantValue := range wantModes {
@@ -954,8 +1022,8 @@ func TestLocalComposeWiresTheInternalCredentialAndModes(testInstance *testing.T)
 }
 
 // TestProdComposeMountsTheInternalCredentialSecret pins production: both services read the one
-// persistent file secret, the credential check is log-only until the admin UI is re-homed while the
-// grant check enforces, and no credential value is written into the compose file.
+// persistent file secret, both the credential check and the grant check enforce, and no credential
+// value is written into the compose file.
 func TestProdComposeMountsTheInternalCredentialSecret(testInstance *testing.T) {
 	const secretPath = "/run/secrets/PROVISIONING_INTERNAL_CREDENTIAL"
 	provisioningLines := composeServiceLines(testInstance, "docker-compose.prod.yml", "provisioning-api")
@@ -983,7 +1051,7 @@ func TestProdComposeMountsTheInternalCredentialSecret(testInstance *testing.T) {
 		}
 	}
 	wantModes := map[string]string{
-		"PROVISIONING_INTERNAL_CREDENTIAL_MODE": "log-only",
+		"PROVISIONING_INTERNAL_CREDENTIAL_MODE": "enforce",
 		"PROVISIONING_APP_GRANT_MODE":           "enforce",
 	}
 	for name, wantValue := range wantModes {

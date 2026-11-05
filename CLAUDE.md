@@ -84,7 +84,7 @@ Components:
   email-keyed; the ntfy user derives from the email). Callable by the admin UI and by
   individual consuming apps, each authenticated via its own Cloudflare Access Service Token. It also
   has two in-app checks, each with an `enforce` / `log-only` mode switch (unset means `enforce`; prod
-  enforces the grant check and runs the credential check `log-only` until one-door master Step 8): an
+  and local enforce both since one-door master Step 8, and prod publishes no host port for it): an
   internal credential (`PROVISIONING_INTERNAL_CREDENTIAL`, header
   `X-Notifs-Internal-Credential`, shared only with delivery-api as `DELIVERY_PROVISIONING_CREDENTIAL`;
   `PROVISIONING_INTERNAL_CREDENTIAL_MODE`) and a per-app grant check on reset-password, set-password and
@@ -103,8 +103,8 @@ Components:
   token), the scheduled-message releaser (`RunReleaser`), the heartbeat checker, the heartbeat prober (website probe loop, 10 s scan,
   bounded concurrency) and the retention
   sweeper in-process.
-- **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api and ntfy from outside
-  the VPS and posts state changes to Discord.
+- **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api (through delivery-api's
+  `/healthz/provisioning`) and ntfy from outside the VPS and posts state changes to Discord.
 - **web** — React/Vite admin UI, deployed to Cloudflare Pages behind Cloudflare Access
   (Google/GitHub OAuth).
 - **setup-web** — public static ntfy setup page (React/Vite, `qrcode.react`) deployed to its own

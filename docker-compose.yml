@@ -98,10 +98,11 @@ services:
       # LOCKSTEP: keep equal to delivery-api's DELIVERY_PROVISIONING_CREDENTIAL below; prod uses the
       # persistent file secret in docker-compose.prod.yml.
       - PROVISIONING_INTERNAL_CREDENTIAL=fedcba98765432100123456789abcdeffedcba98765432100123456789abcdef # dev-only credential; prod uses a persistent file secret
-      # Local keeps the credential check log-only until master Step 8 (the harnesses now carry the credential or use the door; `make credential-audit` proves it) and
-      # runs the per-app grant check for real so the integration suite exercises it. LOCKSTEP: prod
+      # Both checks enforce (credential check enforced since one-door master Step 8; the harnesses carry
+      # the credential or use the door, and `make credential-audit` still flags any caller without it),
+      # so the integration suite exercises them for real. LOCKSTEP: prod
       # (docker-compose.prod.yml) runs the same two modes.
-      - PROVISIONING_INTERNAL_CREDENTIAL_MODE=log-only
+      - PROVISIONING_INTERNAL_CREDENTIAL_MODE=enforce
       - PROVISIONING_APP_GRANT_MODE=enforce
     volumes:
       - ntfy-auth:/var/lib/ntfy

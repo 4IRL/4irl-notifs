@@ -11,11 +11,11 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | Component            | Tech                                            | Host                     | Role                                                                              |
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
-| **provisioning-api** | Go, Docker (VPS)                                | `notifs-api.4irl.app`    | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`). |
+| **provisioning-api** | Go, Docker (VPS)                                | none in prod (compose network only; the `notifs-api.4irl.app` route and Access app are deleted by the Step 8 runbook, the origin port is already gone) | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`), callable only by delivery-api with the internal credential. |
 | **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`), a retention sweeper the heartbeat checker (30 s tick) and the heartbeat prober (website probe loop, 10 s scan, bounded concurrency). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/people`, `/apps` and `/delivery/*` proxy Functions. |
-| **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor on Cloudflare's network, independent of the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`; a stale or malformed `heartbeat_prober` also pages, an absent one is tolerated so an older delivery-api stays quiet), provisioning-api `/healthz` and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes plus a daily summary (16:00 UTC) to a dedicated Discord webhook. A failed probe is retried once after 30 s and only the retry's verdict can alert, so a transient failure (a stray 520, or the few seconds a production deploy takes to recreate the containers) stays quiet; each attempt (`watchdog: probe id=… attempt=… ok=… http=… duration_ms=…`) and each run (`watchdog: run state=… up=… down=… transitions=… discord=… kv_write=…`) is logged and kept by Workers Logs. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
+| **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor on Cloudflare's network, independent of the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`; a stale or malformed `heartbeat_prober` also pages, an absent one is tolerated so an older delivery-api stays quiet), provisioning-api (target id `provisioning-api`, probed through delivery-api `GET /healthz/provisioning`; reachability only, it does not detect internal-credential drift) and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes plus a daily summary (16:00 UTC) to a dedicated Discord webhook. A failed probe is retried once after 30 s and only the retry's verdict can alert, so a transient failure (a stray 520, or the few seconds a production deploy takes to recreate the containers) stays quiet; each attempt (`watchdog: probe id=… attempt=… ok=… http=… duration_ms=…`) and each run (`watchdog: run state=… up=… down=… transitions=… discord=… kv_write=…`) is logged and kept by Workers Logs. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
 | **setup page**       | React/Vite → Cloudflare Pages (static)          | `notifs-setup.4irl.app`  | Public ntfy setup walkthrough linked from every app. No API calls, no Access. See "Setup page". |
 
 Two live environments: **local** (docker-compose: ntfy + person-service + provisioning-api + delivery-api + Postgres) and
@@ -330,7 +330,7 @@ graph TD
     WD["watchdog Worker<br/>cron */5 + KV state"]
   end
   subgraph VPS["VPS (docker compose)"]
-    API["provisioning-api :8091"]
+    API["provisioning-api :8091 (local only; prod has no host port)"]
     NTFY["ntfy :8090"]
     DLV["delivery-api :8300"]
   end
@@ -354,7 +354,7 @@ graph TD
 | Host                     | Fronted by                | Access-gated?            | Origin                       |
 | ------------------------ | ------------------------- | ------------------------ | ---------------------------- |
 | `notifs-admin.4irl.app`  | Cloudflare Pages          | Yes (human login)        | Pages project `notifs-admin` |
-| `notifs-api.4irl.app`    | Tunnel → `127.0.0.1:8091` | Yes (service-token only) | provisioning-api container   |
+| `notifs-api.4irl.app` (route and Access app deleted by the Step 8 runbook; the origin port is already gone) | Tunnel → `127.0.0.1:8091` (gone) | Yes (service-token only) | provisioning-api container, now compose-network only |
 | `notifs.4irl.app`        | Tunnel → `127.0.0.1:8090` | **No** (ntfy token auth) | ntfy container               |
 | `notifs-people.4irl.app` | Worker custom domain      | Yes (service-token only) | person-service Worker        |
 | `notifs-delivery.4irl.app`   | Tunnel → `127.0.0.1:8300` | Yes (service-token only; path-scoped, see below) | delivery-api container |
@@ -400,9 +400,9 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 | ------------------------------- | ----------------------------------------------------- | ------------------------------------------- |
 | `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`)         | `notifs-api` + `notifs-people` + `notifs-delivery` Service Auth apps |
 | VPS dual-write token            | provisioning-api (Go)                                 | `notifs-people` Service Auth                |
-| internal credential (not an Access token) | delivery-api `provisionclient` (`X-Notifs-Internal-Credential`) | provisioning-api's in-app credential check (log-only until one-door master Step 8) |
+| internal credential (not an Access token) | delivery-api `provisionclient` (`X-Notifs-Internal-Credential`) | provisioning-api's in-app credential check (enforced since one-door master Step 8) |
 | per-consuming-app tokens        | tasktracker backend (live); urls4irl backend (future) | `notifs-api` Service Auth; the whole-host `notifs-delivery` app once split from `/v1/admin` (never the `/v1/admin` app) |
-| `notifs-watchdog`               | watchdog Worker (secrets `CF_ACCESS_CLIENT_ID/SECRET`) | `notifs-api` Service Auth; the whole-host `notifs-delivery` app **excluding `/v1/admin`** (only after the `/v1/admin` split exists) |
+| `notifs-watchdog`               | watchdog Worker (secrets `CF_ACCESS_CLIENT_ID/SECRET`) | the whole-host `notifs-delivery` app **excluding `/v1/admin`** (only after the `/v1/admin` split exists) |
 
 ### Admin-UI request flow (the important one)
 
@@ -607,9 +607,9 @@ edge. Full contract: `docs/app-integration-guide.md` + `provisioning-api/interna
 **In-app checks (provisioning-api).** Beyond the edge, provisioning-api has two Go-level checks. Each has a
 mode switch with the same shape: `PROVISIONING_INTERNAL_CREDENTIAL_MODE` and `PROVISIONING_APP_GRANT_MODE`
 accept `enforce` or `log-only`; empty or unset means `enforce` (fail closed) and any other value is a startup
-error (the process logs it and exits non-zero). Production runs the grant check as `enforce` and the
-credential check as `log-only` (explicit settings in `docker-compose.prod.yml`); the local
-`docker-compose.yml` runs the same two modes (grant enforced so the integration suite exercises it).
+error (the process logs it and exits non-zero). Production runs both checks as `enforce` (explicit
+settings in `docker-compose.prod.yml`, since one-door master Step 8); the local `docker-compose.yml`
+runs the same two modes, so the integration suite exercises both for real.
 
 - **Internal credential.** Every route except exactly `GET /healthz` is wrapped by a middleware that checks the
   `X-Notifs-Internal-Credential` header against the persistent `PROVISIONING_INTERNAL_CREDENTIAL` secret
@@ -619,8 +619,8 @@ credential check as `log-only` (explicit settings in `docker-compose.prod.yml`);
   reaches the handler (`enforce` with no credential loaded is a startup error). delivery-api's
   `provisionclient` sends the credential on every call (default timeout 15 s, set from local measurements of
   the new grant lookup: sequential `POST /v1/provision` 126 to 163 ms, `POST /v1/provision-app` 93 to 116 ms,
-  5 concurrent `/v1/provision` 542 to 663 ms, since the CLI calls are serialized). The check stays `log-only`
-  in prod until every caller goes through the delivery-api door (one-door master Step 8); the full
+  5 concurrent `/v1/provision` 542 to 663 ms, since the CLI calls are serialized). The check is `enforce`
+  in prod and local since one-door master Step 8 (`log-only` remains only as a rollback switch); the full
   one-door rewrite of this section is master Step 9. delivery-api refuses to start when
   `DELIVERY_PROVISIONING_URL` names any host other than `provisioning-api`, so the credential is never sent
   to another origin. A successful `GET /healthz` writes no completion log line (Docker's healthcheck and the
@@ -810,10 +810,10 @@ wake, backfills missed messages via `since=` for up to 24h.
 graph TD
   M["merge to main"] --> B["build-prod<br/>provisioning-api + delivery-api images → GHCR"]
   B --> D1J["deploy-prod<br/>SSH → VPS docker compose up<br/>(ntfy + provisioning-api + delivery-api + Postgres)"]
-  M --> D2["deploy-admin-ui<br/>wrangler pages deploy (notifs-admin)"]
+  D1J --> D2["deploy-admin-ui<br/>wrangler pages deploy (notifs-admin)"]
   M --> D3["deploy-person-service<br/>wrangler d1 migrations apply → wrangler deploy Worker"]
   D3 --> D1J
-  M --> D4["deploy-watchdog<br/>wrangler deploy Worker (no D1)"]
+  D1J --> D4["deploy-watchdog<br/>wrangler deploy Worker (no D1)<br/>(after deploy-prod: serves /healthz/provisioning first)"]
   M --> D5["deploy-setup-page<br/>wrangler pages deploy (notifs-setup)"]
 ```
 
@@ -822,13 +822,9 @@ graph TD
   deploy therefore skips the VPS deploy (fail closed, intended). If the Worker lags behind the API (for
   example the Worker deploy failed and the API was deployed some other way), provision leaves the password
   out, reset returns `429`, and **set-password returns `500`** until the Worker and migration `0003` are
-  live. `deploy-admin-ui` has no `needs` while `deploy-prod` waits for `build-prod` and
-  `deploy-person-service`, so the admin UI can go live ahead of the API by the image build plus Worker
-  deploy time, and stays ahead if the Worker deploy fails. During that window the new UI talks to the old
-  API: the operator send-test returns 404 (`/delivery/v1/admin/messages`), the App identities section
-  shows a load error, and the Owner column reads unknown, until the API is up. An older UI against the new
-  API would drop the returned `password`, so deploy the UI first when deploying by hand (the UI-ahead window
-  above is the accepted side of that ordering). Migration `0003` is additive, so an older Worker or API
+  live. `deploy-admin-ui` has `needs: [deploy-prod]`, so the admin UI goes live only after the API is up
+  (a failed API deploy leaves the old UI in place). An older UI against the new API would drop the
+  returned `password`, so when deploying by hand deploy the API first, then the UI. Migration `0003` is additive, so an older Worker or API
   keeps working against it; rolling back the API alone is safe, while rolling back the Worker removes the
   new routes and degrades the API as above.
 - **VPS deploy** (`prod-deploy.yml`): SSH via `cloudflared access ssh` (own SSH key + deploy service
@@ -895,16 +891,17 @@ graph TD
   recreate a service when just a bind-mounted secret file's contents change, so **rotating** it means
   updating the GitHub secret, redeploying, then running `docker compose -f docker-compose.prod.yml up -d
   --force-recreate provisioning-api delivery-api` on the VPS so both ends restart with the same value.
-  Prod runs `PROVISIONING_APP_GRANT_MODE` as `enforce` (see "In-app checks" under the provisioning-api
-  endpoints) and `PROVISIONING_INTERNAL_CREDENTIAL_MODE` as `log-only`: the admin UI proxy reaches
-  provisioning-api without the credential until it is re-homed, so the credential check is flipped to
-  `enforce` only in one-door master Step 8.
+  Prod runs both `PROVISIONING_APP_GRANT_MODE` and `PROVISIONING_INTERNAL_CREDENTIAL_MODE` as `enforce`
+  (see "In-app checks" under the provisioning-api endpoints), and the prod compose publishes no host
+  port for provisioning-api, so only delivery-api, holding the secret, can reach it.
 - **person-service D1 schema** is applied by CI: `worker-deploy.yml` runs `wrangler d1 migrations apply
   person-service --remote` **before** `wrangler deploy`, so a new Worker code path never hits a table its
   migration hasn't created (idempotent — applied migrations are skipped). Adding a table = add a
   `person-service/migrations/NNNN_*.sql` file; no workflow change needed.
 - **watchdog deploy** (`watchdog-deploy.yml`, job `deploy-watchdog`): `wrangler deploy` of `watchdog/`
-  in parallel with the VPS deploy, so it survives a VPS or deploy failure. Only `CLOUDFLARE_API_TOKEN` /
+  with `needs: [deploy-prod]`, so delivery-api already serves `GET /healthz/provisioning` (the watchdog's
+  provisioning probe) before the new Worker probes it. A failed VPS deploy therefore also skips the
+  watchdog deploy; the previously deployed Worker keeps running. Only `CLOUDFLARE_API_TOKEN` /
   `CLOUDFLARE_ACCOUNT_ID` reach CI; the Worker's runtime secrets are set by the operator, never by CI.
   While `watchdog/wrangler.toml` still holds the placeholder KV namespace id the job skips the deploy
   with a `::notice::` (merges stay green); it deploys once the real id replaces the placeholder (runbook
@@ -924,7 +921,8 @@ the operator's shell; never commit one (the KV namespace id needs the repo owner
    `notifs-delivery.4irl.app/v1/admin` (admin proxy token only) *before* authorizing any other token on the
    host, so the watchdog token never reaches `/v1/admin`.
 2. Create the service token `notifs-watchdog`. Add it to the whole-host `notifs-delivery` app (not the
-   `/v1/admin` one) and to `notifs-api`. ntfy needs no token (`/v1/health` is anonymous).
+   `/v1/admin` one); it needs no `notifs-api` access because the provisioning probe goes through
+   delivery-api `GET /healthz/provisioning`. ntfy needs no token (`/v1/health` is anonymous).
 3. In `watchdog/`: `npx wrangler kv namespace create WATCHDOG_STATE`, put the returned id in
    `watchdog/wrangler.toml` in place of the all-zero placeholder, and commit that change only after the
    repo owner approves. The `deploy-watchdog` job skips the deploy until this is done and deploys the
@@ -934,7 +932,7 @@ the operator's shell; never commit one (the KV namespace id needs the repo owner
    `npx wrangler secret put CF_ACCESS_CLIENT_ID`, `npx wrangler secret put CF_ACCESS_CLIENT_SECRET`.
 6. Verify: `npx wrangler tail notifs-watchdog` shows one scheduled run within 5 minutes (the Worker
    skips the run and logs an error if `DISCORD_WEBHOOK_URL` is unset). To force a down, stop ntfy on the
-   VPS (or remove the token from `notifs-api`) and expect a Discord "down" post within about 5 minutes
+   VPS (or stop provisioning-api, which makes delivery-api's `/healthz/provisioning` fail) and expect a Discord "down" post within about 5 minutes
    and a "recovered" post after restoring it.
 
 The Heartbeats admin section ships with its backend: `VITE_HEARTBEATS_ENABLED=true` is set in
@@ -1001,7 +999,7 @@ account IDs stay in the Cloudflare dashboard and are never committed.
 | `/delivery/readyz` shows `schema_mismatch`            | The delivery-api binary and database schema differ: `schema_version` ≠ `expected_schema_version` (a migration not applied, or an old binary). Check `delivery-migrate` logs and the `last_migration_failure` the status card shows. |
 | Delivery status card shows "Stalled" / watchdog says "heartbeat checker stale" | The heartbeat checker has not ticked for 90 s (`/readyz` `heartbeat_checker.stale: true`): delivery-api is wedged or its checker loop died, or the process just started. Check `docker compose logs delivery-api`; a restart fixes a wedged loop. `/readyz` still answers 200, so the container stays healthy. |
 | Watchdog reports delivery-api (or another target) down | Read the Discord detail: `access denied (HTTP 403/3xx)` = `notifs-watchdog` token missing from that Access app or expired; `timeout`, `request failed` or `HTTP 5xx` (e.g. 502/530) = VPS, Tunnel or the service is down (the watchdog runs on Cloudflare's network, independent of the VPS, so this is a real outage); `readiness status …` = a `/readyz` problem. An alert means two probes 30 s apart both failed (a deploy that keeps a container down longer than that also alerts, and recovers on the next run). To see what each attempt returned (status, duration, detail) and whether the retry cleared a failure, read the Worker's logs (Cloudflare dashboard > Workers & Pages > `notifs-watchdog` > Logs, or `npx wrangler tail notifs-watchdog`) and search `watchdog: probe`. Nothing posts at all = the Worker is not running: `npx wrangler tail notifs-watchdog`, then check the cron trigger and the three secrets. |
-| Rotate secret → 404 right after a deploy              | The Pages UI deploys in parallel with the backend; an old `delivery-api` binary has no `rotate-secret` route. Wait for the `deploy-prod` job, then retry (not "destination does not exist"). |
+| Rotate secret → 404 right after a deploy              | The Pages UI deploys after `deploy-prod`, so this only happens if that job failed or the UI was deployed by hand; an old `delivery-api` binary has no `rotate-secret` route. Wait for the `deploy-prod` job, then retry (not "destination does not exist"). |
 | Watchdog says "heartbeat prober stale" | The website probe loop has not scanned for 90 s (`/readyz` `heartbeat_prober.stale: true`): the prober loop died or is wedged, or the process just started. Check `docker compose logs delivery-api` for `heartbeat probe scan failed` / `heartbeat probe scan panicked`, then restart delivery-api. `/readyz` still answers 200. |
 | Probe check down with "Credentials could not be used" | The Access token was rejected or cannot be unsealed. Use Replace credentials on the check (or enter new credentials if none are stored any more). |
 | "Stalled" status card or Heartbeats load error right after the first heartbeats deploy | The Pages UI deployed before the VPS: the old `delivery-api` binary has no `/v1/admin/heartbeats` routes or `heartbeat_checker` field, and migration 0006 may not be applied yet. Wait for the `deploy-prod` job to finish, then refresh. |
