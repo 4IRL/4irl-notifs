@@ -22,6 +22,13 @@ services:
       # Overrides ntfy/server.yml's base-url (shared with prod) so the local
       # stack advertises the host port this project actually published.
       NTFY_BASE_URL: http://localhost:${NTFY_PORT:-8090}
+      # Take the visitor address from X-Forwarded-For so a harness can present its own address
+      # and get its own per-IP limiter buckets. ntfy's auth-failure limiter (30 burst, +1 per
+      # minute, not configurable) otherwise drains across runs on a long-lived stack, because
+      # every harness shares one source IP, and Basic-Auth reads then fail with a 429. Safe: the
+      # port is published on 127.0.0.1 only. LOCKSTEP: prod sets the same in
+      # docker-compose.prod.yml; callers that send no header fall back to their remote address.
+      NTFY_BEHIND_PROXY: "true"
     ports:
       - "127.0.0.1:${NTFY_PORT:-8090}:80"
     depends_on:

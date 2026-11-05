@@ -67,6 +67,30 @@ func ntfyURL() string {
 	return defaultNtfyURL
 }
 
+// harnessVisitorIP is the source address this test process presents to ntfy in
+// X-Forwarded-For (the local compose runs ntfy with NTFY_BEHIND_PROXY=true, like
+// prod). ntfy keeps per-IP limiters, including a 30-burst, 1-per-minute auth-failure
+// limiter that cannot be configured and answers 429 "too many auth failures". The
+// suite makes ~10 deliberate 401s per run (superseded or wrong passwords), so on a
+// long-lived stack every harness sharing the real source IP drains the bucket after
+// a few runs and later Basic-Auth reads fail with a 429. A fresh address per run
+// gives each run its own buckets. It is a private 10.x address derived from the
+// start time, so it does not collide with another run in practice.
+var harnessVisitorIP = func() string {
+	startNanos := time.Now().UnixNano()
+	return fmt.Sprintf("10.%d.%d.%d", byte(startNanos>>16), byte(startNanos>>8), byte(startNanos))
+}()
+
+// newNtfyRequest is http.NewRequest for ntfy with the per-run visitor address set.
+func newNtfyRequest(method string, url string, body io.Reader) (*http.Request, error) {
+	request, buildErr := http.NewRequest(method, url, body)
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	request.Header.Set("X-Forwarded-For", harnessVisitorIP)
+	return request, nil
+}
+
 // provisionResponse mirrors the /v1/provision success body.
 type provisionResponse struct {
 	UserID         string `json:"user_id"`
@@ -199,7 +223,7 @@ func closeBody(t *testing.T, response *http.Response) {
 // returns the ntfy HTTP status (200 authorized to read, 403/401 denied).
 func readStatus(t *testing.T, topic string, token string) int {
 	t.Helper()
-	request, buildErr := http.NewRequest(http.MethodGet, ntfyURL()+"/"+topic+"/json?poll=1&since=all", nil)
+	request, buildErr := newNtfyRequest(http.MethodGet, ntfyURL()+"/"+topic+"/json?poll=1&since=all", nil)
 	if buildErr != nil {
 		t.Fatalf("building read request: %v", buildErr)
 	}
@@ -223,7 +247,7 @@ func readStatus(t *testing.T, topic string, token string) int {
 // enables rather than the token auth used by the other read helpers.
 func readStatusWithBasicAuth(t *testing.T, topic string, username string, password string) int {
 	t.Helper()
-	request, buildErr := http.NewRequest(http.MethodGet, ntfyURL()+"/"+topic+"/json?poll=1&since=all", nil)
+	request, buildErr := newNtfyRequest(http.MethodGet, ntfyURL()+"/"+topic+"/json?poll=1&since=all", nil)
 	if buildErr != nil {
 		t.Fatalf("building read request: %v", buildErr)
 	}
@@ -240,7 +264,7 @@ func readStatusWithBasicAuth(t *testing.T, topic string, username string, passwo
 // the ntfy HTTP status (200 authorized, 403/401 denied).
 func publishStatus(t *testing.T, topic string, token string) int {
 	t.Helper()
-	request, buildErr := http.NewRequest(http.MethodPost, ntfyURL()+"/"+topic, strings.NewReader("integration ping"))
+	request, buildErr := newNtfyRequest(http.MethodPost, ntfyURL()+"/"+topic, strings.NewReader("integration ping"))
 	if buildErr != nil {
 		t.Fatalf("building publish request: %v", buildErr)
 	}
@@ -260,7 +284,7 @@ func publishStatus(t *testing.T, topic string, token string) int {
 // publish was rejected or the body did not decode).
 func publishMessage(t *testing.T, topic string, token string) (int, string) {
 	t.Helper()
-	request, buildErr := http.NewRequest(http.MethodPost, ntfyURL()+"/"+topic, strings.NewReader("integration publish "+time.Now().String()))
+	request, buildErr := newNtfyRequest(http.MethodPost, ntfyURL()+"/"+topic, strings.NewReader("integration publish "+time.Now().String()))
 	if buildErr != nil {
 		t.Fatalf("building publish request: %v", buildErr)
 	}
@@ -298,7 +322,7 @@ func topicContainsMessageID(t *testing.T, topic string, token string, messageID 
 // false before reading any field of the returned message.
 func cachedMessage(t *testing.T, topic string, token string, messageID string) (ntfyMessage, bool) {
 	t.Helper()
-	request, buildErr := http.NewRequest(http.MethodGet, ntfyURL()+"/"+topic+"/json?poll=1&since=all", nil)
+	request, buildErr := newNtfyRequest(http.MethodGet, ntfyURL()+"/"+topic+"/json?poll=1&since=all", nil)
 	if buildErr != nil {
 		t.Fatalf("building read request: %v", buildErr)
 	}
@@ -1241,7 +1265,10 @@ func TestProvisionReturnsWorkingPasswordOnlyOnce(t *testing.T) {
 
 func TestResetPasswordRotatesAndRateLimits(t *testing.T) {
 	waitForHealth(t)
-	const email = "itest-reset@example.com"
+	// A unique email per run: provisioning-api's in-process reset attempt throttle (20 attempts per
+	// person/app per rolling hour, not cleared by user deletion) would otherwise carry over between
+	// runs against a long-lived stack, and this test spends 6 attempts per run.
+	email := fmt.Sprintf("itest-reset-%d@example.com", time.Now().UnixNano())
 	const appID = "itestreset"
 	personHash := personhash.Hash(email)
 	ntfyUserID := personhash.NtfyUser(email)
