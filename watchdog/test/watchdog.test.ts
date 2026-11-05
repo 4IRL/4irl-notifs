@@ -306,6 +306,8 @@ describe('probe verdicts', () => {
     ['404 (older delivery-api)', () => new Response('x', { status: 404 }), 'HTTP 404'],
     ['200 status unavailable', () => Response.json({ status: 'unavailable' }), 'provisioning status unavailable'],
     ['200 non-JSON body', () => new Response('ok'), 'invalid JSON response'],
+    ['200 non-object JSON body', () => Response.json([]), 'invalid JSON response'],
+    ['200 body without status', () => Response.json({}), 'provisioning status missing'],
   ])('treats provisioning-api %s as down', async (_name, provisioning, detail) => {
     const routes = { ...healthyRoutes(MORNING), provisioning };
     expect(await firstDetail(routes, 'provisioning-api')).toBe(detail);
