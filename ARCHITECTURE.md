@@ -382,7 +382,7 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 | `notifs-admin`            | `notifs-admin.4irl.app`                        | `907dc277…575f`   | `U4I Dev Policy` — **Allow**, GitHub org `4IRL` (human login)                        |
 | `notifs-admin` API bypass | `notifs-admin.4irl.app/people`, `/apps`, `/delivery` | —                 | **Bypass** (Everyone) — Access does NOT gate these paths; the Function authenticates |
 | `notifs-delivery`         | `notifs-delivery.4irl.app`                     | (dashboard)       | **Service Auth** (proxy token only; per-app tokens, the `notifs-watchdog` token and a `/v1/admin` split come with the first onboarded app or the watchdog) |
-| `notifs-api`              | `notifs-api.4irl.app`                          | `91ad97d9…694150` | **Service Auth** (proxy token) only                                                  |
+| `notifs-api` (retired)    | `notifs-api.4irl.app`                          | `91ad97d9…694150` | Deleted by the Step 8 runbook; provisioning-api is compose-network only              |
 | `notifs-people`           | `notifs-people.4irl.app`                       | `5a270164…658f5a` | **Service Auth** (VPS dual-write token + proxy token) only                           |
 
 - `U4I Dev Policy` is a **reusable** Allow policy shared with `notifs-admin`. On the backends it was
@@ -398,10 +398,10 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 
 | Token                           | Presented by                                          | Authorized on                               |
 | ------------------------------- | ----------------------------------------------------- | ------------------------------------------- |
-| `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`)         | `notifs-api` + `notifs-people` + `notifs-delivery` Service Auth apps |
+| `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`)         | `notifs-people` + `notifs-delivery` Service Auth apps (the retired `notifs-api` app is deleted by the Step 8 runbook) |
 | VPS dual-write token            | provisioning-api (Go)                                 | `notifs-people` Service Auth                |
 | internal credential (not an Access token) | delivery-api `provisionclient` (`X-Notifs-Internal-Credential`) | provisioning-api's in-app credential check (enforced since one-door master Step 8) |
-| per-consuming-app tokens        | tasktracker backend (live); urls4irl backend (future) | `notifs-api` Service Auth; the whole-host `notifs-delivery` app once split from `/v1/admin` (never the `/v1/admin` app) |
+| per-consuming-app tokens        | tasktracker backend (live); urls4irl backend (future) | the whole-host `notifs-delivery` app once split from `/v1/admin` (never the `/v1/admin` app) |
 | `notifs-watchdog`               | watchdog Worker (secrets `CF_ACCESS_CLIENT_ID/SECRET`) | the whole-host `notifs-delivery` app **excluding `/v1/admin`** (only after the `/v1/admin` split exists) |
 
 ### Admin-UI request flow (the important one)
