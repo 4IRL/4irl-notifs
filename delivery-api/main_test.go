@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -897,6 +898,29 @@ func composePublishedPorts(lines []string) []string {
 	return ports
 }
 
+// TestComposePublishedPortsEvasionBranches pins the helper's purpose: block-style ports, flow-style
+// ports and host networking all report as published, and a service without ports reports none.
+func TestComposePublishedPortsEvasionBranches(testInstance *testing.T) {
+	testCases := []struct {
+		name  string
+		lines []string
+		want  []string
+	}{
+		{"block style", []string{"image: x", "ports:", `- "127.0.0.1:8300:8080"`, "- 9000:9000", "restart: always"}, []string{"127.0.0.1:8300:8080", "9000:9000"}},
+		{"flow style", []string{"image: x", `ports: ["8080:8080"]`}, []string{`["8080:8080"]`}},
+		{"host network", []string{"image: x", "network_mode: host"}, []string{"network_mode: host"}},
+		{"no ports", []string{"image: x", "restart: always"}, nil},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(testInstance *testing.T) {
+			got := composePublishedPorts(testCase.lines)
+			if !slices.Equal(got, testCase.want) {
+				testInstance.Errorf("composePublishedPorts = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
 // TestProvisioningAPIHostPortOnlyPublishedLocally pins the one-door port closure: the prod
 // provisioning-api service publishes no host port (reachable only on the compose network), while the
 // local one still publishes the API_PORT mapping the integration targets need. The prod delivery-api
@@ -981,6 +1005,15 @@ func TestLocalComposeWiresDeliveryAPIToPersonService(testInstance *testing.T) {
 	}
 	if !dependsOnPersonServiceHealthy {
 		testInstance.Error("docker-compose.yml delivery-api must depend_on person-service with condition: service_healthy")
+	}
+}
+
+// TestLocalComposeNtfyBehindProxy pins the local ntfy NTFY_BEHIND_PROXY=true that the harness
+// X-Forwarded-For change needs (LOCKSTEP with prod); dropping it resurfaces only as a 429 flake.
+func TestLocalComposeNtfyBehindProxy(testInstance *testing.T) {
+	ntfyLines := composeServiceLines(testInstance, "docker-compose.yml", "ntfy")
+	if !slices.Contains(ntfyLines, `NTFY_BEHIND_PROXY: "true"`) {
+		testInstance.Errorf("docker-compose.yml ntfy must set NTFY_BEHIND_PROXY: \"true\"; got service lines %v", ntfyLines)
 	}
 }
 
