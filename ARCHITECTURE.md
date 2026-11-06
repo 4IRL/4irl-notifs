@@ -365,7 +365,7 @@ graph TD
 | `notifs-delivery.4irl.app`   | Tunnel → `127.0.0.1:8300` | Yes (service-token only; path-scoped, see below) | delivery-api container |
 | `notifs-setup.4irl.app`  | Cloudflare Pages          | **No** (public static page) | Pages project `notifs-setup` |
 
-- The hostname notifs-api.4irl.app is retired (2026-11-05, one-door Step 8): provisioning-api now runs on the compose network only and is reached through delivery-api.
+- The hostname `notifs-api.4irl.app` is retired (2026-11-05, one-door Step 8): provisioning-api now runs on the compose network only and is reached through delivery-api.
 - The Tunnel is a **shared, remotely-managed** connector (also fronts urls4irl); notifs routes were
   added as public hostnames — no new daemon/credential, dashboard-only.
 - ntfy is deliberately **not** behind Access (mobile/CLI clients can't do an OAuth redirect); its

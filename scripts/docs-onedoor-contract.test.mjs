@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { jsonTagsOf, realIdentifiersIn } from './docs-heartbeat-probes.test.mjs';
+import { jsonTagsOf, realIdentifiersIn } from './docs-helpers.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const readRepoFile = (relativePath) => readFileSync(join(repoRoot, relativePath), 'utf8');
@@ -332,8 +332,8 @@ export function floorProblems(docText, tagMap) {
       problems.push(`missing section ${heading}`);
       continue;
     }
-    for (const route of DOOR_ROUTES)
-      totals[route] += checkDoorExamples(section, tagMap).counts[route];
+    const { counts } = checkDoorExamples(section, tagMap);
+    for (const route of DOOR_ROUTES) totals[route] += counts[route];
     for (const { section: owner, prefix } of DOOR_SECTION_HEADINGS) {
       if (owner === heading && !hasHeadingWithPrefix(section, prefix)) {
         problems.push(`missing heading ${prefix}`);
@@ -430,6 +430,13 @@ test('every /v1/apps route ARCHITECTURE.md names is registered in server.go', ()
 
 // ---------------------------------------------------------------- negative self-tests
 
+const REGISTERED = new Set([
+  'POST /v1/apps/{}/provision',
+  'POST /v1/apps/{}/deprovision',
+  'GET /v1/admin/users',
+  'GET /healthz/provisioning',
+]);
+
 test('negative self-test: ARCHITECTURE checks fire', () => {
   assert.deepEqual(architectureLineProblems('notifs-api.4irl.app is retired'), []);
   assert.equal(architectureLineProblems('a\nvia notifs-api.4irl.app').length, 1);
@@ -441,13 +448,6 @@ test('negative self-test: ARCHITECTURE checks fire', () => {
   ]);
   assert.deepEqual(unregisteredDoorRoutes('`GET /v1/admin/nope`', REGISTERED), []);
 });
-
-const REGISTERED = new Set([
-  'POST /v1/apps/{}/provision',
-  'POST /v1/apps/{}/deprovision',
-  'GET /v1/admin/users',
-  'GET /healthz/provisioning',
-]);
 
 const block = (tag, body) => `\`\`\`json${tag ? ` ${tag}` : ''}\n${body}\n\`\`\`\n`;
 const sectionDoc = (body) => `${DOOR_HEADING}\n\n${body}\n`;
@@ -583,7 +583,7 @@ test('negative self-test: identifier, broadcast, floor and comment checks fire',
     const examples = Object.entries(bodies)
       .map(([route, body]) => block(`${route}.request`, route === elided ? '{ ... }' : body))
       .join('\n');
-    const headings = DOOR_SECTION_HEADINGS.map(({ section, prefix }) => ({ section, prefix }));
+    const headings = DOOR_SECTION_HEADINGS;
     const part = (section) =>
       `${section}\n\n${headings
         .filter((entry) => entry.section === section)
