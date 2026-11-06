@@ -299,9 +299,9 @@ Pick what the app needs, then follow the matching rows. Most apps want the first
 
 | The app wants to…                                         | Use                      | The operator sets up                                                                 | Details                          |
 | --------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------ | -------------------------------- |
-| Push notifications straight to users' devices             | Provision users through the door | A service token on `notifs-delivery`, the app's identity approval and its ntfy publisher | "Provisioning your users through the door" |
+| Push notifications straight to users' devices             | Provision users through the door (`### Provision a user`, with the app's `dak_` key) | A service token on `notifs-delivery` and the app's identity approval | "Provisioning your users through the door" |
 | Send alerts and notifications with retries, a log, fan-out | `POST /v1/messages`      | A service token on the whole-host `notifs-delivery` app and the approval of the app's identity; destinations and routes come from the app's manifest (or the operator) | "Sending through delivery-api"   |
-| Notify one person by email                                | `to.recipient`           | The above, plus the app's ntfy publisher (users are provisioned as in "Provision a user") | "Recipients"                     |
+| Notify one person by email                                | `to.recipient`           | The above, plus the app's ntfy publisher (the app mints it itself, or you do; users are provisioned as in "Provision a user") | "Recipients"                     |
 | Send something later, or cancel / replace it              | `deliver_at`             | Nothing extra                                                                        | "Deferred send"                  |
 | Know when a recurring job stops running or fails          | Heartbeats               | One check per job, declared in the app's manifest (or created by the operator)       | "Heartbeats"                     |
 
@@ -326,8 +326,9 @@ senders** below alongside these steps.
    (ntfy, Discord or webhook) and the routes that send the app's traffic to them in the Delivery tab. Use the
    destination's send-test to confirm each one. Without a matching route or destination a send with no
    `to` fails with `422 no destination matched`.
-5. **If the app sends to people (`to.recipient`):** mint the app's ntfy publisher (see "Operator runbook:
-   ntfy publisher for an app").
+5. **If the app sends to people (`to.recipient`):** the app mints its own publisher (self-serve, see "Mint
+   or rotate the publisher"), or you mint it for the app (see "Operator runbook: ntfy publisher for an
+   app").
 6. **If the app has recurring jobs:** its manifest declares one heartbeat check per job (or create them
    yourself with the app's `app_id`, a `name`, a period, a grace of at least 1 hour for daily jobs, and
    its destinations).
@@ -358,7 +359,11 @@ senders** below alongside these steps.
 5. **Wire each recurring job to a heartbeat.** Send a success ping when the job succeeds and, where the
    job can tell, a `/fail` ping when it fails. Run the job once and confirm the check moves from
    **Waiting** to **Up** in the Heartbeats section.
-6. **If you message people, link them to the shared setup page** instead of writing your own ntfy
+6. **Provision users through the door.** When a user enables notifications, call `POST /v1/apps/{app_id}/provision`
+   with your `dak_` key (see "Provision a user" under "Provisioning your users through the door"), and
+   deprovision when they disable them.
+7. **Mint the publisher** if you send to people with `to.recipient` (see "Mint or rotate the publisher").
+8. **If you message people, link them to the shared setup page** instead of writing your own ntfy
    instructions.
 
 Suggested naming (not enforced beyond the regexes in this guide): short purpose names for channels
@@ -378,11 +383,12 @@ Suggested naming (not enforced beyond the regexes in this guide): short purpose 
 
 - **Planned maintenance:** pause the app's heartbeat checks (alerts stop, pings are still recorded) and
   resume them afterwards; the deadline restarts from the resume.
-- **Removing an app:** unbind it in the admin UI (**App identities**, which stops every one of its keys
-  at once; the objects it owned stay until you delete them), delete its heartbeat checks first (a
-  destination that a check uses cannot be deleted), then remove its token from the Access policies, call `POST /v1/admin/apps/{app_id}/deprovision`, and delete
-  its stored ntfy publisher (`DELETE /v1/admin/apps/<app>/ntfy-publisher`) so recipient submits fail
-  closed.
+- **Removing an app:** call the operator cascade `POST /v1/admin/apps/{app_id}/deprovision` with body
+  `{"app_id":"<app>"}` (repeating the path id). It is irreversible: it tears down the app's provisioning
+  grants and users, unbinds its identity (every key stops at once), deletes the stored publisher and
+  deletes the app's checks, routes and destinations. It answers `409` while a publisher mint is in
+  progress and `502 "provisioning-api teardown failed"` if the teardown fails, and `503` if teardown is unavailable (retry both). Then remove the
+  app's token from the Access policies. For planned maintenance without removal, unbind or pause instead.
 
 ---
 
@@ -657,6 +663,11 @@ Every row except the exchange and `/readyz` also returns the key errors above (`
 | `DELETE /v1/messages/{id}?app_id=<app>` or `DELETE /v1/messages?app_id=<app>&idempotency_key=<key>` | none | `200 {"message_id","cancelled":bool,"status"}` (idempotent) | 400                                          |
 | `POST /v1/heartbeats/{app_id}/{name}`                        | none                          | `200 {"app_id","name","state"}`                          | 400, 404 `check not found`, 503 `heartbeats unavailable`                        |
 | `POST /v1/heartbeats/{app_id}/{name}/fail`                   | none                          | `200 {"app_id","name","state"}` (state `down`)           | same                                                                            |
+| `POST /v1/apps/{app_id}/provision`                           | `{"email"}`                   | `200 {user_id, app_id, person_hash, topic_pattern, broadcast_topic, token, password?}` (`Cache-Control: no-store`) | 400, 401, 403, 429, 502 `provisioning request failed`, 503 `provisioning unavailable` (see "Door errors") |
+| `POST /v1/apps/{app_id}/deprovision`                         | `{"email"}` or `{"person_hash"}` | `200 {user_id, app_id, removed}`                      | as provision, plus 404 `user does not exist` (treat as already removed) |
+| `POST /v1/apps/{app_id}/reset-password`                      | `{"email"}`                   | `200 {user_id, app_id, password}` (`Cache-Control: no-store`) | as provision, plus 404 `user does not exist`, 429 with `Retry-After`, 503 `reset limit unavailable` |
+| `POST /v1/apps/{app_id}/set-password`                        | `{"email","password"}` (legacy, not for new apps) | `200 {user_id, app_id, updated}`  | as provision, plus 404 `user does not exist` |
+| `POST /v1/apps/{app_id}/ntfy-publisher`                      | `{}` or `{"rotate":true}` (body required) | `200 {"publisher":{"app_id","publisher_user_id","topic_pattern","created_at","updated_at"}}` (never the token) | 400, 401, 403, 404 `app has no approved binding`, 409 `publisher mint already in progress`, 429 `publisher mint rate limit exceeded`, 502, 503 |
 | `GET /readyz`                                                | none                          | `200` readiness body (below)                             | `503 {"status":"unavailable"}` (database unreachable) or `503` with `"status":"schema_mismatch"` |
 
 **App-managed destinations (app key).** An app manages its own destinations under
@@ -797,12 +808,13 @@ The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_pr
 | `GET`, `PATCH`, `DELETE /v1/admin/heartbeats/{id}`   | `PATCH`: any of `period_seconds`, `grace_seconds`, `destinations`                             | `200 {"check":{…}}` (`DELETE`: `{"id","deleted"}`, idempotent) | 400 `app_id and name are immutable`, 404 `check not found`         |
 | `PATCH /v1/admin/heartbeats/{id}` (probe check)      | `destinations` and/or `probe` with any of `url`, `expected_statuses`, `body_match` (`null` clears), `timeout_seconds`, `interval_seconds`, `access_token` (omitted keeps, `null` clears, a `{client_id,client_secret}` pair replaces) | `200 {"check":{…}}` | 400 validation, 400 `check kind is immutable` (`probe: null`), 400 on `period_seconds`/`grace_seconds`, 404 |
 | `POST /v1/admin/heartbeats/{id}/pause` and `/resume` | none                                                                                          | `200 {"check":{…}}` (idempotent)                 | 404                                                                          |
-| `POST /v1/admin/apps/{app_id}/ntfy-publisher`        | optional `{"rotate"?:bool}` (strict JSON; absent means `false`)                               | `200 {"publisher":{"app_id","publisher_user_id","topic_pattern","created_at","updated_at"}}` (never the token) | 404 `app has no approved binding`, 502 mint failed, 503 not configured |
+| `POST /v1/admin/apps/{app_id}/ntfy-publisher`        | optional `{"rotate"?:bool}` (strict JSON; absent means `false`)                               | `200 {"publisher":{"app_id","publisher_user_id","topic_pattern","created_at","updated_at"}}` (never the token) | 404 `app has no approved binding`, 409 `publisher mint already in progress`, 502 mint failed, 503 not configured or 2 mints already in flight (operator mints are not rate limited) |
 | `POST /v1/admin/provision`, `/deprovision`, `/reset-password` | the provisioning-api body (app_id, email or user id), relayed                         | provisioning-api's answer, as-is                 | 400 validation, 502 upstream failed, 503 not configured                      |
 | `GET /v1/admin/users`; `DELETE /v1/admin/users/{user_id}` | none                                                                                | provisioning-api's answer, as-is                 | 400 empty `user_id`, 502, 503                                                |
 | `POST /v1/admin/test-notify`                         | `{"app_id","recipients"?:[…],"channel","message","title"?}`                                   | provisioning-api's answer, as-is                 | 404 `app has no approved binding`, 400, 502, 503                             |
 | `POST /v1/admin/apps/{app_id}/deprovision`           | `{ "app_id" }` repeating the path app_id (confirmation)                                       | `200 {"app_id","removed","unbound","deleted":{"checks","routes","destinations","orphaned_routes","orphaned_checks"}}` (irreversible, idempotent) | 400 `invalid app_id` or missing/different body `app_id`, 409 mint in progress (retry), 502 provisioning-api teardown failed, 503 unavailable |
-| `GET`, `DELETE /v1/admin/apps/{app_id}/ntfy-publisher` | none                                                                                        | `200` as above / `204` (idempotent)              | 404 `GET` when none is stored                                                |
+| `GET /v1/admin/apps/{app_id}/ntfy-publisher`         | none                                                                                          | `200 {"publisher":{…}}` (never the token)        | 404 when none is stored                                                      |
+| `DELETE /v1/admin/apps/{app_id}/ntfy-publisher`      | none                                                                                          | `204` (idempotent)                               |                                                                              |
 | `POST /v1/admin/messages`                            | the `POST /v1/messages` envelope, any `app_id` (optional `?wait=0..10`)                       | `202`, same as `POST /v1/messages`               | as `POST /v1/messages`, no key needed (admin send-test uses it)              |
 | `GET /v1/admin/app-identity/requests`                | none                                                                                          | `200 {"requests":[…]}` (pending first, then rejected from the last 30 days) |                                                  |
 | `POST /v1/admin/app-identity/requests/{id}/approve`  | none                                                                                          | `201 {"binding":{…}}` (the request is deleted)   | 400 `invalid request id`, 404 `request does not exist`, 409 `request is not pending` / `app already bound` / `workflow identity already bound` |
@@ -810,6 +822,16 @@ The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_pr
 | `GET /v1/admin/app-identity/bindings`                | none                                                                                          | `200 {"bindings":[{app_id, github_repository, …, "keys":[{id, key_hint, state, …}]}]}`; `state` is `active`, `superseded` or `revoked` |  |
 | `POST /v1/admin/app-identity/keys/{id}/revoke`       | none                                                                                          | `200 {"key":{…}}` (idempotent)                   | 400 `invalid key id`, 404 `key does not exist`                               |
 | `DELETE /v1/admin/app-identity/bindings/{app_id}`    | none                                                                                          | `200 {"app_id","deleted":bool}` (idempotent; every key stops, owned objects stay) | 400 `invalid app_id`                      |
+
+Notes on the provisioning relay and publisher routes above (`POST /v1/admin/provision`,
+`POST /v1/admin/deprovision`, `POST /v1/admin/reset-password`, `POST /v1/admin/test-notify`,
+`GET /v1/admin/users`, `DELETE /v1/admin/users/{user_id}`):
+- Operator reset-password is exempt from the door's reset limits (per app and per person).
+- Operator provision and test-notify require an approved binding for the `app_id`
+  (`404 "app has no approved binding"`).
+- Publisher responses never carry a token.
+- `POST /v1/admin/apps/{app_id}/deprovision` is the one-click, irreversible app teardown (see "Pausing and
+  removing an app").
 
 **Destination `config` and `secrets` by `type`** (an unknown key is `400 unknown field <section>.<key>`):
 
@@ -1530,7 +1552,11 @@ minted once through provisioning-api by an explicit operator call, never lazily 
   stored publisher so submits fail closed (422, `app has no ntfy publisher`):
   `curl -X DELETE https://notifs-delivery.4irl.app/v1/admin/apps/<app>/ntfy-publisher` with the same two
   proxy-token headers (204, idempotent; it removes only delivery-api's copy and revokes nothing in ntfy).
-  Re-mint the publisher before recipient sends are expected to work again.
+  Re-mint the publisher before recipient sends are expected to work again. (The app cascade
+  `POST /v1/admin/apps/{app_id}/deprovision` already deletes the stored publisher for you.)
+- An app can also mint its own publisher with `POST /v1/apps/{app_id}/ntfy-publisher` (see "Mint or rotate
+  the publisher"). Self-mint is limited to 10 per hour per app and at most 2 concurrent mints across all
+  apps; past the concurrency cap the call answers `503`.
 
 ### Operator runbook: exposing delivery-api and issuing app tokens
 
@@ -1549,6 +1575,10 @@ Per app: create a service token named e.g. `<app> → notifs-delivery`, add it t
 `notifs-delivery` policy **only** (never the `/v1/admin` one), and give the app the id and secret. Confirm an
 app token gets 403 on `/v1/admin/destinations`, and that `POST /v1/messages` is `401 app key required`
 without a delivery key and `202` with the app's key (the next runbook issues it).
+
+There is no separate provisioning hostname any more: provisioning is reachable only through
+delivery-api (the app door on this same host, and the `/v1/admin` relay for you), so no extra Access
+application, tunnel hostname or DNS record is needed for it.
 
 ### Operator runbook: app identities
 
@@ -1817,14 +1847,14 @@ goes through APNs bridged via ntfy.sh. Two consequences for you:
 - Expect a short APNs wake latency on iOS; Android/desktop/web are instant. Don't design flows that
   assume sub-second iOS delivery.
 
-**Periodic / bulk sends (e.g. hourly digests).** Publishing is one POST per user-topic — cheap at this
-scale, but mind two limits:
-- A backend publishing many messages from one IP looks like a single ntfy **visitor** and will hit the
-  per-visitor rate limit. Ask the operator to raise/exempt your publisher before a bulk job.
+**Periodic / bulk sends (e.g. hourly digests).** Send through `POST /v1/messages` (see "Sending through
+delivery-api"); the service publishes to ntfy for you. Mind these points:
+- Give every send a stable `idempotency_key` (for example `digest-<user>-<hour>`) so a retried job can
+  never double-send, and use `deliver_at` to schedule a send instead of sleeping in your own job.
 - Each **iOS-bound** message also costs one upstream poll to ntfy.sh (rate-limited) — the operator sets
   `upstream-access-token`.
-- **Coalesce** many-per-user notifications into a single **digest** message (published on
-  `{app}-{hash}-all` with a digest `Title`) instead of N separate ones — fewer requests and better UX.
+- **Coalesce** many-per-user notifications into a single **digest** message (one `to.recipient` message
+  with a digest title) instead of N separate ones — fewer requests and better UX.
 
 **Missed-message catch-up.** The server retains messages for **24h**. When a client reconnects after
 downtime, backfill with `since=`:
@@ -1838,27 +1868,32 @@ types.
 
 ---
 
-## API reference — provisioning through `notifs-delivery.4irl.app`
+## API reference — app door (`notifs-delivery.4irl.app`)
 
 Every call needs the two `CF-Access-Client-*` headers and `Authorization: Bearer dak_…`. All bodies and
 responses are JSON. The `app_id` in the path must be your key's app.
 
-| Method & path                                | Body                                      | Success response                                                                     |
-| -------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------ |
-| `POST /v1/apps/{app_id}/provision`           | `{ "email" }`                             | `{ user_id, app_id, person_hash, topic_pattern, broadcast_topic, token, password? }` |
-| `POST /v1/apps/{app_id}/reset-password`      | `{ "email" }`                             | `{ user_id, app_id, password }`                                                      |
-| `POST /v1/apps/{app_id}/set-password`        | `{ "email", "password" }` (not for new apps) | `{ user_id, app_id, updated }`                                                    |
-| `POST /v1/apps/{app_id}/deprovision`         | `{ "email" }` **or** `{ "person_hash" }`  | `{ user_id, app_id, removed }`                                                       |
-| `POST /v1/apps/{app_id}/ntfy-publisher`      | `{}` or `{ "rotate": true }` (required)   | `{ publisher: { app_id, publisher_user_id, topic_pattern, created_at, updated_at } }` |
+| Method & path                                | Auth                  | Request                                   | Success                                                                              | Errors                         | Rate limit |
+| -------------------------------------------- | --------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------ | ---------- |
+| `POST /v1/apps/{app_id}/provision`           | Access token + `dak_` | `{ "email" }`                             | `{ user_id, app_id, person_hash, topic_pattern, broadcast_topic, token, password? }` | see "Door errors"              | provisioning-api limits (`429`) |
+| `POST /v1/apps/{app_id}/reset-password`      | Access token + `dak_` | `{ "email" }`                             | `{ user_id, app_id, password }`                                                      | see "Door errors"              | 3 per app+person and 30 per app, per hour |
+| `POST /v1/apps/{app_id}/set-password`        | Access token + `dak_` | `{ "email", "password" }` (not for new apps) | `{ user_id, app_id, updated }`                                                    | see "Door errors"              | provisioning-api limits (`429`) |
+| `POST /v1/apps/{app_id}/deprovision`         | Access token + `dak_` | `{ "email" }` **or** `{ "person_hash" }`  | `{ user_id, app_id, removed }`                                                       | see "Door errors"              | provisioning-api limits (`429`) |
+| `POST /v1/apps/{app_id}/ntfy-publisher`      | Access token + `dak_` | `{}` or `{ "rotate": true }` (required)   | `{ publisher: { app_id, publisher_user_id, topic_pattern, created_at, updated_at } }` | see "Door errors", per-route note | 10 per hour per app; at most 2 concurrent mints (`503`) |
 
 Notes:
 - `user_id` is always the derived ntfy id `u_<person_hash>`. `email` must be a valid address
   (validated after trim + lowercase — case-insensitive; `Alice@x.com` == `alice@x.com`).
 - Errors are `{ "error": "<message>" }` with the matching HTTP status; see "Door errors" for every
   status, what it means and what to do.
-- Every `200` from provision and reset-password carries `Cache-Control: no-store`.
+- Every response from these routes carries `Cache-Control: no-store`.
 - `POST /v1/apps/{app_id}/provision` returns `password` (`xxxx-xxxx-xxxx-xxxx`) **only** when this call
   generated one. See "Subscriber login — the generated password".
+- Deprovision answers `200 {removed}` or `404` by the exact rule in "Deprovision a user"; callers treat a
+  `404` as already removed. Do not call the route idempotent.
+- `set-password` is legacy: new apps use the generated password and reset-password.
+- `GET /healthz/provisioning` reports provisioning-api reachability only; it is for operators and the
+  watchdog, not for apps.
 - Operator-only management (cross-app) lives under `/v1/admin`: `/v1/admin/provision`,
   `/v1/admin/deprovision`, `/v1/admin/reset-password`, `/v1/admin/users`, `/v1/admin/users/{user_id}`,
   `/v1/admin/test-notify`, `/v1/admin/apps/{app_id}/deprovision` and
@@ -1895,7 +1930,11 @@ Notes:
 ### Provisioning users through the door
 
 - [ ] Backend stores the Access Client ID and Secret and the `dak_` key as secrets.
+- [ ] Access token and `dak_` secret wired (every door call sends both).
 - [ ] Minted the app's ntfy publisher once with `POST /v1/apps/{app_id}/ntfy-publisher`.
+- [ ] Email verified before any provisioning call.
+- [ ] Never log or cache provision or reset-password request or response bodies.
+- [ ] Reset flow handles `429` and `Retry-After`.
 - [ ] On user opt-in, with a verified email: call `POST /v1/apps/{app_id}/provision`; store
       **`person_hash`** (+ subscriber token or deliver it to the client). Once per user, not per login.
 - [ ] Send notifications through delivery-api (`to.recipient`), with a `Title`.
