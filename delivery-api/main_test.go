@@ -23,6 +23,7 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/dispatch"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/httpapi"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/resetlimit"
 )
 
@@ -240,6 +241,89 @@ func TestRunServeFailsFastOnInvalidRetention(testInstance *testing.T) {
 	}
 }
 
+// TestHoldSettingsReachTheServiceAndSweeperConfigs verifies valid hold
+// environment values land in the message service and sweeper configs, and that
+// an unset environment leaves the flag off with the code defaults.
+func TestHoldSettingsReachTheServiceAndSweeperConfigs(testInstance *testing.T) {
+	env := map[string]string{
+		"DELIVERY_HOLD_UNROUTED":    "1",
+		"DELIVERY_MAX_HELD_PER_APP": "7",
+		"DELIVERY_MAX_HELD_TOTAL":   "70",
+		"DELIVERY_HELD_TTL_DAYS":    "3",
+	}
+	settings, err := holdSettingsFromEnv(func(name string) string { return env[name] })
+	if err != nil {
+		testInstance.Fatalf("holdSettingsFromEnv: %v", err)
+	}
+	service := settings.applyToService(message.ServiceConfig{})
+	if !service.HoldUnrouted || service.MaxHeldPerApp != 7 || service.MaxHeldTotal != 70 {
+		testInstance.Errorf("service config = %+v, want HoldUnrouted true, per app 7, total 70", service)
+	}
+	sweeper := settings.applyToSweeper(dispatch.SweeperConfig{})
+	if want := 3 * 24 * time.Hour; sweeper.HeldTTL != want {
+		testInstance.Errorf("sweeper HeldTTL = %v, want %v", sweeper.HeldTTL, want)
+	}
+
+	defaults, defaultsErr := holdSettingsFromEnv(func(string) string { return "" })
+	if defaultsErr != nil {
+		testInstance.Fatalf("holdSettingsFromEnv with nothing set: %v", defaultsErr)
+	}
+	defaultService := defaults.applyToService(message.ServiceConfig{})
+	if defaultService.HoldUnrouted || defaultService.MaxHeldPerApp != message.DefaultMaxHeldPerApp ||
+		defaultService.MaxHeldTotal != message.DefaultMaxHeldTotal {
+		testInstance.Errorf("default service config = %+v, want the flag off and the code default caps", defaultService)
+	}
+	if want := time.Duration(dispatch.DefaultHeldTTLDays) * 24 * time.Hour; defaults.applyToSweeper(dispatch.SweeperConfig{}).HeldTTL != want {
+		testInstance.Errorf("default HeldTTL is not %v", want)
+	}
+}
+
+// TestRunServeFailsFastOnInvalidHeldTTL verifies serve rejects an invalid
+// DELIVERY_HELD_TTL_DAYS (with a valid database and master key) before binding
+// its listen address, and that the error never echoes the value.
+func TestRunServeFailsFastOnInvalidHeldTTL(testInstance *testing.T) {
+	testCases := []struct {
+		name  string
+		value string
+	}{
+		{name: "zero", value: "0"},
+		{name: "negative", value: "-5"},
+		{name: "not a number", value: "secret-looking-value"},
+		{name: "above the maximum", value: "366"},
+	}
+
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			setDatabaseEnv(subTest)
+			subTest.Setenv("DELIVERY_MASTER_KEY", strings.Repeat("ab", 32))
+			subTest.Setenv("DELIVERY_MASTER_KEY_FILE", "")
+			subTest.Setenv("DELIVERY_HELD_TTL_DAYS", testCase.value)
+			address := reserveFreeAddress(subTest)
+			subTest.Setenv("LISTEN_ADDRESS", address)
+
+			ctx, cancel := context.WithTimeout(context.Background(), resultTimeout)
+			defer cancel()
+			err := run(ctx, newTestLogger(), nil)
+
+			if err == nil {
+				subTest.Fatal("run returned nil, want an error")
+			}
+			if !strings.Contains(err.Error(), "DELIVERY_HELD_TTL_DAYS") {
+				subTest.Fatalf("run error = %q, want it to mention DELIVERY_HELD_TTL_DAYS", err)
+			}
+			if strings.Contains(err.Error(), testCase.value) {
+				subTest.Fatalf("run error = %q, must not contain the value", err)
+			}
+
+			connection, dialErr := net.Dial("tcp", address)
+			if dialErr == nil {
+				_ = connection.Close()
+				subTest.Fatalf("dial %s succeeded, want connection refused (run must not bind before the held TTL check)", address)
+			}
+		})
+	}
+}
+
 // TestRunServeFailsFastOnInvalidMaxScheduled verifies serve rejects an invalid
 // DELIVERY_MAX_SCHEDULED_PER_APP or DELIVERY_MAX_SCHEDULED_TOTAL (with a valid
 // database and master key) before binding its listen address, and that the error
@@ -258,6 +342,14 @@ func TestRunServeFailsFastOnInvalidMaxScheduled(testInstance *testing.T) {
 		{name: "total negative", envVar: "DELIVERY_MAX_SCHEDULED_TOTAL", value: "-5"},
 		{name: "total not a number", envVar: "DELIVERY_MAX_SCHEDULED_TOTAL", value: "secret-looking-value"},
 		{name: "total above the maximum", envVar: "DELIVERY_MAX_SCHEDULED_TOTAL", value: "10000001"},
+		{name: "hold flag garbage", envVar: "DELIVERY_HOLD_UNROUTED", value: "secret-looking-value"},
+		{name: "hold flag yes", envVar: "DELIVERY_HOLD_UNROUTED", value: "yes"},
+		{name: "held per app zero", envVar: "DELIVERY_MAX_HELD_PER_APP", value: "0"},
+		{name: "held per app not a number", envVar: "DELIVERY_MAX_HELD_PER_APP", value: "secret-looking-value"},
+		{name: "held per app above the maximum", envVar: "DELIVERY_MAX_HELD_PER_APP", value: "100001"},
+		{name: "held total zero", envVar: "DELIVERY_MAX_HELD_TOTAL", value: "0"},
+		{name: "held total not a number", envVar: "DELIVERY_MAX_HELD_TOTAL", value: "secret-looking-value"},
+		{name: "held total above the maximum", envVar: "DELIVERY_MAX_HELD_TOTAL", value: "10000001"},
 	}
 
 	for _, testCase := range testCases {

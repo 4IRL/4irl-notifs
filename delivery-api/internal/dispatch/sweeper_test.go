@@ -20,9 +20,50 @@ type fakeExpirer struct {
 	err     error
 	panics  bool
 	called  chan struct{}
+
+	heldCutoffs []time.Time
+	heldDeleted int64
+	heldErr     error
+	heldPanics  bool
+	heldCalled  chan struct{}
 }
 
-func newFakeExpirer() *fakeExpirer { return &fakeExpirer{called: make(chan struct{}, 16)} }
+// testHeldTTL is the valid HeldTTL the sweeper tests run with.
+const testHeldTTL = 7 * 24 * time.Hour
+
+func newFakeExpirer() *fakeExpirer {
+	return &fakeExpirer{called: make(chan struct{}, 16), heldCalled: make(chan struct{}, 16)}
+}
+
+func (expirer *fakeExpirer) DeleteExpiredHeld(_ context.Context, cutoff time.Time) (int64, error) {
+	expirer.mutex.Lock()
+	expirer.heldCutoffs = append(expirer.heldCutoffs, cutoff)
+	deleted, err, shouldPanic := expirer.heldDeleted, expirer.heldErr, expirer.heldPanics
+	expirer.mutex.Unlock()
+	select {
+	case expirer.heldCalled <- struct{}{}:
+	default:
+	}
+	if shouldPanic {
+		panic("held store exploded")
+	}
+	return deleted, err
+}
+
+func (expirer *fakeExpirer) heldCutoffsSeen() []time.Time {
+	expirer.mutex.Lock()
+	defer expirer.mutex.Unlock()
+	return append([]time.Time(nil), expirer.heldCutoffs...)
+}
+
+func waitForHeldCall(t *testing.T, expirer *fakeExpirer) {
+	t.Helper()
+	select {
+	case <-expirer.heldCalled:
+	case <-time.After(testWaitTimeout):
+		t.Fatal("timed out waiting for DeleteExpiredHeld")
+	}
+}
 
 func (expirer *fakeExpirer) DeleteExpired(_ context.Context, cutoff time.Time) (int64, error) {
 	expirer.mutex.Lock()
@@ -66,7 +107,7 @@ func startSweeper(
 	go func() {
 		defer close(done)
 		RunSweeper(ctx, SweeperConfig{
-			Expirer: expirer, Retention: retention, Interval: interval, Now: fixedNow, Logger: logger,
+			Expirer: expirer, Retention: retention, HeldTTL: testHeldTTL, Interval: interval, Now: fixedNow, Logger: logger,
 		})
 	}()
 	return func() {
@@ -100,6 +141,98 @@ func TestRunSweeperSweepsImmediatelyWithRetentionCutoffAndStopsOnCancel(t *testi
 	if !strings.Contains(logged, "level=INFO") || !strings.Contains(logged, "deleted=3") {
 		t.Errorf("a sweep that deleted rows must log the count at info:\n%s", logged)
 	}
+	waitForHeldCall(t, expirer)
+	heldCutoffs := expirer.heldCutoffsSeen()
+	if len(heldCutoffs) != 1 {
+		t.Fatalf("held sweeps = %d, want exactly the immediate one", len(heldCutoffs))
+	}
+	if want := testClockStart.Add(-testHeldTTL); !heldCutoffs[0].Equal(want) {
+		t.Errorf("held cutoff = %v, want now - heldTTL = %v", heldCutoffs[0], want)
+	}
+}
+
+func TestRunSweeperLogsHeldExpirationsOnlyWhenSomeWereDeleted(t *testing.T) {
+	expirer := newFakeExpirer()
+	expirer.heldDeleted = 4
+	logs := &lockedBuffer{}
+	stop := startSweeper(t, expirer, time.Hour, time.Hour, logs)
+
+	waitForHeldCall(t, expirer)
+	stop()
+	logged := logs.String()
+	if !strings.Contains(logged, "held messages expired") || !strings.Contains(logged, "deleted=4") {
+		t.Errorf("held expirations must be logged with the count:\n%s", logged)
+	}
+}
+
+func TestRunSweeperRunsTheHeldSweepWhenTheRetentionSweepFails(t *testing.T) {
+	expirer := newFakeExpirer()
+	expirer.err = errors.New("delete expired messages: database unavailable")
+	logs := &lockedBuffer{}
+	stop := startSweeper(t, expirer, time.Hour, time.Hour, logs)
+
+	waitForHeldCall(t, expirer)
+	stop()
+	if !strings.Contains(logs.String(), "retention sweep failed") {
+		t.Errorf("the retention failure was not logged:\n%s", logs.String())
+	}
+}
+
+func TestRunSweeperRunsTheRetentionSweepWhenTheHeldSweepFails(t *testing.T) {
+	expirer := newFakeExpirer()
+	expirer.heldErr = errors.New("delete expired held messages: database unavailable")
+	logs := &lockedBuffer{}
+	stop := startSweeper(t, expirer, time.Hour, time.Hour, logs)
+
+	waitForCall(t, expirer)
+	waitForHeldCall(t, expirer)
+	stop()
+	if !strings.Contains(logs.String(), "held sweep failed") {
+		t.Errorf("the held failure was not logged:\n%s", logs.String())
+	}
+	if got := len(expirer.cutoffsSeen()); got != 1 {
+		t.Errorf("retention sweeps = %d, want 1", got)
+	}
+}
+
+func TestRunSweeperRunsTheHeldSweepWhenTheRetentionSweepPanics(t *testing.T) {
+	expirer := newFakeExpirer()
+	expirer.panics = true
+	logs := &lockedBuffer{}
+	stop := startSweeper(t, expirer, time.Hour, time.Hour, logs)
+
+	waitForHeldCall(t, expirer)
+	stop()
+	if !strings.Contains(logs.String(), "retention sweep panicked") {
+		t.Errorf("the panic was not logged:\n%s", logs.String())
+	}
+}
+
+func TestRunSweeperRunsTheRetentionSweepWhenTheHeldSweepPanics(t *testing.T) {
+	expirer := newFakeExpirer()
+	expirer.heldPanics = true
+	logs := &lockedBuffer{}
+	stop := startSweeper(t, expirer, time.Hour, 5*time.Millisecond, logs)
+
+	waitForCall(t, expirer)
+	waitForCall(t, expirer)
+	stop()
+	if !strings.Contains(logs.String(), "held sweep panicked") {
+		t.Errorf("the held panic was not logged:\n%s", logs.String())
+	}
+}
+
+func TestRunSweeperDoesNotLogAWrappedHeldCancellationAsAFailure(t *testing.T) {
+	expirer := newFakeExpirer()
+	expirer.heldErr = fmt.Errorf("wrapped: %w", context.Canceled)
+	logs := &lockedBuffer{}
+	stop := startSweeper(t, expirer, time.Hour, time.Hour, logs)
+
+	waitForHeldCall(t, expirer)
+	stop()
+	if logged := logs.String(); strings.Contains(logged, "held sweep failed") {
+		t.Errorf("a canceled held sweep was logged as a failure:\n%s", logged)
+	}
 }
 
 func TestRunSweeperSweepsAgainOnEveryTick(t *testing.T) {
@@ -117,6 +250,7 @@ func TestRunSweeperStaysQuietWhenNothingDeleted(t *testing.T) {
 	logs := &lockedBuffer{}
 	stop := startSweeper(t, expirer, time.Hour, time.Hour, logs)
 	waitForCall(t, expirer)
+	waitForHeldCall(t, expirer)
 	stop()
 	if logged := logs.String(); logged != "" {
 		t.Errorf("an empty sweep logged:\n%s", logged)
@@ -170,7 +304,7 @@ func TestRunSweeperDoesNotSweepWhenAlreadyCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	RunSweeper(ctx, SweeperConfig{
-		Expirer: expirer, Retention: time.Hour, Interval: time.Hour,
+		Expirer: expirer, Retention: time.Hour, HeldTTL: testHeldTTL, Interval: time.Hour,
 		Logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 	})
 	if got := len(expirer.cutoffsSeen()); got != 0 {
@@ -183,12 +317,15 @@ func TestRunSweeperRejectsInvalidConfigurationWithoutPanicking(t *testing.T) {
 		name      string
 		expirer   Expirer
 		retention time.Duration
+		heldTTL   time.Duration
 		interval  time.Duration
 	}{
-		{"nil expirer", nil, time.Hour, time.Hour},
-		{"zero retention", newFakeExpirer(), 0, time.Hour},
-		{"negative retention", newFakeExpirer(), -time.Hour, time.Hour},
-		{"zero interval", newFakeExpirer(), time.Hour, 0},
+		{"nil expirer", nil, time.Hour, testHeldTTL, time.Hour},
+		{"zero retention", newFakeExpirer(), 0, testHeldTTL, time.Hour},
+		{"negative retention", newFakeExpirer(), -time.Hour, testHeldTTL, time.Hour},
+		{"zero held ttl", newFakeExpirer(), time.Hour, 0, time.Hour},
+		{"negative held ttl", newFakeExpirer(), time.Hour, -time.Hour, time.Hour},
+		{"zero interval", newFakeExpirer(), time.Hour, testHeldTTL, 0},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -197,8 +334,9 @@ func TestRunSweeperRejectsInvalidConfigurationWithoutPanicking(t *testing.T) {
 			go func() {
 				defer close(done)
 				RunSweeper(context.Background(), SweeperConfig{
-					Expirer: testCase.expirer, Retention: testCase.retention, Interval: testCase.interval,
-					Logger: slog.New(slog.NewTextHandler(logs, nil)),
+					Expirer: testCase.expirer, Retention: testCase.retention, HeldTTL: testCase.heldTTL,
+					Interval: testCase.interval,
+					Logger:   slog.New(slog.NewTextHandler(logs, nil)),
 				})
 			}()
 			select {
