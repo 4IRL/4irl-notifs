@@ -12,8 +12,9 @@ If the app already sends its own Discord, webhook or ntfy messages or reports fr
 **Migrating an existing app from its own senders**: a generic, lane-by-lane playbook with reference
 clients in Python and shell.
 If you are a program or an LLM agent calling delivery-api, jump to **Agent quick reference**: every
-endpoint with its request, response and status codes, and a copy-paste onboarding recipe. For the ntfy
-path, also read the **Mental model** and **Integration in 5 steps** sections.
+endpoint with its request, response and status codes, and a copy-paste onboarding recipe. To provision
+users for push notifications, also read the **Mental model** and **Provisioning your users through the
+door** sections.
 
 ---
 
@@ -89,9 +90,10 @@ You do not have to build any of this yourself, and every app that joins makes th
 For apps using `POST /v1/messages` and/or heartbeats (most apps — see the table below), the recommended
 path is one reviewed JSON manifest plus `scripts/onboard.mjs`, not clicking through the admin UI or
 scripting `curl` by hand. The manifest is what you edit; the tool makes the server match it. **Not** a
-replacement for the "ntfy direct" path (Steps 1-5) or for the one-time operator setup in "Operator steps
-(once per app)" below (the Access split, service tokens, the app's ntfy publisher, approving the app's
-identity) — it only covers the destinations/routes/heartbeats part of onboarding.
+replacement for provisioning your users (see "Provisioning your users through the door") or for the
+one-time operator setup in "Operator steps (once per app)" below (the Access split, service tokens, the
+app's ntfy publisher, approving the app's identity) — it only covers the destinations/routes/heartbeats
+part of onboarding.
 
 **Where the manifest lives and who applies it.**
 - **An app's own manifest lives in the app's own repo** and is applied by the app's own deploy with the
@@ -171,7 +173,8 @@ The Cloudflare Access service token is the gate on every call, but it only says 
 does not say which app is calling. delivery-api therefore gives each app its own **delivery key**
 (`dak_` plus 43 characters), and requires it as `Authorization: Bearer dak_...` on every app-facing
 endpoint: `/v1/messages` (submit, status, cancel), the heartbeat pings and everything under
-`/v1/apps/{app_id}/…`. The key's app is the caller; an `app_id` in the body, the query or the path that
+`/v1/apps/{app_id}/…`. That includes `POST /v1/apps/{app_id}/{provision,deprovision,reset-password,set-password,ntfy-publisher}`,
+so one key covers everything an app does. The key's app is the caller; an `app_id` in the body, the query or the path that
 differs from it is `403 app_id does not match app key`.
 
 You never create a key by hand. The app's deploy workflow trades a GitHub-signed OIDC token for one:
@@ -296,9 +299,9 @@ Pick what the app needs, then follow the matching rows. Most apps want the first
 
 | The app wants to…                                         | Use                      | The operator sets up                                                                 | Details                          |
 | --------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------ | -------------------------------- |
-| Push notifications straight to users' devices             | ntfy direct (Steps 1-5)  | A service token authorized on `notifs-api`                                           | "Integration in 5 steps"         |
+| Push notifications straight to users' devices             | Provision users through the door | A service token on `notifs-delivery`, the app's identity approval and its ntfy publisher | "Provisioning your users through the door" |
 | Send alerts and notifications with retries, a log, fan-out | `POST /v1/messages`      | A service token on the whole-host `notifs-delivery` app and the approval of the app's identity; destinations and routes come from the app's manifest (or the operator) | "Sending through delivery-api"   |
-| Notify one person by email                                | `to.recipient`           | The above, plus the app's ntfy publisher (users are provisioned as in Step 2)        | "Recipients"                     |
+| Notify one person by email                                | `to.recipient`           | The above, plus the app's ntfy publisher (users are provisioned as in "Provision a user") | "Recipients"                     |
 | Send something later, or cancel / replace it              | `deliver_at`             | Nothing extra                                                                        | "Deferred send"                  |
 | Know when a recurring job stops running or fails          | Heartbeats               | One check per job, declared in the app's manifest (or created by the operator)       | "Heartbeats"                     |
 
@@ -312,7 +315,7 @@ senders** below alongside these steps.
    authorize an app token before that split exists. Details: "Operator runbook: exposing delivery-api and
    issuing app tokens".
 2. **Create the app's service token(s).** `<app> → notifs-delivery`, added to the whole-host policy only
-   (never the `/v1/admin` one), and `<app> → notifs-api` if the app provisions ntfy users. Hand over the
+   (never the `/v1/admin` one); the same token serves provisioning users through the door. Hand over the
    Client ID and Client Secret; they are shown once.
 3. **Approve the app's identity.** After the app's first deploy fails with "identity request #N awaits
    operator approval", open the Delivery tab, **App identities**, check that the requested repository,
@@ -377,7 +380,7 @@ Suggested naming (not enforced beyond the regexes in this guide): short purpose 
   resume them afterwards; the deadline restarts from the resume.
 - **Removing an app:** unbind it in the admin UI (**App identities**, which stops every one of its keys
   at once; the objects it owned stay until you delete them), delete its heartbeat checks first (a
-  destination that a check uses cannot be deleted), then remove its token from the Access policies, call `POST /v1/deprovision-app`, and delete
+  destination that a check uses cannot be deleted), then remove its token from the Access policies, call `POST /v1/admin/apps/{app_id}/deprovision`, and delete
   its stored ntfy publisher (`DELETE /v1/admin/apps/<app>/ntfy-publisher`) so recipient submits fail
   closed.
 
@@ -897,108 +900,101 @@ with `"state":"up"`.
 
 ## Mental model
 
-The notification service is two hosts:
+An app integration involves two hosts:
 
-| Host                          | What it is                                                            | How you authenticate to it                            |
-| ----------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------- |
-| `https://notifs-api.4irl.app` | **Provisioning API** — creates users/tokens/ACLs.                     | Cloudflare Access **service token** (your app's own). |
-| `https://notifs.4irl.app`     | **ntfy server** — the actual pub/sub. You publish and subscribe here. | An **ntfy access token** (`Authorization: Bearer …`). |
+| Host                              | What it is                                                                                                  | How you authenticate to it                                                                                                                                                         |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `https://notifs-delivery.4irl.app` | **delivery-api**, the one door: your app backend provisions users, mints its publisher and sends messages here. | Your app's Cloudflare Access **service token** (`CF-Access-Client-Id` / `CF-Access-Client-Secret`) plus your delivery key (`Authorization: Bearer dak_…`).                          |
+| `https://notifs.4irl.app`         | **ntfy server**: where your users receive notifications. Subscribers only; not behind Cloudflare Access.     | The subscriber's **ntfy token** (`Authorization: Bearer tk_…`) or their username and generated password.                                                                           |
 
-You provision against the **provisioning API**, then publish/subscribe against **ntfy**.
+Your backend talks only to `notifs-delivery.4irl.app`. The provisioning service behind it has no public
+hostname and is reachable only through delivery-api, so there is nothing else to call or protect.
 
 **Identity is the user's email.** The service hashes it into a stable, opaque `person_hash`
-(16 chars). The same email is the same person across every 4IRL app — you never send or store the
+(16 chars). The same email is the same person across every 4IRL app, and you never send or store the
 raw email in a topic. You do **not** compute the hash yourself; the API returns it.
 
-**There are two kinds of token, doing two different jobs:**
+**The credentials involved:**
 
-| Token                | Minted by                               | Scope                                   | Lives where                                           | Used to                   |
-| -------------------- | --------------------------------------- | --------------------------------------- | ----------------------------------------------------- | ------------------------- |
-| **Publisher token**  | `POST /v1/provision-app` (once per app) | write-only on `{app_id}-*`              | your app's **backend** secret store                   | **publish** notifications |
-| **Subscriber token** | `POST /v1/provision` (once per user)    | read-only on `{app_id}-{person_hash}-*` | the user's **client** (or your backend, if you relay) | **receive** notifications |
+| Credential                  | Where it comes from                                      | Who holds it                                         | Used to                                                        |
+| --------------------------- | -------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------- |
+| **`dak_` app key**          | the `notifs-app` action's key exchange (see below)       | your app **backend** (a secret)                      | authenticate every call to delivery-api                        |
+| **Subscriber token** `tk_…` | returned by provision, once per user                     | the user's **client** (or your backend, if you relay) | **receive** notifications (read-only on that user's topics)    |
+| **Generated password**      | returned by provision, only on a person's first call     | shown to the user once, never stored                 | sign in to username-and-password ntfy clients (iOS)            |
+
+There is **no** app-held publisher token: delivery-api keeps each app's ntfy publisher sealed and
+publishes for you when you send a message.
 
 **Topic naming** (one channel per app: `all`):
 
 ```
-{app_id}-{person_hash}-all           ← one channel per app; use this one
+{app_id}-{person_hash}-all           ← one channel per app; delivery-api publishes here for you
 {app_id}-{person_hash}-*             ← everything for one user (their subscriber token can read this)
-{app_id}-*                           ← everything for your app (your publisher token can write this)
+{app_id}-broadcast                   ← the app-wide topic every provisioned user can read
 ```
 
 Example: `urls4irl-v4sf4e5teivpe3zi-all`.
 
-> **Tokens are shown once.** Every mint endpoint reveals the token exactly once — capture and store
-> it at that moment. There is no "fetch my token again" endpoint. If lost, mint a new one.
+> **Tokens and passwords are shown once.** Provision reveals the subscriber token (and a first
+> password) exactly once. There is no "fetch it again" endpoint; recover a lost password with
+> reset-password, and a lost token by provisioning the user again.
 
 ---
 
-## Prerequisites (one-time, operator action)
+## Prerequisites
 
-Ask the notifs operator to give your app a **Cloudflare Access service token** and authorize it:
+Three things must exist before your backend can call the door:
 
-1. Zero Trust → Access → Service Auth → create a token named e.g. `urls4irl → notifs-api`.
-2. Add that token to the **Service Auth policy** on the `notifs-api.4irl.app` Access application.
-3. Hand you the **Client ID** and **Client Secret** (shown once).
+1. **An Access service token authorized on the `notifs-delivery` application.** The operator creates it
+   in Zero Trust → Access → Service Auth, adds it to the Service Auth policy on
+   `notifs-delivery.4irl.app` and hands you the **Client ID** and **Client Secret** (shown once). Your
+   backend stores both as secrets and sends them on every call:
 
-Your backend stores these two values as secrets and sends them on **every** provisioning-API call:
+   ```
+   CF-Access-Client-Id: <client-id>
+   CF-Access-Client-Secret: <client-secret>
+   ```
 
-```
-CF-Access-Client-Id: <client-id>
-CF-Access-Client-Secret: <client-secret>
-```
-
-Without this, `notifs-api.4irl.app` returns a Cloudflare Access `403`/redirect — you never reach the API.
+   Without this, Cloudflare Access answers `403` or a redirect and you never reach the API.
+2. **An approved app identity binding** for your `app_id`. See **Operator runbook: app identities**
+   below: the first deploy files a request and the operator approves it once.
+3. **A `dak_` key** from the `notifs-app` action, delivered to your backend as a secret. Each exchange
+   supersedes the previous key, which keeps working for a 24 h grace period. See **App identity** above.
 
 `app_id` rule: lowercase letters, digits, and underscores, 1–63 chars (e.g. `urls4irl`, `tasktracker`).
 
-This token is for `notifs-api` only. An app that also sends through delivery-api or pings heartbeats
-needs a second token authorized on `notifs-delivery`; see **Onboarding a new app** above.
+The `dak_` key is the credential for `POST /v1/apps/{app_id}/{provision,deprovision,reset-password,set-password,ntfy-publisher}`
+as well as `/v1/messages` and heartbeats, so one key covers everything your app does.
 
 ---
 
-## Integration in 5 steps
+## Provisioning your users through the door
 
-### Step 1 — Mint your publisher token (once per app)
+Every call below goes to `https://notifs-delivery.4irl.app` with the Access headers and
+`Authorization: Bearer dak_<43 chars>`. The `app_id` in the path must be the one your key belongs to
+(otherwise `403 app_id does not match app key`).
+
+<!-- Fenced json examples in this section and in "Subscriber login" carry a tag after json, written route.kind (route: provision, deprovision, set-password, reset-password, ntfy-publisher; kind: request, response, error). scripts/docs-onedoor-contract.test.mjs reads the tag and checks every key against that route's struct; an untagged or misspelled fence fails make scripts-test. -->
+
+### Provision a user
+
+Once per user, when they enable notifications. Send the verified email only:
 
 ```
-POST https://notifs-api.4irl.app/v1/provision-app
+POST https://notifs-delivery.4irl.app/v1/apps/urls4irl/provision
 Content-Type: application/json
-CF-Access-Client-Id: <id>
-CF-Access-Client-Secret: <secret>
+CF-Access-Client-Id: <access-client-id>
+CF-Access-Client-Secret: <access-client-secret>
+Authorization: Bearer dak_<43 chars>
+```
 
-{ "app_id": "urls4irl" }
+```json provision.request
+{ "email": "alice@example.com" }
 ```
 
 Response:
 
-```json
-{
-  "app_id": "urls4irl",
-  "publisher_user_id": "urls4irl-publisher",
-  "topic_pattern": "urls4irl-*",
-  "token": "tk_<publisher-token>"
-}
-```
-
-**Store `token`** in your backend secret store. This is your write credential for all
-`urls4irl-*` topics. (Re-calling this endpoint mints an *additional* publisher token; it does
-**not** revoke the old one — rotation is by-issuing. To force-revoke existing tokens instead — e.g.
-after a leak — pass `{ "app_id": "urls4irl", "rotate": true }`; see the API reference note on `rotate`.)
-
-### Step 2 — Provision a user (once per user, when they enable notifications)
-
-```
-POST https://notifs-api.4irl.app/v1/provision
-Content-Type: application/json
-CF-Access-Client-Id: <id>
-CF-Access-Client-Secret: <secret>
-
-{ "app_id": "urls4irl", "email": "alice@example.com" }
-```
-
-Response:
-
-```json
+```json provision.response
 {
   "user_id": "u_v4sf4e5teivpe3zi",
   "app_id": "urls4irl",
@@ -1010,39 +1006,24 @@ Response:
 }
 ```
 
-`password` is optional: it is present only when this call generated the person's ntfy password. **Always
-display it** (once; never store or log it) and see "Subscriber login — the generated password".
+`password` is present only on the call that generated the person's first password. **Always display
+it** (once; never store or log it) and see "Subscriber login — the generated password". The response
+carries `Cache-Control: no-store`: never cache or log the body.
 
 **Store, keyed to your user:**
-- `person_hash` — you need it to build the topic you publish to. **Always store this.**
-- `token` (subscriber token) — store it if your backend relays notifications; otherwise deliver it
-  to the user's client (see Step 4). Either way, capture it now — it's shown once.
+- `person_hash`: you will want it to identify the user's topic. **Always store this.**
+- `token` (subscriber token): store it if your backend relays notifications; otherwise deliver it to
+  the user's client (see the next subsection). Either way, capture it now.
 
-> Re-provisioning the *same* user resets their tokens (issues a fresh one and invalidates the old).
-> Provision once per user and persist the result; don't call it on every login.
+> Re-provisioning the *same* user issues a fresh token and invalidates the old one. Provision once per
+> user and persist the result; don't call it on every login.
 
-### Step 3 — Publish a notification (ntfy)
+If a retry after an ambiguous failure (a timeout, a `502` or `503`) succeeds **without** a `password`,
+the first attempt probably generated it and the response was lost. Recover with
+`POST /v1/apps/{app_id}/reset-password`, after verifying the user owns the email (see the contract
+note under "Subscriber login — the generated password").
 
-Publish to the user's `all` channel with your **publisher token**:
-
-```
-POST https://notifs.4irl.app/urls4irl-v4sf4e5teivpe3zi-all
-Authorization: Bearer tk_<publisher-token>
-Title: New shared URL
-Priority: default
-
-Alice added a link to your UTub.
-```
-
-The topic is `{app_id}-{person_hash}-all`. **Always publish to `-all`**: the ntfy iOS/Android apps
-have no wildcard subscribe, so every extra channel is another manual subscription for the user.
-Distinguish notification types with the `Title`, `Tags` and `Priority` headers instead, and **always
-set `Title`**, or ntfy shows the raw topic as the notification title. Use a second channel only by
-explicit need. Your publisher token can write any `urls4irl-*` topic, so no per-user publish
-credential is needed. (This is the standard ntfy publish API — see ntfy docs for `Title`,
-`Priority`, `Tags`, `Click`, attachments, etc.)
-
-### Step 4 — Receive notifications (ntfy, on the user's side)
+### Receive notifications (subscriber side)
 
 The user's client subscribes with the **subscriber token** (read-only on their `*` topics):
 
@@ -1064,77 +1045,165 @@ mobile/desktop apps. Two delivery models:
 > `https://notifs.4irl.app`, or notifications silently never arrive. Link iOS users to the shared setup
 > page (see **Link your users to the setup page** below) rather than documenting this yourself.
 
-### Step 5 — Deprovision (when the user disables notifications or leaves)
+### Mint or rotate the publisher
+
+delivery-api publishes recipient messages through a per-app ntfy publisher that it stores sealed. Your
+app (or the operator) mints it once; you never see a token:
 
 ```
-POST https://notifs-api.4irl.app/v1/deprovision
+POST https://notifs-delivery.4irl.app/v1/apps/urls4irl/ntfy-publisher
 Content-Type: application/json
-CF-Access-Client-Id: <id>
-CF-Access-Client-Secret: <secret>
-
-{ "app_id": "urls4irl", "email": "alice@example.com" }
+CF-Access-Client-Id: <access-client-id>
+CF-Access-Client-Secret: <access-client-secret>
+Authorization: Bearer dak_<43 chars>
 ```
 
-Response: `{ "user_id": "u_v4sf4e5teivpe3zi", "app_id": "urls4irl", "removed": true }`.
+The body is required: send `{}` to mint, or `{"rotate": true}` to rotate. An empty body is a `400`.
 
-This removes *your app's* topic access for that user; the ntfy user is deleted entirely once they
-have no remaining topic access from any app. (You may pass `"user_id": "u_…"` instead of `"email"`.)
+```json ntfy-publisher.request
+{ "rotate": true }
+```
+
+Response (no token is ever returned):
+
+```json ntfy-publisher.response
+{
+  "publisher": {
+    "app_id": "urls4irl",
+    "publisher_user_id": "urls4irl-publisher",
+    "topic_pattern": "urls4irl-*",
+    "created_at": "2026-11-05T17:00:00Z",
+    "updated_at": "2026-11-05T17:00:00Z"
+  }
+}
+```
+
+- At most **10 mints per app per hour**.
+- `rotate` false or omitted adds a token and keeps the old ones valid; `rotate: true` revokes the old
+  ones first, then mints the new one.
+- Errors: `409 "publisher mint already in progress"`, `404 "app has no approved binding"`; the full
+  list is in the per-route note under the errors table below.
+
+Next: send notifications, see [Sending through delivery-api](#sending-through-delivery-api-post-v1messages).
+
+### Deprovision a user
+
+When the user disables notifications or leaves. Send exactly one of `email` or `person_hash`:
+
+```
+POST https://notifs-delivery.4irl.app/v1/apps/urls4irl/deprovision
+Content-Type: application/json
+CF-Access-Client-Id: <access-client-id>
+CF-Access-Client-Secret: <access-client-secret>
+Authorization: Bearer dak_<43 chars>
+```
+
+```json deprovision.request
+{ "person_hash": "v4sf4e5teivpe3zi" }
+```
+
+Response:
+
+```json deprovision.response
+{ "user_id": "u_v4sf4e5teivpe3zi", "app_id": "urls4irl", "removed": true }
+```
+
+The call revokes this app's topic and broadcast grants and this app's tokens for the person. When the
+person then holds no grant in any other app, their ntfy user (and password) is deleted too. Deprovision
+is **not idempotent**; its retry behavior is exact:
+- `200 {removed}` when the person's ntfy user is already gone, or when this app's grant is revoked by
+  the call. That is why a repeat call answers `200` once the person held no other app.
+- `404 "user does not exist"` when the person exists but holds no grant in this app. This includes a
+  repeat call while the person still has another app. Treat a `404` as already removed.
+- `removed: true` is also the answer for a person who never existed.
+- A `404` also results from an email whose person exists only in another app (a person absent everywhere answers `200`), so deprovision with the `person_hash`
+  returned by provision rather than a re-typed email.
+
+### Door errors
+
+| Status and body | Meaning | What to do |
+| --- | --- | --- |
+| `400 invalid JSON body` | Malformed JSON, trailing data, or any field not in the route's body (for example `person_hash` on provision). | Fix the request; do not retry. |
+| `400 email required` | The `email` field is missing or blank. | Fix the request; do not retry. |
+| `400 password required` | set-password only: the `password` field is missing. | Fix the request; do not retry. |
+| `400 exactly one of email or person_hash required` | Deprovision needs exactly one identifier. | Fix the request; do not retry. |
+| `400 invalid person_hash` | The `person_hash` is not a valid hash. | Fix the request; do not retry. |
+| `401 app key required` / `401 invalid app key` (with `WWW-Authenticate: Bearer`) | The `dak_` key is missing, malformed, unknown or expired. | Fix the key; run the `notifs-app` key exchange again if it was superseded more than 24 h ago. Do not retry unchanged. |
+| `403 app_id does not match app key` | The `app_id` in the path is not your key's app (an `app_id` in the body is an unknown field: `400 invalid JSON body`). | Fix the request; do not retry. |
+| `404 user does not exist` | reset-password and set-password: the person is absent or has no grant in this app (deliberately indistinguishable). Deprovision: the person exists but holds no grant in this app (an absent person answers `200 {removed:true}`). | reset-password and set-password: stop, the person is not in this app. Deprovision: treat as already removed. |
+| `413 request body too large` | The body exceeds the limit. | Fix the request; do not retry. |
+| `429` + `Retry-After` | A rate limit was hit (reset-password limits or a provisioning-api limit). Every reset-password attempt counts toward the door limits (3 per app+person per hour), so retry sparingly rather than in a tight loop. | Wait for `Retry-After`, then retry with backoff. |
+| `500` (relayed) | Provisioning-api failed internally. | Retry later; contact the operator if it persists. |
+| `502 provisioning request failed` | Provisioning-api was unreachable or rejected delivery-api's internal credential. Never an app-level answer. | Retry later with backoff; contact the operator if it persists. After an ambiguous provision failure, see the password-recovery note under "Provision a user". Reset-password: retry sparingly, every attempt counts. |
+| `503 provisioning unavailable` | Provisioning is not configured on this delivery-api. | Retry later with backoff; contact the operator if it persists. After an ambiguous provision failure, see the password-recovery note under "Provision a user". Reset-password: retry sparingly, every attempt counts. |
+| `503 identity unavailable` | The app identity store is down or unconfigured. Distinct from `provisioning unavailable`. | Retry later with backoff; contact the operator if it persists. |
+| `503 reset limit unavailable` | reset-password only: the limiter is unconfigured or its store is down. It fails closed; no reset was attempted. This is not a `429`. | Retry later with backoff, sparingly. |
+
+The `503`s answered **before** the key is checked are exactly: `503 provisioning unavailable` (the
+provisioning client is unconfigured), `503 identity unavailable` when the identity service is
+unconfigured, and `503 reset limit unavailable` on reset-password (the limiter is unconfigured). The
+`identity unavailable` `503` can also appear after key lookup (a store failure). The mint route's
+`503 "publisher minting unavailable"` for an unset `DELIVERY_PROVISIONING_URL` is answered **after**
+key validation.
+
+Other provisioning-api `4xx`/`5xx` answers (for example `400` invalid email, `400` invalid password,
+`500`) are relayed unchanged with their own error body; only upstream `401`/`403`/redirect answers
+become `502`.
+
+**Per-route note: `ntfy-publisher`.** The mint route's `429`, `502` and `503` differ from the shared
+rows, which apply to the other four routes only:
+
+| Status and body | What to do |
+| --- | --- |
+| `400` (the body is required) | Send `{}` or `{"rotate": true}`; fix the request, do not retry. |
+| `401` | Fix the key; run the `notifs-app` key exchange again if the key was superseded. |
+| `429 "publisher mint rate limit exceeded"` + `Retry-After` | Wait for `Retry-After`, then retry. |
+| `409 "publisher mint already in progress"` | Another mint for this app is in progress; retry shortly. |
+| `404 "app has no approved binding"` | Do not retry: the app's binding was removed while the call ran (for example teardown or unbind in progress), because a valid `dak_` key exists only for an approved binding. Contact the operator. |
+| `502 "provisioning-api mint failed"` | Retry later with backoff; contact the operator if it persists. |
+| `503 "publisher minting unavailable"` | Retry later with backoff; contact the operator if it persists. Also answered at the concurrent-mint cap, for an unset `DELIVERY_PROVISIONING_URL`, and for a store failure after the token was minted upstream. |
+
+Rotate caveat: with `{"rotate": true}` the old tokens are revoked upstream before the new one is
+stored, so after a `502` or `503` the app may have no working publisher until a mint succeeds. Retry
+the rotate promptly.
+
+Next: send notifications, see [Sending through delivery-api](#sending-through-delivery-api-post-v1messages).
 
 ---
 
 ## Broadcast / site-wide announcements
 
-Sometimes you want to reach **all** of your app's subscribers at once — a maintenance window, an outage
-notice, a site-wide announcement — rather than one user's personal channel. Each app has a single shared
-**broadcast topic** for exactly this: `{app_id}-broadcast` (e.g. `urls4irl-broadcast`).
+Each app has a single shared **broadcast topic** for site-wide announcements:
+`{app_id}-broadcast` (e.g. `urls4irl-broadcast`).
 
-**Publish** to it with your **publisher token** — the write-only `{app_id}-*` credential from Step 1
-already covers `{app_id}-broadcast`, so there is **no** extra token to mint:
-
-```
-POST https://notifs.4irl.app/urls4irl-broadcast
-Authorization: Bearer tk_<publisher-token>
-Title: Scheduled maintenance
-Priority: high
-
-urls4irl will be down for ~10 min at 02:00 UTC for maintenance.
-```
-
-**⚠️ Admins only — restrict who can trigger a broadcast.** A broadcast reaches **every** subscriber of
-your app at once, so treat the send path as a privileged action. `notifs.4irl.app` authenticates your
-app-level **publisher token** — it has no knowledge of your app's individual users or their roles, so it
-**cannot** distinguish an admin from any other user; to ntfy, the token *is* the app. Enforcing
-admin-only is therefore **your app's responsibility**: keep the publisher token in your backend (Step 1 —
-never ship it to a client) and gate the broadcast-trigger endpoint behind your own admin authorization
-check. The token itself is a strong random credential (32 chars, `crypto/rand` — not guessable), so the
-real risks are a **leaked** token or a **send path reachable by non-admins**, both of which only your app
-can prevent. (A personal-channel publish only ever hits one user; a broadcast hits everyone, so it
-warrants the stricter gate.)
-
-**Receive** it on the client by also subscribing to `{app_id}-broadcast`, exactly like a personal topic
-(Step 4) but with the shared name:
+**Receiving** works today. Every provisioned user is granted **read** on `{app_id}-broadcast`
+automatically at provision, always on per app (no per-user opt-in or opt-out), so **no extra
+registration** is needed. The topic name is returned as `broadcast_topic` in the provision response, so
+your client can discover it instead of hardcoding it. Subscribe exactly like a personal topic, with the
+shared name:
 
 ```
 GET https://notifs.4irl.app/urls4irl-broadcast/json
 Authorization: Bearer tk_<subscriber-token>
 ```
 
-Every provisioned user is granted **read** on `{app_id}-broadcast` automatically at `POST /v1/provision`
-— it is always-on per app (no per-user opt-in/opt-out), so **no extra registration** is needed. The
-topic name is also returned as `broadcast_topic` in the `/v1/provision` response (see Step 2), so your
-client can discover it instead of hardcoding. The grant is removed when the user is deprovisioned, so a
-departed user stops receiving broadcasts.
+The grant is removed when the user is deprovisioned, so a departed user stops receiving broadcasts.
+
+**Sending** a broadcast has no supported path through delivery-api today: there is no delivery-api
+route for it and apps hold no publisher credential. This is tracked in
+[4IRL/4irl-notifs#174](https://github.com/4IRL/4irl-notifs/issues/174). Until that lands, do not plan
+site-wide announcements on this service.
 
 ---
 
 ## Sending through delivery-api (`POST /v1/messages`)
 
-Besides publishing to ntfy directly, an app can submit an envelope to delivery-api and let it deliver
+An app submits an envelope to delivery-api and lets it deliver
 (retries, backoff and a delivery log included). The human-facing sinks and per-person recipients below
 apply to that path.
 
 delivery-api is reachable at `https://notifs-delivery.4irl.app`, behind Cloudflare Access. Send the same
-`CF-Access-Client-Id` / `CF-Access-Client-Secret` headers as for `notifs-api`, using a service token the
+`CF-Access-Client-Id` / `CF-Access-Client-Secret` headers as for every call to the door, using a service token the
 operator has authorized on the `notifs-delivery` Access application (see the operator runbook below). Your
 app token reaches `/v1/messages`, `/v1/heartbeats/*` (see Heartbeats below), `/v1/apps/*`, `/readyz` and
 `/healthz`; `/v1/admin/*` returns 403 to it.
@@ -1285,10 +1354,11 @@ Through Cloudflare Access an unauthorized token gets a Cloudflare `403`/redirect
 
 `to.recipient` takes an **email or a `person_hash`** and sends the notification to that person's
 personal topic. Only the hash is stored (an email is hashed on submit and never persisted). The topic
-is `{app_id}-{person_hash}-{channel}`, the same topic the user is subscribed to after `POST /v1/provision`
-(Step 2). Because ntfy caps topics at 64 characters, `app_id` + `channel` must keep the whole topic
+is `{app_id}-{person_hash}-{channel}`, the same topic the user is subscribed to after provisioning
+(see "Provision a user"). Because ntfy caps topics at 64 characters, `app_id` + `channel` must keep the whole topic
 within 64 characters (a longer combination is rejected at submit). The app also needs a **publisher**
-(minted by the operator, see the runbook below); with none, the submit fails closed with **422**.
+(minted by the app with `POST /v1/apps/{app_id}/ntfy-publisher` or by the operator with
+`POST /v1/admin/apps/{app_id}/ntfy-publisher`, see the runbook below); with none, the submit fails closed with **422**.
 
 ```
 POST /v1/messages?wait=10
@@ -1452,10 +1522,10 @@ minted once through provisioning-api by an explicit operator call, never lazily 
   one. The mint is additive (`rotate:false`), so the previous publisher token stays valid in ntfy, with
   write access to the app's `{app_id}-*` topics. To revoke it, rotate the app's publisher in
   provisioning-api (the admin UI "remint with rotate"), then re-mint so delivery-api stores the new
-  token. Rotating also invalidates every token the app itself holds for direct publishing.
+  token. Apps hold no publisher token of their own, so rotating affects only delivery-api's copy.
 - An admin-UI "remint with rotate" on the same app revokes delivery-api's token too. Recipient
   deliveries then dead-letter as `terminal_status` with a 401 until the publisher is re-minted.
-- After `POST /v1/deprovision-app` the app's ntfy publisher user is gone, but delivery-api still holds
+- After `POST /v1/admin/apps/{app_id}/deprovision` the app's ntfy publisher user is gone, but delivery-api still holds
   its stored token, so recipient submits are accepted (202) and then dead-letter on a 401. Remove the
   stored publisher so submits fail closed (422, `app has no ntfy publisher`):
   `curl -X DELETE https://notifs-delivery.4irl.app/v1/admin/apps/<app>/ntfy-publisher` with the same two
@@ -1555,19 +1625,20 @@ the app pick another name.
 
 ## Subscriber login — the generated password
 
-The subscriber token (Step 2/Step 4) is what a **programmatic or Android** client uses to subscribe.
-**iOS is different:** the ntfy iOS app's subscribe screen has **no token field**, so an iOS user signs into
-the ntfy app with a **username + password**. The username is the derived ntfy user id `u_<person_hash>`
-(the `user_id` from `/v1/provision`). The password is **generated by the notifications service**, never
-chosen by the person or your app: a typeable `xxxx-xxxx-xxxx-xxxx` code (about 80 bits). The shared setup
-page also asks Android users for this username and password, so every person you link to it needs one.
+The subscriber token (from "Provision a user" and "Receive notifications") is what a **programmatic or
+Android** client uses to subscribe. **iOS is different:** the ntfy iOS app's subscribe screen has **no
+token field**, so an iOS user signs into the ntfy app with a **username + password**. The username is the
+derived ntfy user id `u_<person_hash>` (the `user_id` from provision). The password is **generated by the
+notifications service**, never chosen by the person or your app: a typeable `xxxx-xxxx-xxxx-xxxx` code
+(about 80 bits). The shared setup page also asks Android users for this username and password, so every
+person you link to it needs one.
 
 ### Getting the password
 
-`POST /v1/provision` returns `password` in its response **only** when that call generated one (the first
-time a person is provisioned):
+`POST /v1/apps/{app_id}/provision` returns `password` in its response **only** when that call generated
+one (the first time a person is provisioned):
 
-```json
+```json provision.response
 {
   "user_id": "u_v4sf4e5teivpe3zi",
   "app_id": "urls4irl",
@@ -1580,55 +1651,68 @@ time a person is provisioned):
 ```
 
 - **Show it once.** Never store it, never log it, and pass the `Cache-Control: no-store` header through
-  (every `200` from `/v1/provision` and `/v1/reset-password` carries it). It is not retrievable later.
+  (every `200` from provision and reset-password carries it). It is not retrievable later.
 - **Always display a returned password.** A person who existed before this change has no stored date and
   is **rotated** on their next provision: the returned password is the only delivery of the new one.
 - **No `password` in the response** is normal (the person already has one, or the person store was
   unavailable). Do not treat it as an error; offer "Generate a new password" instead.
 - **Recovery.** If a first-time provision's password never reached the person (for example the response
-  was lost after the service recorded it), call `POST /v1/reset-password` to get a new one.
+  was lost after the service recorded it), call `POST /v1/apps/{app_id}/reset-password` to get a new one.
 
 The person then logs into the ntfy iOS app with **username `u_v4sf4e5teivpe3zi` + that password** (after
 setting the Default server to `https://notifs.4irl.app`; the setup page below walks them through it), and
 their existing read ACL lets them subscribe to their own `{app_id}-{person_hash}-*` topics and
 `{app_id}-broadcast`.
 
-### `POST /v1/reset-password` — generate a new password
+> **Contract note: email ownership is the app's job.** notifs cannot verify that an email belongs to the
+> signed-in user. A person is one ntfy user with one password across all apps, keyed by the email hash, so
+> an app must only provision, reset or set a password for an email it has **verified**: lax verification
+> in one app affects the person's other apps. The door does enforce that reset-password and set-password
+> refuse (`404`) a person with no grant in the calling app, and that deprovision refuses (`404`) a person
+> who exists but holds no grant in it; an absent person answers `200` with `removed: true`.
+
+### `POST /v1/apps/{app_id}/reset-password` — generate a new password
 
 ```
-POST https://notifs-api.4irl.app/v1/reset-password
+POST https://notifs-delivery.4irl.app/v1/apps/urls4irl/reset-password
 Content-Type: application/json
-CF-Access-Client-Id: <id>
-CF-Access-Client-Secret: <secret>
+CF-Access-Client-Id: <access-client-id>
+CF-Access-Client-Secret: <access-client-secret>
+Authorization: Bearer dak_<43 chars>
+```
 
-{ "app_id": "urls4irl", "email": "alice@example.com" }
+```json reset-password.request
+{ "email": "alice@example.com" }
+```
+
+```json reset-password.response
+{ "user_id": "u_v4sf4e5teivpe3zi", "app_id": "urls4irl", "password": "k7mq-x2pw-9rnd-ft4h" }
 ```
 
 | Status | Body | Notes |
 | ------ | ---- | ----- |
 | `200` | `{ "user_id", "app_id", "password" }` | The new password, shown once. `Cache-Control: no-store`. |
-| `400` | `{ "error": "invalid JSON body" }` / `"invalid app_id"` / `"invalid email"` | Validated in that order. |
-| `404` | `{ "error": "user does not exist" }` | The person is not provisioned. |
-| `429` | `{ "error": "too many password changes" }` | Has a `Retry-After` header (seconds). |
-| `500` | `{ "error": "internal error" }` | |
+| `400` | `{ "error": "invalid JSON body" }` / `"email required"`; a malformed address is relayed from provisioning-api as `"invalid email"` | Fix the request. |
+| `404` | `{ "error": "user does not exist" }` | The person is absent or has no grant in this app. |
+| `429` | `{ "error": "reset rate limit exceeded" }` + `Retry-After` | A door limit: 30 per app per hour, 3 per app+person per hour. Every attempt that passes body validation counts, whatever its outcome. |
+| `429` | `{ "error": "too many password changes" }` + `Retry-After` | provisioning-api's own per-person limit, a different layer. |
+| `503` | `{ "error": "reset limit unavailable" }` | The limit store is down. It fails closed: no reset was attempted. |
+| `500` / `502` / `503` | see "Door errors" | Retry later, sparingly. |
 
-Every response from this endpoint (200, 400, 404, 429, 500) carries `Cache-Control: no-store`.
+Every response from this endpoint carries `Cache-Control: no-store`.
 
-- **Limit: 5 resets per person per rolling hour.** A failed reset does not count against it.
-  Repeated attempts (20 per person and app per rolling hour, including ones rejected with `404`) also
-  answer `429` with a `Retry-After` header.
-- **`429` takes precedence over `404`.** The limit is checked first, so an unknown email at the limit, or
-  any request while the limit store is down, still answers `429`.
-- **`Retry-After` is on every `429`**, with the same status and body. For a true limit it is the seconds
-  until the oldest slot in the window expires; for a limit-store outage it is a fixed 60. Callers cannot
-  tell the two apart, so simply wait that long.
+- **Two door limits: 30 resets per app per hour and 3 per app+person per hour.** Every attempt that
+  passes body validation counts toward both, including ones that end in `404` or an error, so retry sparingly, never in a tight loop.
+- **A limit-store outage is a `503`, not a `429`.** If the door cannot check its limits it refuses with
+  `503 "reset limit unavailable"` and attempts no reset; handle it as a retry-later outage.
+- **provisioning-api has its own per-person limit** (`429 "too many password changes"`), applied after the
+  door limits pass. A `429` from either layer carries `Retry-After`: wait that many seconds.
 - **Warn first.** A reset replaces any earlier password (including one the person is already using on
   another device), so say so before the call, as the admin UI does: its Users list has a "Reset password"
   row action that asks for confirmation first, then reveals the new password once. Operators can use it
   instead of calling this endpoint by hand; it is subject to the same limit.
 - The password is applied to the person, not to one app: resetting from any app changes the one ntfy
-  password. Any app's service token can currently reset any person (out of scope here; the
-  app-registration work will bind tokens to `app_id`).
+  password. That is why email ownership is the app's job (see the contract note above).
 
 ### Suggested UI copy
 
@@ -1638,9 +1722,10 @@ password is shown once and that it replaces the old one.
 | Where | Text |
 | ----- | ---- |
 | Reveal lead | "This password is shown only once. It replaces any earlier password for this person." (name your own subject) |
-| No-password state | "No password was returned by this request." plus a pointer: "call POST /v1/reset-password from the app that serves them" |
+| No-password state | "No password was returned by this request." plus a pointer: "call POST /v1/apps/{app_id}/reset-password from the app that serves them" |
 | Warn-first, before a reset | "Generating a new password replaces the current one." |
 | `429` wait message | "Too many password changes. Try again in `<Retry-After>` s." (the abbreviation reads correctly for any count, avoiding "1 seconds") |
+| `503` message | "Password reset is temporarily unavailable. Try again later." |
 
 Accessibility:
 - Announce a late-arriving result through a **single persistent `role="status"` region**: one region,
@@ -1649,14 +1734,30 @@ Accessibility:
 - Show the password in a **labelled read-only field**, not inside a live region.
 - Do not move focus programmatically on reveal.
 
-### `POST /v1/set-password` — not for new apps
+### `POST /v1/apps/{app_id}/set-password` — not for new apps
 
 `set-password` still exists for apps that let a person choose their own password, but **new apps should
-use the generated password**. It records that the person has a password (`password_set_at`) before
-changing it, so a later `POST /v1/provision` will not replace a chosen password. It returns `500` and
-changes nothing when that record cannot be written (person store unavailable). The password policy is 8–128
-characters (`400 { "error": "invalid password" }`), and the user must already be provisioned
-(`404 { "error": "user does not exist" }`). See the API reference for the full contract.
+use the generated password**. The person's one password is shared across every app they use. It records
+that the person has a password (`password_set_at`) before changing it, so a later provision will not
+replace a chosen password. It returns `500` and changes nothing when that record cannot be written (person
+store unavailable). The password policy is 8–128 characters (`400 { "error": "invalid password" }`), and
+the person must already be provisioned in this app (`404 { "error": "user does not exist" }`).
+
+```
+POST https://notifs-delivery.4irl.app/v1/apps/urls4irl/set-password
+Content-Type: application/json
+CF-Access-Client-Id: <access-client-id>
+CF-Access-Client-Secret: <access-client-secret>
+Authorization: Bearer dak_<43 chars>
+```
+
+```json set-password.request
+{ "email": "alice@example.com", "password": "<chosen password, 8-128 chars>" }
+```
+
+```json set-password.response
+{ "user_id": "u_v4sf4e5teivpe3zi", "app_id": "urls4irl", "updated": true }
+```
 
 - **Android/programmatic clients don't need a password** — they authenticate with the subscriber token.
   Only the iOS app (and any other username+password ntfy client, including the setup page's flow) needs one.
@@ -1679,7 +1780,7 @@ https://notifs-setup.4irl.app/?app=tasktracker&user=u_v4sf4e5teivpe3zi&name=Task
 | Param  | Required | Rule                                                                                                                                                                                                                     |
 | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `app`  | yes      | Your `app_id`: `^[a-z0-9][a-z0-9_]{0,62}$`, and not the reserved word `everyone`.                                                                                                                                        |
-| `user` | yes      | The `user_id` from `POST /v1/provision`: `^u_[a-z2-7]{16}$`. This is the user's ntfy **username**.                                                                                                                       |
+| `user` | yes      | The `user_id` from `POST /v1/apps/{app_id}/provision`: `^u_[a-z2-7]{16}$`. This is the user's ntfy **username**.                                                                                                                       |
 | `name` | no       | Display name shown on the page, URL-encoded. After trimming, 1-64 characters with no control or format characters (such as bidi overrides); otherwise (missing, blank, too long or containing any) the page shows `app`. |
 
 - The page derives the topics itself from `app` and `user`: `{app}-{hash}-all` (where `hash` is `user`
@@ -1692,7 +1793,7 @@ https://notifs-setup.4irl.app/?app=tasktracker&user=u_v4sf4e5teivpe3zi&name=Task
   app. This applies to iPhone **and** Android users who follow the page, so make sure the person has
   been shown their password before you link them to it. Never put the password, or any token, in the
   link.
-- Pass the `user_id` from `POST /v1/provision` as the `user` parameter (it is the ntfy username), so
+- Pass the `user_id` from `POST /v1/apps/{app_id}/provision` as the `user` parameter (it is the ntfy username), so
   the username the page shows is the one your user logs in with.
 - The page requires JavaScript.
 
@@ -1700,7 +1801,7 @@ https://notifs-setup.4irl.app/?app=tasktracker&user=u_v4sf4e5teivpe3zi&name=Task
 
 ## Usage recommendations (this deployment)
 
-The 5 steps above are the mechanics; this is how to use them well against `notifs.4irl.app`.
+The provisioning calls above are the mechanics; this is how to use them well against `notifs.4irl.app`.
 
 **Delivery: prefer client-direct.** This deployment is built for client-direct delivery — the user's
 device subscribes to ntfy itself. Reach for backend-relay only when a token must never live on the
@@ -1737,70 +1838,37 @@ types.
 
 ---
 
-## API reference — `notifs-api.4irl.app`
+## API reference — provisioning through `notifs-delivery.4irl.app`
 
-All calls require the two `CF-Access-Client-*` headers. All bodies + responses are JSON.
+Every call needs the two `CF-Access-Client-*` headers and `Authorization: Bearer dak_…`. All bodies and
+responses are JSON. The `app_id` in the path must be your key's app.
 
-| Method & path                | Body                                                     | Success response                                                          |
-| ---------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `POST /v1/provision-app`     | `{ "app_id", "rotate"? }`                                | `{ app_id, publisher_user_id, topic_pattern, token }`                     |
-| `POST /v1/provision`         | `{ "app_id", "email" }`                                  | `{ user_id, app_id, person_hash, topic_pattern, broadcast_topic, token, password? }` |
-| `POST /v1/reset-password`    | `{ "app_id", "email" }`                                  | `{ user_id, app_id, password }`                                           |
-| `POST /v1/deprovision`       | `{ "app_id", "email" }` **or** `{ "app_id", "user_id" }` | `{ user_id, app_id, removed }`                                            |
-| `POST /v1/set-password`      | `{ "app_id", "email", "password" }` (not for new apps)   | `{ user_id, app_id, updated }`                                            |
-| `POST /v1/deprovision-app`   | `{ "app_id" }`                                           | `{ app_id, removed }`                                                     |
-| `GET /v1/users`              | —                                                        | `{ users: [{ user_id, apps, topic_patterns }] }`                          |
-| `DELETE /v1/users/{user_id}` | —                                                        | `{ user_id, deleted }`                                                    |
-| `GET /healthz`               | —                                                        | `ok` (behind Access)                                                      |
+| Method & path                                | Body                                      | Success response                                                                     |
+| -------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------ |
+| `POST /v1/apps/{app_id}/provision`           | `{ "email" }`                             | `{ user_id, app_id, person_hash, topic_pattern, broadcast_topic, token, password? }` |
+| `POST /v1/apps/{app_id}/reset-password`      | `{ "email" }`                             | `{ user_id, app_id, password }`                                                      |
+| `POST /v1/apps/{app_id}/set-password`        | `{ "email", "password" }` (not for new apps) | `{ user_id, app_id, updated }`                                                    |
+| `POST /v1/apps/{app_id}/deprovision`         | `{ "email" }` **or** `{ "person_hash" }`  | `{ user_id, app_id, removed }`                                                       |
+| `POST /v1/apps/{app_id}/ntfy-publisher`      | `{}` or `{ "rotate": true }` (required)   | `{ publisher: { app_id, publisher_user_id, topic_pattern, created_at, updated_at } }` |
 
 Notes:
 - `user_id` is always the derived ntfy id `u_<person_hash>`. `email` must be a valid address
   (validated after trim + lowercase — case-insensitive; `Alice@x.com` == `alice@x.com`).
-- Errors are `{ "error": "<message>" }` with the matching HTTP status (`400` invalid input,
-  `404` user does not exist, `403`/redirect = missing/invalid service token, `500` internal).
-- **`rotate` on `/v1/provision-app`** (optional, default `false`): `false`/omitted mints an *additional*
-  publisher token and leaves existing ones valid (safe, zero-downtime rotation by-issuing — see Step 1's
-  note). `true` is a **hard rotation**: it revokes every existing publisher token first, then mints one
-  fresh — for a leaked credential. The old token stops working immediately, so the app stops publishing
-  until it is redeployed with the new token.
-- **`DELETE /v1/users/{user_id}` is idempotent**: it returns `200 { user_id, deleted: true }` even when
-  the ntfy user is already gone (it no longer `404`s for an absent user), and it also removes the
-  person-service reverse-index row. Do not branch on a `404` from this endpoint.
-- **`POST /v1/provision`** also returns `password` (`xxxx-xxxx-xxxx-xxxx`) **only** when this call
-  generated one; otherwise the field is absent. Every `200` carries `Cache-Control: no-store`. See
-  "Subscriber login — the generated password".
-- **`POST /v1/reset-password`** makes a new generated password (see "Subscriber login — the generated password"). `200
-  { user_id, app_id, password }`; `400` (`invalid JSON body` / `invalid app_id` / `invalid email`, in that
-  order); `404 { "error": "user does not exist" }`; `429 { "error": "too many password changes" }` with
-  a `Retry-After` header; `500 { "error": "internal error" }`. Every response from it carries
-  `Cache-Control: no-store`. A `404` also means the person has no grant in the calling `app_id`
-  (enforced).
-- **`POST /v1/set-password`** is **not for new apps**; use the generated password instead. It sets a
-  person's ntfy password to one your app chose. The user **must already be provisioned**: setting a
-  password on a not-yet-provisioned email returns `404 { "error": "user does not exist" }`; a `404`
-  also means the person has no grant in the calling `app_id` (enforced). The password
-  is validated at **8–128 characters** (`400 { "error": "invalid password" }` otherwise; `app_id` and
-  `email` are validated first, in that order). It records that the person has a password
-  (`password_set_at`) before changing it, so a later `POST /v1/provision` will not replace a chosen
-  password; if that record cannot be written (person store unavailable) it returns `500` and changes
-  nothing. `change-pass` overwrites any existing password, so calling it again simply resets the
-  credential. The response `{ user_id, app_id, updated }` echoes the derived `user_id`
-  (`u_<person_hash>`) with `updated: true`.
-- **`POST /v1/deprovision`**: a `404` means the person has no grant in the calling `app_id` (enforced).
-  It is **idempotent for an absent ntfy user** (same as `DELETE /v1/users/{user_id}`
-  above): deprovisioning a person whose ntfy user does not exist returns `200 { removed: true }`, in every
-  mode, where it used to return `404`. Do not branch on a `404` to detect an already-removed person.
-- `POST /v1/deprovision-app` fully removes an app: its publisher identity, every subscriber's grant for
-  the app, and the app-registry row. It is idempotent.
-- `GET /v1/users`, `DELETE /v1/users/{user_id}`, and `/v1/deprovision-app` are cross-app management
-  surfaces — most app integrations only need `provision-app`, `provision`, and `deprovision`.
+- Errors are `{ "error": "<message>" }` with the matching HTTP status; see "Door errors" for every
+  status, what it means and what to do.
+- Every `200` from provision and reset-password carries `Cache-Control: no-store`.
+- `POST /v1/apps/{app_id}/provision` returns `password` (`xxxx-xxxx-xxxx-xxxx`) **only** when this call
+  generated one. See "Subscriber login — the generated password".
+- Operator-only management (cross-app) lives under `/v1/admin`: `/v1/admin/provision`,
+  `/v1/admin/deprovision`, `/v1/admin/reset-password`, `/v1/admin/users`, `/v1/admin/users/{user_id}`,
+  `/v1/admin/test-notify`, `/v1/admin/apps/{app_id}/deprovision` and
+  `/v1/admin/apps/{app_id}/ntfy-publisher`, plus `GET /healthz/provisioning`. Apps do not call them.
 
 ## ntfy reference — `notifs.4irl.app`
 
-- **Publish:** `POST https://notifs.4irl.app/{topic}` with `Authorization: Bearer <publisher-token>`
-  and the message in the body (ntfy headers `Title`, `Priority`, `Tags`, `Click`, `Actions`, … all apply).
 - **Subscribe:** `GET https://notifs.4irl.app/{topic}/json` (or `/sse`, or WebSocket) with
   `Authorization: Bearer <subscriber-token>`.
+- Apps do not publish to ntfy: send through delivery-api (see **Sending through delivery-api**).
 - ntfy is **not** behind Cloudflare Access — its own token auth is the boundary. Never send the
   `CF-Access-Client-*` headers here; use the `Bearer` token.
 
@@ -1824,28 +1892,27 @@ Notes:
 - [ ] Each job sends a success ping (and a `/fail` ping where it can tell), and the check moved from
       Waiting to Up after one run.
 
-### ntfy direct
+### Provisioning users through the door
 
-- [ ] Operator issued your app a Cloudflare Access service token, authorized on `notifs-api`.
-- [ ] Backend stores `CF-Access-Client-Id` / `CF-Access-Client-Secret` as secrets.
-- [ ] Called `POST /v1/provision-app` once; stored the **publisher token**.
-- [ ] On user opt-in: call `POST /v1/provision`; store **`person_hash`** (+ subscriber token or
-      deliver it to the client). Do this once per user, not per login.
-- [ ] Publish to `{app_id}-{person_hash}-all` with the publisher token, and set a `Title`.
+- [ ] Backend stores the Access Client ID and Secret and the `dak_` key as secrets.
+- [ ] Minted the app's ntfy publisher once with `POST /v1/apps/{app_id}/ntfy-publisher`.
+- [ ] On user opt-in, with a verified email: call `POST /v1/apps/{app_id}/provision`; store
+      **`person_hash`** (+ subscriber token or deliver it to the client). Once per user, not per login.
+- [ ] Send notifications through delivery-api (`to.recipient`), with a `Title`.
 - [ ] User's client subscribes to `{app_id}-{person_hash}-all` with the subscriber token.
-- [ ] (Optional) Site-wide announcements: publish to `{app_id}-broadcast` with the publisher token;
-      clients subscribe to `{app_id}-broadcast` (read grant added automatically at provision, returned as `broadcast_topic`).
-- [ ] On opt-out / account deletion: call `POST /v1/deprovision`.
-- [ ] Always display a `password` returned by `POST /v1/provision` (shown once, never stored or logged,
-      `Cache-Control: no-store` honoured), and offer "Generate a new password" via `POST /v1/reset-password`
-      with the warn-first line and the `429` wait message (see "Subscriber login — the generated password").
+- [ ] Clients subscribe to `{app_id}-broadcast` (read grant added automatically at provision, returned as
+      `broadcast_topic`). Sending broadcasts is not available yet (#174).
+- [ ] On opt-out / account deletion: call `POST /v1/apps/{app_id}/deprovision` with the `person_hash`.
+- [ ] Always display a `password` returned by provision (shown once, never stored or logged,
+      `Cache-Control: no-store` honoured), and offer "Generate a new password" via
+      `POST /v1/apps/{app_id}/reset-password` with the warn-first line and the `429` wait message (see
+      "Subscriber login — the generated password").
 - [ ] Once the person has their password (iPhone and Android users both type it into the ntfy app), link
       them to the shared setup page (see "Link your users to the setup page"); do not write your own
       Default server instructions.
 - [ ] Link users to `https://notifs-setup.4irl.app/?app=<app_id>&user=<user_id>&name=<display name>` instead of
       writing your own ntfy install instructions.
-- [ ] Bulk/periodic sender: publisher rate-limit raised/exempted by operator; many-per-user sends coalesced into a digest.
-- [ ] All mint responses (`token`) are captured on first response — they are never re-shown.
+- [ ] Capture the provision response (`token`) on first response — it is never re-shown.
 
 ## Related docs
 - `ARCHITECTURE.md` — how the service works + Cloudflare/auth config, including the heartbeat watchdog
