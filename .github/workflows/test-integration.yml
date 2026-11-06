@@ -92,6 +92,70 @@ jobs:
         # -p 1: the packages share one database, and the pgstore test writes a transient failure row that /readyz would report
         run: go test -p 1 -tags integration ./...
 
+      # The flag-on run: recreate delivery-api with the hold flag on, run the hold runners, then restore
+      # the flag-off stack below. The env keeps the scheduled cap of 2 so the recreate does not drop it.
+      - name: Recreate delivery-api with the hold flag on
+        id: hold_recreate
+        env:
+          DELIVERY_MAX_SCHEDULED_PER_APP: "2"
+          DELIVERY_HOLD_UNROUTED: "1"
+          # Keep in sync with NOTIFS_DELIVERY_MAX_HELD in the next step (the live hold cap test fills it).
+          DELIVERY_MAX_HELD_PER_APP: "3"
+          # Keep in sync with NOTIFS_DELIVERY_MAX_HELD_TOTAL in the next step (the live total cap test fills it).
+          DELIVERY_MAX_HELD_TOTAL: "20"
+        run: |
+          docker compose --project-directory . -f docker-compose.yml up -d --build delivery-api
+          for _ in $(seq 1 60); do
+            STATUS="$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose --project-directory . -f docker-compose.yml ps -q delivery-api)" || echo "unknown")"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "delivery-api is healthy with the hold flag on"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "delivery-api did not become healthy in time"
+          exit 1
+
+      # The runners target never touches the stack. A mis-set flag fails the tests' probe, and a runner
+      # that ran zero hold tests fails the step. The make target cannot find this stack's containers
+      # (different compose project name), so hand it the credential and the database container.
+      - name: Run hold integration tests (Go + onboard unrouted path)
+        env:
+          NOTIFS_DELIVERY_HOLD_UNROUTED: "1"
+          # Must equal DELIVERY_MAX_HELD_PER_APP on the stack recreated above.
+          NOTIFS_DELIVERY_MAX_HELD: "3"
+          # Must equal DELIVERY_MAX_HELD_TOTAL on the stack recreated above.
+          NOTIFS_DELIVERY_MAX_HELD_TOTAL: "20"
+        run: |
+          set -o pipefail
+          CRED="$(COMPOSE='docker compose --project-directory . -f docker-compose.yml' sh scripts/internal-credential.sh)"
+          echo "::add-mask::$CRED"
+          export NOTIFS_INTERNAL_CREDENTIAL="$CRED"
+          NOTIFS_DELIVERY_DB_CONTAINER="$(docker compose --project-directory . -f docker-compose.yml ps -q delivery-postgres)"
+          export NOTIFS_DELIVERY_DB_CONTAINER
+          make delivery-integration-test-hold-run
+
+      # Always runs, so a failed hold step cannot leave the later steps on a flag-on stack.
+      - name: Restore delivery-api with the hold flag off
+        if: always() && steps.hold_recreate.conclusion != 'skipped'
+        env:
+          DELIVERY_MAX_SCHEDULED_PER_APP: "2"
+          DELIVERY_HOLD_UNROUTED: "0"
+        run: |
+          docker compose --project-directory . -f docker-compose.yml up -d --build delivery-api
+          CONTAINER="$(docker compose --project-directory . -f docker-compose.yml ps -q delivery-api)"
+          for _ in $(seq 1 60); do
+            STATUS="$(docker inspect -f '{{.State.Health.Status}}' "$CONTAINER" || echo "unknown")"
+            if [ "$STATUS" = "healthy" ]; then
+              docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" | grep -qx 'DELIVERY_HOLD_UNROUTED=0' || { echo "delivery-api is not flag-off"; exit 1; }
+              echo "delivery-api is healthy with the hold flag off"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "delivery-api did not become healthy in time"
+          exit 1
+
       # The make target cannot find this stack (different compose project name), so hand it the
       # provisioning-api credential straight from the running container, masked.
       - name: Run app onboarding integration test

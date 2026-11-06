@@ -325,7 +325,11 @@ senders** below alongside these steps.
    instead (operator-owned, usable by every app), add the destinations the app's messages should reach
    (ntfy, Discord or webhook) and the routes that send the app's traffic to them in the Delivery tab. Use the
    destination's send-test to confirm each one. Without a matching route or destination a send with no
-   `to` fails with `422 no destination matched`.
+   `to` fails with `422 no destination matched`, unless the operator has turned on holding
+   (`DELIVERY_HOLD_UNROUTED`, off by default), in which case an app-key send is accepted as `202` with
+   status `unrouted` (see "Unrouted messages (held)"). A route match whose destinations are all disabled
+   counts as no match and is held the same way; a `to.destination` that is disabled or unknown is still
+   `409`/`400`.
 5. **If the app sends to people (`to.recipient`):** the app mints its own publisher (self-serve, see "Mint
    or rotate the publisher"), or you mint it for the app (see "Operator runbook: ntfy publisher for an
    app").
@@ -657,7 +661,7 @@ Every row except the exchange and `/readyz` also returns the key errors above (`
 | Method and path                                              | Request                       | Success                                                  | Errors                                                                          |
 | ------------------------------------------------------------ | ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `POST /v1/app-identity/exchange` (Access token only, no key) | `{"app_id","token":"<GitHub OIDC JWT>"}` | `202 {"status":"pending","request_id"}` (awaits operator approval) or `200 {"status":"issued","app_id","key","key_id"}` (the plaintext key, once) | 400 malformed body or `app_id`, 401 `invalid identity token`, 403 `identity does not match the approved binding`, 429 `too many pending identity requests`, 503 `identity unavailable`. The `notifs-app` action calls this for you. |
-| `POST /v1/messages` (optional `?wait=0..10`)                 | envelope JSON (see Envelope)  | `202 {"message":{…},"duplicate":bool,"replaced":bool}`   | 400 validation, 409 `destination disabled`, 413, 422 `no destination matched` / `app has no ntfy publisher`, 429, 503 `messages unavailable` |
+| `POST /v1/messages` (optional `?wait=0..10`)                 | envelope JSON (see Envelope)  | `202 {"message":{…},"duplicate":bool,"replaced":bool}` (status `unrouted`, with `deliveries: []`, when holding is on and no route matched) | 400 validation, 409 `destination disabled`, 413, 422 `no destination matched` (holding off) / `app has no ntfy publisher`, 429 (`too many held messages`, `held message capacity reached`, scheduled caps), 503 `messages unavailable` |
 | `GET /v1/messages/{id}?app_id=<app>`                         | none                          | `200 {"message":{…}}`                                    | 400 `app_id is required`, 404 `message not found`                               |
 | `GET /v1/messages?app_id=<app>&idempotency_key=<key>`        | none                          | `200 {"message":{…}}`                                    | 400, 404                                                                        |
 | `DELETE /v1/messages/{id}?app_id=<app>` or `DELETE /v1/messages?app_id=<app>&idempotency_key=<key>` | none | `200 {"message_id","cancelled":bool,"status"}` (idempotent) | 400                                          |
@@ -756,8 +760,8 @@ registered under your own app id, so you ping it at `POST /v1/heartbeats/{app_id
 - A `409 check already exists` means the pair (your app id, `name`) is taken by any check, yours or an operator
   check registered under your app id; a `GET` of an id you do not own stays `404`.
 
-Message object (illustrative values; `status` is `pending`, `delivered`, `dead`, `partial`, `scheduled` or
-`cancelled`; a delivery `state` is `pending`, `delivered`, `dead`, `scheduled` or `cancelled`):
+Message object (illustrative values; `status` is `pending`, `delivered`, `dead`, `partial`, `scheduled`,
+`cancelled`, `unrouted` or `release_failed`; a delivery `state` is `pending`, `delivered`, `dead`, `scheduled` or `cancelled`):
 
 ```json
 {
@@ -789,7 +793,7 @@ Message object (illustrative values; `status` is `pending`, `delivered`, `dead`,
 }
 ```
 
-Readiness body: `{"status":"ok","schema_version":8,"expected_schema_version":8,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false},"heartbeat_prober":{"last_tick_at":"<RFC3339>","stale":false}}`.
+Readiness body: `{"status":"ok","schema_version":12,"expected_schema_version":12,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false},"heartbeat_prober":{"last_tick_at":"<RFC3339>","stale":false}}`.
 The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_prober.stale` is `true`; read the fields.
 
 ### Operator endpoints (proxy token; used to onboard an app)
@@ -812,7 +816,7 @@ The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_pr
 | `POST /v1/admin/provision`, `/deprovision`, `/reset-password` | the provisioning-api body (app_id, email or user id), relayed                         | provisioning-api's answer, as-is                 | 400 validation, 502 upstream failed, 503 not configured                      |
 | `GET /v1/admin/users`; `DELETE /v1/admin/users/{user_id}` | none                                                                                | provisioning-api's answer, as-is                 | 400 empty `user_id`, 502, 503                                                |
 | `POST /v1/admin/test-notify`                         | `{"app_id","recipients"?:[…],"channel","message","title"?}`                                   | provisioning-api's answer, as-is                 | 404 `app has no approved binding`, 400, 502, 503                             |
-| `POST /v1/admin/apps/{app_id}/deprovision`           | `{ "app_id" }` repeating the path app_id (confirmation)                                       | `200 {"app_id","removed","unbound","deleted":{"checks","routes","destinations","orphaned_routes","orphaned_checks"}}` (irreversible, idempotent) | 400 `invalid app_id` or missing/different body `app_id`, 409 mint in progress (retry), 502 provisioning-api teardown failed, 503 unavailable |
+| `POST /v1/admin/apps/{app_id}/deprovision`           | `{ "app_id" }` repeating the path app_id (confirmation)                                       | `200 {"app_id","removed","unbound","deleted":{"checks","routes","destinations","orphaned_routes","orphaned_checks","held_messages"}}` (irreversible, idempotent) | 400 `invalid app_id` or missing/different body `app_id`, 409 mint in progress (retry), 502 provisioning-api teardown failed, 503 unavailable |
 | `GET /v1/admin/apps/{app_id}/ntfy-publisher`         | none                                                                                          | `200 {"publisher":{…}}` (never the token)        | 404 when none is stored                                                      |
 | `DELETE /v1/admin/apps/{app_id}/ntfy-publisher`      | none                                                                                          | `204` (idempotent)                               |                                                                              |
 | `POST /v1/admin/messages`                            | the `POST /v1/messages` envelope, any `app_id` (optional `?wait=0..10`)                       | `202`, same as `POST /v1/messages`               | as `POST /v1/messages`, no key needed (admin send-test uses it)              |
@@ -1262,7 +1266,7 @@ Validation is checked in a fixed order (`app_id`, `channel`, `idempotency_key`, 
 
 A successful submit is `202 {"message": {...}, "duplicate": false, "replaced": false}`. The message
 carries `message_id`, `app_id`, `channel`, `idempotency_key`, `critical`, `status` (`pending`,
-`delivered`, `dead`, `partial`, `scheduled` or `cancelled`), `deliver_at` (RFC3339 UTC as submitted, except that a replace which releases the message at once
+`delivered`, `dead`, `partial`, `scheduled`, `cancelled`, `unrouted` or `release_failed`), `deliver_at` (RFC3339 UTC as submitted, except that a replace which releases the message at once
 reports the release time, or `null` when none was given), `created_at`, `cancelled_at` (RFC3339 UTC, or `null` unless cancelled) and `deliveries[]`
 (`id`, `destination`, `state`, `dead_reason`, `attempt_count`, `last_status_code`, `next_attempt_at`,
 `delivered_at`). A delivery `state` is `pending`, `delivered`, `dead`, `scheduled` or `cancelled`;
@@ -1286,8 +1290,9 @@ reports the release time, or `null` when none was given), `created_at`, `cancell
   (`400 app_id is required`) and another app's message is `404 message not found`.
 - `GET /v1/messages?app_id=<app>&idempotency_key=<key>` looks a message up by key
   (`400 app_id and idempotency_key are required`).
-- Both return a held message with `status` `scheduled` and a cancelled one with `status` `cancelled`;
-  neither status is ever mixed with another, because a message moves between states as a whole.
+- Both return a message held for `deliver_at` with `status` `scheduled`, a message held for lack of a route
+  with `status` `unrouted` (no `deliveries`), and a cancelled one with `status` `cancelled`; none of these
+  statuses is ever mixed with another, because a message moves between states as a whole.
 
 ### Deferred send (`deliver_at`)
 
@@ -1340,6 +1345,7 @@ due, instead of sending at once.
   | Situation                                            | `cancelled` | `status`        | `message_id`     |
   | ---------------------------------------------------- | ----------- | --------------- | ---------------- |
   | Message was `scheduled` (now cancelled)              | `true`      | `cancelled`     | the message id   |
+  | Message was `unrouted` (held; now cancelled)         | `true`      | `cancelled`     | the message id   |
   | Message already `cancelled`                          | `true`      | `cancelled`     | the message id   |
   | Already released (pending, delivered, dead, partial) | `false`     | its real status | the message id   |
   | Unknown id, non-UUID id, or another app's message    | `false`     | `not_found`     | the requested id |
@@ -1355,6 +1361,35 @@ due, instead of sending at once.
   (a replace that releases it immediately sets `deliver_at` to the release time), and a cancelled
   message's from the time it was cancelled.
 
+### Unrouted messages (held)
+
+By default a send that matches no route (and names no `to`) is refused with `422 no destination matched`.
+When the operator turns holding on (`DELIVERY_HOLD_UNROUTED=1`; it is off by default), `POST /v1/messages`
+accepts such a send instead and keeps it.
+
+- **What you get:** `202` with `status` `unrouted`, an empty `deliveries` array and `"duplicate": false`.
+  `?wait=` is ignored (an immediate `202`). Nothing is delivered while the message is held.
+- **Which sends are held:** only a new message sent with an app key on `POST /v1/messages` that fans out
+  through the routes. A route that matches but whose destinations are all disabled counts as no match and is
+  held the same way (as is a route whose only destinations belong to another app). A named destination that is unknown (`400`) or disabled (`409 destination disabled`)
+  is still refused, and the operator send-test (`POST /v1/admin/messages`), heartbeat alerts and a replace of
+  a `scheduled` message never hold. There is no `hold` field in the envelope; one is `400 invalid JSON body`.
+- **Replay:** re-posting the key of a held message returns the stored message with `"duplicate": true`,
+  content ignored, and does not add to the held count. `release_failed` (a held message whose release could
+  not build its deliveries) is terminal for its key: re-posting the key returns it unchanged, so send the
+  content under a new key.
+- **Cancel:** `DELETE /v1/messages` (by id or by key) cancels an unscheduled held message: `200` with
+  `"cancelled": true` and `"status": "cancelled"`. A cancelled message stays cancelled.
+- **Caps and expiry:** an app may hold at most 1000 messages (`DELIVERY_MAX_HELD_PER_APP`, 1 to 100000):
+  one more is `429 {"error":"too many held messages"}` and nothing is stored. All apps together may hold at
+  most 100000 (`DELIVERY_MAX_HELD_TOTAL`): one more is `429 {"error":"held message capacity reached"}`; a
+  replay is never refused by either. A held message that is not released within 7 days
+  (`DELIVERY_HELD_TTL_DAYS`, 1 to 365) is removed by the retention sweeper.
+- **Do not enable yet:** holding needs migration 0012. Do not turn the flag on before the release feature that
+  turns held messages into deliveries is deployed, because until then nothing releases them.
+- **Check it:** `onboard verify` reports a channel with no route as `unrouted` (and cancels its held test
+  message) instead of a generic failure.
+
 ### Errors
 
 | Status | Body `error`                                                                 | Meaning                                                    |
@@ -1364,7 +1399,9 @@ due, instead of sending at once.
 | 403    | `app_id does not match app key`                                              | The `app_id` names another app than the key's              |
 | 409    | `destination disabled`                                                       | `to.destination` is disabled                               |
 | 413    | `request body too large`                                                     | Body over 256 KiB                                          |
-| 422    | `no destination matched`, `app has no ntfy publisher`, `destination type not yet supported` | No route/destination/publisher can take it |
+| 422    | `no destination matched`, `app has no ntfy publisher`, `destination type not yet supported` | No route/destination/publisher can take it. With holding on, an app-key send that matches no route is `202 unrouted` instead (see Unrouted messages), but the operator send-test still gets `no destination matched` |
+| 429    | `too many held messages`                                                     | The app already holds the maximum held messages (see Unrouted messages) |
+| 429    | `held message capacity reached`                                              | All apps together hold the maximum held messages (see Unrouted messages) |
 | 429    | `too many scheduled messages`                                                | The app already holds the maximum scheduled messages (see Deferred send) |
 | 429    | `scheduled message capacity reached`                                         | All apps together hold the maximum scheduled messages (see Deferred send) |
 | 503    | `messages unavailable`, `identity unavailable`                               | delivery-api is up but cannot accept messages, or cannot check the key (fails closed) |

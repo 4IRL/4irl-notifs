@@ -579,6 +579,22 @@ describe('createAppApi', () => {
     assert.deepEqual(result, { message_id: 'm1', deliveries: [] });
   });
 
+  it('cancels a message with DELETE /v1/messages and encoded app_id and idempotency_key', async () => {
+    const fetchImpl = createRecordingFetch([
+      jsonResponse({ body: { message_id: 'm1', cancelled: true, status: 'cancelled' } }),
+    ]);
+    const http = createHttp({ baseUrl: 'http://127.0.0.1:8091', credentials: null, fetchImpl });
+    const api = createAppApi(http);
+    const result = await api.cancelMessage({ appId: 'my app', idempotencyKey: 'a:b/c&d' });
+    assert.equal(
+      fetchImpl.calls[0].url,
+      'http://127.0.0.1:8091/v1/messages?app_id=my%20app&idempotency_key=a%3Ab%2Fc%26d',
+    );
+    assert.equal(fetchImpl.calls[0].method, 'DELETE');
+    assert.equal(fetchImpl.calls[0].body, undefined);
+    assert.deepEqual(result, { message_id: 'm1', cancelled: true, status: 'cancelled' });
+  });
+
   it('pings a heartbeat check at /v1/heartbeats/{app_id}/{name}, never /fail', async () => {
     const fetchImpl = createRecordingFetch([jsonResponse({ body: { state: 'up' } })]);
     const http = createHttp({ baseUrl: 'http://127.0.0.1:8091', credentials: null, fetchImpl });
