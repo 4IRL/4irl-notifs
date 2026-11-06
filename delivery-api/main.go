@@ -286,6 +286,51 @@ func openDatabase(ctx context.Context) (*pgxpool.Pool, []migrate.Migration, erro
 	return pool, loaded, nil
 }
 
+// holdSettings is the hold-and-release configuration read from the environment.
+type holdSettings struct {
+	holdUnrouted bool
+	maxPerApp    int
+	maxTotal     int
+	ttl          time.Duration
+}
+
+// holdSettingsFromEnv reads DELIVERY_HOLD_UNROUTED, DELIVERY_MAX_HELD_PER_APP,
+// DELIVERY_MAX_HELD_TOTAL and DELIVERY_HELD_TTL_DAYS through getenv; any invalid
+// value is an error.
+func holdSettingsFromEnv(getenv func(string) string) (holdSettings, error) {
+	ttl, ttlErr := dispatch.HeldTTLFromEnv(getenv)
+	if ttlErr != nil {
+		return holdSettings{}, ttlErr
+	}
+	holdUnrouted, holdUnroutedErr := message.HoldUnroutedFromEnv(getenv)
+	if holdUnroutedErr != nil {
+		return holdSettings{}, holdUnroutedErr
+	}
+	maxPerApp, maxPerAppErr := message.MaxHeldPerAppFromEnv(getenv)
+	if maxPerAppErr != nil {
+		return holdSettings{}, maxPerAppErr
+	}
+	maxTotal, maxTotalErr := message.MaxHeldTotalFromEnv(getenv)
+	if maxTotalErr != nil {
+		return holdSettings{}, maxTotalErr
+	}
+	return holdSettings{holdUnrouted: holdUnrouted, maxPerApp: maxPerApp, maxTotal: maxTotal, ttl: ttl}, nil
+}
+
+// applyToService sets the hold fields of the message service config.
+func (settings holdSettings) applyToService(config message.ServiceConfig) message.ServiceConfig {
+	config.HoldUnrouted = settings.holdUnrouted
+	config.MaxHeldPerApp = settings.maxPerApp
+	config.MaxHeldTotal = settings.maxTotal
+	return config
+}
+
+// applyToSweeper sets the held-message TTL of the sweeper config.
+func (settings holdSettings) applyToSweeper(config dispatch.SweeperConfig) dispatch.SweeperConfig {
+	config.HeldTTL = settings.ttl
+	return config
+}
+
 // runServe loads the (mandatory) database config, master key and retention
 // window first, so a missing or invalid value fails before any port is bound,
 // then serves HTTP and runs the delivery worker and retention sweeper, scheduled-message releaser and heartbeat checker until ctx
@@ -315,6 +360,10 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	maxScheduledTotal, maxScheduledTotalErr := message.MaxScheduledTotalFromEnv(os.Getenv)
 	if maxScheduledTotalErr != nil {
 		return maxScheduledTotalErr
+	}
+	hold, holdErr := holdSettingsFromEnv(os.Getenv)
+	if holdErr != nil {
+		return holdErr
 	}
 	// Fail-closed OIDC config: a static dev JWKS file without DELIVERY_OIDC_DEV_MODE=1 stops startup.
 	oidcConfig, oidcErr := appidentity.ConfigFromEnv(os.Getenv)
@@ -378,7 +427,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Sinks:      sinks,
 		Logger:     logger,
 	})
-	messageService := message.NewService(message.ServiceConfig{
+	messageService := message.NewService(hold.applyToService(message.ServiceConfig{
 		Store:              messageStore,
 		Resolver:           registryService,
 		Publishers:         publisherService,
@@ -387,7 +436,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Logger:             logger,
 		MaxScheduledPerApp: maxScheduled,
 		MaxScheduledTotal:  maxScheduledTotal,
-	})
+	}))
 	// The checker reads the message service as its alert sender, and its freshness tracker backs /readyz.
 	heartbeatFreshness := heartbeat.NewFreshness(time.Now)
 	heartbeatStore := heartbeat.NewPGStore(pool, sealer)
@@ -427,12 +476,12 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	background := startBackground(ctx,
 		worker.Run,
 		func(backgroundCtx context.Context) {
-			dispatch.RunSweeper(backgroundCtx, dispatch.SweeperConfig{
+			dispatch.RunSweeper(backgroundCtx, hold.applyToSweeper(dispatch.SweeperConfig{
 				Expirer:   messageStore,
 				Retention: retention,
 				Interval:  dispatch.DefaultSweepInterval,
 				Logger:    logger,
-			})
+			}))
 		},
 		func(backgroundCtx context.Context) {
 			dispatch.RunReleaser(backgroundCtx, dispatch.ReleaserConfig{
