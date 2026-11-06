@@ -163,7 +163,8 @@ func (service *Service) Deprovision(ctx context.Context, appID string) (Result, 
 	service.logger.Info("app teardown phase done",
 		"app_id", appID, "phase", "objects", "duration", time.Since(started),
 		"checks", deleted.Checks, "routes", deleted.Routes, "destinations", deleted.Destinations,
-		"orphaned_routes", deleted.OrphanedRoutes, "orphaned_checks", deleted.OrphanedChecks)
+		"orphaned_routes", deleted.OrphanedRoutes, "orphaned_checks", deleted.OrphanedChecks,
+		"held_messages", deleted.HeldMessages)
 
 	return Result{AppID: appID, Removed: true, Unbound: unbound, Deleted: deleted}, nil
 }

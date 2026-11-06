@@ -20,6 +20,8 @@ type Deleted struct {
 	// nowhere until the operator re-links them.
 	OrphanedRoutes int64 `json:"orphaned_routes"`
 	OrphanedChecks int64 `json:"orphaned_checks"`
+	// HeldMessages counts the app's held messages (held_at IS NOT NULL) the cascade deleted.
+	HeldMessages int64 `json:"held_messages"`
 }
 
 // PGStore deletes the delivery objects an app owns.
@@ -43,7 +45,14 @@ func NewPGStore(pool *pgxpool.Pool) *PGStore {
 // destinations between the link deletes and the destination delete, the RESTRICT foreign key fails the
 // transaction: nothing is deleted, the caller sees a 503, and repeating the call is safe.
 //
-// Held messages are not handled yet: see the hold-and-release-routing plan (teardown follow-up step).
+// Held messages: the app's rows with held_at IS NOT NULL are deleted first, on the same transaction handle
+// as every other delete here (a single pgutil.WithTx call, no separate pool call), so a later error in the
+// transaction rolls the held delete back too. Only held_at IS NOT NULL rows are removed: cancelled-held
+// rows (held_at cleared) and release-failed rows of the app are deliberately left and age out through the
+// normal retention sweep; they are inert since nothing releases them. A new hold after teardown is not
+// accepted, because Deprovision unbinds the app and its keys are gone before this runs, so requireAppKey
+// rejects the key with 401. The only window is while the upstream phase runs; a hold created then is
+// removed here, and a repeated teardown clears anything later.
 //
 // An invalid app id is rejected before the database is touched (second line of defense; the handler
 // validates first).
@@ -53,6 +62,11 @@ func (store *PGStore) DeleteOwnedObjects(ctx context.Context, appID string) (Del
 	}
 	var deleted Deleted
 	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		heldTag, execErr := tx.Exec(ctx,
+			`DELETE FROM messages WHERE app_id = $1 AND held_at IS NOT NULL`, appID)
+		if execErr != nil {
+			return pgutil.WrapDBError("delete app held messages", execErr)
+		}
 		checkTag, execErr := tx.Exec(ctx,
 			`DELETE FROM heartbeat_checks WHERE owner_kind = 'app' AND owner_app_id = $1`, appID)
 		if execErr != nil {
@@ -83,6 +97,7 @@ func (store *PGStore) DeleteOwnedObjects(ctx context.Context, appID string) (Del
 		deleted = Deleted{
 			Checks: checkTag.RowsAffected(), Routes: routeTag.RowsAffected(), Destinations: destinationTag.RowsAffected(),
 			OrphanedRoutes: orphanedRoutes, OrphanedChecks: orphanedChecks,
+			HeldMessages: heldTag.RowsAffected(),
 		}
 		return nil
 	})
