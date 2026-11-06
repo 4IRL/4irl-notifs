@@ -13,7 +13,10 @@ import (
 
 // Scheduled-message queries that must probe the scheduled-deliveries partial
 // index (message_deliveries_scheduled_idx, WHERE state = 'scheduled'). They are
-// constants so the integration tests can EXPLAIN exactly what runs.
+// constants so the integration tests can EXPLAIN exactly what runs. Every query
+// here is driven by message_deliveries rows; a held message (even one carrying a
+// deliver_at) has none, so it is never listed or counted as scheduled. Keep it
+// that way: TestHeldMessageWithDeliverAtIsNeverListedOrCountedAsScheduled pins it.
 const (
 	// scheduledCountSQL counts an app's scheduled messages: it joins from the
 	// app's messages (the UNIQUE (app_id, idempotency_key) index) to the partial
@@ -137,7 +140,7 @@ func (store *PGStore) ReplaceScheduledMessage(
 		if loadErr != nil {
 			return loadErr
 		}
-		if DeriveStatus(current.Deliveries) != StatusScheduled {
+		if DeriveStatus(current.Deliveries, current.State()) != StatusScheduled {
 			stored = current
 			return nil
 		}
@@ -214,12 +217,37 @@ func (store *PGStore) cancel(
 	var outcome CancelOutcome
 	txErr := pgutil.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		var messageID string
-		lockErr := tx.QueryRow(ctx, `SELECT id::text FROM messages WHERE `+where+` FOR UPDATE`, args...).Scan(&messageID)
+		var state MessageState
+		lockErr := tx.QueryRow(ctx,
+			`SELECT id::text, held_at, cancelled_at, release_failed_at FROM messages WHERE `+where+` FOR UPDATE`,
+			args...).Scan(&messageID, &state.HeldAt, &state.CancelledAt, &state.ReleaseFailedAt)
 		if errors.Is(lockErr, pgx.ErrNoRows) {
 			return nil
 		}
 		if lockErr != nil {
 			return pgutil.WrapDBError("lock message", lockErr)
+		}
+
+		// Message-row state decides first, all under the row lock.
+		switch {
+		case state.CancelledAt != nil:
+			outcome = CancelOutcome{MessageID: messageID, Status: StatusCancelled, Cancelled: true, Found: true}
+			return nil
+		case state.ReleaseFailedAt != nil:
+			// Terminal for its key: not cancellable, nothing changes.
+			outcome = CancelOutcome{MessageID: messageID, Status: StatusReleaseFailed, Found: true}
+			return nil
+		case state.HeldAt != nil:
+			// Clearing held_at drops the message from every held count.
+			if _, updateErr := tx.Exec(ctx,
+				`UPDATE messages SET cancelled_at = $2, held_cancelled_at = $2, held_at = NULL
+WHERE id = $1::text::uuid`, messageID, now); updateErr != nil {
+				return pgutil.WrapDBError("cancel held message", updateErr)
+			}
+			outcome = CancelOutcome{
+				MessageID: messageID, Status: StatusCancelled, Cancelled: true, Transitioned: true, Found: true,
+			}
+			return nil
 		}
 
 		rows, queryErr := tx.Query(ctx,
@@ -241,7 +269,7 @@ func (store *PGStore) cancel(
 			return pgutil.WrapDBError("load delivery states", rowsErr)
 		}
 
-		status := DeriveStatus(deliveries)
+		status := DeriveStatus(deliveries, state)
 		outcome = CancelOutcome{MessageID: messageID, Status: status, Cancelled: status == StatusCancelled, Found: true}
 		if status != StatusScheduled {
 			return nil

@@ -705,6 +705,10 @@ func TestDefaultMaxScheduledMatchesTheComposeDefault(testInstance *testing.T) {
 	}{
 		{envVar: MaxScheduledEnvVar, codeDefault: DefaultMaxScheduledPerApp},
 		{envVar: MaxScheduledTotalEnvVar, codeDefault: DefaultMaxScheduledTotal},
+		{envVar: MaxHeldPerAppEnvVar, codeDefault: DefaultMaxHeldPerApp},
+		{envVar: MaxHeldTotalEnvVar, codeDefault: DefaultMaxHeldTotal},
+		// The hold flag is off by default, which compose spells 0.
+		{envVar: HoldUnroutedEnvVar, codeDefault: 0},
 	}
 	for _, scheduledCap := range caps {
 		// The pass-through line of the cap in a compose file, capturing its default.
@@ -979,7 +983,7 @@ func TestResubmittingACancelledKeyIsADuplicateWithStatusCancelled(testInstance *
 	if err != nil || !outcome.Duplicate || outcome.Scheduled {
 		testInstance.Fatalf("Submit = (%v, outcome %+v), want a duplicate that is not scheduled", err, outcome)
 	}
-	if got := DeriveStatus(stored.Deliveries); got != StatusCancelled {
+	if got := DeriveStatus(stored.Deliveries, stored.State()); got != StatusCancelled {
 		testInstance.Fatalf("status = %q, want %q", got, StatusCancelled)
 	}
 }

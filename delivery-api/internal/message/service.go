@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/envint"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
@@ -46,6 +46,30 @@ const (
 	// MaxScheduledTotalEnvVar names the optional environment variable that
 	// overrides the service-wide scheduled-message cap.
 	MaxScheduledTotalEnvVar = "DELIVERY_MAX_SCHEDULED_TOTAL"
+
+	// HoldUnroutedEnvVar names the environment variable that turns on holding an
+	// app message that matches no route (instead of refusing it). Off by default.
+	HoldUnroutedEnvVar = "DELIVERY_HOLD_UNROUTED"
+
+	// DefaultMaxHeldPerApp is how many held messages one app may have when
+	// DELIVERY_MAX_HELD_PER_APP is unset. docker-compose.yml and
+	// docker-compose.prod.yml repeat it as the pass-through default.
+	DefaultMaxHeldPerApp = 1000
+	// MaxHeldPerAppLimit is the largest accepted DELIVERY_MAX_HELD_PER_APP.
+	MaxHeldPerAppLimit = 100000
+	// MaxHeldPerAppEnvVar names the optional environment variable that overrides
+	// the per-app held-message cap.
+	MaxHeldPerAppEnvVar = "DELIVERY_MAX_HELD_PER_APP"
+
+	// DefaultMaxHeldTotal is how many held messages all apps together may have
+	// when DELIVERY_MAX_HELD_TOTAL is unset. docker-compose.yml and
+	// docker-compose.prod.yml repeat it as the pass-through default.
+	DefaultMaxHeldTotal = 100000
+	// MaxHeldTotalLimit is the largest accepted DELIVERY_MAX_HELD_TOTAL.
+	MaxHeldTotalLimit = 10000000
+	// MaxHeldTotalEnvVar names the optional environment variable that overrides
+	// the service-wide held-message cap.
+	MaxHeldTotalEnvVar = "DELIVERY_MAX_HELD_TOTAL"
 
 	// defaultPollInterval is how often Await re-reads the message.
 	defaultPollInterval = 100 * time.Millisecond
@@ -100,36 +124,57 @@ type ServiceConfig struct {
 	// together; a new scheduled submit over it fails with
 	// ErrScheduledCapacityReached. A value <= 0 takes DefaultMaxScheduledTotal.
 	MaxScheduledTotal int
+	// HoldUnrouted makes an app message with no matching route a held message
+	// instead of ErrNoDestinationMatched. Off (false) by default.
+	HoldUnrouted bool
+	// MaxHeldPerApp caps how many held messages one app may have. A value <= 0
+	// takes DefaultMaxHeldPerApp.
+	MaxHeldPerApp int
+	// MaxHeldTotal caps how many held messages all apps may have together. A
+	// value <= 0 takes DefaultMaxHeldTotal.
+	MaxHeldTotal int
+}
+
+// HoldUnroutedFromEnv reads DELIVERY_HOLD_UNROUTED through getenv. It fails
+// closed: empty, "0" and "false" mean off, "1" and "true" mean on, and anything
+// else is an error. The error text never echoes the value.
+func HoldUnroutedFromEnv(getenv func(string) string) (bool, error) {
+	switch getenv(HoldUnroutedEnvVar) {
+	case "", "0", "false":
+		return false, nil
+	case "1", "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid %s", HoldUnroutedEnvVar)
+	}
+}
+
+// MaxHeldPerAppFromEnv reads DELIVERY_MAX_HELD_PER_APP through getenv. An empty
+// value gives DefaultMaxHeldPerApp; anything else must be an integer from 1 to
+// MaxHeldPerAppLimit. The error text never echoes the value.
+func MaxHeldPerAppFromEnv(getenv func(string) string) (int, error) {
+	return envint.Bounded(getenv, MaxHeldPerAppEnvVar, DefaultMaxHeldPerApp, MaxHeldPerAppLimit)
+}
+
+// MaxHeldTotalFromEnv reads DELIVERY_MAX_HELD_TOTAL through getenv. An empty
+// value gives DefaultMaxHeldTotal; anything else must be an integer from 1 to
+// MaxHeldTotalLimit. The error text never echoes the value.
+func MaxHeldTotalFromEnv(getenv func(string) string) (int, error) {
+	return envint.Bounded(getenv, MaxHeldTotalEnvVar, DefaultMaxHeldTotal, MaxHeldTotalLimit)
 }
 
 // MaxScheduledFromEnv reads DELIVERY_MAX_SCHEDULED_PER_APP through getenv. An
 // empty value gives DefaultMaxScheduledPerApp; anything else must be an integer
 // from 1 to MaxScheduledPerAppLimit. The error text never echoes the value.
 func MaxScheduledFromEnv(getenv func(string) string) (int, error) {
-	raw := getenv(MaxScheduledEnvVar)
-	if raw == "" {
-		return DefaultMaxScheduledPerApp, nil
-	}
-	maxScheduled, parseErr := strconv.Atoi(raw)
-	if parseErr != nil || maxScheduled < 1 || maxScheduled > MaxScheduledPerAppLimit {
-		return 0, fmt.Errorf("invalid %s", MaxScheduledEnvVar)
-	}
-	return maxScheduled, nil
+	return envint.Bounded(getenv, MaxScheduledEnvVar, DefaultMaxScheduledPerApp, MaxScheduledPerAppLimit)
 }
 
 // MaxScheduledTotalFromEnv reads DELIVERY_MAX_SCHEDULED_TOTAL through getenv. An
 // empty value gives DefaultMaxScheduledTotal; anything else must be an integer
 // from 1 to MaxScheduledTotalLimit. The error text never echoes the value.
 func MaxScheduledTotalFromEnv(getenv func(string) string) (int, error) {
-	raw := getenv(MaxScheduledTotalEnvVar)
-	if raw == "" {
-		return DefaultMaxScheduledTotal, nil
-	}
-	maxTotal, parseErr := strconv.Atoi(raw)
-	if parseErr != nil || maxTotal < 1 || maxTotal > MaxScheduledTotalLimit {
-		return 0, fmt.Errorf("invalid %s", MaxScheduledTotalEnvVar)
-	}
-	return maxTotal, nil
+	return envint.Bounded(getenv, MaxScheduledTotalEnvVar, DefaultMaxScheduledTotal, MaxScheduledTotalLimit)
 }
 
 // Service is the message use-case layer behind the HTTP endpoints: it validates
@@ -147,6 +192,8 @@ type Service struct {
 	now            func() time.Time
 	maxScheduled   int
 	maxTotal       int
+	holdUnrouted   bool
+	heldCaps       HeldCaps
 	// awaitSlots is a counting semaphore bounding concurrent Await pollers.
 	awaitSlots chan struct{}
 }
@@ -173,6 +220,8 @@ func NewService(config ServiceConfig) *Service {
 		now:            config.Now,
 		maxScheduled:   config.MaxScheduledPerApp,
 		maxTotal:       config.MaxScheduledTotal,
+		holdUnrouted:   config.HoldUnrouted,
+		heldCaps:       HeldCaps{PerApp: config.MaxHeldPerApp, Total: config.MaxHeldTotal},
 	}
 	for destinationType, supported := range config.SupportedTypes {
 		service.supportedTypes[destinationType] = supported
@@ -194,6 +243,12 @@ func NewService(config ServiceConfig) *Service {
 	}
 	if service.maxTotal <= 0 {
 		service.maxTotal = DefaultMaxScheduledTotal
+	}
+	if service.heldCaps.PerApp <= 0 {
+		service.heldCaps.PerApp = DefaultMaxHeldPerApp
+	}
+	if service.heldCaps.Total <= 0 {
+		service.heldCaps.Total = DefaultMaxHeldTotal
 	}
 	maxAwaits := config.MaxConcurrentAwaits
 	if maxAwaits <= 0 {
@@ -251,6 +306,14 @@ func (service *Service) Submit(ctx context.Context, envelope Envelope) (StoredMe
 	}
 
 	targets, resolveErr := service.resolveTargets(ctx, envelope)
+	if errors.Is(resolveErr, ErrNoDestinationMatched) && envelope.Hold && service.holdUnrouted &&
+		envelope.ToRecipient == "" && envelope.ToDestination == "" {
+		// Only the new-message branch holds, and only when the route (not the
+		// body) opted in and the flag is on. Recipient mode and a named
+		// destination never hold (fail closed), and every other resolver error
+		// returns unchanged below.
+		return service.holdMessage(ctx, envelope, now)
+	}
 	if resolveErr != nil {
 		return StoredMessage{}, SubmitOutcome{}, resolveErr
 	}
@@ -280,13 +343,30 @@ func (service *Service) Submit(ctx context.Context, envelope Envelope) (StoredMe
 	return stored, outcome, nil
 }
 
+// holdMessage stores an unrouted message as held. The worker is never woken: a
+// held message has no delivery. Held is true only for a fresh insert.
+func (service *Service) holdMessage(
+	ctx context.Context, envelope Envelope, now time.Time,
+) (StoredMessage, SubmitOutcome, error) {
+	stored, duplicate, insertErr := service.store.InsertHeldMessage(ctx, envelope, service.heldCaps, now)
+	if insertErr != nil {
+		return StoredMessage{}, SubmitOutcome{}, insertErr
+	}
+	outcome := SubmitOutcome{Duplicate: duplicate, Held: !duplicate}
+	if !duplicate {
+		service.logger.Info("message held",
+			"message_id", stored.ID, "app_id", stored.Envelope.AppID, "channel", stored.Envelope.Channel)
+	}
+	return stored, outcome, nil
+}
+
 // submitExisting handles a submit whose key already exists. settled is false
 // only when the message disappeared before it could be replaced, in which case
 // the caller submits it as a new message.
 func (service *Service) submitExisting(
 	ctx context.Context, envelope Envelope, existing StoredMessage, now time.Time,
 ) (StoredMessage, SubmitOutcome, bool, error) {
-	if DeriveStatus(existing.Deliveries) != StatusScheduled || sameContent(existing.Envelope, envelope) {
+	if DeriveStatus(existing.Deliveries, existing.State()) != StatusScheduled || sameContent(existing.Envelope, envelope) {
 		return existing, newSubmitOutcome(existing, true, false), true, nil
 	}
 
@@ -334,7 +414,7 @@ func newSubmitOutcome(stored StoredMessage, duplicate bool, replaced bool) Submi
 	return SubmitOutcome{
 		Duplicate: duplicate,
 		Replaced:  replaced,
-		Scheduled: DeriveStatus(stored.Deliveries) == StatusScheduled,
+		Scheduled: DeriveStatus(stored.Deliveries, stored.State()) == StatusScheduled,
 	}
 }
 

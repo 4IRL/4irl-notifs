@@ -367,7 +367,7 @@ func TestServiceConcurrentSubmitsOfOneKeyNeverErrorAndStoreOneMessage(testInstan
 			if err != nil {
 				subTest.Fatalf("GetByKey error = %v", err)
 			}
-			if got := message.DeriveStatus(stored.Deliveries); got != testCase.wantStatus || len(stored.Deliveries) != 1 {
+			if got := message.DeriveStatus(stored.Deliveries, stored.State()); got != testCase.wantStatus || len(stored.Deliveries) != 1 {
 				subTest.Fatalf("stored status = %q with %d deliveries, want %q with 1", got, len(stored.Deliveries), testCase.wantStatus)
 			}
 			if testCase.wantStatus == message.StatusScheduled && fixture.wakes.Load() != 0 {
@@ -502,9 +502,9 @@ func TestServiceCancelAndResubmitEndToEnd(testInstance *testing.T) {
 	changed.Channel = "changed"
 	stored, outcome := fixture.mustSubmit(testInstance, changed)
 	if !outcome.Duplicate || outcome.Replaced || outcome.Scheduled || stored.ID != first.ID ||
-		message.DeriveStatus(stored.Deliveries) != message.StatusCancelled || stored.CancelledAt == nil {
+		message.DeriveStatus(stored.Deliveries, stored.State()) != message.StatusCancelled || stored.CancelledAt == nil {
 		testInstance.Fatalf("resubmit of a cancelled key = %+v (status %q), want a cancelled duplicate",
-			outcome, message.DeriveStatus(stored.Deliveries))
+			outcome, message.DeriveStatus(stored.Deliveries, stored.State()))
 	}
 	if stored.Envelope.Channel != "alerts" {
 		testInstance.Fatalf("stored channel = %q, want the original content", stored.Envelope.Channel)
@@ -565,5 +565,5 @@ func mustGetStatus(testInstance *testing.T, fixture scheduledServiceFixture, id 
 	if err != nil {
 		testInstance.Fatalf("Get %s: %v", id, err)
 	}
-	return message.DeriveStatus(stored.Deliveries)
+	return message.DeriveStatus(stored.Deliveries, stored.State())
 }

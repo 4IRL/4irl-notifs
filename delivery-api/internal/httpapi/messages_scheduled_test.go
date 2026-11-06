@@ -197,6 +197,11 @@ func TestCancelMessageByIDOutcomes(testInstance *testing.T) {
 			wantBody: `{"message_id":"` + scheduledMessageID + `","cancelled":false,"status":"delivered"}`,
 		},
 		{
+			name:     "release failed is not cancellable",
+			outcome:  message.CancelOutcome{MessageID: scheduledMessageID, Status: message.StatusReleaseFailed, Found: true},
+			wantBody: `{"message_id":"` + scheduledMessageID + `","cancelled":false,"status":"release_failed"}`,
+		},
+		{
 			name:     "not found",
 			outcome:  message.CancelOutcome{MessageID: scheduledMessageID, Status: message.StatusNotFound},
 			wantBody: `{"message_id":"` + scheduledMessageID + `","cancelled":false,"status":"not_found"}`,
@@ -339,6 +344,11 @@ func TestAdminCancelMessageReturnsTheOutcomeUnscopedToAnApp(testInstance *testin
 			name:     "released",
 			outcome:  message.CancelOutcome{MessageID: scheduledMessageID, Status: message.StatusDead, Found: true},
 			wantBody: `{"message_id":"` + scheduledMessageID + `","cancelled":false,"status":"dead"}`,
+		},
+		{
+			name:     "held message cancelled by id",
+			outcome:  message.CancelOutcome{MessageID: scheduledMessageID, Status: message.StatusCancelled, Cancelled: true, Transitioned: true, Found: true},
+			wantBody: `{"message_id":"` + scheduledMessageID + `","cancelled":true,"status":"cancelled"}`,
 		},
 		{
 			name:     "not found",

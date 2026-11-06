@@ -165,7 +165,7 @@ func TestInsertScheduledStoresScheduledDeliveriesThatNeverClaim(testInstance *te
 	if stored.Envelope.DeliverAt == nil || !stored.Envelope.DeliverAt.Equal(deliverAt) {
 		testInstance.Errorf("stored deliver_at = %v, want %v", stored.Envelope.DeliverAt, deliverAt)
 	}
-	if status := message.DeriveStatus(stored.Deliveries); status != message.StatusScheduled {
+	if status := message.DeriveStatus(stored.Deliveries, stored.State()); status != message.StatusScheduled {
 		testInstance.Errorf("status = %q, want scheduled", status)
 	}
 	requireDeliveryTimesMatchDeliverAt(ctx, testInstance, pool, stored.ID)
@@ -1161,7 +1161,7 @@ func TestCancelMessageCancelsAScheduledMessageIdempotently(testInstance *testing
 	if got.CancelledAt == nil || !got.CancelledAt.Equal(cancelledAt) {
 		testInstance.Errorf("cancelled_at = %v, want %v", got.CancelledAt, cancelledAt)
 	}
-	if status := message.DeriveStatus(got.Deliveries); status != message.StatusCancelled {
+	if status := message.DeriveStatus(got.Deliveries, got.State()); status != message.StatusCancelled {
 		testInstance.Errorf("status = %q, want cancelled", status)
 	}
 
@@ -1434,6 +1434,25 @@ func TestListScheduledBreaksDeliverAtTiesByID(testInstance *testing.T) {
 	}
 	if !slices.IsSorted(ids) || len(ids) != 6 {
 		testInstance.Errorf("tied ids = %v, want 6 in ascending id order", ids)
+	}
+}
+
+func TestHeldMessageWithDeliverAtIsNeverListedOrCountedAsScheduled(testInstance *testing.T) {
+	ctx, store, _, pool := newMessageStore(testInstance)
+	deliverAt := scheduleBase.Add(time.Hour)
+	held := heldEnvelopeFor("u4i", "held-with-deliver-at")
+	held.DeliverAt = &deliverAt
+	if _, _, err := store.InsertHeldMessage(ctx, held, heldCaps(5, 10), scheduleBase); err != nil {
+		testInstance.Fatalf("InsertHeldMessage: %v", err)
+	}
+
+	listed, total, err := store.ListScheduled(ctx, 10)
+	if err != nil || len(listed) != 0 || total != 0 {
+		testInstance.Errorf("ListScheduled = %v, total %d, err %v; want empty list and total 0", listed, total, err)
+	}
+	var appCount int
+	if scanErr := pool.QueryRow(ctx, message.ScheduledCountSQL, "u4i").Scan(&appCount); scanErr != nil || appCount != 0 {
+		testInstance.Errorf("per-app scheduled count = %d, err %v; want 0", appCount, scanErr)
 	}
 }
 

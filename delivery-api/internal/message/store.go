@@ -13,6 +13,14 @@ type ScheduledCaps struct {
 	Total int
 }
 
+// HeldCaps bounds how many messages may sit in the held (unrouted) state.
+type HeldCaps struct {
+	// PerApp is the most held messages one app may have.
+	PerApp int
+	// Total is the most held messages all apps may have together.
+	Total int
+}
+
 // Store persists messages and their delivery fan-out.
 type Store interface {
 	// InsertMessage persists envelope and one delivery per target in a single
@@ -55,10 +63,16 @@ type Store interface {
 	Replay(ctx context.Context, deliveryID int64, now time.Time) (AdminDelivery, error)
 	// DeleteExpired deletes messages past the retention cutoff that have no
 	// pending or scheduled delivery (their deliveries and attempts cascade) and
-	// returns how many. A message's age counts from the later of created_at and
-	// deliver_at, so a long-scheduled message keeps its full retention after it
-	// is released; a cancelled message ages from cancelled_at instead.
+	// returns how many. A message's age counts from the latest of created_at,
+	// deliver_at, released_at and release_failed_at, so a long-scheduled or
+	// long-held message keeps its full retention after it is released; a
+	// cancelled message ages from cancelled_at instead. A still-held message is
+	// never deleted here (see DeleteExpiredHeld).
 	DeleteExpired(ctx context.Context, cutoff time.Time) (int64, error)
+	// DeleteExpiredHeld deletes held messages whose held_at is older than
+	// heldCutoff and returns how many. A message just released (held_at cleared)
+	// is never deleted.
+	DeleteExpiredHeld(ctx context.Context, heldCutoff time.Time) (int64, error)
 
 	// InsertScheduledMessage is InsertMessage for a message held until
 	// envelope.DeliverAt (which must be set): the deliveries are inserted
@@ -72,6 +86,15 @@ type Store interface {
 	InsertScheduledMessage(
 		ctx context.Context, envelope Envelope, targets []DeliveryTarget, caps ScheduledCaps,
 	) (StoredMessage, bool, error)
+	// InsertHeldMessage stores envelope as a held (unrouted) message: held_at is
+	// now and there are no delivery rows. A new message is refused, storing
+	// nothing, with ErrTooManyHeld when the app already has caps.PerApp held
+	// messages, else ErrHeldCapacityReached when all apps together have
+	// caps.Total. Neither cap is exceeded under concurrent submits. The bool
+	// reports a duplicate: the existing message is returned with no cap check.
+	// Held messages count against these caps only, never the scheduled ones.
+	// Both caps must be positive.
+	InsertHeldMessage(ctx context.Context, envelope Envelope, caps HeldCaps, now time.Time) (StoredMessage, bool, error)
 	// ReplaceScheduledMessage swaps the content and deliveries of the message at
 	// (envelope.AppID, envelope.IdempotencyKey) for the submitted ones, under the
 	// message row lock, but only while the message is still scheduled. It keeps

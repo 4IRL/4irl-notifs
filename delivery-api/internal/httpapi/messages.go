@@ -40,6 +40,8 @@ const (
 	errMsgDeliveryNotDead            = "delivery not dead"
 	errMsgTooManyScheduled           = "too many scheduled messages"
 	errMsgScheduledCapacityReached   = "scheduled message capacity reached"
+	errMsgTooManyHeld                = "too many held messages"
+	errMsgHeldCapacityReached        = "held message capacity reached"
 )
 
 // Query parameter and path value names, and list defaults.
@@ -255,8 +257,21 @@ func (server *Server) requireMessages(handler http.HandlerFunc) http.HandlerFunc
 // requireAppKey (the body's app_id is the key's app), the operator route behind the
 // Access /v1/admin split. ?wait=N (0-10 seconds)
 // holds the response until every delivery has had a first attempt or the wait
-// elapses; a duplicate never waits.
-func (server *Server) handleCreateMessage(responseWriter http.ResponseWriter, request *http.Request) {
+// elapses; a duplicate or held message never waits.
+//
+// hold is decided by route registration alone, never by the body: the app-key
+// route passes true (an unrouted message is held when the service flag is on),
+// the operator send-test passes false. The body decoder rejects unknown fields,
+// so a body "hold" field is a 400 on both routes.
+func (server *Server) handleCreateMessage(hold bool) http.HandlerFunc {
+	return func(responseWriter http.ResponseWriter, request *http.Request) {
+		server.createMessage(responseWriter, request, hold)
+	}
+}
+
+// createMessage is the shared body of both submit routes; hold comes from the
+// route registration only.
+func (server *Server) createMessage(responseWriter http.ResponseWriter, request *http.Request, hold bool) {
 	wait, waitOK := parseWait(responseWriter, request)
 	if !waitOK {
 		return
@@ -268,6 +283,7 @@ func (server *Server) handleCreateMessage(responseWriter http.ResponseWriter, re
 	}
 
 	envelope := message.Envelope{
+		Hold:           hold,
 		AppID:          body.AppID,
 		Channel:        body.Channel,
 		IdempotencyKey: body.IdempotencyKey,
@@ -287,7 +303,7 @@ func (server *Server) handleCreateMessage(responseWriter http.ResponseWriter, re
 		return
 	}
 	duplicate := outcome.Duplicate
-	if wait > 0 && !duplicate && !outcome.Scheduled {
+	if wait > 0 && !duplicate && !outcome.Scheduled && !outcome.Held {
 		// The message is already committed, so a failed wait is not a failed
 		// submit: answer with the freshest view available. A scheduled message has
 		// no attempt to wait for, so it answers at once.
@@ -533,7 +549,7 @@ func newMessageView(stored message.StoredMessage) messageView {
 		Channel:        stored.Envelope.Channel,
 		IdempotencyKey: stored.Envelope.IdempotencyKey,
 		Critical:       stored.Envelope.Critical,
-		Status:         message.DeriveStatus(stored.Deliveries),
+		Status:         message.DeriveStatus(stored.Deliveries, stored.State()),
 		DeliverAt:      utcOrNil(stored.Envelope.DeliverAt),
 		CreatedAt:      stored.CreatedAt.UTC(),
 		CancelledAt:    utcOrNil(stored.CancelledAt),
@@ -644,6 +660,10 @@ func (server *Server) writeMessageError(responseWriter http.ResponseWriter, requ
 		writeError(responseWriter, http.StatusTooManyRequests, errMsgTooManyScheduled)
 	case errors.Is(err, message.ErrScheduledCapacityReached):
 		writeError(responseWriter, http.StatusTooManyRequests, errMsgScheduledCapacityReached)
+	case errors.Is(err, message.ErrTooManyHeld):
+		writeError(responseWriter, http.StatusTooManyRequests, errMsgTooManyHeld)
+	case errors.Is(err, message.ErrHeldCapacityReached):
+		writeError(responseWriter, http.StatusTooManyRequests, errMsgHeldCapacityReached)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		// The client went away or the request ran out of time: not a server fault,
 		// and a client that can disconnect at will must not be able to flood the

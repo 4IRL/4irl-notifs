@@ -355,7 +355,7 @@ func (server *Server) routes() {
 	// The app-facing message routes take the app key: the key's app must be the app_id the
 	// request asserts (in the body for a submit, in the query for a read or cancel).
 	server.mux.HandleFunc("POST /v1/messages",
-		server.requireMessages(server.requireAppKey(assertedAppIDFromBody, server.handleCreateMessage)))
+		server.requireMessages(server.requireAppKey(assertedAppIDFromBody, server.handleCreateMessage(true))))
 	server.mux.HandleFunc("GET /v1/messages/{id}",
 		server.requireMessages(server.requireAppKey(assertedAppIDFromQuery, server.handleGetMessage)))
 	server.mux.HandleFunc("GET /v1/messages",
@@ -366,7 +366,7 @@ func (server *Server) routes() {
 		server.requireMessages(server.requireAppKey(assertedAppIDFromQuery, server.handleCancelMessageByKey)))
 	// Operator submit (the admin UI's send-test): the POST /v1/messages contract with no app key,
 	// the operator asserting any app_id.
-	server.mux.HandleFunc("POST /v1/admin/messages", server.requireMessages(server.handleCreateMessage))
+	server.mux.HandleFunc("POST /v1/admin/messages", server.requireMessages(server.handleCreateMessage(false)))
 	server.mux.HandleFunc("GET /v1/admin/scheduled-messages", server.requireMessages(server.handleListScheduledMessages))
 	server.mux.HandleFunc("DELETE /v1/admin/scheduled-messages/{id}", server.requireMessages(server.handleAdminCancelMessage))
 	server.mux.HandleFunc("GET /v1/admin/deliveries", server.requireMessages(server.handleListDeliveries))

@@ -46,6 +46,11 @@ const (
 	StatusScheduled = "scheduled"
 	// StatusCancelled marks a message whose deliveries are all cancelled.
 	StatusCancelled = "cancelled"
+	// StatusUnrouted marks a message held because no route matched it.
+	StatusUnrouted = "unrouted"
+	// StatusReleaseFailed marks a held message whose release could not build
+	// deliveries.
+	StatusReleaseFailed = "release_failed"
 	// StatusNotFound is the status a cancel reports when no message matched. It
 	// is never a DeriveStatus result.
 	StatusNotFound = "not_found"
@@ -111,6 +116,13 @@ var (
 	// apps. It is distinct from ErrTooManyScheduled so an app can tell its own cap
 	// from the shared one.
 	ErrScheduledCapacityReached = errors.New("scheduled message capacity reached")
+	// ErrTooManyHeld reports a new held submit by an app that already has its
+	// maximum number of held messages.
+	ErrTooManyHeld = errors.New("too many held messages")
+	// ErrHeldCapacityReached reports a new held submit while all apps together
+	// already have the maximum number of held messages. It is distinct from
+	// ErrTooManyHeld so an app can tell its own cap from the shared one.
+	ErrHeldCapacityReached = errors.New("held message capacity reached")
 )
 
 // ValidationError reports an envelope field that failed validation. Message is
@@ -154,6 +166,10 @@ type Envelope struct {
 	Critical       bool
 	Payload        json.RawMessage
 	Display        *Display
+	// Hold opts this one submit into being held when no route matches. It is set
+	// by route registration only (the app-key route), never decoded from a
+	// request body. The zero value is false, the fail-closed value: no hold.
+	Hold bool
 }
 
 // DeliveryTarget is one resolved destination a message fans out to. The name
@@ -202,7 +218,33 @@ type StoredMessage struct {
 	CreatedAt time.Time
 	// CancelledAt is when a scheduled message was cancelled; nil otherwise.
 	CancelledAt *time.Time
-	Deliveries  []Delivery
+	// HeldAt is when the message was accepted with no matching route; nil
+	// otherwise. Held messages have no delivery rows.
+	HeldAt *time.Time
+	// ReleasedAt is when a held message was released into deliveries.
+	ReleasedAt *time.Time
+	// HeldCancelledAt is the witness that a held message was cancelled.
+	HeldCancelledAt *time.Time
+	// ReleaseFailedAt and ReleaseFailedReason are set together when a release
+	// could not build deliveries.
+	ReleaseFailedAt     *time.Time
+	ReleaseFailedReason string
+	Deliveries          []Delivery
+}
+
+// MessageState is the message-row state DeriveStatus needs besides the
+// deliveries.
+//
+//nolint:revive // the name MessageState reads clearly beside StoredMessage.
+type MessageState struct {
+	HeldAt          *time.Time
+	CancelledAt     *time.Time
+	ReleaseFailedAt *time.Time
+}
+
+// State returns the message-row state for DeriveStatus.
+func (stored StoredMessage) State() MessageState {
+	return MessageState{HeldAt: stored.HeldAt, CancelledAt: stored.CancelledAt, ReleaseFailedAt: stored.ReleaseFailedAt}
 }
 
 // ScheduledDestination is one destination a scheduled message will fan out to,
@@ -239,6 +281,11 @@ type SubmitOutcome struct {
 	Replaced bool
 	// Scheduled is true when the returned message is scheduled.
 	Scheduled bool
+	// Held is true only for a fresh hold insert (an unrouted message accepted
+	// just now). It is not derived from stored state, so every replay or
+	// duplicate, including a same-key replay of a held message, has Held false
+	// and Duplicate true.
+	Held bool
 }
 
 // CancelOutcome is the result of a cancel request. Found is false when no
@@ -302,8 +349,17 @@ type Attempt struct {
 // dead, and StatusPartial for a mix of delivered and dead. Scheduled and
 // cancelled deliveries only ever change message-atomically, so a mix of either
 // with another state cannot happen; if one ever did, it reads as StatusPending
-// (not final) rather than as a terminal status.
-func DeriveStatus(deliveries []Delivery) string {
+// (not final) rather than as a terminal status. Message state takes precedence
+// over the deliveries: cancelled, then unrouted (held), then release_failed.
+func DeriveStatus(deliveries []Delivery, state MessageState) string {
+	switch {
+	case state.CancelledAt != nil:
+		return StatusCancelled
+	case state.HeldAt != nil:
+		return StatusUnrouted
+	case state.ReleaseFailedAt != nil:
+		return StatusReleaseFailed
+	}
 	if len(deliveries) == 0 {
 		return StatusPending
 	}
