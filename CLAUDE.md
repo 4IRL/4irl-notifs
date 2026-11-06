@@ -18,7 +18,7 @@ Guidance for Claude Code when working in this repository.
 - **Token generator:** `~/code/.claude/scripts/generate-gh-token.sh` — the central generator (shared `gpropersi-claude` App; auto-resolves this repo's installation from its owner). The repo-local `.claude/bot/generate-gh-token.sh` delegate takes precedence over it (central `gh-app-push.sh` / `gh-bot.sh` resolve it first). Only the shared private key `~/.claude/u4i-app.pem` lives outside git.
 - **Container runtime:** `docker compose -p $(COMPOSE_PROJECT_NAME) --project-directory . -f docker-compose.yml` (local stack: ntfy + local-only `person-service` + provisioning-api + `delivery-postgres` + `delivery-migrate` + `delivery-api`; the project name and host ports come from the Makefile, defaulting to `4irl-notifs` / 8090 / 8091 / `DELIVERY_PORT` 8300 and overridden per worktree by `.worktree.env`; in a worktree start the stack only via `make local-up` / `make local-down`)
 - **App URL (Playwright MCP):** `http://127.0.0.1:5173/` by default (Vite dev server; the port is `WEB_PORT` from `.worktree.env` in a worktree, run `make worktree-ports`; prod is Cloudflare Pages behind Cloudflare Access)
-- **Test login:** n/a (admin UI is behind Cloudflare Access Google/GitHub OAuth; per-app callers use Cloudflare Access Service Tokens)
+- **Test login:** n/a (admin UI is behind Cloudflare Access Google/GitHub OAuth; per-app callers use a Cloudflare Access Service Token plus their own `dak_` delivery key)
 - **Commands:** (Makefile-first — always prefer `make <target>`; raw command shown for reference)
   | Purpose | Command |
   |---|---|
@@ -81,10 +81,13 @@ Components:
 - **provisioning-api** — barebones Go service that shells out to the `ntfy` CLI to expose
   `provision(app_id, email)` (returns a generated subscriber password once) / `reset-password(app_id, email)` /
   `deprovision(app_id, email-or-ntfy-user-id)` (identity is
-  email-keyed; the ntfy user derives from the email). Callable by the admin UI and by
-  individual consuming apps, each authenticated via its own Cloudflare Access Service Token. It also
+  email-keyed; the ntfy user derives from the email). Callable only by delivery-api, over the compose
+  network, with the internal credential: it has no public hostname, no Access application and no per-app
+  tokens. Apps reach it through delivery-api's `/v1/apps/{app_id}/...` with their `dak_` key, and the
+  operator (admin UI) through the `/v1/admin` relay. It also
   has two in-app checks, each with an `enforce` / `log-only` mode switch (unset means `enforce`; prod
-  and local enforce both since one-door master Step 8, and prod publishes no host port for it): an
+  and local enforce both since one-door master Step 8, and prod publishes no host port for it; the 8091
+  port is a local-stack convenience only): an
   internal credential (`PROVISIONING_INTERNAL_CREDENTIAL`, header
   `X-Notifs-Internal-Credential`, shared only with delivery-api as `DELIVERY_PROVISIONING_CREDENTIAL`;
   `PROVISIONING_INTERNAL_CREDENTIAL_MODE`) and a per-app grant check on reset-password, set-password and
@@ -98,7 +101,10 @@ Components:
   `/readyz`. Every app-facing endpoint needs the calling app's own delivery key (`dak_...`, from the
   GitHub OIDC exchange at `/v1/app-identity/exchange`, approved by the operator under
   `/v1/admin/app-identity`), and an app manages only its own destinations, routes and checks under
-  `/v1/apps/{app_id}` (see `ARCHITECTURE.md` "App identity"). It runs the delivery worker (webhook,
+  `/v1/apps/{app_id}` (see `ARCHITECTURE.md` "App identity"). That prefix is also the app provisioning
+  door (`provision`, `deprovision`, `set-password`, `reset-password`, and `ntfy-publisher` self-mint of
+  the sealed publisher token), relayed to provisioning-api; `GET /healthz/provisioning` reports its
+  health. It runs the delivery worker (webhook,
   Discord and ntfy sinks, including `to.recipient` delivery through each app's ntfy publisher
   token), the scheduled-message releaser (`RunReleaser`), the heartbeat checker, the heartbeat prober (website probe loop, 10 s scan,
   bounded concurrency) and the retention
