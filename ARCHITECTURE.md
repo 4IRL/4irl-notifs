@@ -1,7 +1,7 @@
 # 4irl-notifs — Architecture
 
 Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://ntfy.sh). Consuming
-apps (urls4irl, tasktracker, …) provision users and push **personalized** notifications; end users
+apps (urls4irl, chores4irl, …) provision users and send **personalized** notifications, both through delivery-api with their own key; end users
 receive only their own messages. This doc is the single source of truth for how it works and how it's
 wired in Cloudflare — enough to operate and debug it. For how a *client app* integrates, see
 [`docs/app-integration-guide.md`](docs/app-integration-guide.md).
@@ -11,8 +11,8 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | Component            | Tech                                            | Host                     | Role                                                                              |
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
-| **provisioning-api** | Go, Docker (VPS)                                | none in prod (compose network only; the `notifs-api.4irl.app` route and Access app are deleted by the Step 8 runbook, the origin port is already gone) | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`), callable only by delivery-api with the internal credential. |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`), a retention sweeper the heartbeat checker (30 s tick) and the heartbeat prober (website probe loop, 10 s scan, bounded concurrency). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
+| **provisioning-api** | Go, Docker (VPS)                                | none (compose network only, no public hostname; the public route, its Access app and the origin port were removed when the runbook ran 2026-11-05) | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`), callable only by delivery-api with the internal credential. |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD, the app provisioning door `/v1/apps/{app_id}/{provision,deprovision,set-password,reset-password,ntfy-publisher}` (the only way an app reaches provisioning-api), the operator provisioning relay under `/v1/admin` (`provision`, `deprovision`, `reset-password`, `users`, `test-notify`, `apps/{app_id}/…`), `GET /healthz/provisioning`, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`), a retention sweeper the heartbeat checker (30 s tick) and the heartbeat prober (website probe loop, 10 s scan, bounded concurrency). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/people`, `/apps` and `/delivery/*` proxy Functions. |
 | **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor on Cloudflare's network, independent of the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`; a stale or malformed `heartbeat_prober` also pages, an absent one is tolerated so an older delivery-api stays quiet), provisioning-api (target id `provisioning-api`, probed through delivery-api `GET /healthz/provisioning`; reachability only, it does not detect internal-credential drift) and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes plus a daily summary (16:00 UTC) to a dedicated Discord webhook. A failed probe is retried once after 30 s and only the retry's verdict can alert, so a transient failure (a stray 520, or the few seconds a production deploy takes to recreate the containers) stays quiet; each attempt (`watchdog: probe id=… attempt=… ok=… http=… duration_ms=…`) and each run (`watchdog: run state=… up=… down=… transitions=… discord=… kv_write=…`) is logged and kept by Workers Logs. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
@@ -180,7 +180,9 @@ behind one **Service Auth Access application** for the whole hostname, whose pol
 token only until the operator adds app tokens. The second layer is delivery-api's own per-app identity (see
 "App identity" below): every app-facing endpoint needs `Authorization: Bearer dak_...`, and `/v1/admin/*`
 stays operator-only through the Access `/v1/admin` split. The exchange endpoint `/v1/app-identity/exchange`
-and the health checks need only the Access gate.
+and the health checks need only the Access gate. provisioning-api is unreachable except through
+delivery-api: it has no public hostname and no host port in prod, and it rejects any call without the internal
+credential, so neither an app nor the admin UI can talk to it directly.
 
 **Before the first app is onboarded, or the `notifs-watchdog` token is authorized** (the watchdog is a
 non-proxy token on this host too), split the hostname into two path-scoped Access apps, most specific
@@ -201,7 +203,11 @@ app. The per-app identity runbook (approve, revoke, unbind) is in `docs/app-inte
 ### App identity
 
 An app proves which app it is with a delivery key it gets from its own GitHub Actions deploy, independent
-of its Access token. With that key an app can also provision and remove its own users:
+of its Access token. This is the one-door model: apps reach provisioning only through delivery-api with their
+own key, provisioning-api accepts only delivery-api's internal credential, and the door trusts the app to have
+verified the email it provisions (the email-ownership contract is in
+[`docs/app-integration-guide.md`](docs/app-integration-guide.md#subscriber-login--the-generated-password)).
+With that key an app can also provision and remove its own users:
 `POST /v1/apps/{app_id}/provision` (`{email}`) and `POST /v1/apps/{app_id}/deprovision` (`{email}` or
 `{person_hash}`) relay provisioning-api's answer (upstream 401/403/3xx become a fixed 502).
 `POST /v1/apps/{app_id}/ntfy-publisher` (`{"rotate"?: bool}`) lets the app (re)mint its own ntfy publisher
@@ -330,22 +336,22 @@ graph TD
     WD["watchdog Worker<br/>cron */5 + KV state"]
   end
   subgraph VPS["VPS (docker compose)"]
-    API["provisioning-api :8091 (local only; prod has no host port)"]
+    API["provisioning-api<br/>(compose network only)"]
     NTFY["ntfy :8090"]
     DLV["delivery-api :8300"]
   end
-  APPS["Consuming apps<br/>urls4irl, tasktracker"]
+  APPS["Consuming apps<br/>urls4irl, chores4irl"]
+  CLIENTS["Subscriber clients<br/>(ntfy apps)"]
 
   SPA -->|same-origin fetch, Access cookie| FN
-  FN -->|service token| TUN --> API
-  FN -->|proxy token, /delivery prefix stripped| TUN --> DLV
+  FN -->|"proxy token, /delivery prefix stripped"| TUN --> DLV
   FN -->|service token| WORKER --> D1
+  DLV -->|internal credential, compose network| API
   API -->|ntfy CLI| NTFY
   API -->|dual-write, service token| WORKER
-  APPS -->|service token| TUN
-  APPS -->|"per-app service token + dak_ key, /v1/messages, /v1/heartbeats, /v1/apps/*"| TUN
-  APPS -->|publish/subscribe, ntfy token| NTFY
-  WD -->|probes: notifs-watchdog token, ntfy anonymous| TUN
+  APPS -->|"Access token + dak_ key: /v1/apps/*, /v1/messages, /v1/heartbeats"| TUN
+  CLIENTS -->|subscribe, ntfy token or password| NTFY
+  WD -->|"probes: notifs-watchdog token, delivery-api /healthz/provisioning, ntfy anonymous"| TUN
   WD -->|state change + daily summary| DISCORD["Discord webhook"]
 ```
 
@@ -354,12 +360,12 @@ graph TD
 | Host                     | Fronted by                | Access-gated?            | Origin                       |
 | ------------------------ | ------------------------- | ------------------------ | ---------------------------- |
 | `notifs-admin.4irl.app`  | Cloudflare Pages          | Yes (human login)        | Pages project `notifs-admin` |
-| `notifs-api.4irl.app` (route and Access app deleted by the Step 8 runbook; the origin port is already gone) | Tunnel → `127.0.0.1:8091` (gone) | Yes (service-token only) | provisioning-api container, now compose-network only |
 | `notifs.4irl.app`        | Tunnel → `127.0.0.1:8090` | **No** (ntfy token auth) | ntfy container               |
 | `notifs-people.4irl.app` | Worker custom domain      | Yes (service-token only) | person-service Worker        |
 | `notifs-delivery.4irl.app`   | Tunnel → `127.0.0.1:8300` | Yes (service-token only; path-scoped, see below) | delivery-api container |
 | `notifs-setup.4irl.app`  | Cloudflare Pages          | **No** (public static page) | Pages project `notifs-setup` |
 
+- The hostname notifs-api.4irl.app is retired (2026-11-05, one-door Step 8): provisioning-api now runs on the compose network only and is reached through delivery-api.
 - The Tunnel is a **shared, remotely-managed** connector (also fronts urls4irl); notifs routes were
   added as public hostnames — no new daemon/credential, dashboard-only.
 - ntfy is deliberately **not** behind Access (mobile/CLI clients can't do an OAuth redirect); its
@@ -381,8 +387,7 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 | ------------------------- | ---------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------ |
 | `notifs-admin`            | `notifs-admin.4irl.app`                        | `907dc277…575f`   | `U4I Dev Policy` — **Allow**, GitHub org `4IRL` (human login)                        |
 | `notifs-admin` API bypass | `notifs-admin.4irl.app/people`, `/apps`, `/delivery` | —                 | **Bypass** (Everyone) — Access does NOT gate these paths; the Function authenticates |
-| `notifs-delivery`         | `notifs-delivery.4irl.app`                     | (dashboard)       | **Service Auth** (proxy token only; per-app tokens, the `notifs-watchdog` token and a `/v1/admin` split come with the first onboarded app or the watchdog) |
-| `notifs-api` (retired)    | `notifs-api.4irl.app`                          | `91ad97d9…694150` | Deleted by the Step 8 runbook; provisioning-api is compose-network only              |
+| `notifs-delivery`         | `notifs-delivery.4irl.app`                     | (dashboard)       | **Service Auth**, path-scoped: a `/v1/admin` app (proxy token only) and the whole-host app (proxy token, per-app tokens and the `notifs-watchdog` token), as in the runbook above |
 | `notifs-people`           | `notifs-people.4irl.app`                       | `5a270164…658f5a` | **Service Auth** (VPS dual-write token + proxy token) only                           |
 
 - `U4I Dev Policy` is a **reusable** Allow policy shared with `notifs-admin`. On the backends it was
@@ -398,10 +403,10 @@ Zero Trust team domain: **`urls4irl.cloudflareaccess.com`** (shared with urls4ir
 
 | Token                           | Presented by                                          | Authorized on                               |
 | ------------------------------- | ----------------------------------------------------- | ------------------------------------------- |
-| `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`)         | `notifs-people` + `notifs-delivery` Service Auth apps (the retired `notifs-api` app is deleted by the Step 8 runbook) |
+| `notifs-admin-proxy → backends` | Pages Function (`CF-Access-Client-Id/Secret`)         | `notifs-people` + `notifs-delivery` Service Auth apps |
 | VPS dual-write token            | provisioning-api (Go)                                 | `notifs-people` Service Auth                |
 | internal credential (not an Access token) | delivery-api `provisionclient` (`X-Notifs-Internal-Credential`) | provisioning-api's in-app credential check (enforced since one-door master Step 8) |
-| per-consuming-app tokens        | tasktracker backend (live); urls4irl backend (future) | the whole-host `notifs-delivery` app once split from `/v1/admin` (never the `/v1/admin` app) |
+| per-consuming-app tokens        | chores4irl backend (live); urls4irl backend (future)  | the whole-host `notifs-delivery` app once split from `/v1/admin` (never the `/v1/admin` app) |
 | `notifs-watchdog`               | watchdog Worker (secrets `CF_ACCESS_CLIENT_ID/SECRET`) | the whole-host `notifs-delivery` app **excluding `/v1/admin`** (only after the `/v1/admin` split exists) |
 
 ### Admin-UI request flow (the important one)
@@ -412,7 +417,7 @@ sequenceDiagram
   participant A as CF Access
   participant F as Pages Function
   participant K as team JWKS
-  participant S as Backend (api/people)
+  participant S as Backend (delivery/people)
   B->>A: GET / (page)  ── login (GitHub org 4IRL)
   A-->>B: CF_Authorization cookie (aud=notifs-admin)
   B->>F: fetch /people, /apps or /delivery/* (same-origin, cookie)
@@ -480,7 +485,7 @@ sequenceDiagram
 | `ACCESS_JWT_AUD`             | plaintext | `notifs-admin` AUD (`907dc277…`)                                   |
 | `DISABLE_ACCESS_AUTH`        | plaintext | **local dev only** (`true` disables JWT check). Never set in prod. |
 
-The unused `PROVISIONING_API_URL` Pages binding and the `notifs-admin.4irl.app/v1` destination of the `notifs-admin API (Function-authed)` Access application can be removed from the Cloudflare dashboard after deploy. Keep that application's `/people`, `/apps` and `/delivery` destinations.
+The Function code no longer reads a `PROVISIONING_API_URL` binding, and the admin UI calls only `/delivery`, `/people` and `/apps`. Any leftover `PROVISIONING_API_URL` Pages binding or `notifs-admin.4irl.app/v1` destination on the `notifs-admin API (Function-authed)` Access application is dead configuration; the repo cannot show whether the dashboard still has them. Keep that application's `/people`, `/apps` and `/delivery` destinations.
 
 Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABLED=true`,
 `VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`, `VITE_PENDING_SENDS_ENABLED=true`, `VITE_HEARTBEATS_ENABLED=true`, `VITE_APP_IDENTITIES_ENABLED=true`.
@@ -530,10 +535,12 @@ Consuming apps link to it as `?app=<app_id>&user=u_<hash>&name=<display name>`; 
   email = same person across every app. ntfy user id = `u_<person_hash>`.
 - **Two tokens** (each revealed once at mint):
 
-| Token          | Endpoint                            | ntfy ACL                             | Held by                   |
-| -------------- | ----------------------------------- | ------------------------------------ | ------------------------- |
-| **Publisher**  | `POST /v1/provision-app {app_id}`   | write-only `{app_id}-*`              | app backend (one per app) |
-| **Subscriber** | `POST /v1/provision {app_id,email}` | read-only `{app_id}-{person_hash}-*` | end-user client           |
+| Token          | Minted by                                                                | ntfy ACL                             | Held by                                    |
+| -------------- | ------------------------------------------------------------------------ | ------------------------------------ | ------------------------------------------ |
+| **Publisher**  | `POST /v1/apps/{app_id}/ntfy-publisher` (app) or the operator mint route | write-only `{app_id}-*`              | sealed in delivery-api; never given to apps |
+| **Subscriber** | `POST /v1/apps/{app_id}/provision {email}` (relayed to provisioning-api) | read-only `{app_id}-{person_hash}-*` | end-user client                            |
+
+Only delivery-api publishes for apps: an app sends through `POST /v1/messages` and delivery-api publishes with the sealed publisher. The one other publisher is the operator `test-notify` relay, which publishes with an ephemeral token that provisioning-api mints and revokes.
 
 - **Subscriber auth — token vs. password.** The subscriber token (above) is what an app hands a
   programmatic/Android client to subscribe. **iOS is different:** the ntfy iOS app's subscribe screen has
@@ -550,9 +557,9 @@ Consuming apps link to it as `?app=<app_id>&user=u_<hash>&name=<display name>`; 
   announcements. Every subscriber is granted **read** on it at `Provision` (always-on per app — no
   per-user opt-out); the publisher writes it via its existing write-only `{app_id}-*` grant (no new
   publisher credential). The read grant is reset at `Deprovision` (and on `DeprovisionApp` teardown).
-  `POST /v1/provision` returns it as `broadcast_topic`. **Send authz is app-side:** ntfy authenticates the
-  app-level publisher token, not the app's users, so restricting who may *trigger* a broadcast to that
-  app's admins is the consuming app's responsibility (see the integration guide's broadcast section).
+  `POST /v1/provision` returns it as `broadcast_topic`. **Sending a broadcast is unsupported:** the
+  publisher is sealed in delivery-api and no delivery-api route publishes to `{app_id}-broadcast`, so apps
+  can receive but not send on it for now (tracked in #174; see the integration guide's broadcast section).
 - **person-service D1** table `person(person_hash PK, email, created_at, password_set_at)` (plus the
   `password_reset` table; see "Subscriber passwords: storage, claims and flows") — reverse index so an
   operator can map an opaque hash back to an email. Populated by the provisioning-api **dual-write**
@@ -568,21 +575,24 @@ Consuming apps link to it as `?app=<app_id>&user=u_<hash>&name=<display name>`; 
 ```mermaid
 graph LR
   subgraph Provision
-    APP1["app backend"] -->|"/v1/provision-app"| P["provisioning-api"]
-    APP1 -->|"/v1/provision {email}"| P
+    APP1["app backend"] -->|"dak_ key: /v1/apps/{app_id}/provision"| DLV1["delivery-api"]
+    DLV1 -->|internal credential| P["provisioning-api"]
     P -->|create ntfy user + ACL| NTFY["ntfy"]
     P -->|"dual-write hash→email"| D1["person-service D1"]
-    P -->|publisher + subscriber tokens| APP1
+    DLV1 -->|"subscriber token + password"| APP1
   end
   subgraph Runtime
-    APP2["app backend"] -->|"publish {app}-{hash}-all<br/>(publisher token)"| NTFY2["ntfy"]
+    APP2["app backend"] -->|"/v1/messages<br/>(dak_ key)"| DLV2["delivery-api<br/>delivery worker"]
+    DLV2 -->|"publish {app}-{hash}-all<br/>(sealed publisher)"| NTFY2["ntfy"]
     NTFY2 -->|"subscribe (subscriber token)"| USER["user client"]
   end
 ```
 
-### provisioning-api endpoints (`notifs-api.4irl.app`, all Service-Auth gated at the edge, plus the in-app checks below)
+### provisioning-api endpoints (internal, delivery-api only)
 
-`POST /v1/provision` · `POST /v1/reset-password` · `POST /v1/deprovision` · `POST /v1/set-password` · `GET /v1/users` ·
+These are provisioning-api's own routes. Nothing outside the compose network can reach them, and delivery-api
+is the only caller (the app door and the operator relay both land here, see "App identity" and
+"delivery-api endpoints"). `POST /v1/provision` · `POST /v1/reset-password` · `POST /v1/deprovision` · `POST /v1/set-password` · `GET /v1/users` ·
 `DELETE /v1/users/{user_id}` · `POST /v1/provision-app` · `POST /v1/deprovision-app` ·
 `POST /v1/test-notify` · `GET /healthz`. Bodies +
 responses are JSON; errors `{ "error": … }`. Notes: `DELETE /v1/users/{id}` is idempotent (200 even when
@@ -601,10 +611,9 @@ ntfy password (via `ntfy user change-pass`) so they can log into the ntfy iOS ap
 must already be provisioned (missing user → `404 {"error":"user does not exist"}`), the password is
 validated at 8–128 chars (`400 {"error":"invalid password"}`), it records `password_set_at` before
 changing the password (so a later provision won't replace a chosen one) and returns `500` with nothing
-changed when that record can't be written, and like every `/v1/*` route it is Service-Auth gated at the
-edge. Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
+changed when that record can't be written, and like every `/v1/*` route it needs the internal credential. Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
 
-**In-app checks (provisioning-api).** Beyond the edge, provisioning-api has two Go-level checks. Each has a
+**In-app checks (provisioning-api).** Since there is no edge in front of it, provisioning-api has two Go-level checks. Each has a
 mode switch with the same shape: `PROVISIONING_INTERNAL_CREDENTIAL_MODE` and `PROVISIONING_APP_GRANT_MODE`
 accept `enforce` or `log-only`; empty or unset means `enforce` (fail closed) and any other value is a startup
 error (the process logs it and exits non-zero). Production runs both checks as `enforce` (explicit
@@ -620,8 +629,8 @@ runs the same two modes, so the integration suite exercises both for real.
   `provisionclient` sends the credential on every call (default timeout 15 s, set from local measurements of
   the new grant lookup: sequential `POST /v1/provision` 126 to 163 ms, `POST /v1/provision-app` 93 to 116 ms,
   5 concurrent `/v1/provision` 542 to 663 ms, since the CLI calls are serialized). The check is `enforce`
-  in prod and local since one-door master Step 8 (`log-only` remains only as a rollback switch); the full
-  one-door rewrite of this section is master Step 9. delivery-api refuses to start when
+  in prod and local since one-door master Step 8 (`log-only` remains only as a rollback switch).
+  delivery-api refuses to start when
   `DELIVERY_PROVISIONING_URL` names any host other than `provisioning-api`, so the credential is never sent
   to another origin. A successful `GET /healthz` writes no completion log line (Docker's healthcheck and the
   watchdog probe it constantly); a failing one is still logged.
@@ -649,6 +658,12 @@ attempts included, no reset slot claimed) answers `429` without any ntfy CLI cal
 reset `429` carries `Retry-After`: the seconds until the oldest slot expires for a true limit, a fixed 60
 for a limit-store outage or unconfigured client (status and body identical). The limit store fails
 closed: if it is down or unconfigured, reset answers `429` and makes no ntfy call.
+
+The app door adds its own reset limits in delivery-api, ahead of these: 30 resets per app per hour and 3 per
+app and person per hour (every attempt that passes body validation counts). Over a limit the door answers
+`429 {"error":"reset rate limit exceeded"}` with `Retry-After`; if its limit store is down or unconfigured it
+answers `503 {"error":"reset limit unavailable"}` and attempts no reset. The operator
+`/v1/admin/reset-password` is exempt from the door limits.
 
 #### Subscriber passwords: storage, claims and flows
 
@@ -705,9 +720,9 @@ closed: if it is down or unconfigured, reset answers `429` and makes no ntfy cal
   store_unavailable / healed; Reset logs `password reset` with `outcome` reset / limited /
   limit_store_unavailable / stamp_unavailable / not_found / failed; claim and release failures log at
   Error level with `person_hash`. No log line or error string contains a password.
-- **Admin UI.** It is a `/v1/provision` caller: it shows the returned password once in the provision
+- **Admin UI.** It is a caller of the `/delivery/v1/admin/provision` relay: it shows the returned password once in the provision
   result, with a Copy password button, and a neutral "no password was returned" message when the response
-  has none. It is also a `POST /v1/reset-password` caller: each person row in the Users list has a
+  has none. It is also a caller of the `/delivery/v1/admin/reset-password` relay: each person row in the Users list has a
   "Reset password" action (shown only when the row's email is known from the People list, so no endpoint
   is extended; the app id is the row's first app) that asks for confirmation ("replaces the current
   password immediately"), calls reset, and reveals the new password once with a Copy password button and
@@ -731,18 +746,18 @@ closed: if it is down or unconfigured, reset answers `429` and makes no ntfy cal
 
 **Decision:** 4irl-notifs does **not** schedule notifications and holds **no** cron, timer, or
 schedule registry. Each consuming app **implements its own scheduler and its own decision logic**,
-and publishes app-direct to ntfy (publisher token) when it decides to. Two kinds of trigger, both
+and sends through `POST /v1/messages` (optionally with `deliver_at`) when it decides to. Two kinds of trigger, both
 app-side:
 
 - **Immediate / event-driven** — an app event happens (a chore completed, a member joined a UTub);
-  the app publishes right then. No clock involved.
+  the app sends right then. No clock involved.
 - **Time-based / scheduled** — "is anything due / overdue / worth a daily digest?" is the passage of
   time, which no event fires for. The app runs its **own** periodic sweep (its own cron), decides
-  who to notify, dedups, and publishes. The clock, the domain logic, and the dedup/high-watermark
+  who to notify, dedups, and sends. The clock, the domain logic, and the dedup/high-watermark
   cursor all live **in the app**, never here.
 
 **Why 4irl-notifs stays out of it:** every current 4IRL consumer can already schedule itself —
-`tasktracker`/chore-reaper runs a `scheduled()` sweep on its own Cloudflare Worker (native Cron
+`chores4irl`/chore-reaper runs a `scheduled()` sweep on its own Cloudflare Worker (native Cron
 Triggers, in the same Worker as its API); `urls4irl` is an always-on Flask app that crons itself
 trivially. A centralized scheduler here would serve only a hypothetical app that needs scheduled
 sends **yet cannot run any cron of its own** — currently an empty set. Building it now is
@@ -921,7 +936,7 @@ the operator's shell; never commit one (the KV namespace id needs the repo owner
    `notifs-delivery.4irl.app/v1/admin` (admin proxy token only) *before* authorizing any other token on the
    host, so the watchdog token never reaches `/v1/admin`.
 2. Create the service token `notifs-watchdog`. Add it to the whole-host `notifs-delivery` app (not the
-   `/v1/admin` one); it needs no `notifs-api` access because the provisioning probe goes through
+   `/v1/admin` one); it needs no provisioning access because the provisioning probe goes through
    delivery-api `GET /healthz/provisioning`. ntfy needs no token (`/v1/health` is anonymous).
 3. In `watchdog/`: `npx wrangler kv namespace create WATCHDOG_STATE`, put the returned id in
    `watchdog/wrangler.toml` in place of the all-zero placeholder, and commit that change only after the
@@ -964,7 +979,7 @@ account IDs stay in the Cloudflare dashboard and are never committed.
   reusable Service Auth policy to that wildcard application once, and every Pi app's health path is
   reachable by the prober. See `~/code/misc/home-pi1.md`, ingress row.
 - **VPS apps.** These are tunnel `hetz-hills-001` routes, configured per hostname. Hostnames already
-  behind Access (`notifs-api`, `notifs-delivery`) need the policy attached to their application. For
+  behind Access (`notifs-delivery`) need the policy attached to their application. For
   public hostnames (`urls.4irl.app`, ntfy `notifs.4irl.app`), add a path-scoped self-hosted Access
   application covering only the health path (for example `<host>/healthz`) with the Service Auth policy;
   the rest of the site stays public. Third-party ntfy cannot check a key, so either gate its health path
@@ -993,7 +1008,11 @@ account IDs stay in the Cloudflare dashboard and are never committed.
 | Admin API `502 {"error":"upstream auth failed"}`      | Proxy service token not on the backend's Service-Auth policy (or wrong policy action).                                                                                                               |
 | Admin API `502 {"error":"upstream unreachable"}`      | `DELIVERY_API_URL`/`PERSON_SERVICE_URL` wrong/down, or Tunnel route missing.                                                                                                                     |
 | Admin API `401 {"error":"unauthorized"}`              | JWT invalid/missing: `aud`≠`notifs-admin` AUD, wrong `ACCESS_TEAM_DOMAIN`, or expired session.                                                                                                       |
-| Provisioning/Apps POST/PATCH/DELETE → 302 login / 405 | The path (`/delivery`, `/people`, `/apps`) is missing from the Access **Bypass** app → Access is edge-challenging the write. (Apps section lists via GET but every mutation fails until `/apps` is added.) |
+| App door `502 {"error":"provisioning request failed"}` | provisioning-api is down, **or** delivery-api's internal credential no longer matches provisioning-api's (drift). `GET /healthz/provisioning` only proves reachability, so it does not detect drift: check the provisioning-api logs for `internal credential` rejections, or run `make credential-audit` locally. |
+| App door `503 {"error":"provisioning unavailable"}`   | `DELIVERY_PROVISIONING_URL` is unset on delivery-api, so provisioning is not configured. |
+| App door `429 {"error":"reset rate limit exceeded"}`  | The reset-password door limit was hit (30 per app and 3 per app and person, per hour). Wait for `Retry-After`; the operator `/v1/admin/reset-password` is exempt. |
+| App door `503 {"error":"reset limit unavailable"}`    | The reset limit store is down or unconfigured; reset fails closed and attempts nothing. Check the delivery-api logs for `reset limit store failed`. |
+| `/apps` POST/PATCH/DELETE → 302 login / 405           | The path (`/delivery`, `/people`, `/apps`) is missing from the Access **Bypass** app → Access is edge-challenging the write. (Apps section lists via GET but every mutation fails until `/apps` is added.) |
 | `/delivery` `502 {"error":"upstream auth failed"}`    | Proxy token not on the `notifs-delivery` Service Auth policy, or `DELIVERY_API_URL` points at the wrong host.                                                             |
 | `/delivery` non-GET → 302 login / 405                 | `/delivery` is missing from the `notifs-admin` Access **Bypass** app (GETs still work, writes fail).                                                                                                 |
 | `/delivery/readyz` shows `schema_mismatch`            | The delivery-api binary and database schema differ: `schema_version` ≠ `expected_schema_version` (a migration not applied, or an old binary). Check `delivery-migrate` logs and the `last_migration_failure` the status card shows. |
@@ -1016,7 +1035,7 @@ account IDs stay in the Cloudflare dashboard and are never committed.
 | Admin API `500` "no such table: app"                  | person-service Worker deployed without applying D1 migration 0002 — run `wrangler d1 migrations apply person-service --remote` (CI does this automatically before deploy).                           |
 | Direct browser visit to a backend → 403               | Expected post-lockdown (service-token-only). Rollback = re-add `U4I Dev Policy`.                                                                                                                     |
 | Setup page asks for a login                           | An Access application (or a wildcard `*.4irl.app` Access app) is covering `notifs-setup.4irl.app`; the page is meant to be public. Remove or exclude the hostname from that app.                       |
-| ntfy publish/subscribe 403                            | Wrong ntfy token, or topic outside the token's ACL (`{app_id}-*` publisher / `{app_id}-{hash}-*` subscriber).                                                                                        |
+| ntfy subscribe 403                                    | Wrong ntfy token or password, or topic outside the subscriber's ACL (`{app_id}-{hash}-*`). Apps do not publish to ntfy; delivery-api does, with the sealed publisher.                                                                                        |
 | iOS notifications silent/delayed (Android & web fine) | ntfy iOS app **Default server** ≠ `base-url` (`https://notifs.4irl.app`), or `upstream-base-url`/`upstream-access-token` unset or rate-limited on the server.                                        |
 
 **Where to look:** Pages Functions logs (`wrangler pages deployment tail`); Cloudflare Access audit
@@ -1024,6 +1043,6 @@ logs (per-app); VPS `docker compose logs`; provisioning-api emits structured err
 leaked to callers).
 
 ## Related docs
-- `docs/app-integration-guide.md` — how a consuming app integrates (service token → provision → pub/sub).
+- `docs/app-integration-guide.md` — how a consuming app integrates (Access token + `dak_` key → provision through delivery-api → send through `/v1/messages`).
 - `CLAUDE.md` — repo conventions, commands, environments.
 - Plans: `~/code/plans/4irl-notifs/completed/admin-ui-same-origin/` (the same-origin redesign + auth model).

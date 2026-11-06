@@ -395,7 +395,52 @@ test('the broadcast section links the tracking issue #174', () => {
   assert.deepEqual(broadcastProblems(guideDoc), []);
 });
 
+// ---------------------------------------------------------------- ARCHITECTURE.md
+
+const architectureDoc = readRepoFile('ARCHITECTURE.md');
+
+// Lines that still name the retired hostname without saying it is retired, or a provisioning-api
+// host port (`:8091`) on a line that does not say it is local.
+export function architectureLineProblems(docText) {
+  return docText.split('\n').flatMap((line, index) => {
+    const found = [];
+    if (line.includes('notifs-api') && !line.includes('retired')) {
+      found.push(`line ${index + 1}: notifs-api without retired`);
+    }
+    if (line.includes(':8091') && !/local/i.test(line)) {
+      found.push(`line ${index + 1}: :8091 outside a local mention`);
+    }
+    return found;
+  });
+}
+
+// Unregistered /v1/apps/{app_id}/… routes (the door) a doc names; other route families in
+// ARCHITECTURE.md are described in prose and not checked here.
+export function unregisteredDoorRoutes(docText, registered) {
+  return unregisteredRoutes(docText, registered).filter((route) => route.includes('/v1/apps/'));
+}
+
+test('ARCHITECTURE.md names the retired hostname only on a retired line, and no :8091 outside local', () => {
+  assert.deepEqual(architectureLineProblems(architectureDoc), []);
+});
+
+test('every /v1/apps route ARCHITECTURE.md names is registered in server.go', () => {
+  assert.deepEqual(unregisteredDoorRoutes(architectureDoc, registeredRoutes), []);
+});
+
 // ---------------------------------------------------------------- negative self-tests
+
+test('negative self-test: ARCHITECTURE checks fire', () => {
+  assert.deepEqual(architectureLineProblems('notifs-api.4irl.app is retired'), []);
+  assert.equal(architectureLineProblems('a\nvia notifs-api.4irl.app').length, 1);
+  assert.equal(architectureLineProblems('API :8091').length, 1);
+  assert.deepEqual(architectureLineProblems('API :8091 (local only)'), []);
+  assert.deepEqual(unregisteredDoorRoutes('`POST /v1/apps/{app_id}/provision`', REGISTERED), []);
+  assert.deepEqual(unregisteredDoorRoutes('`POST /v1/apps/{app_id}/nope`', REGISTERED), [
+    'POST /v1/apps/{}/nope',
+  ]);
+  assert.deepEqual(unregisteredDoorRoutes('`GET /v1/admin/nope`', REGISTERED), []);
+});
 
 const REGISTERED = new Set([
   'POST /v1/apps/{}/provision',
