@@ -33,6 +33,7 @@ type fakeMessages struct {
 	submitDuplicate bool
 	submitReplaced  bool
 	submitScheduled bool
+	submitHeld      bool
 	submitErr       error
 	submitCalls     []message.Envelope
 
@@ -100,6 +101,7 @@ func (fake *fakeMessages) Submit(
 	fake.submitCalls = append(fake.submitCalls, envelope)
 	outcome := message.SubmitOutcome{
 		Duplicate: fake.submitDuplicate, Replaced: fake.submitReplaced, Scheduled: fake.submitScheduled,
+		Held: fake.submitHeld,
 	}
 	return fake.submitResult, outcome, fake.submitErr
 }
@@ -265,6 +267,7 @@ func TestSubmitPassesDecodedEnvelopeToTheService(testInstance *testing.T) {
 	}
 	want := message.Envelope{
 		AppID: "urls4irl", Channel: "alerts", IdempotencyKey: "key-1", ToDestination: "ops_webhook", Critical: true,
+		Hold:    true, // the app-key route opts in; the operator route does not
 		Payload: json.RawMessage(`{"nested":{"k":[1,2]}}`),
 		Display: &message.Display{Title: "T", Body: "B", URL: "https://example.com", Priority: "high"},
 	}
@@ -724,6 +727,9 @@ func TestWriteMessageErrorBranches(testInstance *testing.T) {
 		{name: "too many scheduled", err: message.ErrTooManyScheduled, wantStatus: 429, wantBody: `{"error":"too many scheduled messages"}`},
 		{name: "wrapped too many scheduled", err: fmt.Errorf("insert: %w", message.ErrTooManyScheduled), wantStatus: 429, wantBody: `{"error":"too many scheduled messages"}`},
 		{name: "scheduled capacity reached", err: message.ErrScheduledCapacityReached, wantStatus: 429, wantBody: `{"error":"scheduled message capacity reached"}`},
+		{name: "too many held", err: message.ErrTooManyHeld, wantStatus: 429, wantBody: `{"error":"too many held messages"}`},
+		{name: "wrapped too many held", err: fmt.Errorf("insert: %w", message.ErrTooManyHeld), wantStatus: 429, wantBody: `{"error":"too many held messages"}`},
+		{name: "held capacity reached", err: message.ErrHeldCapacityReached, wantStatus: 429, wantBody: `{"error":"held message capacity reached"}`},
 		{name: "wrapped sentinel", err: fmt.Errorf("replay: %w", message.ErrDeliveryNotDead), wantStatus: 409, wantBody: `{"error":"delivery not dead"}`},
 		{name: "anything else", err: errors.New("boom"), wantStatus: 500, wantBody: `{"error":"internal error"}`},
 	}

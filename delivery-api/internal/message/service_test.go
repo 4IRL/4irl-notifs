@@ -52,6 +52,7 @@ type fakeServiceStore struct {
 	replayCalls  []replayCall
 
 	scheduledStoreScript
+	heldStoreScript
 }
 
 type insertCall struct {

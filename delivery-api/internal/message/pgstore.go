@@ -35,10 +35,21 @@ const DeleteExpiredMaxBatches = 200
 // planner can use messages_created_at_idx.
 const deleteExpiredSQL = `DELETE FROM messages WHERE id IN (
   SELECT m.id FROM messages m WHERE m.created_at < $1
-  AND ((m.cancelled_at IS NULL AND greatest(m.created_at, COALESCE(m.deliver_at, m.created_at)) < $1)
+  AND ((m.cancelled_at IS NULL AND greatest(m.created_at, COALESCE(m.deliver_at, m.created_at),
+         COALESCE(m.released_at, m.created_at), COALESCE(m.release_failed_at, m.created_at)) < $1)
     OR m.cancelled_at < $1)
+  AND m.held_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM message_deliveries d WHERE d.message_id = m.id AND d.state IN ('pending', 'scheduled'))
   ORDER BY m.created_at, m.id LIMIT $2)`
+
+// deleteExpiredHeldSQL deletes one batch of held messages whose held_at is
+// older than $1. held_at IS NOT NULL is re-checked in the DELETE under the row
+// lock taken by the candidate select, so a message the releaser has just
+// released (held_at cleared) is never deleted; rows locked by another
+// transaction are skipped.
+const deleteExpiredHeldSQL = `DELETE FROM messages WHERE held_at IS NOT NULL AND id IN (
+  SELECT m.id FROM messages m WHERE m.held_at IS NOT NULL AND m.held_at < $1
+  ORDER BY m.held_at, m.id LIMIT $2 FOR UPDATE SKIP LOCKED)`
 
 // Attempt text caps, matching the delivery_attempts CHECK constraints: the error
 // is capped in runes (char_length) and the response snippet in bytes
@@ -56,7 +67,8 @@ var readSnapshotOptions = pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode
 // plain-string Envelope fields read back as "" when omitted.
 const (
 	messageColumns = `id::text, app_id, channel, idempotency_key,
-	COALESCE(to_destination, ''), COALESCE(to_recipient, ''), deliver_at, critical, payload, display, created_at, cancelled_at`
+	COALESCE(to_destination, ''), COALESCE(to_recipient, ''), deliver_at, critical, payload, display, created_at, cancelled_at,
+	held_at, held_cancelled_at, released_at, release_failed_at, COALESCE(release_failed_reason, '')`
 
 	deliveryColumns = `id, message_id::text, destination_id, destination_name, destination_type, state, dead_reason,
 	attempt_count, budget_attempts, budget_started_at, next_attempt_at, last_status_code, delivered_at,
@@ -88,6 +100,10 @@ var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0
 // tests, not unit tests.
 type PGStore struct {
 	pool *pgxpool.Pool
+	// insertHeldTx runs one held-insert transaction; NewPGStore sets
+	// it to insertHeldOnce; it is a field only so a unit test can script the retry
+	// loop around it.
+	insertHeldTx insertHeldFunc
 }
 
 // Compile-time check that PGStore satisfies Store.
@@ -95,7 +111,9 @@ var _ Store = (*PGStore)(nil)
 
 // NewPGStore returns a PGStore over pool.
 func NewPGStore(pool *pgxpool.Pool) *PGStore {
-	return &PGStore{pool: pool}
+	store := &PGStore{pool: pool}
+	store.insertHeldTx = store.insertHeldOnce
+	return store
 }
 
 // InsertMessage persists envelope and one delivery per target atomically. The
@@ -481,11 +499,13 @@ WHERE id = $1`, current.ID, now); updateErr != nil {
 // DeleteExpired deletes messages older than cutoff that have no pending or
 // scheduled delivery. Deliveries and attempts cascade.
 //
-// A message's age counts from the later of created_at and deliver_at, so a
-// long-scheduled message keeps its full retention after it is released. A
-// cancelled message ages from cancelled_at instead, so a far-future deliver_at
-// does not keep it. The sargable created_at < cutoff bound stays in the
-// predicate so messages_created_at_idx remains usable.
+// A message's age counts from the latest of created_at, deliver_at, released_at
+// and release_failed_at, so a long-scheduled or long-held message keeps its full
+// retention after it is released. A cancelled message ages from cancelled_at
+// instead, so a far-future deliver_at does not keep it. A message that is still
+// held (held_at set) is never deleted here; DeleteExpiredHeld owns it. The
+// sargable created_at < cutoff bound stays in the predicate so
+// messages_created_at_idx remains usable.
 //
 // Known, accepted race: a Replay of a dead delivery on a message sitting right
 // at the retention cutoff can commit between this statement's snapshot and its
@@ -517,6 +537,41 @@ func (store *PGStore) DeleteExpiredInBatches(ctx context.Context, cutoff time.Ti
 		tag, execErr := store.pool.Exec(ctx, deleteExpiredSQL, cutoff, batchSize)
 		if execErr != nil {
 			return total, pgutil.WrapDBError("delete expired messages", execErr)
+		}
+		deleted := tag.RowsAffected()
+		total += deleted
+		if deleted < int64(batchSize) {
+			return total, nil
+		}
+	}
+	return total, nil
+}
+
+// DeleteExpiredHeld deletes held messages (held_at set) whose held_at is older
+// than heldCutoff and returns how many. A message the releaser has just released
+// (held_at cleared) or that another transaction has row-locked is never deleted:
+// a message is either released intact or deleted while still held. It is batched
+// and capped like DeleteExpired.
+func (store *PGStore) DeleteExpiredHeld(ctx context.Context, heldCutoff time.Time) (int64, error) {
+	return store.DeleteExpiredHeldInBatches(ctx, heldCutoff, DeleteExpiredBatchSize)
+}
+
+// DeleteExpiredHeldInBatches is DeleteExpiredHeld with an explicit positive
+// batch size, exported only so tests can use a small one. It stops early, with
+// the context's error, once ctx is done, and after DeleteExpiredMaxBatches
+// batches with the total so far and a nil error.
+func (store *PGStore) DeleteExpiredHeldInBatches(ctx context.Context, heldCutoff time.Time, batchSize int) (int64, error) {
+	if batchSize < 1 {
+		return 0, errors.New("delete expired held messages: batch size must be positive")
+	}
+	var total int64
+	for range DeleteExpiredMaxBatches {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return total, fmt.Errorf("delete expired held messages: %w", ctxErr)
+		}
+		tag, execErr := store.pool.Exec(ctx, deleteExpiredHeldSQL, heldCutoff, batchSize)
+		if execErr != nil {
+			return total, pgutil.WrapDBError("delete expired held messages", execErr)
 		}
 		deleted := tag.RowsAffected()
 		total += deleted
@@ -700,6 +755,7 @@ func scanMessage(row pgutil.RowScanner) (StoredMessage, error) {
 		&stored.ID, &stored.Envelope.AppID, &stored.Envelope.Channel, &stored.Envelope.IdempotencyKey,
 		&stored.Envelope.ToDestination, &stored.Envelope.ToRecipient, &stored.Envelope.DeliverAt,
 		&stored.Envelope.Critical, &payload, &displayJSON, &stored.CreatedAt, &stored.CancelledAt,
+		&stored.HeldAt, &stored.HeldCancelledAt, &stored.ReleasedAt, &stored.ReleaseFailedAt, &stored.ReleaseFailedReason,
 	); scanErr != nil {
 		return StoredMessage{}, scanErr
 	}

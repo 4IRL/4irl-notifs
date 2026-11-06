@@ -162,7 +162,7 @@ func TestInsertThenGetRoundTripsEveryEnvelopeField(testInstance *testing.T) {
 			}
 		}
 	}
-	if status := message.DeriveStatus(inserted.Deliveries); status != message.StatusPending {
+	if status := message.DeriveStatus(inserted.Deliveries, inserted.State()); status != message.StatusPending {
 		testInstance.Errorf("status of a fresh message = %q, want pending", status)
 	}
 }
@@ -503,5 +503,37 @@ func TestGetMessageByKeyReportsPresenceAndAbsence(testInstance *testing.T) {
 	}
 	if missing.ID != "" {
 		testInstance.Errorf("absent key: id=%q, want empty", missing.ID)
+	}
+}
+
+func TestHeldStateColumnsReachStoredMessageOnEveryReadPath(testInstance *testing.T) {
+	ctx, store, registryStore, pool := newMessageStore(testInstance)
+	pager := seedTarget(ctx, testInstance, registryStore, "pager")
+	inserted, _, err := store.InsertMessage(ctx, sampleEnvelope("held-1"), []message.DeliveryTarget{pager})
+	if err != nil {
+		testInstance.Fatalf("InsertMessage: %v", err)
+	}
+	heldAt := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, execErr := pool.Exec(ctx, `UPDATE messages SET held_at = $2 WHERE id = $1::text::uuid`, inserted.ID, heldAt); execErr != nil {
+		testInstance.Fatalf("mark held: %v", execErr)
+	}
+
+	for name, load := range map[string]func() (message.StoredMessage, error){
+		"GetMessage":      func() (message.StoredMessage, error) { return store.GetMessage(ctx, inserted.ID) },
+		"GetMessageByKey": func() (message.StoredMessage, error) { return store.GetMessageByKey(ctx, "u4i", "held-1") },
+	} {
+		got, loadErr := load()
+		if loadErr != nil {
+			testInstance.Fatalf("%s: %v", name, loadErr)
+		}
+		if got.HeldAt == nil || !got.HeldAt.Equal(heldAt) {
+			testInstance.Errorf("%s HeldAt = %v, want %v", name, got.HeldAt, heldAt)
+		}
+		if got.ReleasedAt != nil || got.HeldCancelledAt != nil || got.ReleaseFailedAt != nil || got.ReleaseFailedReason != "" {
+			testInstance.Errorf("%s unexpected release state: %+v", name, got)
+		}
+		if status := message.DeriveStatus(got.Deliveries, got.State()); status != message.StatusUnrouted {
+			testInstance.Errorf("%s status = %q, want %q", name, status, message.StatusUnrouted)
+		}
 	}
 }

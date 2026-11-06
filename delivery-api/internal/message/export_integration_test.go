@@ -10,4 +10,6 @@ const (
 	ScheduledListSQL  = scheduledListSQL
 	ScheduledTotalSQL = scheduledTotalSQL
 	DeleteExpiredSQL  = deleteExpiredSQL
+
+	DeleteExpiredHeldSQL = deleteExpiredHeldSQL
 )

@@ -2,6 +2,7 @@ package message_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 )
@@ -70,7 +71,32 @@ func TestDeriveStatus(testInstance *testing.T) {
 	}
 	for _, testCase := range cases {
 		testInstance.Run(testCase.name, func(testInstance *testing.T) {
-			if got := message.DeriveStatus(testCase.deliveries); got != testCase.want {
+			if got := message.DeriveStatus(testCase.deliveries, message.MessageState{}); got != testCase.want {
+				testInstance.Errorf("DeriveStatus = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+
+	instant := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	held := message.MessageState{HeldAt: &instant}
+	stateCases := []struct {
+		name       string
+		deliveries []message.Delivery
+		state      message.MessageState
+		want       string
+	}{
+		{"held with no deliveries is unrouted", nil, held, message.StatusUnrouted},
+		{"cancelled after hold is cancelled", nil, message.MessageState{HeldAt: &instant, CancelledAt: &instant}, message.StatusCancelled},
+		{"release failed", nil, message.MessageState{ReleaseFailedAt: &instant}, message.StatusReleaseFailed},
+		{"held beats release failed", nil, message.MessageState{HeldAt: &instant, ReleaseFailedAt: &instant}, message.StatusUnrouted},
+		{"cancelled beats release failed", nil, message.MessageState{CancelledAt: &instant, ReleaseFailedAt: &instant}, message.StatusCancelled},
+		{"cancelled beats deliveries", deliveriesIn(message.StatePending), message.MessageState{CancelledAt: &instant}, message.StatusCancelled},
+		{"zero deliveries without state stays pending", []message.Delivery{}, message.MessageState{}, message.StatusPending},
+		{"zero state keeps delivery status", deliveriesIn(message.StateDelivered), message.MessageState{}, message.StatusDelivered},
+	}
+	for _, testCase := range stateCases {
+		testInstance.Run(testCase.name, func(testInstance *testing.T) {
+			if got := message.DeriveStatus(testCase.deliveries, testCase.state); got != testCase.want {
 				testInstance.Errorf("DeriveStatus = %q, want %q", got, testCase.want)
 			}
 		})
