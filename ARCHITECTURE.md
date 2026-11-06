@@ -139,7 +139,11 @@ the VPS; person-service + admin UI are Cloudflare-native.
   provisioning-api state first (failing closed with 502 if that fails), then its ntfy publisher, binding and
   owned checks, routes and destinations. It is idempotent. The body must be `{"app_id": "<the path app_id>"}` as a confirmation; a missing or
   different one is `400`. The answer's `deleted` block carries `orphaned_routes` and `orphaned_checks`: operator-owned
-  routes and checks that lost their last destination link and now deliver nowhere. `409` means a publisher
+  routes and checks that lost their last destination link and now deliver nowhere. It also carries
+  `held_messages`: the app's held messages (`held_at IS NOT NULL`), deleted in the same transaction as the
+  other owned objects (`0` when none). Cancelled-held and release-failed rows are deliberately left and age
+  out through the retention sweep; they are inert. A hold after teardown is not accepted, because the app's
+  keys are removed before the cascade, so `POST /v1/messages` fails `401`. `409` means a publisher
   mint is in progress, `400 invalid app_id`, `503` when teardown is not configured.
 
 - `POST /v1/messages` (submit, optional `?wait=N`), `GET /v1/messages/{id}?app_id=` and
@@ -172,6 +176,22 @@ the VPS; person-service + admin UI are Cloudflare-native.
   `scheduled` delivery is never deleted. A message's age counts from the later of `created_at` and
   `deliver_at`, so a long-scheduled message keeps its full retention after release; a cancelled message
   ages from `cancelled_at` instead.
+- Message-level held state (migration 0012): the `messages` row carries `held_at` (accepted with no
+  matching route, no delivery rows), `held_cancelled_at` (witness that a held message was cancelled;
+  `cancelled_at` is set to the same instant), `released_at`, `release_failed_at` and
+  `release_failed_reason` (only `release_invalid`; the two release-failed columns are set together).
+  Messages are not immutable: they also mutate on cancel, scheduled replace and these columns. The
+  message status is still derived, never stored: cancelled, then `unrouted` (held), then
+  `release_failed`, then the delivery-derived status (zero deliveries with no state stays `pending`).
+  0012 replaces `messages_cancelled_at_check` so a held message (no `deliver_at`) can be cancelled.
+  Holding is gated by `DELIVERY_HOLD_UNROUTED` (default off, so an unrouted app message stays `422`).
+  Caps: `DELIVERY_MAX_HELD_PER_APP` (default 1000) and `DELIVERY_MAX_HELD_TOTAL` (default 100000); a hold
+  over either cap is `429`. The sweeper expires an unreleased held message after `DELIVERY_HELD_TTL_DAYS`
+  (default 7). Held cancel (`DELETE /v1/messages`) sets `cancelled_at` and `held_cancelled_at` to the same
+  instant and clears `held_at`; the cancelled row then ages out through the normal retention sweep.
+  Rollback note: rolling the delivery-api image back past 0012 needs a paired schema rollback, or
+  acceptance of `/readyz` `503 schema_mismatch` until rolled forward, because the version check fails
+  in both directions.
 
 **Exposure and authentication.** delivery-api stays bound to `127.0.0.1:8300` and has two layers.
 Cloudflare Access is the network gate: it only says "some allowed service token", never which app. It is

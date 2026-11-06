@@ -77,7 +77,7 @@ func TestAdminDeprovisionAppRequiresMatchingBodyAppID(testInstance *testing.T) {
 func TestAdminDeprovisionAppReturnsTheCascadeResult(testInstance *testing.T) {
 	fake := &fakeAppTeardown{result: appteardown.Result{
 		AppID: "urls4irl", Removed: true, Unbound: false,
-		Deleted: appteardown.Deleted{Checks: 1, Routes: 2, Destinations: 3, OrphanedRoutes: 4, OrphanedChecks: 5},
+		Deleted: appteardown.Deleted{Checks: 1, Routes: 2, Destinations: 3, OrphanedRoutes: 4, OrphanedChecks: 5, HeldMessages: 6},
 	}}
 
 	recorder := postTeardown(teardownServer(fake), "urls4irl")
@@ -89,7 +89,7 @@ func TestAdminDeprovisionAppReturnsTheCascadeResult(testInstance *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		testInstance.Fatalf("body: %v", err)
 	}
-	want := `{"app_id":"urls4irl","deleted":{"checks":1,"destinations":3,"orphaned_checks":5,"orphaned_routes":4,"routes":2},"removed":true,"unbound":false}`
+	want := `{"app_id":"urls4irl","deleted":{"checks":1,"destinations":3,"held_messages":6,"orphaned_checks":5,"orphaned_routes":4,"routes":2},"removed":true,"unbound":false}`
 	gotJSON, _ := json.Marshal(got)
 	if string(gotJSON) != want {
 		testInstance.Fatalf("body = %s, want %s", gotJSON, want)

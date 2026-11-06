@@ -170,6 +170,53 @@ VALUES ($1, $2, 'urls4irl_hook', 'webhook')`, messageID, appDestination)
 	}
 }
 
+func TestDeleteOwnedObjectsRemovesOnlyTheAppsHeldMessages(testInstance *testing.T) {
+	ctx := context.Background()
+	pool := pgtest.IsolatedPool(ctx, testInstance)
+	store := NewPGStore(pool)
+
+	// Held message of the torn-down app: removed and counted.
+	execSQL(ctx, testInstance, pool,
+		`INSERT INTO messages (app_id, channel, idempotency_key, payload, held_at) VALUES ('urls4irl', 'alerts', 'held1', '{}', now())`)
+	// Another app's held message survives.
+	execSQL(ctx, testInstance, pool,
+		`INSERT INTO messages (app_id, channel, idempotency_key, payload, held_at) VALUES ('chores4irl', 'alerts', 'held2', '{}', now())`)
+	// A released (non-held) message of the torn-down app is not touched.
+	execSQL(ctx, testInstance, pool,
+		`INSERT INTO messages (app_id, channel, idempotency_key, payload, released_at) VALUES ('urls4irl', 'alerts', 'released1', '{}', now())`)
+	// A cancelled-held row (held_at cleared) is deliberately left to retention, so the count excludes it.
+	execSQL(ctx, testInstance, pool,
+		`INSERT INTO messages (app_id, channel, idempotency_key, payload, cancelled_at, held_cancelled_at)
+VALUES ('urls4irl', 'alerts', 'cancelled1', '{}', now(), now())`)
+
+	// A release-failed row is likewise left to retention.
+	execSQL(ctx, testInstance, pool,
+		`INSERT INTO messages (app_id, channel, idempotency_key, payload, release_failed_at, release_failed_reason)
+VALUES ('urls4irl', 'alerts', 'failed1', '{}', now(), 'release_invalid')`)
+
+	deleted, err := store.DeleteOwnedObjects(ctx, "urls4irl")
+	if err != nil {
+		testInstance.Fatalf("DeleteOwnedObjects: %v", err)
+	}
+	if deleted.HeldMessages != 1 {
+		testInstance.Fatalf("HeldMessages = %d, want 1 (cancelled-held rows are not counted)", deleted.HeldMessages)
+	}
+	if got := count(ctx, testInstance, pool, `SELECT count(*) FROM messages WHERE app_id = 'urls4irl' AND held_at IS NOT NULL`); got != 0 {
+		testInstance.Fatalf("torn-down app held messages left = %d", got)
+	}
+	if got := count(ctx, testInstance, pool, `SELECT count(*) FROM messages WHERE app_id = 'chores4irl' AND held_at IS NOT NULL`); got != 1 {
+		testInstance.Fatalf("other app held messages = %d, want 1", got)
+	}
+	if got := count(ctx, testInstance, pool, `SELECT count(*) FROM messages WHERE app_id = 'urls4irl'`); got != 3 {
+		testInstance.Fatalf("torn-down app remaining messages = %d, want the released, cancelled-held and release-failed rows", got)
+	}
+
+	again, repeatErr := store.DeleteOwnedObjects(ctx, "urls4irl")
+	if repeatErr != nil || again != (Deleted{}) || again.HeldMessages != 0 {
+		testInstance.Fatalf("repeat = %+v, %v, want zero counts", again, repeatErr)
+	}
+}
+
 func TestDeleteOwnedObjectsRejectsInvalidAppIDs(testInstance *testing.T) {
 	ctx := context.Background()
 	store := NewPGStore(pgtest.IsolatedPool(ctx, testInstance))
