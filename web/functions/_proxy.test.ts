@@ -10,7 +10,7 @@ import type { JWK } from 'jose';
 import { proxyTo } from './_proxy';
 import { jsonResponse, makeEnv } from './test-helpers';
 
-const UPSTREAM = 'https://notifs-api.4irl.app';
+const UPSTREAM = 'https://upstream.example';
 
 describe('proxyTo', () => {
   const fetchMock = vi.fn();
@@ -47,7 +47,7 @@ describe('proxyTo', () => {
 
   it('forwards a GET with service-token headers and returns the upstream response unchanged', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
-    const request = new Request('https://notifs-admin.4irl.app/v1/users', {
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', {
       method: 'GET',
       headers: {
         // An inbound email header must NOT be forwarded — the audit email now
@@ -63,7 +63,7 @@ describe('proxyTo', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [calledUrl, calledInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(calledUrl).toBe('https://notifs-api.4irl.app/v1/users');
+    expect(calledUrl).toBe('https://upstream.example/v1/admin/users');
     // A regression that drops `redirect: 'manual'` must fail a core case, not
     // only the dedicated 3xx case below.
     expect(calledInit).toMatchObject({ method: 'GET', redirect: 'manual' });
@@ -95,7 +95,7 @@ describe('proxyTo', () => {
         },
       }),
     );
-    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', { method: 'GET' });
 
     const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
 
@@ -108,13 +108,13 @@ describe('proxyTo', () => {
 
   it('forwards a HEAD without a body (skips arrayBuffer) and returns the upstream response', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
-    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'HEAD' });
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', { method: 'HEAD' });
 
     const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [calledUrl, calledInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(calledUrl).toBe('https://notifs-api.4irl.app/v1/users');
+    expect(calledUrl).toBe('https://upstream.example/v1/admin/users');
     // Like GET, a HEAD must never buffer a request body — the
     // `method === 'GET' || method === 'HEAD'` guard leaves `body` undefined so
     // `request.arrayBuffer()` is skipped (a HEAD Request has no body to read).
@@ -127,7 +127,7 @@ describe('proxyTo', () => {
   it('omits the user-email header entirely when the inbound request lacks it', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
     // No `Cf-Access-Authenticated-User-Email` on the inbound request.
-    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', { method: 'GET' });
 
     await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
 
@@ -143,7 +143,7 @@ describe('proxyTo', () => {
   it('buffers and forwards a POST JSON body (via arrayBuffer) and content-type unchanged', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { ok: true } }));
     const payload = JSON.stringify({ app_id: 'urls4irl', email: 'alice@example.com' });
-    const request = new Request('https://notifs-admin.4irl.app/v1/provision', {
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/provision', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
@@ -152,7 +152,7 @@ describe('proxyTo', () => {
     await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
 
     const [calledUrl, calledInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(calledUrl).toBe('https://notifs-api.4irl.app/v1/provision');
+    expect(calledUrl).toBe('https://upstream.example/v1/admin/provision');
     expect((calledInit.headers as Headers).get('Content-Type')).toBe('application/json');
     const forwardedBody = new TextDecoder().decode(calledInit.body as ArrayBuffer);
     expect(forwardedBody).toBe(payload);
@@ -160,7 +160,7 @@ describe('proxyTo', () => {
 
   it('passes a non-2xx app response (404) through unchanged', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 404, body: { error: 'not found' } }));
-    const request = new Request('https://notifs-admin.4irl.app/v1/users/u_missing', {
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users/u_missing', {
       method: 'GET',
     });
 
@@ -172,17 +172,19 @@ describe('proxyTo', () => {
 
   it('preserves the querystring on the upstream URL', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: { users: [] } }));
-    const request = new Request('https://notifs-admin.4irl.app/v1/users?x=1', { method: 'GET' });
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users?x=1', {
+      method: 'GET',
+    });
 
     await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
 
-    expect(fetchMock.mock.calls[0][0]).toBe('https://notifs-api.4irl.app/v1/users?x=1');
+    expect(fetchMock.mock.calls[0][0]).toBe('https://upstream.example/v1/admin/users?x=1');
   });
 
   it('normalizes an upstream 302 login redirect to 502 {error: "upstream auth failed"}', async () => {
     // `redirect: 'manual'` is what makes this observable instead of auto-followed.
     fetchMock.mockResolvedValue(new Response(null, { status: 302 }));
-    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', { method: 'GET' });
 
     const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
 
@@ -199,7 +201,7 @@ describe('proxyTo', () => {
     // `(response.type as string) === 'opaqueredirect'` guard in `_proxy.ts`.
     const opaqueRedirect = { status: 0, type: 'opaqueredirect' } as unknown as Response;
     fetchMock.mockResolvedValue(opaqueRedirect);
-    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', { method: 'GET' });
 
     const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
 
@@ -211,7 +213,9 @@ describe('proxyTo', () => {
     'normalizes an upstream %i to 502 {error: "upstream auth failed"}',
     async (status) => {
       fetchMock.mockResolvedValue(jsonResponse({ status, body: { error: 'denied' } }));
-      const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+      const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', {
+        method: 'GET',
+      });
 
       const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
 
@@ -221,7 +225,7 @@ describe('proxyTo', () => {
   );
 
   it('returns 500 {error: "proxy misconfigured"} and never calls fetch when the client id is empty', async () => {
-    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', { method: 'GET' });
 
     const response = await proxyTo({
       request,
@@ -235,7 +239,7 @@ describe('proxyTo', () => {
   });
 
   it('returns 500 {error: "proxy misconfigured"} and never calls fetch when the client secret is empty', async () => {
-    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', { method: 'GET' });
 
     const response = await proxyTo({
       request,
@@ -249,7 +253,7 @@ describe('proxyTo', () => {
   });
 
   it('returns 500 {error: "proxy misconfigured"} and never calls fetch when the upstream base is empty', async () => {
-    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', { method: 'GET' });
 
     const response = await proxyTo({
       request,
@@ -264,7 +268,7 @@ describe('proxyTo', () => {
 
   it('returns 502 {error: "upstream unreachable"} when the upstream fetch rejects', async () => {
     fetchMock.mockRejectedValue(new Error('network down'));
-    const request = new Request('https://notifs-admin.4irl.app/v1/users', { method: 'GET' });
+    const request = new Request('https://notifs-admin.4irl.app/v1/admin/users', { method: 'GET' });
 
     const response = await proxyTo({ request, upstreamBase: UPSTREAM, env: makeEnv() });
 
@@ -283,7 +287,7 @@ describe('proxyTo with JWT auth enabled', () => {
   const AUD = 'proxy-aud-tag';
   const KID = 'proxy-test-key';
   const CERTS_URL = `${ISSUER}/cdn-cgi/access/certs`;
-  const UPSTREAM_URL = 'https://notifs-api.4irl.app/v1/users';
+  const UPSTREAM_URL = 'https://upstream.example/v1/admin/users';
 
   const fetchMock = vi.fn();
   let privateKey: CryptoKey;
@@ -350,7 +354,7 @@ describe('proxyTo with JWT auth enabled', () => {
     // The concrete scenario this fix targets: a same-origin provisioning POST
     // carrying a valid Access JWT must authenticate at the Function and forward
     // its JSON body to the backend exactly once (no downgrade to a login redirect).
-    const PROVISION_URL = 'https://notifs-api.4irl.app/v1/provision';
+    const PROVISION_URL = 'https://upstream.example/v1/admin/provision';
     const token = await signToken({ email: 'admin@x.com' });
     const payload = JSON.stringify({ app_id: 'urls4irl', email: 'alice@example.com' });
     const request = new Request(PROVISION_URL, {

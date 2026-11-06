@@ -36,12 +36,12 @@ describe('parseSetupParams', () => {
   it('accepts the example link from docs/app-integration-guide.md', () => {
     // Keep in sync with "Link your users to the setup page" in docs/app-integration-guide.md.
     const exampleLink =
-      'https://notifs-setup.4irl.app/?app=tasktracker&user=u_v4sf4e5teivpe3zi&name=Task%20Tracker';
+      'https://notifs-setup.4irl.app/?app=chores4irl&user=u_v4sf4e5teivpe3zi&name=Chores4irl';
     expect(parseSetupParams(new URL(exampleLink).search)).toMatchObject({
       ok: true,
-      app: 'tasktracker',
+      app: 'chores4irl',
       user: 'u_v4sf4e5teivpe3zi',
-      displayName: 'Task Tracker',
+      displayName: 'Chores4irl',
       nameIsFallback: false,
     });
   });

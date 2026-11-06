@@ -7,6 +7,8 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { jsonTagsOf, realIdentifiersIn } from './docs-helpers.mjs';
+
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const readRepoFile = (relativePath) => readFileSync(join(repoRoot, relativePath), 'utf8');
 
@@ -35,13 +37,6 @@ const VPS_CAVEAT =
   'Probe checks run from the VPS, so they cannot see a VPS or Cloudflare Tunnel outage; the watchdog covers that, and external-vantage probing is follow-up #101.';
 
 const GATING_HEADING = '#### Gating a health endpoint for probes';
-
-// Every json tag declared anywhere in heartbeats.go.
-export function jsonTagsOf(goSource) {
-  return new Set(
-    [...goSource.matchAll(/`json:"([a-z_]+)(?:,[a-z]+)?"`/g)].map((match) => match[1]),
-  );
-}
 
 // Route patterns ("POST /v1/admin/heartbeats/{id}/pause" -> the path part) of the
 // admin heartbeat HandleFunc registrations.
@@ -83,16 +78,6 @@ export function sectionOf(docText, heading) {
   const rest = docText.slice(start + heading.length + 1);
   const nextHeading = rest.match(new RegExp(`^#{1,${level}} `, 'm'));
   return nextHeading ? rest.slice(0, nextHeading.index) : rest;
-}
-
-// Heuristic: catches a 32-hex-character id and a *.cloudflareaccess.com hostname.
-export function realIdentifiersIn(text) {
-  const found = [];
-  const hex = text.match(/\b[0-9a-f]{32}\b/i);
-  if (hex) found.push(hex[0]);
-  const accessHost = text.match(/[\w.-]+\.cloudflareaccess\.com/i);
-  if (accessHost) found.push(accessHost[0]);
-  return found;
 }
 
 test('every documented /v1/admin/heartbeats route exists in server.go', () => {
