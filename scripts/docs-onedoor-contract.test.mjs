@@ -1,6 +1,9 @@
 // Keeps docs/app-integration-guide.md honest about the one-door provisioning model: every
 // documented door/admin route is registered in delivery-api, the retired door is never named,
 // and every json example in the door sections only uses fields the route's own structs accept.
+// Coupling: it reads Go struct names and routes under delivery-api/ and provisioning-api/, but the
+// push gate maps those paths to the Go suites only, so a Go-side rename must also run
+// `make scripts-test` (otherwise it fails only in CI).
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -428,6 +431,32 @@ test('every /v1/apps route ARCHITECTURE.md names is registered in server.go', ()
   assert.deepEqual(unregisteredDoorRoutes(architectureDoc, registeredRoutes), []);
 });
 
+// The one sentence that names the retired hostname; every other retired term (bar routes) is banned.
+const RETIRED_HOSTNAME_LINE = (line) =>
+  line.includes('notifs-api.4irl.app') && line.includes('retired');
+
+export function architectureRetiredProblems(docText) {
+  const lines = docText.split('\n');
+  const hostnameLines = lines.filter(RETIRED_HOSTNAME_LINE);
+  const rest = lines.filter((line) => !RETIRED_HOSTNAME_LINE(line)).join('\n');
+  // ARCHITECTURE.md legitimately documents provisioning-api's own internal /v1/* routes (still
+  // registered there), so only the non-route retired terms are banned in it.
+  const problems = retiredTermsIn(rest).filter((term) => !term.startsWith('/'));
+  if (hostnameLines.length !== 1) {
+    problems.push(`expected exactly one retired-hostname line, found ${hostnameLines.length}`);
+  }
+  return problems;
+}
+
+test('ARCHITECTURE.md has one retired-hostname line and no other retired term', () => {
+  assert.deepEqual(architectureRetiredProblems(architectureDoc), []);
+});
+
+test('README.md and CLAUDE.md name no retired door, route or term', () => {
+  assert.deepEqual(retiredTermsIn(readRepoFile('README.md')), []);
+  assert.deepEqual(retiredTermsIn(readRepoFile('CLAUDE.md')), []);
+});
+
 // ---------------------------------------------------------------- negative self-tests
 
 const REGISTERED = new Set([
@@ -488,6 +517,18 @@ test('negative self-test: retired terms fire', () => {
   assert.deepEqual(retiredTermsIn('POST /v1/deprovision-app'), ['/v1/deprovision-app']);
   assert.deepEqual(retiredTermsIn('POST /v1/provision now'), ['/v1/provision']);
   assert.deepEqual(retiredTermsIn('POST /v1/apps/{app_id}/provision and /v1/admin/provision'), []);
+  assert.deepEqual(retiredTermsIn('text <!-- publisher-token --> text'), ['publisher-token']);
+  assert.deepEqual(architectureRetiredProblems('`notifs-api.4irl.app` is retired'), []);
+  assert.equal(architectureRetiredProblems('no hostname line').length, 1);
+  assert.equal(
+    architectureRetiredProblems('`notifs-api.4irl.app` is retired\nnotifs-api again').length,
+    1,
+  );
+  assert.equal(
+    architectureRetiredProblems('`notifs-api.4irl.app` is retired\n`notifs-api.4irl.app` retired')
+      .length,
+    1,
+  );
 });
 
 test('negative self-test: section helper is fence-aware and floors fire', () => {

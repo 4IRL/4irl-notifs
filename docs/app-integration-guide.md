@@ -1,7 +1,7 @@
 # Integrating an app with 4irl-notifs
 
 **Audience:** an engineer (or an LLM) wiring a new client application (e.g. `urls4irl`,
-`tasktracker`) into the 4IRL notification service so it can send personalized notifications to its
+`chores4irl`) into the 4IRL notification service so it can send personalized notifications to its
 users, deliver alerts through retries and a delivery log, schedule messages for later, and monitor its
 recurring jobs. This is a **self-service integration guide** — it is not about deploying the
 notification service itself (that is `ARCHITECTURE.md`).
@@ -983,7 +983,7 @@ Three things must exist before your backend can call the door:
 3. **A `dak_` key** from the `notifs-app` action, delivered to your backend as a secret. Each exchange
    supersedes the previous key, which keeps working for a 24 h grace period. See **App identity** above.
 
-`app_id` rule: lowercase letters, digits, and underscores, 1–63 chars (e.g. `urls4irl`, `tasktracker`).
+`app_id` rule: lowercase letters, digits, and underscores, 1–63 chars (e.g. `urls4irl`, `chores4irl`).
 
 The `dak_` key is the credential for `POST /v1/apps/{app_id}/{provision,deprovision,reset-password,set-password,ntfy-publisher}`
 as well as `/v1/messages` and heartbeats, so one key covers everything your app does.
@@ -1804,7 +1804,7 @@ button, and offers one-tap `ntfy://` subscribe buttons on Android. It makes no A
 **Link format** (all three values are query parameters):
 
 ```
-https://notifs-setup.4irl.app/?app=tasktracker&user=u_v4sf4e5teivpe3zi&name=Task%20Tracker
+https://notifs-setup.4irl.app/?app=chores4irl&user=u_v4sf4e5teivpe3zi&name=Chores4irl
 ```
 
 | Param  | Required | Rule                                                                                                                                                                                                                     |
