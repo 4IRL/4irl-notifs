@@ -78,7 +78,8 @@ const (
 	// adminDeliveryFrom, followed by the parent message's app_id and channel.
 	adminDeliveryColumns = `d.id, d.message_id::text, d.destination_id, d.destination_name, d.destination_type,
 	d.state, d.dead_reason, d.attempt_count, d.budget_attempts, d.budget_started_at, d.next_attempt_at,
-	d.last_status_code, d.delivered_at, d.created_at, d.updated_at, m.app_id, m.channel`
+	d.last_status_code, d.delivered_at, d.created_at, d.updated_at, m.app_id, m.channel,
+	COALESCE(m.to_recipient, '')`
 
 	// adminDeliveryFrom joins a delivery to its message only; destinations are
 	// never joined, so a deleted destination keeps its row.
@@ -826,7 +827,7 @@ func scanAdminDelivery(row pgutil.RowScanner) (AdminDelivery, error) {
 		&delivery.DestinationType, &delivery.State, &delivery.DeadReason, &delivery.AttemptCount,
 		&delivery.BudgetAttempts, &delivery.BudgetStartedAt, &delivery.NextAttemptAt,
 		&delivery.LastStatusCode, &delivery.DeliveredAt, &delivery.CreatedAt, &delivery.UpdatedAt,
-		&delivery.AppID, &delivery.Channel,
+		&delivery.AppID, &delivery.Channel, &delivery.ToRecipient,
 	); scanErr != nil {
 		return AdminDelivery{}, scanErr
 	}

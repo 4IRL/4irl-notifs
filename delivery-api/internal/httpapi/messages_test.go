@@ -534,7 +534,8 @@ func TestListDeliveriesReturnsTheExactBody(testInstance *testing.T) {
 	recorder := serveMessages(fake, nil, http.MethodGet, "/v1/admin/deliveries?state=dead&limit=3", "")
 
 	const adminSuffix = `,"message_id":"` + sampleMessageID + `","app_id":"urls4irl","channel":"alerts",` +
-		`"destination_type":"webhook","created_at":"2026-10-16T11:00:00Z","updated_at":"` + adminTimestampJSON + `"}`
+		`"destination_type":"webhook","target_kind":"destination","person_hash":null,` +
+		`"created_at":"2026-10-16T11:00:00Z","updated_at":"` + adminTimestampJSON + `"}`
 	assertResponse(testInstance, recorder, http.StatusOK,
 		`{"deliveries":[`+withAdminFields(pendingDeliveryJSON, adminSuffix)+`,`+
 			withAdminFields(deadDeliveryJSON, adminSuffix)+`,`+withAdminFields(deliveredDeliveryJSON, adminSuffix)+`]}`+"\n")
@@ -667,6 +668,7 @@ func TestReplayReturnsTheExactBody(testInstance *testing.T) {
 		`{"delivery":{"id":12,"destination":"b_hook","state":"pending","dead_reason":null,"attempt_count":2,`+
 			`"last_status_code":400,"next_attempt_at":"2026-10-16T12:00:30Z","delivered_at":null,`+
 			`"message_id":"`+sampleMessageID+`","app_id":"urls4irl","channel":"alerts","destination_type":"webhook",`+
+			`"target_kind":"destination","person_hash":null,`+
 			`"created_at":"2026-10-16T11:00:00Z","updated_at":"`+adminTimestampJSON+`"}}`+"\n")
 	if !reflect.DeepEqual(fake.replayCalls, []int64{12}) {
 		testInstance.Fatalf("Replay calls = %v, want [12]", fake.replayCalls)
@@ -744,6 +746,7 @@ func TestWriteMessageErrorBranches(testInstance *testing.T) {
 		{name: "held capacity reached", err: message.ErrHeldCapacityReached, wantStatus: 429, wantBody: `{"error":"held message capacity reached"}`},
 		{name: "wrapped sentinel", err: fmt.Errorf("replay: %w", message.ErrDeliveryNotDead), wantStatus: 409, wantBody: `{"error":"delivery not dead"}`},
 		{name: "anything else", err: errors.New("boom"), wantStatus: 500, wantBody: `{"error":"internal error"}`},
+		{name: "personal lookup failure", err: fmt.Errorf("list opted-in personal destinations: %w", errors.New("db down")), wantStatus: 500, wantBody: `{"error":"internal error"}`},
 	}
 	routes := []struct {
 		name   string

@@ -136,11 +136,21 @@ func (server *Server) handleAdminDeprovision(responseWriter http.ResponseWriter,
 		writeError(responseWriter, http.StatusBadRequest, errMsgUserIDRequired)
 		return
 	}
+	loggedHash := ""
+	if personHash, isHash := personhash.HashFromNtfyUser(body.UserID); isHash {
+		loggedHash = personHash
+		if !server.forgetPersonForApp(responseWriter, request, body.AppID, personHash) {
+			return
+		}
+	} else {
+		server.logger.Info("personal destination cleanup skipped: user id is not a derived ntfy user",
+			"path", request.URL.Path, "app_id", body.AppID)
+	}
 	started := time.Now()
 	answer, err := server.adminProvisioning.Deprovision(request.Context(), body.AppID,
 		provisionclient.DeprovisionTarget{UserID: body.UserID})
 	server.relayProvisioning(responseWriter, request, relayCall{
-		appID: body.AppID, action: "admin-deprovision", started: started,
+		appID: body.AppID, personHash: loggedHash, action: "admin-deprovision", started: started,
 	}, answer, err)
 }
 
@@ -185,9 +195,21 @@ func (server *Server) handleAdminDeleteUser(responseWriter http.ResponseWriter, 
 		writeError(responseWriter, http.StatusBadRequest, errMsgUserIDRequired)
 		return
 	}
+	loggedHash := ""
+	if personHash, isHash := personhash.HashFromNtfyUser(userID); isHash {
+		loggedHash = personHash
+		if !server.forgetPerson(responseWriter, request, personHash) {
+			return
+		}
+	} else {
+		server.logger.Info("personal destination cleanup skipped: user id is not a derived ntfy user",
+			"path", request.URL.Path)
+	}
 	started := time.Now()
 	answer, err := server.adminProvisioning.DeleteUser(request.Context(), userID)
-	server.relayProvisioning(responseWriter, request, relayCall{action: "admin-delete-user", started: started}, answer, err)
+	server.relayProvisioning(responseWriter, request, relayCall{
+		personHash: loggedHash, action: "admin-delete-user", started: started,
+	}, answer, err)
 }
 
 // handleAdminTestNotify serves POST /v1/admin/test-notify. The app must be bound.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
 
@@ -159,12 +160,36 @@ type deliveryView struct {
 // message responses keep deliveryView.
 type adminDeliveryView struct {
 	deliveryView
-	MessageID       string    `json:"message_id"`
-	AppID           string    `json:"app_id"`
-	Channel         string    `json:"channel"`
-	DestinationType string    `json:"destination_type"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	MessageID       string `json:"message_id"`
+	AppID           string `json:"app_id"`
+	Channel         string `json:"channel"`
+	DestinationType string `json:"destination_type"`
+	// TargetKind is "destination", "recipient" or "personal", derived from the delivery name.
+	TargetKind string `json:"target_kind"`
+	// PersonHash is the message's to_recipient for recipient and personal rows, else null.
+	PersonHash *string   `json:"person_hash"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// Delivery target kinds reported in adminDeliveryView.TargetKind.
+const (
+	targetKindDestination = "destination"
+	targetKindRecipient   = "recipient"
+	targetKindPersonal    = "personal"
+)
+
+// deliveryTargetKind classifies a delivery by its name. Anything in the personal namespace, even an
+// unparseable name, is personal.
+func deliveryTargetKind(name string) string {
+	switch {
+	case name == registry.RecipientDestinationName:
+		return targetKindRecipient
+	case personal.IsPersonalDeliveryName(name):
+		return targetKindPersonal
+	default:
+		return targetKindDestination
+	}
 }
 
 // attemptView is the JSON form of one delivery-log row.
@@ -640,7 +665,14 @@ func newDeliveryView(delivery message.Delivery) deliveryView {
 
 // newAdminDeliveryView converts an admin delivery into its JSON view; times are UTC.
 func newAdminDeliveryView(delivery message.AdminDelivery) adminDeliveryView {
+	targetKind := deliveryTargetKind(delivery.DestinationName)
+	var personHash *string
+	if targetKind != targetKindDestination && delivery.ToRecipient != "" {
+		personHash = &delivery.ToRecipient
+	}
 	return adminDeliveryView{
+		TargetKind:      targetKind,
+		PersonHash:      personHash,
 		deliveryView:    newDeliveryView(delivery.Delivery),
 		MessageID:       delivery.MessageID,
 		AppID:           delivery.AppID,

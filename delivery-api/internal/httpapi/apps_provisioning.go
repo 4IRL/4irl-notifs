@@ -147,6 +147,9 @@ func (server *Server) handleAppDeprovision(responseWriter http.ResponseWriter, r
 		target = provisionclient.DeprovisionTarget{UserID: personhash.NtfyUserFromHash(body.PersonHash)}
 		loggedHash = body.PersonHash
 	}
+	if !server.forgetPersonForApp(responseWriter, request, appID, loggedHash) {
+		return
+	}
 	started := time.Now()
 	answer, err := server.appProvisioning.Deprovision(request.Context(), appID, target)
 	server.relayProvisioning(responseWriter, request, relayCall{

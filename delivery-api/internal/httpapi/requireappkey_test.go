@@ -121,6 +121,30 @@ func appKeyRoutes() []appKeyRoute {
 			name: "mint publisher", method: http.MethodPost, pathFormat: "/v1/apps/%s/ntfy-publisher", source: "path",
 			bodyFormat: "{}",
 		},
+		{
+			name: "personal create", method: http.MethodPost, pathFormat: "/v1/apps/%s/personal-destinations", source: "path",
+			bodyFormat: `{"email":"person@example.com","label":"Phone","type":"discord"}`,
+		},
+		{
+			name: "personal lookup", method: http.MethodPost, pathFormat: "/v1/apps/%s/personal-destinations/lookup", source: "path",
+			bodyFormat: `{"email":"person@example.com"}`,
+		},
+		{
+			name: "personal patch", method: http.MethodPatch, pathFormat: "/v1/apps/%s/personal-destinations/7", source: "path",
+			bodyFormat: `{"email":"person@example.com","label":"x"}`,
+		},
+		{
+			name: "personal delete", method: http.MethodDelete, pathFormat: "/v1/apps/%s/personal-destinations/7", source: "path",
+			bodyFormat: `{"email":"person@example.com"}`,
+		},
+		{
+			name: "personal opt in", method: http.MethodPut, pathFormat: "/v1/apps/%s/personal-destinations/7/opt-in", source: "path",
+			bodyFormat: `{"email":"person@example.com"}`,
+		},
+		{
+			name: "personal opt out", method: http.MethodDelete, pathFormat: "/v1/apps/%s/personal-destinations/7/opt-in", source: "path",
+			bodyFormat: `{"email":"person@example.com"}`,
+		},
 	}
 }
 
@@ -131,6 +155,7 @@ type appKeyRig struct {
 	provision  *fakeAppProvisioning
 	limiter    *fakeResetLimiter
 	publishers *fakePublishers
+	personal   *fakePersonal
 	identity   *fakeAppIdentity
 	logs       *bytes.Buffer
 	server     *Server
@@ -145,6 +170,7 @@ func newAppKeyRig() *appKeyRig {
 		provision:  &fakeAppProvisioning{answer: provisionclient.Passthrough{Status: http.StatusOK, Body: []byte("{}")}},
 		limiter:    &fakeResetLimiter{},
 		publishers: &fakePublishers{view: samplePublisherView()},
+		personal:   &fakePersonal{view: samplePersonalView()},
 		identity:   &fakeAppIdentity{resolved: appidentity.ResolvedKey{ID: 4, AppID: keyApp, Hint: "dak_abcd"}},
 		logs:       &bytes.Buffer{},
 	}
@@ -159,7 +185,7 @@ func (rig *appKeyRig) rebuild() {
 	}
 	rig.server = NewServer(ServerConfig{
 		Messages: rig.messages, Heartbeats: rig.heartbeats, AppIdentity: identity, AppProvisioning: rig.provision,
-		ResetLimiter: rig.limiter, Publishers: rig.publishers,
+		ResetLimiter: rig.limiter, Publishers: rig.publishers, PersonalDestinations: rig.personal,
 		Logger: slog.New(slog.NewTextHandler(rig.logs, nil)),
 	})
 }
@@ -175,7 +201,8 @@ func (rig *appKeyRig) serve(method string, path string, body string, authorizati
 }
 
 func (rig *appKeyRig) handlerCalls() int {
-	return rig.messages.totalCalls() + rig.heartbeats.totalCalls() + rig.provision.totalCalls() + rig.limiter.totalCalls() + rig.publishers.mintCalls
+	return rig.messages.totalCalls() + rig.heartbeats.totalCalls() + rig.provision.totalCalls() + rig.limiter.totalCalls() + rig.publishers.mintCalls +
+		rig.personal.totalCalls()
 }
 
 func (rig *appKeyRig) assertNoHandlerCall(testInstance *testing.T) {
