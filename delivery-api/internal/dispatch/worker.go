@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/sink"
 )
@@ -79,8 +80,13 @@ const (
 	errorTextUnsupportedType     = "no sink for destination type"
 	errorTextUnresolvable        = "destination could not be resolved"
 	errorTextNoPublisher         = "app has no ntfy publisher"
+	errorTextOptedOut            = "app is no longer opted in to this personal destination"
 	errorTextSinkPanic           = "sink panicked"
 )
+
+// personalDisableReason is stored as a personal destination's disabled_reason
+// (disabled_by = 'system') after it reports itself gone.
+const personalDisableReason = "Endpoint returned 410 Gone."
 
 // disableReason is stored as the destination's disabled_reason after the
 // destination reports itself gone: a 410, or a sink-asserted Gone such as a
@@ -120,6 +126,15 @@ type RecipientResolver interface {
 	ResolveRecipient(ctx context.Context, appID, personHash, channel string) (registry.ResolvedDestination, error)
 }
 
+// PersonalResolver resolves and disables personal destinations for @personal_<id>
+// deliveries. It is satisfied by *personal.Service; ResolvePersonal returns
+// personal.ErrNotFound, personal.ErrDisabled or personal.ErrNotOptedIn for the
+// never-send cases. DisablePersonal transitions only an enabled row.
+type PersonalResolver interface {
+	ResolvePersonal(ctx context.Context, id int64, appID, personHash string) (registry.ResolvedDestination, error)
+	DisablePersonal(ctx context.Context, id int64, reason string) error
+}
+
 // WorkerConfig configures a Worker. Queue, Resolver and Sinks are required;
 // Sinks is keyed by destination type. Every other zero field takes its default
 // (see the Default* constants; Now is time.Now and Random is rand.Float64).
@@ -130,8 +145,11 @@ type WorkerConfig struct {
 	// (ntfy is not configured), a recipient delivery is dead-lettered with
 	// message.DeadReasonNoPublisher instead of being sent.
 	Recipients RecipientResolver
-	Sinks      map[string]sink.Sink
-	Logger     *slog.Logger
+	// Personal resolves @personal_<id> deliveries. It is optional: when nil, a
+	// personal delivery is dead-lettered with message.DeadReasonUnsupportedType.
+	Personal PersonalResolver
+	Sinks    map[string]sink.Sink
+	Logger   *slog.Logger
 
 	Concurrency    int
 	PollInterval   time.Duration
@@ -358,11 +376,34 @@ func (worker *Worker) process(ctx context.Context, claim message.Claim) {
 	// call may have used the whole attempt budget and a slow disable must never
 	// starve the record.
 	worker.record(ctx, claim, result)
+	if result.Record.Outcome != message.OutcomeGone {
+		return
+	}
 	// A recipient destination is synthetic: there is no registry row to
-	// disable, and a gone topic must never disable anything.
-	isRecipientDelivery := claim.Delivery.DestinationName == registry.RecipientDestinationName
-	if result.Record.Outcome == message.OutcomeGone && !isRecipientDelivery {
+	// disable, and a gone topic must never disable anything. A personal
+	// destination is disabled in its own table, never in the operator registry.
+	if personalID, isPersonal := personal.ParsePersonalDeliveryName(claim.Delivery.DestinationName); isPersonal {
+		worker.disablePersonal(ctx, claim, personalID)
+		return
+	}
+	if claim.Delivery.DestinationName != registry.RecipientDestinationName {
 		worker.disableDestination(ctx, claim, destination.ID)
+	}
+}
+
+// disablePersonal disables a personal destination after it reported gone, on its
+// own short context. The store transitions only an enabled row, so an operator
+// or app disable is never overwritten. A failure is logged and otherwise ignored.
+func (worker *Worker) disablePersonal(ctx context.Context, claim message.Claim, personalID int64) {
+	if worker.config.Personal == nil {
+		return
+	}
+	disableCtx, cancelDisable := context.WithTimeout(context.WithoutCancel(ctx), disableTimeout)
+	defer cancelDisable()
+	if disableErr := worker.config.Personal.DisablePersonal(disableCtx, personalID, personalDisableReason); disableErr != nil {
+		worker.config.Logger.Error("disable personal destination after 410 failed",
+			"message_id", claim.Delivery.MessageID, "delivery_id", claim.Delivery.ID,
+			"destination", claim.Delivery.DestinationName, "error", disableErr)
 	}
 }
 
@@ -398,6 +439,11 @@ func (worker *Worker) resolve(
 ) (registry.ResolvedDestination, string, error) {
 	if claim.Delivery.DestinationName == registry.RecipientDestinationName {
 		return worker.resolveRecipient(ctx, claim)
+	}
+	// The personal namespace never reaches the registry: an unparseable
+	// @personal_ name fails closed as deleted.
+	if personal.IsPersonalDeliveryName(claim.Delivery.DestinationName) {
+		return worker.resolvePersonal(ctx, claim)
 	}
 	// An empty name would make Resolve fan out by route instead of naming one
 	// destination: fail closed.
@@ -449,6 +495,36 @@ func (worker *Worker) resolveRecipient(
 	return resolved, "", nil
 }
 
+// resolvePersonal re-resolves a @personal_<id> delivery by id, the message's app
+// and its recipient. A missing row, a person mismatch or an unparseable name is
+// destination_deleted; a disabled row is destination_disabled; a withdrawn
+// opt-in is opted_out; no personal resolver is unsupported_type. Any other error
+// means the state is unknown.
+func (worker *Worker) resolvePersonal(
+	ctx context.Context, claim message.Claim,
+) (registry.ResolvedDestination, string, error) {
+	personalID, parsed := personal.ParsePersonalDeliveryName(claim.Delivery.DestinationName)
+	if !parsed {
+		return registry.ResolvedDestination{}, message.DeadReasonDestinationDeleted, nil
+	}
+	if worker.config.Personal == nil {
+		return registry.ResolvedDestination{}, message.DeadReasonUnsupportedType, nil
+	}
+	envelope := claim.Message.Envelope
+	resolved, resolveErr := worker.config.Personal.ResolvePersonal(ctx, personalID, envelope.AppID, envelope.ToRecipient)
+	switch {
+	case errors.Is(resolveErr, personal.ErrNotFound):
+		return registry.ResolvedDestination{}, message.DeadReasonDestinationDeleted, nil
+	case errors.Is(resolveErr, personal.ErrDisabled):
+		return registry.ResolvedDestination{}, message.DeadReasonDestinationDisabled, nil
+	case errors.Is(resolveErr, personal.ErrNotOptedIn):
+		return registry.ResolvedDestination{}, message.DeadReasonOptedOut, nil
+	case resolveErr != nil:
+		return registry.ResolvedDestination{}, "", resolveErr
+	}
+	return resolved, "", nil
+}
+
 // deliver calls the sink, turning a panic into a retryable outcome so one bad
 // sink cannot kill the loop.
 func (worker *Worker) deliver(
@@ -480,6 +556,8 @@ func (worker *Worker) recordNeverSent(ctx context.Context, claim message.Claim, 
 		errorText = errorTextUnresolvable
 	case message.DeadReasonNoPublisher:
 		errorText = errorTextNoPublisher
+	case message.DeadReasonOptedOut:
+		errorText = errorTextOptedOut
 	}
 	result := message.AttemptResult{
 		Record: message.AttemptRecord{
