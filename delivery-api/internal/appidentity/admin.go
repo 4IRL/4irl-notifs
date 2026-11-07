@@ -11,6 +11,11 @@ const (
 	// operator's list; older rejected requests are no longer shown.
 	RejectedRequestWindow = 30 * 24 * time.Hour
 
+	// RequestKindApp is the kind of a request to bind one app id.
+	RequestKindApp = "app"
+	// RequestKindRegistrar is the kind of a request to become a registrar (no app id).
+	RequestKindRegistrar = "registrar"
+
 	// RequestPending is the status of a request awaiting the operator.
 	RequestPending = "pending"
 	// RequestRejected is the status of a request the operator rejected.
@@ -54,7 +59,10 @@ var (
 
 // Request is one registration request in the operator's approval queue.
 type Request struct {
-	ID                int64
+	ID int64
+	// Kind is RequestKindApp or RequestKindRegistrar.
+	Kind string
+	// AppID is empty for a registrar request (stored as NULL, rendered as JSON null).
 	AppID             string
 	Repository        string
 	RepositoryID      int64
@@ -174,4 +182,30 @@ type AdminStore interface {
 
 	// BindingExists reports whether the app has an approved binding. It takes no lock.
 	BindingExists(ctx context.Context, appID string) (bool, error)
+
+	// ApproveRegistrarRequest turns a pending kind "registrar" request into a registrar with
+	// prefix, under the pending-request lock. It deletes the request and its sibling pending
+	// requests for the identity, and rejects (status rejected, decided_at now) every pending
+	// app request whose app id is the prefix's stem or starts with the prefix. Errors:
+	// ErrInvalidPrefix, ErrRequestNotFound, ErrRequestNotPending, ErrRequestNotRegistrar,
+	// ErrWorkflowIdentityBound, ErrPrefixTaken, ErrPrefixOverlap. Nothing changes on error.
+	ApproveRegistrarRequest(ctx context.Context, requestID int64, prefix string, now time.Time) (WorkflowRegistrar, error)
+
+	// ListRegistrars returns every registrar sorted by prefix with its app count and limit.
+	// Never nil.
+	ListRegistrars(ctx context.Context) ([]WorkflowRegistrar, error)
+
+	// DeleteRegistrar deletes the registrar; its apps (and their keys) go with it by cascade.
+	// It takes the pending-request lock and returns the deleted registrar and how many apps went
+	// with it. ErrRegistrarNotFound for an unknown id.
+	DeleteRegistrar(ctx context.Context, registrarID int64) (deleted WorkflowRegistrar, unboundApps int, err error)
+
+	// AcknowledgeBinding sets the app's acknowledged_at to now unless already set, and returns
+	// the binding with its keys. ErrBindingNotFound when the app has no binding.
+	AcknowledgeBinding(ctx context.Context, appID string, now time.Time) (BindingWithKeys, error)
+
+	// AcknowledgeAllBindings acknowledges, in one statement, the listed bindings that are
+	// registrar-created and not yet seen, and returns how many it changed. Unknown, normal and
+	// already-seen ids are skipped. The caller validates the list.
+	AcknowledgeAllBindings(ctx context.Context, appIDs []string, now time.Time) (int, error)
 }
