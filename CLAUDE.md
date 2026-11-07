@@ -97,7 +97,8 @@ Components:
   container); serves the operator registry (destinations and routes) under `/v1/admin`, the
   app message envelope API (`/v1/messages`, including `DELETE /v1/messages` cancel of scheduled
   messages), the operator delivery log and replay endpoints (`/v1/admin/deliveries`) and the operator
-  scheduled-message list and cancel (`/v1/admin/scheduled-messages`), heartbeat pings
+  scheduled-message list and cancel (`/v1/admin/scheduled-messages`), the operator held-message failure
+  list (`GET /v1/admin/held-failures`), heartbeat pings
   (`/v1/heartbeats`) and the operator heartbeat CRUD (`/v1/admin/heartbeats`), alongside `/healthz` and
   `/readyz`. Every app-facing endpoint needs the calling app's own delivery key (`dak_...`, from the
   GitHub OIDC exchange at `/v1/app-identity/exchange`, approved by the operator under
@@ -107,7 +108,7 @@ Components:
   the sealed publisher token), relayed to provisioning-api; `GET /healthz/provisioning` reports its
   health. It runs the delivery worker (webhook,
   Discord and ntfy sinks, including `to.recipient` delivery through each app's ntfy publisher
-  token), the scheduled-message releaser (`RunReleaser`), the heartbeat checker, the heartbeat prober (website probe loop, 10 s scan,
+  token), the scheduled-message releaser (`RunReleaser`), the always-on held-message releaser (`RunReleaser` with kind `held`), the heartbeat checker, the heartbeat prober (website probe loop, 10 s scan,
   bounded concurrency) and the retention
   sweeper in-process.
 - **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api (through delivery-api's

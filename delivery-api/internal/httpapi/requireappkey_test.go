@@ -621,6 +621,7 @@ func TestAdminMessagesAndOtherRoutesNeedNoKey(testInstance *testing.T) {
 			body: `{"app_id":"chores4irl","channel":"alerts","idempotency_key":"key-1","payload":{}}`},
 		{name: "admin deliveries", method: http.MethodGet, path: "/v1/admin/deliveries"},
 		{name: "admin scheduled", method: http.MethodGet, path: "/v1/admin/scheduled-messages"},
+		{name: "admin held failures", method: http.MethodGet, path: "/v1/admin/held-failures"},
 		{name: "admin heartbeats", method: http.MethodGet, path: "/v1/admin/heartbeats"},
 		{name: "healthz", method: http.MethodGet, path: "/healthz"},
 		// No ProvisioningHealth is configured in this rig, so the route answers its own 503 (never a 401).

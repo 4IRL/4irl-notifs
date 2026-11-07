@@ -290,7 +290,7 @@ func TestAdminMessagesAndTheProbesNeedNoAppKey(testInstance *testing.T) {
 		fixture.body("admin-"+suffix, "", 1))
 	requireStatus(testInstance, "POST /v1/messages without a key", status, http.StatusUnauthorized, body)
 
-	for _, path := range []string{"/healthz", "/readyz", "/v1/admin/deliveries", "/v1/admin/heartbeats", "/v1/admin/scheduled-messages"} {
+	for _, path := range []string{"/healthz", "/readyz", "/v1/admin/deliveries", "/v1/admin/heartbeats", "/v1/admin/scheduled-messages", "/v1/admin/held-failures"} {
 		status, body = apiRequestWithAuthorization(testInstance, "", http.MethodGet, path, nil)
 		requireStatus(testInstance, "GET "+path+" without a key", status, http.StatusOK, body)
 	}

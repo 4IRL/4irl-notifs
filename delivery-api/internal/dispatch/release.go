@@ -17,7 +17,20 @@ const (
 	// DefaultMaxReleaseBatches bounds how many batches one run may drain before
 	// it yields to the next tick.
 	DefaultMaxReleaseBatches = 50
+	// DefaultHeldReleaseInterval is how often the held-message releaser runs.
+	DefaultHeldReleaseInterval = 5 * time.Second
+
+	defaultReleaserKind = "scheduled"
 )
+
+// ReleaserFunc adapts a function to DueReleaser, for loops (such as the held
+// releaser) that do not release through ReleaseDue.
+type ReleaserFunc func(ctx context.Context, now time.Time, limit int) (int64, error)
+
+// ReleaseDue calls the function.
+func (releaserFunc ReleaserFunc) ReleaseDue(ctx context.Context, now time.Time, limit int) (int64, error) {
+	return releaserFunc(ctx, now, limit)
+}
 
 // DueReleaser releases scheduled messages that have come due. It is satisfied
 // by *message.PGStore.
@@ -35,6 +48,8 @@ type DueReleaser interface {
 type ReleaserConfig struct {
 	Releaser DueReleaser
 	Interval time.Duration
+	// Kind names the loop in its log messages ("held"); empty means "scheduled".
+	Kind string
 	// BatchSize is the limit passed to every ReleaseDue call.
 	BatchSize int
 	// MaxBatchesPerRun caps the ReleaseDue calls of one run; hitting it ends the
@@ -78,9 +93,13 @@ func RunReleaser(ctx context.Context, config ReleaserConfig) {
 	if maxBatches <= 0 {
 		maxBatches = DefaultMaxReleaseBatches
 	}
+	kind := config.Kind
+	if kind == "" {
+		kind = defaultReleaserKind
+	}
 	releaser, interval := config.Releaser, config.Interval
 	if releaser == nil || interval <= 0 {
-		logger.Error("scheduled-message releaser not started: invalid configuration")
+		logger.Error(kind + "-message releaser not started: invalid configuration")
 		return
 	}
 
@@ -89,14 +108,14 @@ func RunReleaser(ctx context.Context, config ReleaserConfig) {
 	drain := func() (total int64) {
 		defer func() {
 			if recover() != nil {
-				logger.Error("scheduled release panicked", "released", total)
+				logger.Error(kind+" release panicked", "released", total)
 			}
 		}()
 		for batch := 0; batch < maxBatches && ctx.Err() == nil; batch++ {
 			released, releaseErr := releaser.ReleaseDue(ctx, now(), batchSize)
 			if releaseErr != nil {
 				if !errors.Is(releaseErr, context.Canceled) {
-					logger.Error("scheduled release failed", "released", total, "error", releaseErr)
+					logger.Error(kind+" release failed", "released", total, "error", releaseErr)
 				}
 				return total
 			}
@@ -113,13 +132,13 @@ func RunReleaser(ctx context.Context, config ReleaserConfig) {
 		// cannot end the loop either.
 		defer func() {
 			if recover() != nil {
-				logger.Error("scheduled release wake panicked")
+				logger.Error(kind + " release wake panicked")
 			}
 		}()
 		released := drain()
 		if released > 0 {
 			// Log first so a panicking wake cannot suppress the count.
-			logger.Info("released scheduled messages", "released", released)
+			logger.Info("released "+kind+" messages", "released", released)
 			wake()
 		}
 	}

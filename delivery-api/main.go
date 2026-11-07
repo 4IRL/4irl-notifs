@@ -491,6 +491,17 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 				Logger:   logger,
 			})
 		},
+		// The held releaser runs whatever DELIVERY_HOLD_UNROUTED is set to, so turning the flag off
+		// never strands already-held messages.
+		func(backgroundCtx context.Context) {
+			dispatch.RunReleaser(backgroundCtx, dispatch.ReleaserConfig{
+				Kind:     "held",
+				Releaser: dispatch.ReleaserFunc(messageService.ReleaseHeld),
+				Interval: dispatch.DefaultHeldReleaseInterval,
+				Wake:     worker.Wake,
+				Logger:   logger,
+			})
+		},
 		func(backgroundCtx context.Context) {
 			heartbeat.RunChecker(backgroundCtx, heartbeat.CheckerConfig{
 				Service:   heartbeatService,

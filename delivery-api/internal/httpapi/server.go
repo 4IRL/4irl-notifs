@@ -369,6 +369,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /v1/admin/messages", server.requireMessages(server.handleCreateMessage(false)))
 	server.mux.HandleFunc("GET /v1/admin/scheduled-messages", server.requireMessages(server.handleListScheduledMessages))
 	server.mux.HandleFunc("DELETE /v1/admin/scheduled-messages/{id}", server.requireMessages(server.handleAdminCancelMessage))
+	server.mux.HandleFunc("GET /v1/admin/held-failures", server.requireMessages(server.handleListHeldFailures))
 	server.mux.HandleFunc("GET /v1/admin/deliveries", server.requireMessages(server.handleListDeliveries))
 	server.mux.HandleFunc("GET /v1/admin/deliveries/{id}/attempts", server.requireMessages(server.handleListAttempts))
 	server.mux.HandleFunc("POST /v1/admin/deliveries/{id}/replay", server.requireMessages(server.handleReplayDelivery))

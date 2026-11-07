@@ -77,6 +77,11 @@ type fakeMessages struct {
 	listScheduledTotal  int
 	listScheduledErr    error
 	listScheduledCalls  []int
+
+	listHeldFailuresResult []message.HeldFailure
+	listHeldFailuresTotal  int
+	listHeldFailuresErr    error
+	listHeldFailuresCalls  []int
 }
 
 type appAndID struct {
@@ -156,10 +161,16 @@ func (fake *fakeMessages) ListScheduled(_ context.Context, limit int) ([]message
 	return fake.listScheduledResult, fake.listScheduledTotal, fake.listScheduledErr
 }
 
+func (fake *fakeMessages) ListHeldFailures(_ context.Context, limit int) ([]message.HeldFailure, int, error) {
+	fake.listHeldFailuresCalls = append(fake.listHeldFailuresCalls, limit)
+	return fake.listHeldFailuresResult, fake.listHeldFailuresTotal, fake.listHeldFailuresErr
+}
+
 func (fake *fakeMessages) totalCalls() int {
 	return len(fake.submitCalls) + len(fake.getCalls) + len(fake.getByKeyCalls) + len(fake.awaitCalls) +
 		len(fake.listDeliveriesCalls) + len(fake.listAttemptsCalls) + len(fake.replayCalls) +
-		len(fake.cancelCalls) + len(fake.cancelByKeyCalls) + len(fake.adminCancelCalls) + len(fake.listScheduledCalls)
+		len(fake.cancelCalls) + len(fake.cancelByKeyCalls) + len(fake.adminCancelCalls) + len(fake.listScheduledCalls) +
+		len(fake.listHeldFailuresCalls)
 }
 
 func failingMessages(err error) *fakeMessages {
@@ -167,6 +178,7 @@ func failingMessages(err error) *fakeMessages {
 		submitErr: err, getErr: err, getByKeyErr: err, awaitErr: err,
 		listDeliveriesErr: err, listAttemptsErr: err, replayErr: err,
 		cancelErr: err, cancelByKeyErr: err, adminCancelErr: err, listScheduledErr: err,
+		listHeldFailuresErr: err,
 	}
 }
 
@@ -748,6 +760,7 @@ func TestWriteMessageErrorBranches(testInstance *testing.T) {
 		{name: "cancel", method: http.MethodDelete, path: "/v1/messages/" + sampleMessageID + "?app_id=urls4irl"},
 		{name: "cancel by key", method: http.MethodDelete, path: "/v1/messages?app_id=urls4irl&idempotency_key=k"},
 		{name: "list scheduled", method: http.MethodGet, path: "/v1/admin/scheduled-messages"},
+		{name: "list held failures", method: http.MethodGet, path: "/v1/admin/held-failures"},
 		{name: "admin cancel", method: http.MethodDelete, path: "/v1/admin/scheduled-messages/" + sampleMessageID},
 	}
 	for _, testCase := range testCases {
@@ -778,6 +791,7 @@ func TestInternalErrorsAreLoggedButNeverReturned(testInstance *testing.T) {
 		{name: "cancel", method: http.MethodDelete, path: "/v1/messages/" + sampleMessageID + "?app_id=urls4irl"},
 		{name: "cancel by key", method: http.MethodDelete, path: "/v1/messages?app_id=urls4irl&idempotency_key=k"},
 		{name: "list scheduled", method: http.MethodGet, path: "/v1/admin/scheduled-messages"},
+		{name: "list held failures", method: http.MethodGet, path: "/v1/admin/held-failures"},
 		{name: "admin cancel", method: http.MethodDelete, path: "/v1/admin/scheduled-messages/" + sampleMessageID},
 	}
 	for _, route := range routes {
@@ -914,6 +928,7 @@ func TestNilMessagesFailsClosed(testInstance *testing.T) {
 		{name: "cancel", method: http.MethodDelete, path: "/v1/messages/" + sampleMessageID + "?app_id=urls4irl"},
 		{name: "cancel by key", method: http.MethodDelete, path: "/v1/messages?app_id=urls4irl&idempotency_key=k"},
 		{name: "list scheduled", method: http.MethodGet, path: "/v1/admin/scheduled-messages"},
+		{name: "list held failures", method: http.MethodGet, path: "/v1/admin/held-failures"},
 		{name: "admin cancel", method: http.MethodDelete, path: "/v1/admin/scheduled-messages/" + sampleMessageID},
 	}
 	for _, route := range routes {
@@ -934,6 +949,7 @@ func TestMessageResponsesAreNotCacheable(testInstance *testing.T) {
 		{http.MethodPost, "/v1/messages", validSubmitBody},
 		{http.MethodGet, "/v1/messages/" + sampleMessageID + "?app_id=urls4irl", ""},
 		{http.MethodGet, "/v1/admin/deliveries", ""},
+		{http.MethodGet, "/v1/admin/held-failures", ""},
 		{http.MethodPost, "/v1/admin/deliveries/1/replay", ""},
 		{http.MethodGet, "/v1/messages?app_id=urls4irl", ""},
 	} {
@@ -982,6 +998,8 @@ func TestMessageRoutesRejectUnsupportedRequests(testInstance *testing.T) {
 		{name: "POST scheduled messages", method: http.MethodPost, path: "/v1/admin/scheduled-messages", wantStatus: http.StatusMethodNotAllowed},
 		{name: "GET scheduled message by id", method: http.MethodGet, path: "/v1/admin/scheduled-messages/" + sampleMessageID, wantStatus: http.StatusMethodNotAllowed},
 		{name: "DELETE scheduled messages list", method: http.MethodDelete, path: "/v1/admin/scheduled-messages", wantStatus: http.StatusMethodNotAllowed},
+		{name: "POST held failures", method: http.MethodPost, path: "/v1/admin/held-failures", wantStatus: http.StatusMethodNotAllowed},
+		{name: "held failures outside admin", method: http.MethodGet, path: "/v1/held-failures", wantStatus: http.StatusNotFound},
 		{name: "scheduled messages outside admin", method: http.MethodGet, path: "/v1/scheduled-messages", wantStatus: http.StatusNotFound},
 		{name: "POST message by id", method: http.MethodPost, path: "/v1/messages/" + sampleMessageID, wantStatus: http.StatusMethodNotAllowed},
 		{name: "POST deliveries list", method: http.MethodPost, path: "/v1/admin/deliveries", wantStatus: http.StatusMethodNotAllowed},

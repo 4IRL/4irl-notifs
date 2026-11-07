@@ -95,6 +95,9 @@ type Messages interface {
 	// ListScheduled returns up to limit scheduled messages, soonest first, and the
 	// total number of scheduled messages.
 	ListScheduled(ctx context.Context, limit int) ([]message.ScheduledMessage, int, error)
+	// ListHeldFailures returns up to limit held messages whose release failed
+	// terminally, newest first, and the uncapped total of such messages.
+	ListHeldFailures(ctx context.Context, limit int) ([]message.HeldFailure, int, error)
 }
 
 // createMessageRequestBody is the POST /v1/messages body. Unknown top-level
@@ -214,6 +217,23 @@ type scheduledMessageView struct {
 type scheduledMessagesResponseBody struct {
 	ScheduledMessages []scheduledMessageView `json:"scheduled_messages"`
 	Total             int                    `json:"total"`
+}
+
+// heldFailureView is the operator JSON form of one release-failed held message.
+// It carries no payload, display, idempotency key or recipient hash.
+type heldFailureView struct {
+	MessageID string    `json:"message_id"`
+	AppID     string    `json:"app_id"`
+	Channel   string    `json:"channel"`
+	Reason    string    `json:"reason"`
+	FailedAt  time.Time `json:"failed_at"`
+}
+
+// heldFailuresResponseBody wraps the failure list (never nil) and the uncapped
+// total, which may exceed the list's length.
+type heldFailuresResponseBody struct {
+	Failures []heldFailureView `json:"failures"`
+	Total    int               `json:"total"`
 }
 
 // messageResponseBody wraps one message view.
@@ -414,6 +434,29 @@ func (server *Server) handleListScheduledMessages(responseWriter http.ResponseWr
 		views = append(views, newScheduledMessageView(scheduledMessage))
 	}
 	writeJSON(responseWriter, http.StatusOK, scheduledMessagesResponseBody{ScheduledMessages: views, Total: total})
+}
+
+// handleListHeldFailures serves GET /v1/admin/held-failures?limit=. The limit is
+// parsed like the scheduled list's, so the service's range check is the single
+// source of the 400. Operator-only through the Cloudflare Access /v1/admin split,
+// not by delivery-api code.
+func (server *Server) handleListHeldFailures(responseWriter http.ResponseWriter, request *http.Request) {
+	failures, total, err := server.messages.ListHeldFailures(request.Context(), parseListLimit(request))
+	if err != nil {
+		server.writeMessageError(responseWriter, request, err)
+		return
+	}
+	views := make([]heldFailureView, 0, len(failures))
+	for _, failure := range failures {
+		views = append(views, heldFailureView{
+			MessageID: failure.MessageID,
+			AppID:     failure.AppID,
+			Channel:   failure.Channel,
+			Reason:    failure.Reason,
+			FailedAt:  failure.FailedAt.UTC(),
+		})
+	}
+	writeJSON(responseWriter, http.StatusOK, heldFailuresResponseBody{Failures: views, Total: total})
 }
 
 // handleListDeliveries serves GET /v1/admin/deliveries?state=&limit=. The state

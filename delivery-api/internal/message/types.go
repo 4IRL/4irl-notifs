@@ -232,6 +232,40 @@ type StoredMessage struct {
 	Deliveries          []Delivery
 }
 
+// ReleaseFailedReasonInvalid is the release_failed_reason of a held message
+// that can never be delivered as written (a *ValidationError at release).
+const ReleaseFailedReasonInvalid = "release_invalid"
+
+// HeldPair is one (app, channel) pair that has held messages.
+type HeldPair struct {
+	AppID   string
+	Channel string
+}
+
+// HeldFailure is one held message whose release failed terminally, as the
+// operator sees it. It carries no payload, display, key or recipient.
+type HeldFailure struct {
+	MessageID string
+	AppID     string
+	Channel   string
+	Reason    string
+	FailedAt  time.Time
+}
+
+// HeldReleaseResult is what ReleaseHeldMessage did.
+type HeldReleaseResult string
+
+const (
+	// HeldReleased means pending delivery rows were inserted.
+	HeldReleased HeldReleaseResult = "released"
+	// HeldScheduled means scheduled delivery rows were inserted for a future
+	// deliver_at.
+	HeldScheduled HeldReleaseResult = "scheduled"
+	// HeldSkipped means the lock was not obtained or the message is no longer
+	// held; nothing was written.
+	HeldSkipped HeldReleaseResult = "skipped"
+)
+
 // MessageState is the message-row state DeriveStatus needs besides the
 // deliveries.
 //

@@ -95,6 +95,30 @@ type Store interface {
 	// Held messages count against these caps only, never the scheduled ones.
 	// Both caps must be positive.
 	InsertHeldMessage(ctx context.Context, envelope Envelope, caps HeldCaps, now time.Time) (StoredMessage, bool, error)
+	// ListHeldPairs returns up to limit distinct (app, channel) pairs of held,
+	// uncancelled, route-mode messages (no to_destination or to_recipient)
+	// strictly after the keyset cursor, ordered by app then channel. Never nil.
+	ListHeldPairs(ctx context.Context, after HeldPair, limit int) ([]HeldPair, error)
+	// ListReleasableHeld is the unlocked probe: up to limit held route-mode
+	// messages whose pair is in pairs, ordered held_at then id, without
+	// deliveries. Empty pairs returns an empty slice.
+	ListReleasableHeld(ctx context.Context, pairs []HeldPair, limit int) ([]StoredMessage, error)
+	// ReleaseHeldMessage locks the held message (SKIP LOCKED, re-checking it is
+	// still held and uncancelled) and inserts one delivery per target: pending
+	// now, or scheduled at a future deliver_at. In the same transaction it sets
+	// released_at = now and clears held_at. It returns HeldSkipped, writing
+	// nothing, when the lock is not obtained or the message is no longer held.
+	// Empty targets are an error. Release is exempt from the scheduled caps.
+	ReleaseHeldMessage(
+		ctx context.Context, messageID string, targets []DeliveryTarget, now time.Time,
+	) (HeldReleaseResult, error)
+	// FailHeldRelease terminally fails a held message under the same lock:
+	// release_failed_at = now, release_failed_reason = reason, held_at cleared.
+	// It reports false when skipped. Only ReleaseFailedReasonInvalid is accepted.
+	FailHeldRelease(ctx context.Context, messageID string, reason string, now time.Time) (bool, error)
+	// ListHeldFailures returns up to limit release-failed messages, newest
+	// first, and the uncapped count, from one snapshot. Never nil.
+	ListHeldFailures(ctx context.Context, limit int) ([]HeldFailure, int, error)
 	// ReplaceScheduledMessage swaps the content and deliveries of the message at
 	// (envelope.AppID, envelope.IdempotencyKey) for the submitted ones, under the
 	// message row lock, but only while the message is still scheduled. It keeps

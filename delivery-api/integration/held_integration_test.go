@@ -432,3 +432,51 @@ func TestHoldRouteToAnotherAppsDestinationIsHeld(testInstance *testing.T) {
 	app.submitHeld(testInstance, "POST message routed only to another app's destination", "",
 		app.body("held-usable-"+suffix, channel))
 }
+
+// holdReleaseTimeout is how long the live release test waits: above the held
+// releaser's 5s interval, with room for a slow tick.
+const (
+	holdReleaseTimeout = 20 * time.Second
+	holdReleasePoll    = 250 * time.Millisecond
+)
+
+// TestHoldReleasedWhenARouteAppears holds a message, then adds a route on its exact unique channel
+// (no wildcard, so no other test's held message is released) and waits for the held releaser to
+// turn it into deliveries.
+func TestHoldReleasedWhenARouteAppears(testInstance *testing.T) {
+	requireHoldStack(testInstance)
+	app := newUniqueHoldApp(testInstance)
+	suffix := randomSuffix(testInstance)
+	channel := "it_" + suffix
+	destinationName := "itest_" + suffix
+
+	created := app.submitHeld(testInstance, "POST unrouted message", "", app.body("held-release-"+suffix, channel))
+
+	createDestination(testInstance, destinationName, map[string]any{
+		"type": registry.TypeWebhook,
+		"secrets": map[string]string{
+			"url":            blockedWebhookURL,
+			"signing_secret": ("sign" + suffix + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")[:signingSecretLength],
+		},
+	})
+	createRoute(testInstance, channel, destinationName)
+
+	deadline := time.Now().Add(holdReleaseTimeout)
+	var view messageJSON
+	for time.Now().Before(deadline) {
+		view = getAs(testInstance, app.appID, created.Message.MessageID)
+		if view.Status != statusUnroutedName {
+			break
+		}
+		time.Sleep(holdReleasePoll)
+	}
+	if view.Status == statusUnroutedName {
+		testInstance.Fatalf("message %s still %s %v after the route appeared, want it released",
+			created.Message.MessageID, view.Status, holdReleaseTimeout)
+	}
+	// Released: cleanup deletes the app's rows instead of cancelling a message that is no longer held.
+	app.held = nil
+	if len(view.Deliveries) == 0 {
+		testInstance.Fatalf("released message view = %+v, want at least one delivery", view)
+	}
+}
