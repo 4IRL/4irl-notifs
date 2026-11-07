@@ -13,6 +13,7 @@ import {
   heartbeatWire,
   identityBindingWire,
   identityKeyWire,
+  identityRegistrarWire,
   identityRequestWire,
   maxRenderedLines,
   mockDelivery,
@@ -2650,6 +2651,296 @@ test.describe('admin UI Delivery tab', () => {
       'POST /delivery/v1/admin/app-identity/keys/11/revoke',
       'DELETE /delivery/v1/admin/app-identity/bindings/tasktracker',
     ]);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  const hostedRegistrar = { id: 1, prefix: 'hosted_' };
+
+  test('app identities: a registrar request is approved with a prefix and the registrar is listed', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRequests: [
+        identityRequestWire({
+          id: 7,
+          appId: null,
+          kind: 'registrar',
+          repository: '4IRL/hosting',
+        }),
+      ],
+    });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    await section
+      .getByRole('button', { name: 'Approve registrar request from 4IRL/hosting', exact: true })
+      .click();
+    const dialog = page.getByRole('dialog', { name: 'Approve registrar?' });
+    const prefix = dialog.getByLabel('Reserved prefix');
+    await expect(prefix).toBeFocused();
+    await prefix.fill('hosted_');
+    await dialog.getByRole('button', { name: 'Approve registrar', exact: true }).click();
+
+    await expect(section.getByText('Approved registrar hosted_ for 4IRL/hosting')).toBeVisible();
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      section.getByRole('button', { name: 'Delete registrar hosted_', exact: true }),
+    ).toBeFocused();
+    expect(mock.mutations.map((request) => `${request.method} ${request.pathname}`)).toEqual([
+      'POST /delivery/v1/admin/app-identity/requests/7/approve-registrar',
+    ]);
+    expect(mock.mutations[0].body).toEqual({ prefix: 'hosted_' });
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: a prefix-class 409 stays in the dialog under the field', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRequests: [
+        identityRequestWire({ id: 7, appId: null, kind: 'registrar', repository: '4IRL/hosting' }),
+      ],
+      approveRegistrarError: { status: 409, message: 'prefix already used' },
+    });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    await section
+      .getByRole('button', { name: 'Approve registrar request from 4IRL/hosting', exact: true })
+      .click();
+    const dialog = page.getByRole('dialog', { name: 'Approve registrar?' });
+    await dialog.getByLabel('Reserved prefix').fill('hosted_');
+    await dialog.getByRole('button', { name: 'Approve registrar', exact: true }).click();
+
+    await expect(dialog.getByText('prefix already used')).toBeVisible();
+    await expect(dialog.getByLabel('Reserved prefix')).toBeFocused();
+    await expect(section.locator('tr[data-request-id="7"]')).toBeVisible();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: a request-class 409 closes the dialog and announces the reason', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRequests: [
+        identityRequestWire({ id: 7, appId: null, kind: 'registrar', repository: '4IRL/hosting' }),
+      ],
+      approveRegistrarError: { status: 409, message: 'request is not pending' },
+    });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    await section
+      .getByRole('button', { name: 'Approve registrar request from 4IRL/hosting', exact: true })
+      .click();
+    const dialog = page.getByRole('dialog', { name: 'Approve registrar?' });
+    await dialog.getByLabel('Reserved prefix').fill('hosted_');
+    await dialog.getByRole('button', { name: 'Approve registrar', exact: true }).click();
+
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      section.getByText('Could not approve registrar: request is not pending'),
+    ).toBeVisible();
+    await expect(section.getByRole('heading', { name: 'Requests' })).toBeFocused();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: deleting a registrar unbinds its apps and reports the count', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRegistrars: [identityRegistrarWire({ id: 1, appCount: 2 })],
+      identityBindings: [
+        identityBindingWire({
+          appId: 'hosted_a',
+          registrar: hostedRegistrar,
+          acknowledgedAt: TIMESTAMP,
+        }),
+        identityBindingWire({
+          appId: 'hosted_b',
+          registrar: hostedRegistrar,
+          acknowledgedAt: TIMESTAMP,
+        }),
+      ],
+    });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    await expect(section.locator('tr[data-registrar-id="1"]')).toContainText('of 50');
+    await section.getByRole('button', { name: 'Delete registrar hosted_', exact: true }).click();
+    await expect(
+      page.getByRole('dialog', { name: 'Delete registrar?' }).getByText(/2 apps/),
+    ).toBeVisible();
+    await page
+      .getByRole('button', { name: 'Confirm delete registrar hosted_', exact: true })
+      .click();
+
+    await expect(section.getByText('Deleted registrar hosted_; unbound 2 apps')).toBeVisible();
+    await expect(section.locator('tr[data-app-id]')).toHaveCount(0);
+    expect(mock.mutations.map((request) => `${request.method} ${request.pathname}`)).toEqual([
+      'DELETE /delivery/v1/admin/app-identity/registrars/1',
+    ]);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: Mark seen, Mark all seen (only with 2+ New) and the summary', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRegistrars: [identityRegistrarWire({ id: 1, appCount: 4 })],
+      identityBindings: [
+        identityBindingWire({
+          appId: 'hosted_a',
+          registrar: hostedRegistrar,
+          acknowledgedAt: null,
+        }),
+        identityBindingWire({
+          appId: 'hosted_b',
+          registrar: hostedRegistrar,
+          acknowledgedAt: null,
+        }),
+        identityBindingWire({
+          appId: 'hosted_c',
+          registrar: hostedRegistrar,
+          acknowledgedAt: null,
+        }),
+        identityBindingWire({
+          appId: 'hosted_d',
+          registrar: hostedRegistrar,
+          acknowledgedAt: TIMESTAMP,
+        }),
+        identityBindingWire({ appId: 'plain' }),
+      ],
+    });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    const summary = section.locator('.app-identities__summary');
+    const markAll = section.getByRole('button', { name: 'Mark all new apps seen', exact: true });
+    await expect(summary).toHaveText('3 new apps');
+    await expect(markAll).toBeVisible();
+    await expect(section.locator('tr[data-app-id="hosted_a"]')).toContainText('New');
+    await expect(section.locator('tr[data-app-id="hosted_d"]')).not.toContainText('New');
+    await expect(section.locator('tr[data-app-id="plain"]')).not.toContainText('via ');
+
+    await section.getByRole('button', { name: 'Mark hosted_a seen', exact: true }).click();
+    await expect(section.getByText('Marked hosted_a seen')).toBeVisible();
+    await expect(
+      section.getByRole('button', { name: 'Unbind hosted_a', exact: true }),
+    ).toBeFocused();
+    await expect(summary).toHaveText('2 new apps');
+    await expect(markAll).toBeVisible();
+
+    await markAll.click();
+    await expect(section.getByText('Marked 2 apps seen')).toBeVisible();
+    await expect(section.getByRole('heading', { name: 'Approved apps' })).toBeFocused();
+    await expect(summary).toHaveText('');
+    await expect(markAll).toHaveCount(0);
+    await expect(section.locator('.app-identities__row--new')).toHaveCount(0);
+
+    expect(mock.mutations.map((request) => `${request.method} ${request.pathname}`)).toEqual([
+      'POST /delivery/v1/admin/app-identity/bindings/hosted_a/acknowledge',
+      'POST /delivery/v1/admin/app-identity/bindings/acknowledge-all',
+    ]);
+    expect(mock.mutations[1].body).toEqual({ app_ids: ['hosted_b', 'hosted_c'] });
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: a single New row has no Mark all seen button', async ({ page }) => {
+    const mock = await mockDelivery(page, {
+      identityRegistrars: [identityRegistrarWire({ id: 1, appCount: 1 })],
+      identityBindings: [
+        identityBindingWire({
+          appId: 'hosted_a',
+          registrar: hostedRegistrar,
+          acknowledgedAt: null,
+        }),
+      ],
+    });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    await expect(section.locator('.app-identities__summary')).toHaveText('1 new app');
+    await expect(section.getByRole('button', { name: 'Mark all new apps seen' })).toHaveCount(0);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: a Mark seen 404 is a neutral result, not a row error', async ({ page }) => {
+    const mock = await mockDelivery(page, {
+      identityRegistrars: [identityRegistrarWire({ id: 1, appCount: 1 })],
+      identityBindings: [
+        identityBindingWire({
+          appId: 'hosted_a',
+          registrar: hostedRegistrar,
+          acknowledgedAt: null,
+        }),
+      ],
+      acknowledgeError: { status: 404, message: 'binding does not exist' },
+    });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    await section.getByRole('button', { name: 'Mark hosted_a seen', exact: true }).click();
+
+    await expect(section.getByText('hosted_a is no longer bound')).toBeVisible();
+    await expect(section.locator('tr[data-app-id="hosted_a"]')).toHaveCount(0);
+    await expect(section.getByRole('alert')).toHaveCount(0);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities: a failed Mark all seen shows inline above the table and keeps focus', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRegistrars: [identityRegistrarWire({ id: 1, appCount: 2 })],
+      identityBindings: [
+        identityBindingWire({
+          appId: 'hosted_a',
+          registrar: hostedRegistrar,
+          acknowledgedAt: null,
+        }),
+        identityBindingWire({
+          appId: 'hosted_b',
+          registrar: hostedRegistrar,
+          acknowledgedAt: null,
+        }),
+      ],
+      acknowledgeAllError: { status: 500, message: 'internal error' },
+    });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+    const markAll = section.getByRole('button', { name: 'Mark all new apps seen', exact: true });
+    await markAll.click();
+
+    await expect(section.getByText('Could not mark apps seen: internal error')).toBeVisible();
+    await expect(markAll).toBeFocused();
+    await expect(section.locator('tr[data-app-id="hosted_a"]')).toContainText('New');
+    await expect(section.getByRole('table', { name: 'Approved apps' })).toBeVisible();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('app identities at 390px: Mark seen lives in the kebab and focus returns to it', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      identityRegistrars: [identityRegistrarWire({ id: 1, appCount: 2 })],
+      identityBindings: [
+        identityBindingWire({
+          appId: 'hosted_a',
+          registrar: hostedRegistrar,
+          acknowledgedAt: null,
+        }),
+        identityBindingWire({
+          appId: 'hosted_b',
+          registrar: hostedRegistrar,
+          acknowledgedAt: null,
+        }),
+      ],
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'App identities' });
+
+    const menu = await openRowMenu({ page, row: 'hosted_a' });
+    await expect(menu.getByRole('menuitem', { name: 'Mark hosted_a seen' })).toBeVisible();
+    await menu.getByRole('menuitem', { name: 'Mark hosted_a seen' }).click();
+    await expect(section.getByText('Marked hosted_a seen')).toBeVisible();
+    await expect(rowKebab({ page, row: 'hosted_a' })).toBeFocused();
+    const reopened = await openRowMenu({ page, row: 'hosted_a' });
+    await expect(reopened.getByRole('menuitem', { name: 'Mark hosted_a seen' })).toHaveCount(0);
     expect(mock.unmocked).toEqual([]);
   });
 

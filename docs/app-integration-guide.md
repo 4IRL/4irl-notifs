@@ -194,6 +194,48 @@ You never create a key by hand. The app's deploy workflow trades a GitHub-signed
    of them (a renamed workflow file, deploying from another branch, adding an `environment:`), ask the
    operator to unbind the app, then deploy again and have the new request approved.
 
+#### Registrars: one workflow, many apps
+
+One approved workflow identity binds exactly one `app_id`. A monorepo or hosting platform that deploys many
+apps from one workflow (the `GPropersi/apps` platform is the intended user) would need an approval click per
+app, and could register only its first. A **registrar** removes that: the operator approves the workflow
+identity **once**, together with a reserved **prefix** (for example `hosted_`). After that the workflow
+exchanges its OIDC token plus a bare app **name**, and every app it names gets its own `dak_` key with no
+further approval.
+
+- **Who it is for.** A trusted deploy workflow that creates apps on demand. A normal single-app repo keeps
+  the per-app flow above and never needs a registrar.
+- **Sending a name.** Post `{"name","token"}` instead of `{"app_id","token"}`; send exactly one of the two
+  (`400 send exactly one of app_id or name` otherwise). A name must match `^[a-z0-9][a-z0-9_]*$`
+  (`400 invalid name`).
+- **Derived id and length.** The server computes `app_id = prefix + name`; the registrar never names a full
+  app id. The result must be a valid app id, at most **63 characters** in total (`400 invalid name` when the
+  name makes it longer). Every derived id is a normal app: destinations, routes, heartbeats, the ntfy
+  publisher and teardown all work as for any other app.
+- **First request.** A name from a workflow identity that matches no registrar and no binding files a
+  pending **registrar request** (`202 {"status":"pending","request_id"}`), in the same queue and under the
+  same 20-request cap as app requests. The operator approves it as a registrar with a prefix.
+- **Auto-create.** After approval a new name is created with no click: the person-service row, the
+  binding and the key arrive in one `200 {"status":"issued","app_id":"<prefix+name>","key","key_id"}`. The
+  operator sees it as an informational **New** row.
+- **Ownership.** A registrar can mint keys only for apps it created, inside its own prefix. A derived id that
+  is bound normally or by another registrar is `403 app id is not owned by this registrar`. The normal
+  per-repo flow can never claim an id inside a registrar prefix (`409 app id is reserved by a registrar`),
+  and a registrar's own token sent with an `app_id` is `403 identity does not match the approved binding`.
+  A registrar never learns about other apps or registrars.
+- **Cap.** At most **50** apps per registrar (`409 registrar app limit reached`).
+- **Overlap.** A new name is refused with `409 app id overlaps an approved app id` when it would be an
+  underscore-extension of a bound app id or the reverse (`hosted_a` and `hosted_a_b` cannot both exist).
+- **Retryable race.** `409 registration changed, retry` means the app was unbound or created concurrently;
+  exchange again with a fresh token.
+- **Unbind recreates.** Unbinding one registrar app is not a block: the registrar recreates it (as New
+  again) on its next deploy. Permanent removal is the platform's job (teardown, then stop deploying the name).
+- **Deleting a registrar** unbinds every app it created (their keys stop; owned objects stay, exactly as for
+  Unbind). The workflow identity can then be requested and approved again.
+- **One identity, one role.** A workflow identity bound as a normal app cannot become a registrar
+  (approving it as one is `409 workflow identity already bound`, and a bound app's token sending a `name` is
+  `403 identity does not match the approved binding`); a registrar's identity is never a normal app.
+
 ### Onboarding from the app's own repo (the `notifs-app` action)
 
 1. **Put the manifest in your repo** (any path, for example `.notifs/manifest.json`). It follows the
@@ -235,7 +277,11 @@ You never create a key by hand. The app's deploy workflow trades a GitHub-signed
    `manifest` (optional; without it only the exchange runs); `apply` (default `'true'`);
    `audience` (default `notifs-delivery`, which must equal the server's `DELIVERY_OIDC_AUDIENCE`, so
    pass it only if the operator changed that value). `app_id` must equal the `app_id` in the manifest.
-   The action requests the OIDC token, exchanges it,
+   **Registrar mode:** a workflow approved as a registrar passes `name` (env `NOTIFS_APP_NAME`) instead of
+   `app_id`; exactly one of the two is required, otherwise the action fails before any network call. On `200`
+   the outputs are `key` (masked), `key_id` and `app_id` (the derived `prefix + name`); on `202` it fails with
+   `registrar request #N awaits operator approval in the admin UI (App identities → approve as registrar)`.
+   A manifest whose `app_id` differs from the derived id fails. The action requests the OIDC token, exchanges it,
    masks the key in the logs, lints the manifest, then runs `apply` (or `plan` for any `apply` value other
    than `'true'`) with the new key. The output `steps.notifs.outputs.key` is the new key, already masked. If the 4irl-notifs
    repository is private, its Actions settings must allow your repository to use the action.
@@ -660,7 +706,7 @@ Every row except the exchange and `/readyz` also returns the key errors above (`
 
 | Method and path                                              | Request                       | Success                                                  | Errors                                                                          |
 | ------------------------------------------------------------ | ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `POST /v1/app-identity/exchange` (Access token only, no key) | `{"app_id","token":"<GitHub OIDC JWT>"}` | `202 {"status":"pending","request_id"}` (awaits operator approval) or `200 {"status":"issued","app_id","key","key_id"}` (the plaintext key, once) | 400 malformed body or `app_id`, 401 `invalid identity token`, 403 `identity does not match the approved binding`, 429 `too many pending identity requests`, 503 `identity unavailable`. The `notifs-app` action calls this for you. |
+| `POST /v1/app-identity/exchange` (Access token only, no key) | `{"app_id","token":"<GitHub OIDC JWT>"}` or, for a registrar workflow, `{"name","token":"<GitHub OIDC JWT>"}` (exactly one of `app_id` / `name`) | `202 {"status":"pending","request_id"}` (awaits operator approval) or `200 {"status":"issued","app_id","key","key_id"}` (the plaintext key, once; `app_id` is `prefix + name` in registrar form) | 400 malformed body, `app_id`, `invalid name` or `send exactly one of app_id or name`, 401 `invalid identity token`, 403 `identity does not match the approved binding` / `app id is not owned by this registrar`, 409 `app id is reserved by a registrar` (normal form, id inside a registrar prefix) / `registrar app limit reached` / `app id overlaps an approved app id` / `registration changed, retry`, 429 `too many pending identity requests`, 502 / 503 `app registry unavailable` (registrar auto-create, person-service), 503 `identity unavailable`. The `notifs-app` action calls this for you. |
 | `POST /v1/messages` (optional `?wait=0..10`)                 | envelope JSON (see Envelope)  | `202 {"message":{…},"duplicate":bool,"replaced":bool}` (status `unrouted`, with `deliveries: []`, when holding is on and no route matched) | 400 validation, 409 `destination disabled`, 413, 422 `no destination matched` (holding off) / `app has no ntfy publisher`, 429 (`too many held messages`, `held message capacity reached`, scheduled caps), 503 `messages unavailable` |
 | `GET /v1/messages/{id}?app_id=<app>`                         | none                          | `200 {"message":{…}}`                                    | 400 `app_id is required`, 404 `message not found`                               |
 | `GET /v1/messages?app_id=<app>&idempotency_key=<key>`        | none                          | `200 {"message":{…}}`                                    | 400, 404                                                                        |
@@ -820,12 +866,22 @@ The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_pr
 | `GET /v1/admin/apps/{app_id}/ntfy-publisher`         | none                                                                                          | `200 {"publisher":{…}}` (never the token)        | 404 when none is stored                                                      |
 | `DELETE /v1/admin/apps/{app_id}/ntfy-publisher`      | none                                                                                          | `204` (idempotent)                               |                                                                              |
 | `POST /v1/admin/messages`                            | the `POST /v1/messages` envelope, any `app_id` (optional `?wait=0..10`)                       | `202`, same as `POST /v1/messages`               | as `POST /v1/messages`, no key needed (admin send-test uses it)              |
-| `GET /v1/admin/app-identity/requests`                | none                                                                                          | `200 {"requests":[…]}` (pending first, then rejected from the last 30 days) |                                                  |
-| `POST /v1/admin/app-identity/requests/{id}/approve`  | none                                                                                          | `201 {"binding":{…}}` (the request is deleted)   | 400 `invalid request id`, 404 `request does not exist`, 409 `request is not pending` / `app already bound` / `workflow identity already bound` |
+| `GET /v1/admin/app-identity/requests`                | none                                                                                          | `200 {"requests":[…]}` (pending first, then rejected from the last 30 days); each carries `"kind":"app"\|"registrar"` and `"app_id": string\|null` (null for a registrar request) |                                                  |
+| `POST /v1/admin/app-identity/requests/{id}/approve`  | none                                                                                          | `201 {"binding":{…}}` (the request is deleted)   | 400 `invalid request id`, 404 `request does not exist`, 409 `request is not pending` / `request is a registrar request` / `app id is reserved by a registrar` / `app already bound` / `workflow identity already bound` |
+| `POST /v1/admin/app-identity/requests/{id}/approve-registrar` | `{"prefix":"hosted_"}` (strict JSON)                                                 | `201 {"registrar":{id, prefix, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at, app_count, app_limit}}` (the request and its sibling pending requests are deleted; pending app requests inside the prefix are rejected) | 400 `invalid prefix` (grammar `^[a-z0-9][a-z0-9_]{0,30}_$`, any prefix starting with `platform_`, stem `everyone`), 404 `request does not exist`, 409 `request is not pending` / `request is not a registrar request` / `prefix already used` / `prefix overlaps an approved app id or registrar` / `workflow identity already bound` |
+| `GET /v1/admin/app-identity/registrars`              | none                                                                                          | `200 {"registrars":[{id, prefix, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at, app_count, app_limit}]}` sorted by prefix; `app_limit` is the per-registrar app cap (50 today) |  |
+| `DELETE /v1/admin/app-identity/registrars/{id}`      | none                                                                                          | `200 {"id","deleted":bool,"unbound_apps":int}` (idempotent; unbinds every app the registrar created) | 400 `invalid registrar id` |
+| `POST /v1/admin/app-identity/bindings/{app_id}/acknowledge` | none                                                                                   | `200 {"binding":{…}}` (idempotent; keeps the first time) | 400 `invalid app_id`, 404 `binding does not exist` |
+| `POST /v1/admin/app-identity/bindings/acknowledge-all` | `{"app_ids":["…"]}` (strict JSON; 1-200 ids, the New rows the page displayed)               | `200 {"acknowledged":int}` (marks only the listed registrar apps still New; unknown, normal or already-seen ids are skipped; a repeat returns `0`) | 400 `app_ids must list 1 to 200 apps`, 400 `invalid app_id` |
 | `POST /v1/admin/app-identity/requests/{id}/reject`   | none                                                                                          | `200 {"request":{…,"status":"rejected"}}` (idempotent) | 400, 404                                                              |
-| `GET /v1/admin/app-identity/bindings`                | none                                                                                          | `200 {"bindings":[{app_id, github_repository, …, "keys":[{id, key_hint, state, …}]}]}`; `state` is `active`, `superseded` or `revoked` |  |
+| `GET /v1/admin/app-identity/bindings`                | none                                                                                          | `200 {"bindings":[{app_id, github_repository, …, "registrar":{id, prefix}\|null, "acknowledged_at": string\|null, "keys":[{id, key_hint, state, …}]}]}`; `state` is `active`, `superseded` or `revoked` |  |
 | `POST /v1/admin/app-identity/keys/{id}/revoke`       | none                                                                                          | `200 {"key":{…}}` (idempotent)                   | 400 `invalid key id`, 404 `key does not exist`                               |
 | `DELETE /v1/admin/app-identity/bindings/{app_id}`    | none                                                                                          | `200 {"app_id","deleted":bool}` (idempotent; every key stops, owned objects stay) | 400 `invalid app_id`                      |
+
+Approve precedence: `POST /v1/admin/app-identity/requests/{id}/approve` answers `404 request does not
+exist`, `409 request is not pending`, `409 request is a registrar request` and the reserved-id `409`
+before it checks that person-service is configured. `503` (app registry not configured) now appears only
+for an approvable app request. On a deploy without person-service those cases answered `503` before.
 
 Notes on the provisioning relay and publisher routes above (`POST /v1/admin/provision`,
 `POST /v1/admin/deprovision`, `POST /v1/admin/reset-password`, `POST /v1/admin/test-notify`,
@@ -1639,6 +1695,27 @@ no operator command can supply there, and it is dev/test-only.
 3. **Approve.** The app now appears under **Approved apps**; its next exchange (re-run the deploy job) gets
    a key. `409 app already bound` or `workflow identity already bound` means the app id or that workflow
    identity is already taken (unbind the other binding first if that is intended).
+
+**Approve a registrar (once per deploy workflow; model: "Registrars: one workflow, many apps").**
+1. When a trusted deploy workflow's first bare-name exchange fails with "registrar request #N awaits operator
+   approval", open **Requests**. The registrar row shows no app id, only the GitHub-verified repository,
+   workflow file, ref and environment. Approve only a workflow you trust to create apps: from now on it
+   creates and keys any number of apps (up to 50) inside the prefix without asking.
+2. **Approve as registrar...** and choose the **prefix**: lowercase letters, digits and underscores, ending in
+   `_`, 2-32 characters (for example `hosted_`). Pick something that names the platform, since every app it
+   creates is `prefix + name`. `platform_*` is refused on purpose: `_platform.json` shared destinations use
+   the `platform_` namespace and onboarding rejects any app id starting with it, so a prefix like
+   `platform_eu_` would mint apps that onboarding refuses (`400 invalid prefix`; `everyone_` and the
+   reserved ids are refused too). A prefix that overlaps a bound app id or another registrar prefix is
+   `409 prefix overlaps an approved app id or registrar`; a reused one is `409 prefix already used`.
+   Approving also rejects every pending app request whose id now falls inside the prefix.
+3. Apps the registrar creates appear under **Approved apps** with a `via <prefix>` marker and a **New**
+   badge. They need no action. **Mark seen** clears one; **Mark all seen** clears only the New apps listed on
+   the page (`POST bindings/acknowledge-all` with those ids), so an app created after the page loaded stays
+   New until you look at it.
+4. **Delete a registrar** (confirm; the dialog states the app count) removes the registrar and unbinds every
+   app it created, so all of their keys stop at once; owned objects stay, as for Unbind. **Unbind** on a single
+   registrar app is not a block: the registrar recreates it on its next deploy.
 
 **Reject a request.** **Reject** (then confirm) for a repository or workflow you do not recognise. The
 deploy keeps failing; the rejected request stays listed for 30 days, and a deploy with the same claims
