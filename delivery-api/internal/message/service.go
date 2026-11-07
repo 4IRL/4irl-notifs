@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/envint"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
@@ -90,8 +91,18 @@ type Publishers interface {
 	HasPublisher(ctx context.Context, appID string) (bool, error)
 }
 
+// PersonalTargets lists the personal destinations a to.recipient message also
+// fans out to. *personal.Service satisfies it.
+type PersonalTargets interface {
+	OptedInTargets(ctx context.Context, appID, personHash string) ([]personal.Target, error)
+}
+
 // ServiceConfig configures a Service.
 type ServiceConfig struct {
+	// PersonalTargets adds a delivery per enabled personal destination the
+	// recipient opted in for the sending app. Optional: when nil, a recipient
+	// message goes to the ntfy topic only.
+	PersonalTargets PersonalTargets
 	// Store persists messages. Required.
 	Store Store
 	// Resolver resolves destinations at submit time. Required.
@@ -186,6 +197,7 @@ type Service struct {
 	store          Store
 	resolver       Resolver
 	publishers     Publishers
+	personals      PersonalTargets
 	supportedTypes map[string]bool
 	wake           func()
 	logger         *slog.Logger
@@ -220,6 +232,7 @@ func NewService(config ServiceConfig) *Service {
 		store:          config.Store,
 		resolver:       config.Resolver,
 		publishers:     config.Publishers,
+		personals:      config.PersonalTargets,
 		supportedTypes: make(map[string]bool, len(config.SupportedTypes)),
 		wake:           config.Wake,
 		logger:         config.Logger,
@@ -431,7 +444,7 @@ func newSubmitOutcome(stored StoredMessage, duplicate bool, replaced bool) Submi
 // stores nothing.
 func (service *Service) resolveTargets(ctx context.Context, envelope Envelope) ([]DeliveryTarget, error) {
 	if envelope.ToRecipient != "" {
-		return service.resolveRecipientTarget(ctx, envelope)
+		return service.resolveRecipientTargets(ctx, envelope)
 	}
 	resolved, resolveErr := service.resolveRouteDestinations(ctx, envelope)
 	if resolveErr != nil {
@@ -482,13 +495,17 @@ func (service *Service) routeTargets(
 	return targets, nil
 }
 
-// resolveRecipientTarget builds the single synthetic ntfy delivery for a
-// to.recipient envelope, whose ToRecipient is already a person hash. The
-// recipient bypasses the registry (there is no destination row), so it fails
+// resolveRecipientTargets builds the synthetic ntfy delivery for a
+// to.recipient envelope, whose ToRecipient is already a person hash, followed
+// by one delivery per enabled personal destination of that person opted in for
+// the sending app (ordered by id). The set is a snapshot taken here, at
+// submit/replace time; it is never recomputed at release.
+//
+// The recipient bypasses the registry (there is no destination row), so it fails
 // closed itself: ntfy must have a sink, the per-person topic must fit ntfy's
 // 64-character cap, the display must be renderable, and the app must have a
 // publisher token (a nil Publishers is that same refusal, not a panic).
-func (service *Service) resolveRecipientTarget(ctx context.Context, envelope Envelope) ([]DeliveryTarget, error) {
+func (service *Service) resolveRecipientTargets(ctx context.Context, envelope Envelope) ([]DeliveryTarget, error) {
 	if !service.supportedTypes[registry.TypeNtfy] {
 		return nil, ErrUnsupportedDestinationType
 	}
@@ -509,11 +526,29 @@ func (service *Service) resolveRecipientTarget(ctx context.Context, envelope Env
 	if !hasPublisher {
 		return nil, registry.ErrNoPublisher
 	}
-	return []DeliveryTarget{{
+	targets := []DeliveryTarget{{
 		DestinationID:   nil,
 		DestinationName: registry.RecipientDestinationName,
 		DestinationType: registry.TypeNtfy,
-	}}, nil
+	}}
+	if service.personals == nil {
+		return targets, nil
+	}
+	personalTargets, personalErr := service.personals.OptedInTargets(ctx, envelope.AppID, envelope.ToRecipient)
+	if personalErr != nil {
+		return nil, personalErr
+	}
+	for _, personalTarget := range personalTargets {
+		if !service.supportedTypes[personalTarget.Type] {
+			return nil, ErrUnsupportedDestinationType
+		}
+		targets = append(targets, DeliveryTarget{
+			DestinationID:   nil,
+			DestinationName: personal.PersonalDeliveryName(personalTarget.ID),
+			DestinationType: personalTarget.Type,
+		})
+	}
+	return targets, nil
 }
 
 // Get returns the message with the given id, scoped to appID: a message that
