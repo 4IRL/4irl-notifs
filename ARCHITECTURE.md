@@ -12,7 +12,7 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | none (compose network only, no public hostname; the public route, its Access app and the origin port were removed when the runbook ran 2026-11-05) | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`), callable only by delivery-api with the internal credential. |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD, the app provisioning door `/v1/apps/{app_id}/{provision,deprovision,set-password,reset-password,ntfy-publisher}` (the only way an app reaches provisioning-api), the operator provisioning relay under `/v1/admin` (`provision`, `deprovision`, `reset-password`, `users`, `test-notify`, `apps/{app_id}/…`), `GET /healthz/provisioning`, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel, and the operator `GET /v1/admin/held-failures` list. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`, 1 s), a held-message releaser (the same `RunReleaser` with kind `held`, 5 s, always on whatever `DELIVERY_HOLD_UNROUTED` is), a retention sweeper the heartbeat checker (30 s tick) and the heartbeat prober (website probe loop, 10 s scan, bounded concurrency). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD (including `/personal-destinations`, with the operator `/v1/admin/personal-destinations` moderation routes), the app provisioning door `/v1/apps/{app_id}/{provision,deprovision,set-password,reset-password,ntfy-publisher}` (the only way an app reaches provisioning-api), the operator provisioning relay under `/v1/admin` (`provision`, `deprovision`, `reset-password`, `users`, `test-notify`, `apps/{app_id}/…`), `GET /healthz/provisioning`, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel, and the operator `GET /v1/admin/held-failures` list. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`, 1 s), a held-message releaser (the same `RunReleaser` with kind `held`, 5 s, always on whatever `DELIVERY_HOLD_UNROUTED` is), a retention sweeper the heartbeat checker (30 s tick) and the heartbeat prober (website probe loop, 10 s scan, bounded concurrency). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/people`, `/apps` and `/delivery/*` proxy Functions. |
 | **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor on Cloudflare's network, independent of the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`; a stale or malformed `heartbeat_prober` also pages, an absent one is tolerated so an older delivery-api stays quiet), provisioning-api (target id `provisioning-api`, probed through delivery-api `GET /healthz/provisioning`; reachability only, it does not detect internal-credential drift) and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes plus a daily summary (16:00 UTC) to a dedicated Discord webhook. A failed probe is retried once after 30 s and only the retry's verdict can alert, so a transient failure (a stray 520, or the few seconds a production deploy takes to recreate the containers) stays quiet; each attempt (`watchdog: probe id=… attempt=… ok=… http=… duration_ms=…`) and each run (`watchdog: run state=… up=… down=… transitions=… discord=… kv_write=…`) is logged and kept by Workers Logs. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
@@ -142,7 +142,9 @@ the VPS; person-service + admin UI are Cloudflare-native.
   routes and checks that lost their last destination link and now deliver nowhere. It also carries
   `held_messages`: the app's held messages (`held_at IS NOT NULL`), deleted in the same transaction as the
   other owned objects (`0` when none). Cancelled-held and release-failed rows are deliberately left and age
-  out through the retention sweep; they are inert. A hold after teardown is not accepted, because the app's
+  out through the retention sweep; they are inert. It also carries `personal_opt_ins` and
+  `personal_destinations` (the app's personal opt-ins removed and personal destinations deleted; see
+  "Personal destinations"). A hold after teardown is not accepted, because the app's
   keys are removed before the cascade, so `POST /v1/messages` fails `401`. `409` means a publisher
   mint is in progress, `400 invalid app_id`, `503` when teardown is not configured.
 
@@ -249,6 +251,41 @@ Access app exists. Operator runbook: create the Access app and add the proxy tok
 hostname, then set the Pages `DELIVERY_API_URL` binding and add `/delivery` to the `notifs-admin` Bypass
 app. The per-app identity runbook (approve, revoke, unbind) is in `docs/app-integration-guide.md`
 ("Operator runbook: app identities").
+
+### Personal destinations
+
+End users can receive an app's `to.recipient` messages at their own Discord or webhook endpoints
+(`internal/personal/`, `httpapi/apps_personal.go`, `httpapi/admin_personal.go`). Full app-facing contract:
+`docs/app-integration-guide.md` "Personal destinations".
+
+- **Data model** (migration `0013_personal_destinations.sql`): `personal_destinations` (keyed by `person_hash`
+  only, never an email; `registered_by_app_id`, `registrar_removed_at`, `label`, `type` in
+  `discord`/`webhook`, `config`, `sealed_secrets`, `enabled` with `disabled_by` in `app`/`operator`/`system`)
+  and `personal_destination_opt_ins` (`app_id`, `personal_destination_id`, cascade on destination delete; no FK on
+  `app_id`). Separate tables, not a third `destinations.owner_kind`, so the registry's owner CHECKs, routes and
+  operator lists are untouched. `message_deliveries.dead_reason` gains `opted_out`. Cap: 50 per person per registering app.
+- **Routes:** `POST` (create), `POST …/lookup`, `PATCH`, `DELETE` and `PUT`/`DELETE …/opt-in` under
+  `/v1/apps/{app_id}/personal-destinations` (key-gated, person always in the JSON body, `503` when the service
+  is not wired); operator `GET /v1/admin/personal-destinations?person_hash=`, `PATCH`/`DELETE …/{id}`.
+  Operator disable (`disabled_by = 'operator'`) cannot be undone by an app.
+- **Fan-out and naming:** `message.Service.resolveRecipientTargets` returns the `@recipient` ntfy target plus one
+  target per enabled personal destination of the person opted in for the sending app, snapshotted at submit or
+  scheduled replace (never recomputed at release). A personal delivery has `destination_id` NULL and name
+  `@personal_<id>`, built and parsed only by `personal.PersonalDeliveryName` / `ParsePersonalDeliveryName`.
+  A type with no sink fails the submit `422`.
+- **Send-time rules (worker):** the row is resolved by id and the message's `app_id` + `to_recipient`: absent,
+  other person or unparseable name is dead `destination_deleted`; disabled `destination_disabled`; no opt-in
+  `opted_out`; no resolver `unsupported_type`; store/unseal errors leave the lease to expire (retry);
+  `410 Gone` disables the personal row (`disabled_by = 'system'`), never the operator registry. Sends use the
+  same SSRF-guarded discord/webhook sinks.
+- **Teardown and deprovision:** app teardown (`appteardown`, `Deleted.PersonalOptIns`/`PersonalDestinations`)
+  locks the affected rows in ascending id order, deletes the app's opt-ins, deletes rows it registered that no
+  other app uses, marks the rest `registrar_removed_at`, and reaps orphans. App and operator deprovision
+  (`ForgetPersonForApp`, `ForgetPerson`) clean up locally first and then relay; a cleanup failure is `503` and the
+  relay is not sent, and with no service wired the cleanup is skipped with a warning. An opt-out that leaves a
+  registrar-removed row with no opt-ins reaps it in the same transaction.
+- **Key rotation:** `personal_destinations.sealed_secrets` is registered in `keyrotation.Registry()` (AAD keyed by
+  the row id).
 
 ### App identity
 
@@ -548,7 +585,9 @@ sequenceDiagram
     `VITE_PENDING_SENDS_ENABLED=true` (Pending sends) and `VITE_DELIVERY_LOG_ENABLED=true` (Delivery Log)
     and `VITE_HEARTBEATS_ENABLED=true` (Heartbeats; requires `VITE_DESTINATIONS_ENABLED`)
     and `VITE_APP_IDENTITIES_ENABLED=true` (App identities: approve or reject an app's identity request,
-    revoke a key, unbind an app; independent of the other flags, shown only with its backend).
+    revoke a key, unbind an app; independent of the other flags, shown only with its backend)
+    and `VITE_PERSONAL_DESTINATIONS_ENABLED=true` (Personal destinations: list, disable, enable and delete
+    people's personal endpoints; independent of the other flags, shown only with its backend).
     The Pending sends section lists scheduled messages (soonest first) and cancels one through
     `DELETE /delivery/v1/admin/scheduled-messages/{id}`, a non-GET that the existing `/delivery` Access
     Bypass and the Pages Function allowlist already cover.
@@ -568,7 +607,7 @@ sequenceDiagram
 The Function code no longer reads a `PROVISIONING_API_URL` binding, and the admin UI calls only `/delivery`, `/people` and `/apps`. Any leftover `PROVISIONING_API_URL` Pages binding or `notifs-admin.4irl.app/v1` destination on the `notifs-admin API (Function-authed)` Access application is dead configuration; the repo cannot show whether the dashboard still has them. Keep that application's `/people`, `/apps` and `/delivery` destinations.
 
 Build-time (in `pages-deploy.yml`): `VITE_PEOPLE_ENABLED=true`, `VITE_APPS_ENABLED=true`,
-`VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`, `VITE_PENDING_SENDS_ENABLED=true`, `VITE_HEARTBEATS_ENABLED=true`, `VITE_APP_IDENTITIES_ENABLED=true`.
+`VITE_DESTINATIONS_ENABLED=true`, `VITE_DELIVERY_LOG_ENABLED=true`, `VITE_PENDING_SENDS_ENABLED=true`, `VITE_HEARTBEATS_ENABLED=true`, `VITE_APP_IDENTITIES_ENABLED=true`, `VITE_PERSONAL_DESTINATIONS_ENABLED=true`.
 
 ---
 
@@ -938,7 +977,8 @@ graph TD
   deploy fails before touching the VPS if it is missing or malformed, so set it before the first merge.
   Like the DB password it is written to `secrets-persistent/` on every deploy and never deleted, but only
   delivery-api receives it (as `DELIVERY_MASTER_KEY_FILE`; `delivery-migrate` never needs it). **Back it up
-  offline**: it seals three tables (destination secrets, app publisher tokens, probe Access credentials),
+  offline**: it seals four tables (destination secrets, app publisher tokens, probe Access credentials,
+  personal destination secrets: `personal_destinations.sealed_secrets`, AAD `delivery-api/personal-destination/v1:<id>`, registered in `keyrotation.Registry()`),
   and changing it without the rotation runbook below orphans all of them. Keys are read only at process
   start (no reload), so a key change takes effect only when delivery-api is recreated.
 - **`DELIVERY_MASTER_KEY_PREVIOUS` (optional repo secret)**: the old master key during a rotation window,
