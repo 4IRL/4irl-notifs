@@ -112,6 +112,18 @@ func TestNtfyUserMatchesNtfyUserFromHash(t *testing.T) {
 	}
 }
 
+func TestHashFromNtfyUser(t *testing.T) {
+	hash := Hash("alice@example.com")
+	if got, ok := HashFromNtfyUser(NtfyUserFromHash(hash)); !ok || got != hash {
+		t.Fatalf("HashFromNtfyUser round trip = %q, %v", got, ok)
+	}
+	for _, userID := range []string{"", "u_", hash, "x_" + hash, "u_" + hash + "a", "u_" + hash[:15], "u_ABCDEFGHIJKLMNOP", "app-publisher"} {
+		if got, ok := HashFromNtfyUser(userID); ok || got != "" {
+			t.Fatalf("HashFromNtfyUser(%q) = %q, %v; want not ok", userID, got, ok)
+		}
+	}
+}
+
 func TestNtfyUser(t *testing.T) {
 	testCases := []struct {
 		name     string

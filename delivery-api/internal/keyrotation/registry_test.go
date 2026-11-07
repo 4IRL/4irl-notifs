@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
@@ -14,6 +15,7 @@ var realColumns = []SealedColumn{
 	{Table: "destinations", Column: "sealed_secrets"},
 	{Table: "app_publishers", Column: "sealed_token"},
 	{Table: "heartbeat_check_probes", Column: "sealed_access_headers"},
+	{Table: "personal_destinations", Column: "sealed_secrets"},
 }
 
 func TestCoverageGapsRealRegistryHasNone(testInstance *testing.T) {
@@ -54,10 +56,12 @@ func TestCoverageGapsReportsMisspeltRegistryEntryAsStale(testInstance *testing.T
 
 func TestRegistryShape(testInstance *testing.T) {
 	tables := Registry()
-	if len(tables) != 3 {
-		testInstance.Fatalf("registry has %d entries, want 3", len(tables))
+	if len(tables) != 4 {
+		testInstance.Fatalf("registry has %d entries, want 4", len(tables))
 	}
-	wantNullable := map[string]bool{"destinations": false, "app_publishers": false, "heartbeat_check_probes": true}
+	wantNullable := map[string]bool{
+		"destinations": false, "app_publishers": false, "heartbeat_check_probes": true, "personal_destinations": false,
+	}
 	for _, table := range tables {
 		if table.Nullable != wantNullable[table.Table] {
 			testInstance.Errorf("%s Nullable=%v, want %v", table.Table, table.Nullable, wantNullable[table.Table])
@@ -70,11 +74,13 @@ func TestRegistryAADMatchesOwningPackages(testInstance *testing.T) {
 		"destinations":           registry.DestinationSecretsAAD("sample-dest"),
 		"app_publishers":         publisher.TokenAAD("sample-app"),
 		"heartbeat_check_probes": heartbeat.ProbeAccessAAD(42),
+		"personal_destinations":  personal.SecretsAAD(7),
 	}
 	rowKeys := map[string]string{
 		"destinations":           "sample-dest",
 		"app_publishers":         "sample-app",
 		"heartbeat_check_probes": "42",
+		"personal_destinations":  "7",
 	}
 	for _, table := range Registry() {
 		got, aadErr := table.AAD(rowKeys[table.Table])
@@ -87,9 +93,9 @@ func TestRegistryAADMatchesOwningPackages(testInstance *testing.T) {
 	}
 }
 
-func TestProbeAADRejectsNonIntegerRowKey(testInstance *testing.T) {
+func TestIntegerKeyedAADsRejectNonIntegerRowKey(testInstance *testing.T) {
 	for _, table := range Registry() {
-		if table.Table != "heartbeat_check_probes" {
+		if table.Table != "heartbeat_check_probes" && table.Table != "personal_destinations" {
 			continue
 		}
 		for _, badKey := range []string{"", "abc", "1.5", "12x"} {
