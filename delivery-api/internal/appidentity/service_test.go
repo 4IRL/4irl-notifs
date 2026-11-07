@@ -56,6 +56,15 @@ type fakeExchangeTx struct {
 	issueErr error
 	issuedAt time.Time
 	runID    string
+
+	// Registrar scripting.
+	registrar     *WorkflowRegistrar
+	findErr       error
+	inPrefix      bool
+	prefixErr     error
+	normalBinding bool
+	createErr     error
+	createdAppID  string
 }
 
 func (fake *fakeExchangeTx) RecordJTI(_ context.Context, jti string, expiresAt time.Time) (bool, error) {
@@ -93,6 +102,33 @@ func (fake *fakeExchangeTx) IssueKey(_ context.Context, _ string, githubRunID st
 	return fake.issued, fake.issueErr
 }
 
+func (fake *fakeExchangeTx) FindRegistrarByClaims(context.Context, Claims) (*WorkflowRegistrar, error) {
+	fake.calls = append(fake.calls, "find-registrar")
+	return fake.registrar, fake.findErr
+}
+
+func (fake *fakeExchangeTx) AppIDInRegistrarPrefix(context.Context, string) (bool, error) {
+	fake.calls = append(fake.calls, "in-prefix")
+	return fake.inPrefix, fake.prefixErr
+}
+
+func (fake *fakeExchangeTx) HasNormalBindingForIdentity(context.Context, Claims) (bool, error) {
+	fake.calls = append(fake.calls, "has-normal-binding")
+	return fake.normalBinding, nil
+}
+
+func (fake *fakeExchangeTx) FilePendingRegistrarRequest(_ context.Context, _ Claims, now time.Time) (int64, error) {
+	fake.calls = append(fake.calls, "file-registrar")
+	fake.filedAt = now
+	return fake.requestID, fake.fileErr
+}
+
+func (fake *fakeExchangeTx) CreateRegistrarBinding(_ context.Context, _ WorkflowRegistrar, appID string, _ time.Time) error {
+	fake.calls = append(fake.calls, "create-registrar-binding")
+	fake.createdAppID = appID
+	return fake.createErr
+}
+
 // fakeExchangeStore runs the exchange function against fakeExchangeTx and reports whether the
 // "transaction" committed (the function returned nil).
 type fakeExchangeStore struct {
@@ -100,16 +136,35 @@ type fakeExchangeStore struct {
 	runs      int
 	committed bool
 	beginErr  error
+
+	// state and readErr script ReadRegistrarExchange; onRead lets a test record call order.
+	state    RegistrarExchangeState
+	readErr  error
+	readName string
+	onRead   func()
+	// order, when set, records "tx" when a transaction starts (ReadRegistrarExchange via onRead).
+	order *[]string
 }
 
 func (fake *fakeExchangeStore) Exchange(_ context.Context, fn func(tx ExchangeTx) error) error {
 	fake.runs++
+	if fake.order != nil {
+		*fake.order = append(*fake.order, "tx")
+	}
 	if fake.beginErr != nil {
 		return fake.beginErr
 	}
 	fnErr := fn(fake.tx)
 	fake.committed = fnErr == nil
 	return fnErr
+}
+
+func (fake *fakeExchangeStore) ReadRegistrarExchange(_ context.Context, _ Claims, name string) (RegistrarExchangeState, error) {
+	fake.readName = name
+	if fake.onRead != nil {
+		fake.onRead()
+	}
+	return fake.state, fake.readErr
 }
 
 func (fake *fakeExchangeStore) ResolveKey(context.Context, string, time.Time) (ResolvedKey, error) {
@@ -624,6 +679,14 @@ type fakeAdminStore struct {
 	// expectedAppID the store was asked to approve under.
 	calls         *[]string
 	approvedAppID string
+
+	// Registrar and acknowledge scripting.
+	registrarRow      WorkflowRegistrar
+	registrarDeleted  bool
+	unboundApps       int
+	approvedPrefix    string
+	acknowledgedApps  []string
+	acknowledgedCount int
 }
 
 func (fake *fakeAdminStore) record(call string) {
@@ -703,6 +766,40 @@ func (fake *fakeAdminStore) Unbind(_ context.Context, appID string) (bool, error
 func (fake *fakeAdminStore) BindingExists(_ context.Context, appID string) (bool, error) {
 	fake.bindingChecked = appID
 	return fake.bindingExists, fake.err
+}
+
+func (fake *fakeAdminStore) ApproveRegistrarRequest(_ context.Context, _ int64, prefix string, _ time.Time) (WorkflowRegistrar, error) {
+	fake.record("approve-registrar")
+	fake.approvedPrefix = prefix
+	return fake.registrarRow, fake.err
+}
+
+func (fake *fakeAdminStore) ListRegistrars(context.Context) ([]WorkflowRegistrar, error) {
+	fake.record("list-registrars")
+	return []WorkflowRegistrar{fake.registrarRow}, fake.err
+}
+
+func (fake *fakeAdminStore) DeleteRegistrar(context.Context, int64) (WorkflowRegistrar, int, error) {
+	fake.record("delete-registrar")
+	if fake.err != nil {
+		return WorkflowRegistrar{}, 0, fake.err
+	}
+	if !fake.registrarDeleted {
+		return WorkflowRegistrar{}, 0, ErrRegistrarNotFound
+	}
+	return fake.registrarRow, fake.unboundApps, nil
+}
+
+func (fake *fakeAdminStore) AcknowledgeBinding(_ context.Context, appID string, _ time.Time) (BindingWithKeys, error) {
+	fake.record("acknowledge")
+	fake.acknowledgedApps = []string{appID}
+	return BindingWithKeys{Binding: fake.binding}, fake.err
+}
+
+func (fake *fakeAdminStore) AcknowledgeAllBindings(_ context.Context, appIDs []string, _ time.Time) (int, error) {
+	fake.record("acknowledge-all")
+	fake.acknowledgedApps = appIDs
+	return fake.acknowledgedCount, fake.err
 }
 
 func TestHasBindingValidatesThenReadsTheStore(testInstance *testing.T) {
