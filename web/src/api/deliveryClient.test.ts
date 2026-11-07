@@ -69,6 +69,8 @@ describe('delivery api client', () => {
     delivered_at: null,
     created_at: '2026-10-17T10:00:00Z',
     updated_at: '2026-10-17T11:00:00Z',
+    target_kind: 'personal',
+    person_hash: '76gzqgp4byjl6dje',
   };
 
   it('listDestinations GETs through the /delivery prefix and maps rows', async () => {
@@ -391,6 +393,8 @@ describe('delivery api client', () => {
       deadReason: 'exhausted',
       attemptCount: 5,
       lastStatusCode: 500,
+      targetKind: 'personal',
+      personHash: '76gzqgp4byjl6dje',
     });
   });
 
@@ -1106,6 +1110,135 @@ describe('delivery api client', () => {
         constructor: ApiError,
         status: 409,
         message: 'request is not pending',
+      });
+    });
+  });
+
+  describe('personal destinations', () => {
+    const personalWire = {
+      id: 4,
+      person_hash: '76gzqgp4byjl6dje',
+      label: 'Phone',
+      type: 'discord',
+      config: {},
+      secrets: { webhook_url: 'https://discord.com/****' },
+      enabled: false,
+      disabled_by: 'operator',
+      disabled_reason: 'spam',
+      registered_by_app_id: 'urls4irl',
+      registrar_removed: true,
+      opted_in_app_ids: ['urls4irl', 'chores'],
+      created_at: '2026-10-21T18:04:00Z',
+      updated_at: '2026-10-21T19:00:00Z',
+    };
+
+    it('lists with no query and maps snake_case to camelCase', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ body: { personal_destinations: [personalWire], total: 9 } }),
+      );
+
+      const result = await makeClient().listPersonalDestinations();
+
+      expect(lastCall().url).toBe('https://admin.test/delivery/v1/admin/personal-destinations');
+      expect(lastCall().init.method).toBe('GET');
+      expect(result.total).toBe(9);
+      expect(result.personalDestinations).toEqual([
+        {
+          id: 4,
+          personHash: '76gzqgp4byjl6dje',
+          label: 'Phone',
+          type: 'discord',
+          config: {},
+          secrets: { webhook_url: 'https://discord.com/****' },
+          enabled: false,
+          disabledBy: 'operator',
+          disabledReason: 'spam',
+          registeredByAppId: 'urls4irl',
+          registrarRemoved: true,
+          optedInAppIds: ['urls4irl', 'chores'],
+          createdAt: '2026-10-21T18:04:00Z',
+          updatedAt: '2026-10-21T19:00:00Z',
+        },
+      ]);
+    });
+
+    it('filters by an encoded person_hash', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: { personal_destinations: [], total: 0 } }));
+
+      await makeClient().listPersonalDestinations({ personHash: 'a b' });
+
+      expect(lastCall().url).toBe(
+        'https://admin.test/delivery/v1/admin/personal-destinations?person_hash=a%20b',
+      );
+    });
+
+    it('never reports a total smaller than the rows, and tolerates null rows', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ body: { personal_destinations: [personalWire, personalWire], total: 1 } }),
+      );
+      expect((await makeClient().listPersonalDestinations()).total).toBe(2);
+
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: { personal_destinations: null } }));
+      expect(await makeClient().listPersonalDestinations()).toEqual({
+        personalDestinations: [],
+        total: 0,
+      });
+    });
+
+    it('maps an unknown disabled_by to null (fail closed)', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          body: {
+            personal_destinations: [{ ...personalWire, disabled_by: 'martian' }],
+            total: 1,
+          },
+        }),
+      );
+
+      const result = await makeClient().listPersonalDestinations();
+
+      expect(result.personalDestinations[0].disabledBy).toBeNull();
+    });
+
+    it('PATCHes enabled with an optional reason and maps the row', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(jsonResponse({ body: { personal_destination: personalWire } })),
+      );
+
+      const row = await makeClient().setPersonalDestinationEnabled({
+        id: 4,
+        enabled: false,
+        disabledReason: 'spam',
+      });
+
+      expect(lastCall().url).toBe('https://admin.test/delivery/v1/admin/personal-destinations/4');
+      expect(lastCall().init.method).toBe('PATCH');
+      expect(JSON.parse(lastCall().init.body as string)).toEqual({
+        enabled: false,
+        disabled_reason: 'spam',
+      });
+      expect(row.id).toBe(4);
+
+      await makeClient().setPersonalDestinationEnabled({ id: 4, enabled: true });
+      expect(JSON.parse(lastCall().init.body as string)).toEqual({ enabled: true });
+    });
+
+    it('DELETEs the row path', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: { id: 4, deleted: true } }));
+
+      await makeClient().deletePersonalDestination({ id: 4 });
+
+      expect(lastCall().url).toBe('https://admin.test/delivery/v1/admin/personal-destinations/4');
+      expect(lastCall().init.method).toBe('DELETE');
+      expect(lastCall().headers['X-Requested-With']).toBe('admin-ui');
+    });
+
+    it('throws ApiError on a 404', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ status: 404, body: { error: 'missing' } }));
+
+      await expect(makeClient().deletePersonalDestination({ id: 4 })).rejects.toMatchObject({
+        constructor: ApiError,
+        status: 404,
       });
     });
   });

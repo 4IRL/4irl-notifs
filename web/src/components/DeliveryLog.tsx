@@ -31,6 +31,8 @@ type AttemptsState =
 const HEADING_KEY = 'heading';
 const COLUMN_COUNT = 7;
 const DESTINATION_DELETED = 'destination_deleted';
+const OPTED_OUT = 'opted_out';
+const PERSONAL_NAME_PREFIX = '@personal_';
 
 const FILTERS: { state: DeliveryState; label: string }[] = [
   { state: 'dead', label: strings.deliveryLogFilterDead },
@@ -75,6 +77,12 @@ function spaced(text: string): string {
 function capitalised(text: string): string {
   const spacedText = spaced(text);
   return spacedText.charAt(0).toUpperCase() + spacedText.slice(1);
+}
+
+/** `@personal_12` renders as `#12`; an unparseable name falls back to itself. */
+function personalEndpointLabel(name: string): string {
+  const id = name.startsWith(PERSONAL_NAME_PREFIX) ? name.slice(PERSONAL_NAME_PREFIX.length) : '';
+  return /^[1-9][0-9]*$/.test(id) ? strings.deliveryPersonalEndpoint({ id }) : name;
 }
 
 function formatClock(timestamp: string): string {
@@ -357,7 +365,9 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
                 const expanded = expandedId === id;
                 const rowError = rowErrors[id];
                 const replayable =
-                  delivery.state === 'dead' && delivery.deadReason !== DESTINATION_DELETED;
+                  delivery.state === 'dead' &&
+                  delivery.deadReason !== DESTINATION_DELETED &&
+                  delivery.deadReason !== OPTED_OUT;
                 return (
                   <Fragment key={id}>
                     <tr>
@@ -382,8 +392,27 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
                         </span>
                       </td>
                       <td>
-                        <span className="delivery-log__name">{delivery.destination}</span>
-                        <span className="delivery-log__sub">{delivery.destinationType}</span>
+                        {delivery.targetKind === 'personal' ? (
+                          <>
+                            <span className="delivery-log__pill delivery-log__pill--neutral">
+                              {strings.deliveryPersonalPill}
+                            </span>{' '}
+                            <span className="delivery-log__mono">
+                              {personalEndpointLabel(delivery.destination)}
+                            </span>
+                            <span className="delivery-log__sub">
+                              {strings.deliveryPersonalSub({
+                                type: capitalised(delivery.destinationType),
+                                hash: delivery.personHash,
+                              })}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="delivery-log__name">{delivery.destination}</span>
+                            <span className="delivery-log__sub">{delivery.destinationType}</span>
+                          </>
+                        )}
                       </td>
                       <td>{delivery.attemptCount}</td>
                       <td className="delivery-log__mono">
@@ -422,7 +451,11 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
                           )}
                           {delivery.state === 'dead' && !replayable && (
                             <span className="delivery-log__sub">
-                              {strings.destinationWasDeleted}
+                              {
+                                delivery.deadReason === OPTED_OUT
+                                  ? strings.personOptedOut
+                                  : strings.destinationWasDeleted /* the only other non-replayable reason */
+                              }
                             </span>
                           )}
                         </div>

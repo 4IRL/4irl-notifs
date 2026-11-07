@@ -297,6 +297,39 @@ describe('delivery proxy route', () => {
       },
     );
 
+    const personalRows: Array<{ method: string; path: string; body?: string }> = [
+      { method: 'GET', path: '/delivery/v1/admin/personal-destinations' },
+      {
+        method: 'GET',
+        path: '/delivery/v1/admin/personal-destinations?person_hash=abcdefghijklmnop',
+      },
+      {
+        method: 'PATCH',
+        path: '/delivery/v1/admin/personal-destinations/7',
+        body: '{"enabled":false}',
+      },
+      { method: 'DELETE', path: '/delivery/v1/admin/personal-destinations/7' },
+    ];
+
+    it.each(personalRows)(
+      'forwards $method $path to the upstream admin personal-destinations route',
+      async ({ method, path, body }) => {
+        fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+        const response = await call({
+          path,
+          init: {
+            method,
+            headers: method === 'GET' ? {} : { ...JSON_HEADERS, ...SAME_ORIGIN },
+            ...(body === undefined ? {} : { body }),
+          },
+        });
+        expect(response.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${UPSTREAM}${path.replace('/delivery', '')}`);
+        expect(init.method).toBe(method);
+      },
+    );
+
     it('resolves an empty segment plus a dot-segment to an admin path, never a ping path', async () => {
       // `admin//..` collapses back to `admin/`, so this stays under the admin prefix
       // (upstream answers 404 for it: there is no admin ping route).
@@ -359,6 +392,12 @@ describe('delivery proxy route', () => {
       { method: 'POST', path: '/delivery/v1/heartbeats' },
       { method: 'GET', path: '/delivery/v1/admin/heartbeats%2f7' },
       { method: 'GET', path: '/delivery/v1/adminheartbeats' },
+      // The app-key personal destination prefix stays unreachable through the admin proxy.
+      { method: 'POST', path: '/delivery/v1/apps/urls4irl/personal-destinations' },
+      { method: 'POST', path: '/delivery/v1/apps/urls4irl/personal-destinations/lookup' },
+      { method: 'PATCH', path: '/delivery/v1/apps/urls4irl/personal-destinations/7' },
+      { method: 'DELETE', path: '/delivery/v1/apps/urls4irl/personal-destinations/7' },
+      { method: 'PUT', path: '/delivery/v1/apps/urls4irl/personal-destinations/7/opt-in' },
       // An admin-prefix path must never reach the app-facing ping paths: dot-segments
       // resolve to a non-allowlisted path, and encoded slashes/backslashes are refused.
       { method: 'POST', path: '/delivery/v1/admin/../heartbeats/urls4irl/nightly_backup' },
