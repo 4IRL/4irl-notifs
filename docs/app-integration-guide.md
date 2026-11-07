@@ -1491,6 +1491,119 @@ POST /v1/messages?wait=10
 }
 ```
 
+### Personal destinations (a person's own Discord or webhook endpoints)
+
+A person can receive an app's `to.recipient` messages at their **own** Discord or webhook endpoints in
+addition to their ntfy topic. The app builds a "my endpoints" settings page and calls the six endpoints
+below with its own `dak_` key; the service stores only the `person_hash` (the app asserts the email, it is
+hashed and never stored, logged or returned). Types are `discord` or `webhook` only (anything else is
+`400 type must be discord or webhook`); the person's ntfy topic stays the recipient ntfy leg.
+
+**Calls** (all under `https://notifs-delivery.4irl.app/v1/apps/{app_id}/personal-destinations`, same
+Access headers and `Authorization: Bearer dak_...` as the rest of the app door; `{app_id}` must be the key's
+own app). **The person always goes in the JSON body, never the URL**: every body carries exactly one of
+`email` or `person_hash` (both or neither is `400 exactly one of email or person_hash required`), and an
+unknown body field is `400`. Responses are `no-store`.
+
+| Call | Body | Success |
+|---|---|---|
+| `POST …/personal-destinations` | `{email\|person_hash, label, type, config, secrets, opt_in?}` | `201 {"personal_destination": {…}}` |
+| `POST …/personal-destinations/lookup` | `{email\|person_hash}` | `200 {"person_hash": "…", "personal_destinations": [{…}]}` (newest first, empty list when none) |
+| `PATCH …/personal-destinations/{id}` | `{email\|person_hash, label?, config?, secrets?, enabled?}` | `200 {"personal_destination": {…}}` |
+| `DELETE …/personal-destinations/{id}` | `{email\|person_hash}` | `200 {"id": N, "deleted": true}` |
+| `PUT …/personal-destinations/{id}/opt-in` | `{email\|person_hash}` | `200 {"personal_destination": {…}}` (idempotent) |
+| `DELETE …/personal-destinations/{id}/opt-in` | `{email\|person_hash}` | `200 {"personal_destination": {…}}` (idempotent), or `200 {"id": N, "deleted": true}` the opt-out reaped the row (see "Opt-out" below) |
+
+Both `DELETE` calls need a **JSON body** (the person selector); an empty body answers the generic
+`400 invalid JSON body`. Set `Content-Type: application/json` and send at least `{"email": "…"}`.
+
+Create example (the destination is opted in for the registering app unless `"opt_in": false`):
+
+```
+POST /v1/apps/urls4irl/personal-destinations
+{
+  "email": "user@example.com",
+  "label": "My Discord",
+  "type": "discord",
+  "config": {},
+  "secrets": { "webhook_url": "https://discord.com/api/webhooks/…" }
+}
+```
+
+`config` and `secrets` follow the same per-type rules (and the same SSRF check on the URL, `400` when
+refused) as operator and app destinations. `PATCH` merges `secrets` per key and they are write-only: every
+response returns them masked.
+
+**What each view contains** (every personal destination in a response): `id`, `person_hash`, `label`,
+`type`, `config`, `secrets` (masked), `enabled`, `disabled_by` (`app`, `operator`, `system` or null),
+`disabled_reason`, `registered_by_app_id`, `managed_by_caller` (you registered it and your app is still
+there), `opted_in` (for the **calling app only**; other apps' opt-ins are never shown), `created_at`,
+`updated_at`.
+
+**Rules**
+- **Visibility:** any app can `lookup` all of a person's personal destinations (masked). Only the
+  registering app can `PATCH` or `DELETE` one (`403 personal destination is managed by another app`,
+  also when the registering app has since been removed). Every app toggles the opt-in for **itself** only.
+- **A different person or an unknown id is `404 personal destination does not exist`**, identical to an
+  absent row (no oracle); a malformed id is the same `404`.
+- **Cap:** at most 50 personal destinations per person per registering app; each app has its own allowance
+  for the same person (`409 personal destination limit reached`).
+- **Operator disable sticks:** `PATCH {"enabled": true}` on a row the operator disabled is
+  `409 personal destination disabled by the operator` and nothing in that body is written. A row the
+  service disabled after the endpoint answered `410 Gone` (`disabled_by: "system"`) can be re-enabled by the
+  registering app. `PATCH {"enabled": false}` on an already-disabled row is a no-op that keeps the
+  existing `disabled_by`/`disabled_reason`.
+- **Opt-out:** `DELETE …/opt-in` withdraws only your app. When the registering app was removed and your
+  opt-out leaves the row with no opt-ins, the row is deleted in the same call and the answer is
+  `{"id": N, "deleted": true}`; repeating the call is then `404`. An opt-out on a row whose registrar is
+  still present never deletes it.
+- **Errors:** `503 personal destinations unavailable` when the feature is not configured, `503` when the
+  URL checker is unavailable (create and `PATCH` with a URL), `400` for validation, `500 internal error`
+  otherwise.
+- **Deprovisioning:** `POST …/deprovision` removes your app's opt-ins for the person and deletes the
+  destinations you registered that no other app uses locally first, then relays; a cleanup failure answers
+  `503 personal destination cleanup failed` and the relay is not sent (retry the call). Removing an app
+  does the same for all its people. Because that cleanup runs before the relay, a deprovision whose relay
+  fails (`502`) may already have removed the personal destinations; retrying the call finishes both.
+- **Opt-in trust boundary:** any authenticated app that knows a person's email (or `person_hash`) can opt
+  itself in to that person's personal destinations, by design. There is no per-person consent step, so only
+  opt a person in after you have verified their email and their wish to receive messages there.
+
+**How `to.recipient` fans out.** A recipient message goes to the person's ntfy topic as before **plus** one
+delivery per **enabled** personal destination of that person that is opted in for the sending app. The set
+is frozen when the message is submitted (or a scheduled message is replaced): a destination or opt-in
+added afterwards never receives that message, and scheduled messages are not recomputed at release. If a
+selected personal type has no sink configured in this deployment, the submit fails `422`
+(`destination type not yet supported`). The ntfy leg is still required (no publisher stays `422`).
+
+**What you see in `deliveries[]`.** Besides the ntfy `@recipient` row the message shows one row per
+personal destination, named `@personal_<id>` (the destination `id`), so `deliveries[]` can hold several
+entries; a `202` is still not delivery. `?wait=` now waits for every one of them to have a first attempt, so
+a slow personal endpoint delays the response (bounded by the 10 s clamp; read the states, a short wait is
+not a failure). A personal delivery goes dead, never sent, with these `dead_reason`s:
+
+| `dead_reason` | Meaning |
+|---|---|
+| `opted_out` | The opt-in was withdrawn after the message was submitted |
+| `destination_disabled` | The personal destination is disabled (by the app, the operator, or the system after a `410`) |
+| `destination_deleted` | The destination was deleted (or no longer belongs to that person) |
+| `gone` | The endpoint answered `410 Gone`; the destination is also disabled (`disabled_by: "system"`) |
+| `unsupported_type` | No sink for its type is wired |
+| `terminal_status` / `budget_exhausted` / `blocked_address` | As for any destination (SSRF-blocked address, rejected, or retries exhausted) |
+
+The operator's admin message views (scheduled list) show an empty `destinations` for recipient messages;
+that is expected. The operator sees, disables, enables and deletes personal destinations in the admin UI
+(Personal destinations section) and marks personal rows in the Delivery Log.
+
+**Suggested settings-page flow**
+1. **Lookup** on page load: `POST …/lookup {"email": "<signed-in user>"}`.
+2. **List with a toggle:** show each `label`/`type` with a switch bound to `opted_in`. Switching on calls
+   `PUT …/{id}/opt-in`, off calls `DELETE …/{id}/opt-in` (with the body). Only offer edit and delete when
+   `managed_by_caller` is true. Show a disabled badge with `disabled_reason` when `enabled` is false, and
+   hide the re-enable control when `disabled_by` is `operator`.
+3. **Add:** a form posting `POST …/personal-destinations`; surface `409 personal destination limit reached`
+   and the `400` text to the user.
+
 ### Human-facing sinks (ntfy and Discord)
 
 The ntfy and Discord sinks render only `display`, which needs a `title` or a `body` that is not blank

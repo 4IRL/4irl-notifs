@@ -30,6 +30,7 @@ import (
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/keyrotation"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/migrate"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personsvc"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/provisionclient"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
@@ -399,6 +400,10 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	// app-supplied URL's host (net.DefaultResolver, 3 s timeout) and refuses any non-public address.
 	registryService := registry.NewService(registry.NewPGStore(pool), sealer, logger,
 		registry.WithURLChecker(registry.NewURLChecker(nil, logger)))
+	// Personal destinations share the registry's SSRF registration check. The sealer is mandatory at
+	// startup (seal.FromEnv fails otherwise), so the service is always wired here.
+	personalService := personal.NewService(personal.NewPGStore(pool, sealer), sealer, logger,
+		personal.WithURLChecker(registry.NewURLChecker(nil, logger)))
 
 	// One transport client per process: it owns the connection pool and the SSRF guard. Production passes
 	// the zero Config, so the address policy and TLS settings are the guarded defaults.
@@ -424,13 +429,16 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Queue:      messageStore,
 		Resolver:   registryService,
 		Recipients: recipients,
-		Sinks:      sinks,
-		Logger:     logger,
+		// personalService is always wired (the sealer is mandatory), so this is never a typed nil.
+		Personal: personalService,
+		Sinks:    sinks,
+		Logger:   logger,
 	})
 	messageService := message.NewService(hold.applyToService(message.ServiceConfig{
 		Store:              messageStore,
 		Resolver:           registryService,
 		Publishers:         publisherService,
+		PersonalTargets:    personalService,
 		SupportedTypes:     supportedTypes,
 		Wake:               worker.Wake,
 		Logger:             logger,
@@ -448,23 +456,24 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	prober := newProberWiring(heartbeatStore, heartbeatService.HoldOffUntil, guardedClient, sealer, logger)
 	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{
-		Logger:             logger,
-		Readiness:          checker,
-		HeartbeatChecker:   heartbeatFreshness,
-		HeartbeatProber:    prober.freshness,
-		Registry:           registryService,
-		AppRegistry:        registryService,
-		Messages:           messageService,
-		Publishers:         publisherService,
-		Heartbeats:         heartbeatService,
-		AppHeartbeats:      heartbeatService,
-		AppProvisioning:    appProvisioning,
-		ResetLimiter:       resetWired.limiter,
-		AdminProvisioning:  adminProvisioning,
-		BindingChecker:     appIdentityService,
-		AppTeardown:        appTeardown,
-		AppIdentity:        appIdentityService,
-		ProvisioningHealth: buildProvisioningHealth(provisionClient),
+		Logger:               logger,
+		Readiness:            checker,
+		HeartbeatChecker:     heartbeatFreshness,
+		HeartbeatProber:      prober.freshness,
+		Registry:             registryService,
+		AppRegistry:          registryService,
+		Messages:             messageService,
+		Publishers:           publisherService,
+		Heartbeats:           heartbeatService,
+		AppHeartbeats:        heartbeatService,
+		PersonalDestinations: personalService,
+		AppProvisioning:      appProvisioning,
+		ResetLimiter:         resetWired.limiter,
+		AdminProvisioning:    adminProvisioning,
+		BindingChecker:       appIdentityService,
+		AppTeardown:          appTeardown,
+		AppIdentity:          appIdentityService,
+		ProvisioningHealth:   buildProvisioningHealth(provisionClient),
 	}).Handler()
 
 	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)
