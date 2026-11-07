@@ -17,6 +17,19 @@ const (
 	// ExchangePending is the outcome of an exchange that filed (or refreshed) a request for the operator.
 	ExchangePending = "pending"
 
+	// Outcome labels of the name-form exchange log line (failures use the same labels as the
+	// normal form plus outcomeRegistrarDenied and outcomeRegistrarCap).
+	outcomeRegistrarIssued  = "registrar_issued"
+	outcomeRegistrarCreated = "registrar_created"
+	outcomeRegistrarPending = "registrar_pending"
+	outcomeRegistrarDenied  = "registrar_denied"
+	outcomeRegistrarCap     = "registrar_cap"
+
+	// maxLoggedNameChars bounds a caller-supplied registrar app name in a log line.
+	maxLoggedNameChars = 64
+	// MaxAcknowledgeApps is the most app ids one acknowledge-all call may list.
+	MaxAcknowledgeApps = 200
+
 	// maxLoggedReasonChars bounds an attacker-influenced rejection reason in a log line.
 	maxLoggedReasonChars = 300
 
@@ -68,10 +81,20 @@ type TokenVerifier interface {
 	Verify(ctx context.Context, rawToken string, replay ReplayRecorder) (Claims, error)
 }
 
+// ExchangeInput is one exchange request: exactly one of AppID (a normal app) or Name (a
+// registrar's bare app name), plus the GitHub OIDC token.
+type ExchangeInput struct {
+	AppID string
+	Name  string
+	Token string
+}
+
 // ExchangeResult is the successful outcome of an exchange.
 type ExchangeResult struct {
 	// Status is ExchangeIssued or ExchangePending.
 	Status string
+	// Created is true when this exchange created the app (name form, first sight of the name).
+	Created bool
 	// AppID, Key and KeyID are set for ExchangeIssued. Key is the plaintext, shown once.
 	AppID string
 	Key   string
@@ -153,22 +176,41 @@ func (verifyOnly) RecordJTI(context.Context, string, time.Time) (bool, error) {
 //     previous keys are superseded in the same transaction.
 //
 // One log line records every exchange, with its outcome and duration; never the token or key.
-func (service *Service) Exchange(ctx context.Context, appID string, token string) (ExchangeResult, error) {
+//
+// The name form (input.Name, a registrar's bare app name) additionally returns ErrInvalidName,
+// ErrRegistrarOwnership, ErrRegistrarAppLimit, ErrAppIDOverlap, ErrAppRegistryNotConfigured,
+// ErrAppRegistryUnavailable and ErrBindingAppeared (a retryable race); see exchangeAsRegistrar.
+// Input naming both or neither of AppID and Name returns ErrExchangeTarget.
+func (service *Service) Exchange(ctx context.Context, input ExchangeInput) (ExchangeResult, error) {
 	started := time.Now()
-	if validateErr := ValidateAppID(appID); validateErr != nil {
-		return ExchangeResult{}, validateErr
+	appID, name := input.AppID, input.Name
+	if (appID == "") == (name == "") {
+		return ExchangeResult{}, ErrExchangeTarget
 	}
-	if reservedErr := validateExchangeAppID(appID); reservedErr != nil {
-		return ExchangeResult{}, reservedErr
+	if name != "" {
+		if nameErr := ValidateName(name); nameErr != nil {
+			return ExchangeResult{}, nameErr
+		}
+	} else {
+		if validateErr := ValidateAppID(appID); validateErr != nil {
+			return ExchangeResult{}, validateErr
+		}
+		if reservedErr := validateExchangeAppID(appID); reservedErr != nil {
+			return ExchangeResult{}, reservedErr
+		}
 	}
-	if token == "" {
+	if input.Token == "" {
 		return ExchangeResult{}, &ValidationError{Message: "token is required"}
 	}
 
-	claims, verifyErr := service.verifier.Verify(ctx, token, verifyOnly{})
+	entry := exchangeLogEntry{appID: appID, name: name}
+	claims, verifyErr := service.verifier.Verify(ctx, input.Token, verifyOnly{})
 	if verifyErr != nil {
-		service.logRejectedToken(ctx, appID, verifyErr, time.Since(started))
+		service.logRejectedToken(ctx, entry, verifyErr, time.Since(started))
 		return ExchangeResult{}, verifyErr
+	}
+	if name != "" {
+		return service.exchangeAsRegistrar(ctx, entry, claims, started)
 	}
 
 	var result ExchangeResult
@@ -185,18 +227,218 @@ func (service *Service) Exchange(ctx context.Context, appID string, token string
 		return exchangeErr
 	})
 	if txErr != nil {
-		service.logFailedExchange(ctx, appID, claims, txErr, time.Since(started))
+		service.logFailedExchange(ctx, entry, claims, txErr, time.Since(started))
 		return ExchangeResult{}, txErr
 	}
-	service.logExchange(ctx, appID, claims, result.Status, time.Since(started))
+	service.logExchange(ctx, entry, claims, result.Status, time.Since(started))
 	return result, nil
 }
 
-// exchangeClaims decides what verified claims earn appID, inside the exchange transaction.
+// exchangeClaims decides what verified claims earn appID, inside the exchange transaction. The
+// normal flow first refuses claims that are a registrar's identity (403), then an app id inside
+// a registrar's space (409); FilePendingRequest repeats both under its lock.
 func (service *Service) exchangeClaims(
 	ctx context.Context, tx ExchangeTx, appID string, claims Claims,
 ) (ExchangeResult, error) {
+	registrar, findErr := tx.FindRegistrarByClaims(ctx, claims)
+	if findErr != nil {
+		return ExchangeResult{}, findErr
+	}
+	if registrar != nil {
+		return ExchangeResult{}, ErrBindingMismatch
+	}
+	inPrefix, prefixErr := tx.AppIDInRegistrarPrefix(ctx, appID)
+	if prefixErr != nil {
+		return ExchangeResult{}, prefixErr
+	}
+	if inPrefix {
+		return ExchangeResult{}, ErrAppIDInRegistrarPrefix
+	}
 	return service.decideClaims(ctx, tx, appID, claims, service.now(), true)
+}
+
+// exchangeAsRegistrar is the name form of the exchange, after the token verified.
+//
+// Order: unlocked read (registrar, derived id state, cap, overlap, jti) -> deterministic refusals
+// -> person-service CreateApp for a new id -> one transaction that records the jti and
+// re-decides everything under the store's lock. A replayed jti and a refusal that does not
+// depend on a race never reach person-service.
+func (service *Service) exchangeAsRegistrar(
+	ctx context.Context, entry exchangeLogEntry, claims Claims, started time.Time,
+) (ExchangeResult, error) {
+	fail := func(err error) (ExchangeResult, error) {
+		service.logFailedExchange(ctx, entry, claims, err, time.Since(started))
+		return ExchangeResult{}, err
+	}
+
+	state, readErr := service.store.ReadRegistrarExchange(ctx, claims, entry.name)
+	if readErr != nil {
+		return fail(readErr)
+	}
+	if state.Registrar != nil {
+		entry.prefix, entry.appID = state.Registrar.Prefix, state.DerivedAppID
+	}
+	if state.JTIRecorded {
+		return fail(ErrReplayed)
+	}
+
+	createInDirectory := false
+	if state.Registrar != nil {
+		switch state.Derived {
+		case DerivedAppOwned:
+		case DerivedAppAbsent:
+			switch {
+			case state.AppCount >= RegistrarAppLimit:
+				return fail(ErrRegistrarAppLimit)
+			case state.Overlaps:
+				return fail(ErrAppIDOverlap)
+			}
+			createInDirectory = true
+		default:
+			// DerivedAppForeign, and any state added later: fail closed.
+			return fail(ErrRegistrarOwnership)
+		}
+	}
+	if createInDirectory {
+		if registerErr := service.registerAppInDirectory(ctx, state.DerivedAppID, "exchange_name", entry.name); registerErr != nil {
+			return fail(registerErr)
+		}
+	}
+
+	var result ExchangeResult
+	txErr := service.store.Exchange(ctx, func(tx ExchangeTx) error {
+		fresh, recordErr := tx.RecordJTI(ctx, claims.JTI, claims.ReplayExpiry())
+		if recordErr != nil {
+			return recordErr
+		}
+		if !fresh {
+			return ErrReplayed
+		}
+		exchanged, exchangeErr := service.decideRegistrarClaims(ctx, tx, entry.name, claims, createInDirectory, service.now())
+		result = exchanged
+		return exchangeErr
+	})
+	if txErr != nil {
+		return fail(txErr)
+	}
+	if result.AppID != "" {
+		entry.appID = result.AppID
+	}
+	var outcome string
+	switch {
+	case result.Status == ExchangePending:
+		outcome = outcomeRegistrarPending
+	case result.Created:
+		outcome = outcomeRegistrarCreated
+	default:
+		outcome = outcomeRegistrarIssued
+	}
+	service.logExchange(ctx, entry, claims, outcome, time.Since(started))
+	return result, nil
+}
+
+// decideRegistrarClaims is the transaction half of the name form. A registrar that is gone
+// (never found, or deleted before the binding insert) is the "no registrar" case.
+// createdInDirectory says the caller already registered a new id in the people directory; a new
+// id found without that is ErrBindingAppeared, never a skip of person-service.
+func (service *Service) decideRegistrarClaims(
+	ctx context.Context, tx ExchangeTx, name string, claims Claims, createdInDirectory bool, now time.Time,
+) (ExchangeResult, error) {
+	registrar, findErr := tx.FindRegistrarByClaims(ctx, claims)
+	if findErr != nil {
+		return ExchangeResult{}, findErr
+	}
+	if registrar == nil {
+		return service.fileRegistrarRequest(ctx, tx, claims, now)
+	}
+	derived, deriveErr := DeriveAppID(registrar.Prefix, name)
+	if deriveErr != nil {
+		return ExchangeResult{}, deriveErr
+	}
+
+	binding, bound, lockErr := tx.LockBinding(ctx, derived)
+	if lockErr != nil {
+		return ExchangeResult{}, lockErr
+	}
+	created := false
+	if !bound {
+		if !createdInDirectory {
+			return ExchangeResult{}, ErrBindingAppeared
+		}
+		createErr := tx.CreateRegistrarBinding(ctx, *registrar, derived, now)
+		switch {
+		case createErr == nil:
+			created = true
+		case errors.Is(createErr, ErrRegistrarNotFound):
+			return service.fileRegistrarRequest(ctx, tx, claims, now)
+		case errors.Is(createErr, ErrBindingAppeared):
+			// Lost a create race: look once more, then apply the bound branch.
+			binding, bound, lockErr = tx.LockBinding(ctx, derived)
+			if lockErr != nil {
+				return ExchangeResult{}, lockErr
+			}
+			if !bound {
+				return ExchangeResult{}, ErrBindingAppeared
+			}
+		default:
+			return ExchangeResult{}, createErr
+		}
+	}
+	if !created && (binding.RegistrarID == nil || *binding.RegistrarID != registrar.ID) {
+		return ExchangeResult{}, ErrRegistrarOwnership
+	}
+	issued, issueErr := tx.IssueKey(ctx, derived, claims.RunID, now)
+	if issueErr != nil {
+		return ExchangeResult{}, issueErr
+	}
+	return ExchangeResult{
+		Status: ExchangeIssued, AppID: derived, Key: issued.Plaintext, KeyID: issued.ID, Created: created,
+	}, nil
+}
+
+// fileRegistrarRequest handles claims that match no registrar: a workflow already bound as a
+// normal app is refused (nothing filed), anything else files or refreshes a registrar request.
+func (service *Service) fileRegistrarRequest(
+	ctx context.Context, tx ExchangeTx, claims Claims, now time.Time,
+) (ExchangeResult, error) {
+	normal, normalErr := tx.HasNormalBindingForIdentity(ctx, claims)
+	if normalErr != nil {
+		return ExchangeResult{}, normalErr
+	}
+	if normal {
+		return ExchangeResult{}, ErrBindingMismatch
+	}
+	requestID, fileErr := tx.FilePendingRegistrarRequest(ctx, claims, now)
+	if fileErr != nil {
+		return ExchangeResult{}, fileErr
+	}
+	return ExchangeResult{Status: ExchangePending, RequestID: requestID}, nil
+}
+
+// registerAppInDirectory registers appID in the people directory, outside any transaction or
+// lock. A nil registrar is ErrAppRegistryNotConfigured; a failure is ErrAppRegistryUnavailable
+// (wrapping the cause) after one WARN with the extra log attributes; a caller that went away
+// returns its own context error without a WARN.
+func (service *Service) registerAppInDirectory(ctx context.Context, appID string, extra ...any) error {
+	if service.registrar == nil {
+		return ErrAppRegistryNotConfigured
+	}
+	registerCtx, cancel := context.WithTimeout(ctx, registerTimeout)
+	defer cancel()
+	registerStarted := time.Now()
+	registerErr := service.registrar.CreateApp(registerCtx, appID, appID)
+	if registerErr == nil {
+		return nil
+	}
+	// The caller went away (parent context only, so the registerTimeout still maps to
+	// ErrAppRegistryUnavailable): not a registry fault, so no WARN.
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	service.logger.WarnContext(ctx, "app registry registration failed",
+		append(extra, "app_id", appID,
+			"duration", time.Since(registerStarted).String(), "error", loggedReason(registerErr))...)
+	return fmt.Errorf("%w: %w", ErrAppRegistryUnavailable, registerErr)
 }
 
 // decideClaims reads the app's binding and acts on it. When the app has none it files a
@@ -234,9 +476,36 @@ func (service *Service) decideClaims(
 	return ExchangeResult{Status: ExchangeIssued, AppID: appID, Key: issued.Plaintext, KeyID: issued.ID}, nil
 }
 
+// exchangeLogEntry names what an exchange was about, for its log line. appID is the requested
+// app id (normal form) or the derived one once known (name form); name and prefix are set for
+// the name form only. name is caller-controlled, so it is truncated when logged.
+type exchangeLogEntry struct {
+	appID  string
+	name   string
+	prefix string
+}
+
+// attributes renders the entry's log fields. The name-form fields appear only for the name form.
+func (entry exchangeLogEntry) attributes() []any {
+	attributes := []any{"app_id", entry.appID}
+	if entry.name != "" {
+		attributes = append(attributes, "registrar_prefix", entry.prefix, "name", truncateForLog(entry.name))
+	}
+	return attributes
+}
+
+// truncateForLog bounds a caller-controlled value to maxLoggedNameChars runes for a log line.
+func truncateForLog(value string) string {
+	runes := []rune(value)
+	if len(runes) <= maxLoggedNameChars {
+		return value
+	}
+	return string(runes[:maxLoggedNameChars])
+}
+
 // logRejectedToken logs an exchange whose token failed verification. The reason names the
 // failed check but never the token.
-func (service *Service) logRejectedToken(ctx context.Context, appID string, verifyErr error, elapsed time.Duration) {
+func (service *Service) logRejectedToken(ctx context.Context, entry exchangeLogEntry, verifyErr error, elapsed time.Duration) {
 	outcome := "error"
 	level := slog.LevelError
 	switch {
@@ -250,12 +519,13 @@ func (service *Service) logRejectedToken(ctx context.Context, appID string, veri
 		outcome, level = "canceled", slog.LevelDebug
 	}
 	service.logger.Log(ctx, level, "app identity exchange",
-		"app_id", appID, "outcome", outcome, "reason", loggedReason(verifyErr), "duration", elapsed.String())
+		append(entry.attributes(),
+			"outcome", outcome, "reason", loggedReason(verifyErr), "duration", elapsed.String())...)
 }
 
 // logFailedExchange logs an exchange that failed after its token verified.
 func (service *Service) logFailedExchange(
-	ctx context.Context, appID string, claims Claims, exchangeErr error, elapsed time.Duration,
+	ctx context.Context, entry exchangeLogEntry, claims Claims, exchangeErr error, elapsed time.Duration,
 ) {
 	outcome := "error"
 	level := slog.LevelError
@@ -266,31 +536,39 @@ func (service *Service) logFailedExchange(
 		outcome, level = "mismatch", slog.LevelWarn
 	case errors.Is(exchangeErr, ErrPendingCap):
 		outcome, level = "pending_cap", slog.LevelWarn
+	case errors.Is(exchangeErr, ErrRegistrarOwnership):
+		outcome, level = outcomeRegistrarDenied, slog.LevelWarn
+	case errors.Is(exchangeErr, ErrRegistrarAppLimit):
+		outcome, level = outcomeRegistrarCap, slog.LevelWarn
+	case errors.Is(exchangeErr, ErrAppIDOverlap):
+		outcome, level = "app_id_overlap", slog.LevelWarn
+	case errors.Is(exchangeErr, ErrAppIDInRegistrarPrefix):
+		outcome, level = "reserved_by_registrar", slog.LevelWarn
+	case errors.Is(exchangeErr, ErrBindingAppeared):
+		outcome, level = "registration_changed", slog.LevelWarn
 	case errors.Is(exchangeErr, context.Canceled):
 		outcome, level = "canceled", slog.LevelDebug
 	}
 	service.logger.Log(ctx, level, "app identity exchange",
-		append(claimAttributes(appID, claims),
+		append(claimAttributes(entry, claims),
 			"outcome", outcome, "reason", loggedReason(exchangeErr), "duration", elapsed.String())...)
 }
 
 // logExchange logs a successful exchange.
-func (service *Service) logExchange(ctx context.Context, appID string, claims Claims, outcome string, elapsed time.Duration) {
+func (service *Service) logExchange(ctx context.Context, entry exchangeLogEntry, claims Claims, outcome string, elapsed time.Duration) {
 	service.logger.InfoContext(ctx, "app identity exchange",
-		append(claimAttributes(appID, claims), "outcome", outcome, "duration", elapsed.String())...)
+		append(claimAttributes(entry, claims), "outcome", outcome, "duration", elapsed.String())...)
 }
 
 // claimAttributes are the log fields every exchange that got past verification carries. The
 // claims were signed by the issuer, so they are safe to log.
-func claimAttributes(appID string, claims Claims) []any {
-	return []any{
-		"app_id", appID,
+func claimAttributes(entry exchangeLogEntry, claims Claims) []any {
+	return append(entry.attributes(),
 		"repository", claims.Repository,
 		"workflow_path", claims.WorkflowPath,
 		"ref", claims.Ref,
 		"environment", claims.Environment,
-		"run_id", claims.RunID,
-	}
+		"run_id", claims.RunID)
 }
 
 // loggedReason renders err for a log line, bounded so a hostile token cannot inflate it.
@@ -320,9 +598,6 @@ func (service *Service) ListRequests(ctx context.Context) ([]Request, error) {
 // registration returns ErrAppRegistryUnavailable and writes nothing. The store re-checks under
 // its row lock that the request still names the app that was registered.
 func (service *Service) ApproveRequest(ctx context.Context, requestID int64) (Binding, error) {
-	if service.registrar == nil {
-		return Binding{}, ErrAppRegistryNotConfigured
-	}
 	request, getErr := service.admin.GetRequest(ctx, requestID)
 	if getErr != nil {
 		return Binding{}, getErr
@@ -330,23 +605,15 @@ func (service *Service) ApproveRequest(ctx context.Context, requestID int64) (Bi
 	if request.Status != RequestPending {
 		return Binding{}, ErrRequestNotPending
 	}
+	if request.Kind == RequestKindRegistrar {
+		return Binding{}, ErrRequestIsRegistrar
+	}
 	if request.AppID == reservedAppID {
 		return Binding{}, ErrAppIDReserved
 	}
-
-	registerCtx, cancel := context.WithTimeout(ctx, registerTimeout)
-	defer cancel()
-	registerStarted := time.Now()
-	if registerErr := service.registrar.CreateApp(registerCtx, request.AppID, request.AppID); registerErr != nil {
-		// The caller went away (parent context only, so the registerTimeout still maps to
-		// ErrAppRegistryUnavailable): not a registry fault, so no WARN.
-		if ctx.Err() != nil {
-			return Binding{}, ctx.Err()
-		}
-		service.logger.WarnContext(ctx, "app registry registration failed",
-			"request_id", requestID, "app_id", request.AppID,
-			"duration", time.Since(registerStarted).String(), "error", loggedReason(registerErr))
-		return Binding{}, fmt.Errorf("%w: %w", ErrAppRegistryUnavailable, registerErr)
+	// Only an approvable app request reaches the not-configured check, so 404 / 409 win over 503.
+	if registerErr := service.registerAppInDirectory(ctx, request.AppID, "request_id", requestID); registerErr != nil {
+		return Binding{}, registerErr
 	}
 
 	binding, approveErr := service.admin.ApproveRequest(ctx, requestID, request.AppID, service.now())
@@ -357,6 +624,88 @@ func (service *Service) ApproveRequest(ctx context.Context, requestID int64) (Bi
 		"request_id", requestID, "app_id", binding.AppID, "repository", binding.Repository,
 		"workflow_path", binding.WorkflowPath, "ref", binding.Ref, "environment", binding.Environment)
 	return binding, nil
+}
+
+// ApproveRegistrarRequest turns a pending registrar request into a registrar owning prefix. The
+// prefix grammar is checked first (ErrInvalidPrefix, nothing else is called); no person-service
+// call happens, because apps are registered when the registrar first creates them.
+func (service *Service) ApproveRegistrarRequest(
+	ctx context.Context, requestID int64, prefix string,
+) (WorkflowRegistrar, error) {
+	if prefixErr := ValidatePrefix(prefix); prefixErr != nil {
+		return WorkflowRegistrar{}, prefixErr
+	}
+	registrar, approveErr := service.admin.ApproveRegistrarRequest(ctx, requestID, prefix, service.now())
+	if approveErr != nil {
+		return WorkflowRegistrar{}, approveErr
+	}
+	service.logger.InfoContext(ctx, "app identity registrar approved",
+		"request_id", requestID, "registrar_id", registrar.ID, "prefix", registrar.Prefix,
+		"repository", registrar.Repository, "workflow_path", registrar.WorkflowPath,
+		"ref", registrar.Ref, "environment", registrar.Environment)
+	return registrar, nil
+}
+
+// ListRegistrars returns every registrar sorted by prefix with its app count and limit.
+func (service *Service) ListRegistrars(ctx context.Context) ([]WorkflowRegistrar, error) {
+	return service.admin.ListRegistrars(ctx)
+}
+
+// DeleteRegistrar deletes a registrar and unbinds every app it created. It reports whether the
+// registrar existed and how many apps went with it. Deleting an unknown id is not an error.
+func (service *Service) DeleteRegistrar(ctx context.Context, registrarID int64) (bool, int, error) {
+	registrar, unbound, deleteErr := service.admin.DeleteRegistrar(ctx, registrarID)
+	if errors.Is(deleteErr, ErrRegistrarNotFound) {
+		return false, 0, nil
+	}
+	if deleteErr != nil {
+		return false, 0, deleteErr
+	}
+	service.logger.InfoContext(ctx, "app identity registrar deleted",
+		"registrar_id", registrarID, "prefix", registrar.Prefix, "repository", registrar.Repository,
+		"deleted", true, "unbound_apps", unbound)
+	return true, unbound, nil
+}
+
+// AcknowledgeBinding marks one app as seen by the operator. It is idempotent and keeps the
+// first time. ErrBindingNotFound when the app has no binding.
+func (service *Service) AcknowledgeBinding(ctx context.Context, appID string) (BindingWithKeys, error) {
+	if validateErr := ValidateAppID(appID); validateErr != nil {
+		return BindingWithKeys{}, validateErr
+	}
+	binding, acknowledgeErr := service.admin.AcknowledgeBinding(ctx, appID, service.now())
+	if acknowledgeErr != nil {
+		return BindingWithKeys{}, acknowledgeErr
+	}
+	service.logger.InfoContext(ctx, "binding acknowledged", "app_id", appID)
+	return binding, nil
+}
+
+// AcknowledgeAllBindings marks the listed registrar-created apps as seen and returns how many it
+// changed. The list must hold 1 to MaxAcknowledgeApps ids (counted before duplicates are
+// dropped), each a valid app id.
+func (service *Service) AcknowledgeAllBindings(ctx context.Context, appIDs []string) (int, error) {
+	if len(appIDs) == 0 || len(appIDs) > MaxAcknowledgeApps {
+		return 0, &ValidationError{Message: fmt.Sprintf("app_ids must list 1 to %d apps", MaxAcknowledgeApps)}
+	}
+	unique := make([]string, 0, len(appIDs))
+	seen := make(map[string]struct{}, len(appIDs))
+	for _, appID := range appIDs {
+		if validateErr := ValidateAppID(appID); validateErr != nil {
+			return 0, validateErr
+		}
+		if _, duplicate := seen[appID]; duplicate {
+			continue
+		}
+		seen[appID] = struct{}{}
+		unique = append(unique, appID)
+	}
+	changed, acknowledgeErr := service.admin.AcknowledgeAllBindings(ctx, unique, service.now())
+	if acknowledgeErr != nil {
+		return 0, acknowledgeErr
+	}
+	service.logger.InfoContext(ctx, "bindings acknowledged all", "requested", len(unique), "changed", changed)
+	return changed, nil
 }
 
 // RejectRequest rejects a pending request; rejecting a rejected one is a no-op.

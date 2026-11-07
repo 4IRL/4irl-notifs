@@ -53,7 +53,8 @@ var (
 
 type identityRequestJSON struct {
 	ID               int64   `json:"id"`
-	AppID            string  `json:"app_id"`
+	Kind             string  `json:"kind"`
+	AppID            string  `json:"app_id"` // null (registrar request) decodes as ""
 	GitHubRepository string  `json:"github_repository"`
 	RepositoryID     int64   `json:"github_repository_id"`
 	WorkflowPath     string  `json:"workflow_path"`
@@ -78,15 +79,20 @@ type identityKeyJSON struct {
 }
 
 type identityBindingJSON struct {
-	AppID        string            `json:"app_id"`
-	Repository   string            `json:"github_repository"`
-	RepositoryID int64             `json:"github_repository_id"`
-	OwnerID      int64             `json:"github_owner_id"`
-	WorkflowPath string            `json:"workflow_path"`
-	GitRef       string            `json:"git_ref"`
-	Environment  *string           `json:"environment"`
-	ApprovedAt   string            `json:"approved_at"`
-	Keys         []identityKeyJSON `json:"keys"`
+	AppID        string  `json:"app_id"`
+	Repository   string  `json:"github_repository"`
+	RepositoryID int64   `json:"github_repository_id"`
+	OwnerID      int64   `json:"github_owner_id"`
+	WorkflowPath string  `json:"workflow_path"`
+	GitRef       string  `json:"git_ref"`
+	Environment  *string `json:"environment"`
+	ApprovedAt   string  `json:"approved_at"`
+	Registrar    *struct {
+		ID     int64  `json:"id"`
+		Prefix string `json:"prefix"`
+	} `json:"registrar"`
+	AcknowledgedAt *string           `json:"acknowledged_at"`
+	Keys           []identityKeyJSON `json:"keys"`
 }
 
 type exchangeResponseJSON struct {
@@ -657,7 +663,10 @@ func TestExchangeBodyValidationIs400(testInstance *testing.T) {
 		body  map[string]any
 		error string
 	}{
-		{"empty app id", map[string]any{"app_id": "", "token": token}, "invalid app_id"},
+		// An empty app_id with no name is "neither", which the registrar contract answers first.
+		{"empty app id and no name", map[string]any{"app_id": "", "token": token}, "send exactly one of app_id or name"},
+		{"both app id and name", map[string]any{"app_id": app.appID, "name": "blog", "token": token}, "send exactly one of app_id or name"},
+		{"invalid name", map[string]any{"name": "Bad-Name", "token": token}, "invalid name"},
 		{"uppercase app id", map[string]any{"app_id": "Urls4irl", "token": token}, "invalid app_id"},
 		{"app id too long", map[string]any{"app_id": "a" + strings.Repeat("b", 63), "token": token}, "invalid app_id"},
 		{"missing token", map[string]any{"app_id": app.appID}, "token is required"},

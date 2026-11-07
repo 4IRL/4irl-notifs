@@ -185,23 +185,27 @@ type exchangeFixture struct {
 	store    *fakeExchangeStore
 	tx       *fakeExchangeTx
 	logs     *syncBuffer
+	// directory is the people-directory fake wired as the service's Registrar.
+	directory *fakeRegistrar
 }
 
 func newExchangeFixture() *exchangeFixture {
 	claims := testClaimsFor(1001, "")
 	tx := &fakeExchangeTx{recordFresh: true, requestID: 7, issued: IssuedKey{ID: 5, Plaintext: exchangeTestKey, Hint: "dak_abcd"}}
 	fixture := &exchangeFixture{
-		verifier: &fakeVerifier{claims: claims},
-		store:    &fakeExchangeStore{tx: tx},
-		tx:       tx,
-		logs:     &syncBuffer{},
+		verifier:  &fakeVerifier{claims: claims},
+		store:     &fakeExchangeStore{tx: tx},
+		tx:        tx,
+		logs:      &syncBuffer{},
+		directory: &fakeRegistrar{},
 	}
 	fixture.service = NewService(ServiceConfig{
-		Store:    fixture.store,
-		Admin:    nil,
-		Verifier: fixture.verifier,
-		Logger:   textLogger(fixture.logs),
-		Now:      func() time.Time { return testNow },
+		Store:     fixture.store,
+		Admin:     nil,
+		Registrar: fixture.directory,
+		Verifier:  fixture.verifier,
+		Logger:    textLogger(fixture.logs),
+		Now:       func() time.Time { return testNow },
 	})
 	return fixture
 }
@@ -225,7 +229,7 @@ func matchingBinding() Binding {
 func TestExchangeOfAnUnboundAppFilesAPendingRequestAndIssuesNoKey(testInstance *testing.T) {
 	fixture := newExchangeFixture()
 
-	result, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+	result, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 	if err != nil {
 		testInstance.Fatalf("Exchange: %v", err)
 	}
@@ -233,8 +237,8 @@ func TestExchangeOfAnUnboundAppFilesAPendingRequestAndIssuesNoKey(testInstance *
 	if result.Status != ExchangePending || result.RequestID != 7 || result.Key != "" || result.KeyID != 0 {
 		testInstance.Errorf("result = %+v, want a pending result for request 7 with no key", result)
 	}
-	if got := strings.Join(fixture.tx.calls, ","); got != "record,lock,file" {
-		testInstance.Errorf("transaction calls = %s, want record,lock,file (and never issue)", got)
+	if got := strings.Join(fixture.tx.calls, ","); got != "record,find-registrar,in-prefix,lock,file" {
+		testInstance.Errorf("transaction calls = %s, want record,find-registrar,in-prefix,lock,file (and never issue)", got)
 	}
 	if !fixture.store.committed {
 		testInstance.Error("the pending request must commit (the token is consumed)")
@@ -248,7 +252,7 @@ func TestExchangeRecordsTheJTIInsideTheTransactionAfterVerifyingWithoutRecording
 	fixture := newExchangeFixture()
 	fixture.tx.bound, fixture.tx.binding = true, matchingBinding()
 
-	if _, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken); err != nil {
+	if _, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken}); err != nil {
 		testInstance.Fatalf("Exchange: %v", err)
 	}
 
@@ -271,7 +275,7 @@ func TestExchangeIssuesAKeyWhenTheClaimsMatchTheBinding(testInstance *testing.T)
 	fixture := newExchangeFixture()
 	fixture.tx.bound, fixture.tx.binding = true, matchingBinding()
 
-	result, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+	result, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 	if err != nil {
 		testInstance.Fatalf("Exchange: %v", err)
 	}
@@ -279,8 +283,8 @@ func TestExchangeIssuesAKeyWhenTheClaimsMatchTheBinding(testInstance *testing.T)
 	if result.Status != ExchangeIssued || result.AppID != "urls4irl" || result.Key != exchangeTestKey || result.KeyID != 5 {
 		testInstance.Errorf("result = %+v", result)
 	}
-	if got := strings.Join(fixture.tx.calls, ","); got != "record,lock,issue" {
-		testInstance.Errorf("transaction calls = %s, want record,lock,issue (and never file)", got)
+	if got := strings.Join(fixture.tx.calls, ","); got != "record,find-registrar,in-prefix,lock,issue" {
+		testInstance.Errorf("transaction calls = %s, want record,find-registrar,in-prefix,lock,issue (and never file)", got)
 	}
 	if fixture.tx.runID != "run-77" || !fixture.tx.issuedAt.Equal(testNow) {
 		testInstance.Errorf("key issued with run id %q at %v", fixture.tx.runID, fixture.tx.issuedAt)
@@ -301,9 +305,9 @@ func TestExchangeRereadsTheBindingWhenAnApprovalCommitsWhileFiling(testInstance 
 		wantErr   error
 		wantCalls string
 	}{
-		{"matching claims are issued a key", func(*Claims) {}, nil, "record,lock,file,lock,issue"},
+		{"matching claims are issued a key", func(*Claims) {}, nil, "record,find-registrar,in-prefix,lock,file,lock,issue"},
 		{"claims differing from the new binding are refused and nothing is filed",
-			func(claims *Claims) { claims.Ref = "refs/heads/other" }, ErrBindingMismatch, "record,lock,file,lock"},
+			func(claims *Claims) { claims.Ref = "refs/heads/other" }, ErrBindingMismatch, "record,find-registrar,in-prefix,lock,file,lock"},
 	} {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
 			fixture := newExchangeFixture()
@@ -311,7 +315,7 @@ func TestExchangeRereadsTheBindingWhenAnApprovalCommitsWhileFiling(testInstance 
 			fixture.tx.fileErr = ErrBindingAppeared
 			testCase.mutate(&fixture.verifier.claims)
 
-			result, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+			result, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 
 			if !errors.Is(err, testCase.wantErr) {
 				subTest.Fatalf("err = %v, want %v", err, testCase.wantErr)
@@ -333,12 +337,12 @@ func TestExchangeGivesUpWhenTheBindingStillCannotBeFound(testInstance *testing.T
 	fixture := newExchangeFixture()
 	fixture.tx.fileErr = ErrBindingAppeared
 
-	_, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+	_, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 
 	if !errors.Is(err, ErrBindingAppeared) {
 		testInstance.Fatalf("err = %v, want ErrBindingAppeared (no retry loop)", err)
 	}
-	if got := strings.Join(fixture.tx.calls, ","); got != "record,lock,file,lock" {
+	if got := strings.Join(fixture.tx.calls, ","); got != "record,find-registrar,in-prefix,lock,file,lock" {
 		testInstance.Errorf("transaction calls = %s, want exactly one re-read", got)
 	}
 }
@@ -347,7 +351,7 @@ func TestExchangeReturnsATransactionThatCouldNotStart(testInstance *testing.T) {
 	fixture := newExchangeFixture()
 	fixture.store.beginErr = errScripted
 
-	_, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+	_, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 
 	if !errors.Is(err, errScripted) || len(fixture.tx.calls) != 0 {
 		testInstance.Errorf("err = %v, transaction calls = %v, want the begin error and no calls", err, fixture.tx.calls)
@@ -361,7 +365,7 @@ func TestExchangeLogsACanceledRequestBelowErrorLevel(testInstance *testing.T) {
 	fixture := newExchangeFixture()
 	fixture.verifier.err = context.Canceled
 
-	_, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+	_, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 
 	if !errors.Is(err, context.Canceled) {
 		testInstance.Fatalf("err = %v", err)
@@ -387,13 +391,13 @@ func TestExchangeRefusesClaimsThatDifferFromTheBindingInAnyOfTheFiveFields(testI
 			fixture.tx.bound, fixture.tx.binding = true, matchingBinding()
 			testCase.mutate(&fixture.verifier.claims)
 
-			_, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+			_, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 
 			if !errors.Is(err, ErrBindingMismatch) {
 				subTest.Fatalf("err = %v, want ErrBindingMismatch", err)
 			}
-			if got := strings.Join(fixture.tx.calls, ","); got != "record,lock" {
-				subTest.Errorf("transaction calls = %s, want record,lock only: nothing may be filed or issued", got)
+			if got := strings.Join(fixture.tx.calls, ","); got != "record,find-registrar,in-prefix,lock" {
+				subTest.Errorf("transaction calls = %s, want record,find-registrar,in-prefix,lock only: nothing may be filed or issued", got)
 			}
 			if fixture.store.committed {
 				subTest.Error("a mismatch must roll the transaction back")
@@ -406,7 +410,7 @@ func TestExchangeOfAReplayedTokenIsAnInvalidTokenAndRollsBack(testInstance *test
 	fixture := newExchangeFixture()
 	fixture.tx.recordFresh = false
 
-	_, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+	_, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 
 	if !errors.Is(err, ErrInvalidToken) || !errors.Is(err, ErrReplayed) {
 		testInstance.Fatalf("err = %v, want ErrReplayed (an ErrInvalidToken)", err)
@@ -428,7 +432,7 @@ func TestExchangeTokenFailuresNeverReachTheDatabase(testInstance *testing.T) {
 			fixture := newExchangeFixture()
 			fixture.verifier.err = testCase.err
 
-			_, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+			_, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 
 			if !errors.Is(err, testCase.err) {
 				subTest.Errorf("err = %v, want %v", err, testCase.err)
@@ -457,7 +461,7 @@ func TestExchangeMapsStoreOutcomes(testInstance *testing.T) {
 			fixture := newExchangeFixture()
 			testCase.setup(fixture.tx)
 
-			_, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+			_, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 
 			if !errors.Is(err, testCase.want) {
 				subTest.Errorf("err = %v, want %v", err, testCase.want)
@@ -476,7 +480,6 @@ func TestExchangeRejectsAMalformedAppIDOrMissingTokenBeforeVerifying(testInstanc
 		token   string
 		message string
 	}{
-		{"empty app id", "", exchangeTestToken, "invalid app_id"},
 		{"uppercase app id", "Urls4irl", exchangeTestToken, "invalid app_id"},
 		{"app id with a dash", "urls-4irl", exchangeTestToken, "invalid app_id"},
 		{"overlong app id", "a" + strings.Repeat("b", 63), exchangeTestToken, "invalid app_id"},
@@ -486,7 +489,7 @@ func TestExchangeRejectsAMalformedAppIDOrMissingTokenBeforeVerifying(testInstanc
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
 			fixture := newExchangeFixture()
 
-			_, err := fixture.service.Exchange(context.Background(), testCase.appID, testCase.token)
+			_, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: testCase.appID, Token: testCase.token})
 
 			var validationErr *ValidationError
 			if !errors.As(err, &validationErr) || validationErr.Message != testCase.message {
@@ -503,7 +506,7 @@ func TestExchangeLogsOneLinePerExchangeWithoutTheTokenOrKey(testInstance *testin
 	fixture := newExchangeFixture()
 	fixture.tx.bound, fixture.tx.binding = true, matchingBinding()
 
-	if _, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken); err != nil {
+	if _, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken}); err != nil {
 		testInstance.Fatalf("Exchange: %v", err)
 	}
 
@@ -554,7 +557,7 @@ func TestExchangeLogsEachFailureOutcomeWithItsReason(testInstance *testing.T) {
 			fixture := newExchangeFixture()
 			testCase.setup(fixture)
 
-			_, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken)
+			_, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken})
 			if err == nil {
 				subTest.Fatal("want an error")
 			}
@@ -596,7 +599,7 @@ func TestExchangeBoundsALoggedReason(testInstance *testing.T) {
 	fixture := newExchangeFixture()
 	fixture.verifier.err = fmt.Errorf("%w: unknown kid %s", ErrInvalidToken, strings.Repeat("k", 5000))
 
-	if _, err := fixture.service.Exchange(context.Background(), "urls4irl", exchangeTestToken); err == nil {
+	if _, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "urls4irl", Token: exchangeTestToken}); err == nil {
 		testInstance.Fatal("want an error")
 	}
 
@@ -964,7 +967,17 @@ func TestApproveRequestRefusals(testInstance *testing.T) {
 		{"rejected request", &fakeAdminStore{request: Request{AppID: "urls4irl", Status: RequestRejected}}, nil, false, false,
 			ErrRequestNotPending, []string{"get"}},
 		{"no registrar", &fakeAdminStore{request: Request{AppID: "urls4irl"}}, nil, true, false,
-			ErrAppRegistryNotConfigured, nil},
+			ErrAppRegistryNotConfigured, []string{"get"}},
+		{"registrar request", &fakeAdminStore{request: Request{Kind: RequestKindRegistrar}}, nil, true, false,
+			ErrRequestIsRegistrar, []string{"get"}},
+		{"no registrar and unknown request", &fakeAdminStore{getErr: ErrRequestNotFound}, nil, true, false,
+			ErrRequestNotFound, []string{"get"}},
+		{"no registrar and rejected request", &fakeAdminStore{request: Request{AppID: "urls4irl", Status: RequestRejected}}, nil, true, false,
+			ErrRequestNotPending, []string{"get"}},
+		{"no registrar and reserved id", &fakeAdminStore{request: Request{AppID: "everyone"}}, nil, true, false,
+			ErrAppIDReserved, []string{"get"}},
+		{"registrar request with a registrar", &fakeAdminStore{request: Request{Kind: RequestKindRegistrar}}, nil, false, false,
+			ErrRequestIsRegistrar, []string{"get"}},
 		{"overlap after registering", &fakeAdminStore{request: Request{AppID: "urls4irl"}, approveErr: ErrAppIDOverlap}, nil, false, false,
 			ErrAppIDOverlap, []string{"get", "register", "approve"}},
 		{"request changed under lock", &fakeAdminStore{request: Request{AppID: "urls4irl"}, approveErr: ErrRequestChanged}, nil, false, false,
@@ -1025,7 +1038,7 @@ func TestApproveRequestRefusals(testInstance *testing.T) {
 func TestExchangeRejectsTheReservedAppIDBeforeAnyStoreCall(testInstance *testing.T) {
 	fixture := newExchangeFixture()
 
-	_, err := fixture.service.Exchange(context.Background(), "everyone", "token")
+	_, err := fixture.service.Exchange(context.Background(), ExchangeInput{AppID: "everyone", Token: "token"})
 
 	var validationErr *ValidationError
 	if !errors.As(err, &validationErr) || validationErr.Message != "invalid app_id" {
