@@ -58,8 +58,13 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     approveIdentityRequest: vi.fn(),
     rejectIdentityRequest: vi.fn(),
     listIdentityBindings: vi.fn().mockResolvedValue([]),
+    listRegistrars: vi.fn().mockResolvedValue([]),
     revokeIdentityKey: vi.fn(),
     unbindApp: vi.fn(),
+    approveRegistrarRequest: vi.fn(),
+    deleteRegistrar: vi.fn(),
+    acknowledgeBinding: vi.fn(),
+    acknowledgeAllBindings: vi.fn(),
     ...overrides,
   };
 }
@@ -721,6 +726,7 @@ describe('Heartbeats table, roomy layout', () => {
 
 function buildRequest(overrides: Partial<IdentityRequest> & { id: number }): IdentityRequest {
   return {
+    kind: 'app',
     appId: `app_${overrides.id}`,
     githubRepository: `4IRL/app_${overrides.id}`,
     githubRepositoryId: 812345600 + overrides.id,
@@ -759,6 +765,8 @@ function buildBinding(
     gitRef: 'refs/heads/main',
     environment: 'production',
     approvedAt: '2026-10-19T09:12:00Z',
+    registrar: null,
+    acknowledgedAt: '2026-10-19T09:12:00Z',
     keys: [],
     ...overrides,
   };
@@ -871,6 +879,60 @@ describe('App identities tables, narrow layout', () => {
 
     expect(allKebabs()).toHaveLength(0);
     expect(screen.getByText(strings.identityRequestUnknownSub)).toBeInTheDocument();
+  });
+
+  it('gives a registrar request a kebab with the registrar Approve and Reject, named by repository', async () => {
+    const user = userEvent.setup();
+    renderIdentities(
+      buildClient({
+        listIdentityRequests: vi.fn().mockResolvedValue([
+          buildRequest({
+            id: 7,
+            kind: 'registrar',
+            appId: null,
+            githubRepository: '4IRL/hosting',
+          }),
+        ]),
+      }),
+    );
+    const row = strings.registrarRequestRowLabel({ repository: '4IRL/hosting' });
+    await screen.findByRole('button', { name: `Actions for ${row}` });
+
+    await openMenu({ user, row });
+    expect(screen.getAllByRole('menuitem').map((item) => item.getAttribute('aria-label'))).toEqual([
+      strings.approveRegistrarNamed({ repository: '4IRL/hosting' }),
+      strings.rejectRegistrarNamed({ repository: '4IRL/hosting' }),
+    ]);
+  });
+
+  it('gives a registrar row a kebab with Delete registrar', async () => {
+    const user = userEvent.setup();
+    renderIdentities(
+      buildClient({
+        listRegistrars: vi.fn().mockResolvedValue([
+          {
+            id: 1,
+            prefix: 'hosted_',
+            githubRepository: '4IRL/hosting',
+            githubRepositoryId: 900100,
+            githubOwnerId: 55,
+            workflowPath: '.github/workflows/create-app.yml',
+            gitRef: 'refs/heads/main',
+            environment: 'production',
+            approvedAt: '2026-10-22T09:00:00Z',
+            appCount: 3,
+            appLimit: 25,
+          },
+        ]),
+      }),
+    );
+    await screen.findByRole('button', { name: 'Actions for hosted_' });
+
+    expect(screen.queryByRole('button', { name: /^Delete registrar/ })).toBeNull();
+    await openMenu({ user, row: 'hosted_' });
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      strings.deleteRegistrarNamed({ prefix: 'hosted_' }),
+    ]);
   });
 
   it('puts Unbind and every revocable key in the binding menu, and no Revoke in the key rows', async () => {

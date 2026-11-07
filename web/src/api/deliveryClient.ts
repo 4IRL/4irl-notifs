@@ -325,10 +325,18 @@ export interface HeartbeatIdParam {
  */
 export type IdentityRequestStatus = 'pending' | 'rejected' | 'unknown';
 
-/** An app's request (filed by its first deploy) for a delivery identity. */
+/**
+ * What an identity request asks for. `unknown` is anything this build does not recognise
+ * (fail closed: no actions are offered for it).
+ */
+export type IdentityRequestKind = 'app' | 'registrar' | 'unknown';
+
+/** A workflow's request (filed by its first deploy) for a delivery identity, for one app or a registrar. */
 export interface IdentityRequest {
   id: number;
-  appId: string;
+  kind: IdentityRequestKind;
+  /** Null for a registrar request (it names no single app) and for an unknown kind. */
+  appId: string | null;
   githubRepository: string;
   githubRepositoryId: number;
   workflowPath: string;
@@ -366,11 +374,54 @@ export interface IdentityBinding {
   gitRef: string;
   environment: string | null;
   approvedAt: string;
+  /** The registrar that created this app, or null for an app approved one by one. */
+  registrar: { id: number; prefix: string } | null;
+  /** When the operator first saw this app; null for a registrar-created app not yet seen. */
+  acknowledgedAt: string | null;
   keys: IdentityKey[];
+}
+
+/** A workflow approved to create apps under a reserved prefix. */
+export interface IdentityRegistrar {
+  id: number;
+  prefix: string;
+  githubRepository: string;
+  githubRepositoryId: number;
+  githubOwnerId: number;
+  workflowPath: string;
+  gitRef: string;
+  environment: string | null;
+  approvedAt: string;
+  appCount: number;
+  /** The server's cap on apps per registrar; the UI never hard-codes it. */
+  appLimit: number;
 }
 
 export interface IdentityRequestIdParam {
   id: number;
+}
+
+export interface ApproveRegistrarParam {
+  id: number;
+  prefix: string;
+}
+
+export interface DeleteRegistrarParam {
+  id: number;
+}
+
+export interface DeleteRegistrarResult {
+  id: number;
+  deleted: boolean;
+  unboundApps: number;
+}
+
+export interface AcknowledgeBindingParam {
+  appId: string;
+}
+
+export interface AcknowledgeAllBindingsParam {
+  appIds: string[];
 }
 
 export interface IdentityKeyIdParam {
@@ -421,7 +472,12 @@ export interface DeliveryApiClient {
   listIdentityRequests(): Promise<IdentityRequest[]>;
   approveIdentityRequest(param: IdentityRequestIdParam): Promise<IdentityBinding>;
   rejectIdentityRequest(param: IdentityRequestIdParam): Promise<IdentityRequest>;
+  approveRegistrarRequest(param: ApproveRegistrarParam): Promise<IdentityRegistrar>;
+  listRegistrars(): Promise<IdentityRegistrar[]>;
+  deleteRegistrar(param: DeleteRegistrarParam): Promise<DeleteRegistrarResult>;
   listIdentityBindings(): Promise<IdentityBinding[]>;
+  acknowledgeBinding(param: AcknowledgeBindingParam): Promise<IdentityBinding>;
+  acknowledgeAllBindings(param: AcknowledgeAllBindingsParam): Promise<number>;
   revokeIdentityKey(param: IdentityKeyIdParam): Promise<IdentityKey>;
   unbindApp(param: UnbindAppParam): Promise<UnbindAppResult>;
 }
@@ -547,7 +603,8 @@ interface HeartbeatProbeWire {
 
 interface IdentityRequestWire {
   id: number;
-  app_id: string;
+  kind?: string;
+  app_id?: string | null;
   github_repository: string;
   github_repository_id: number;
   workflow_path: string;
@@ -580,7 +637,23 @@ interface IdentityBindingWire {
   git_ref: string;
   environment: string | null;
   approved_at: string;
+  registrar?: { id: number; prefix: string } | null;
+  acknowledged_at?: string | null;
   keys: IdentityKeyWire[] | null;
+}
+
+interface IdentityRegistrarWire {
+  id: number;
+  prefix: string;
+  github_repository: string;
+  github_repository_id: number;
+  github_owner_id: number;
+  workflow_path: string;
+  git_ref: string;
+  environment: string | null;
+  approved_at: string;
+  app_count: number;
+  app_limit?: unknown;
 }
 
 interface ReadinessWire {
@@ -667,10 +740,26 @@ function mapIdentityKeyState(state: string): IdentityKeyState {
   return state === 'active' || state === 'superseded' || state === 'revoked' ? state : 'unknown';
 }
 
+/**
+ * Fail closed: an `app` request needs an app id, a `registrar` request must carry none;
+ * anything else (absent or unrecognised kind, mismatched app id) reads as `unknown`.
+ */
+function mapIdentityRequestKind(wire: IdentityRequestWire): IdentityRequestKind {
+  const hasAppId = typeof wire.app_id === 'string' && wire.app_id !== '';
+  if (wire.kind === 'app' && hasAppId) {
+    return 'app';
+  }
+  if (wire.kind === 'registrar' && wire.app_id == null) {
+    return 'registrar';
+  }
+  return 'unknown';
+}
+
 function mapIdentityRequest(wire: IdentityRequestWire): IdentityRequest {
   return {
     id: wire.id,
-    appId: wire.app_id,
+    kind: mapIdentityRequestKind(wire),
+    appId: typeof wire.app_id === 'string' ? wire.app_id : null,
     githubRepository: wire.github_repository,
     githubRepositoryId: wire.github_repository_id,
     workflowPath: wire.workflow_path,
@@ -699,6 +788,7 @@ function mapIdentityKey(wire: IdentityKeyWire): IdentityKey {
 }
 
 function mapIdentityBinding(wire: IdentityBindingWire): IdentityBinding {
+  const registrar = wire.registrar ?? null;
   return {
     appId: wire.app_id,
     githubRepository: wire.github_repository,
@@ -708,7 +798,32 @@ function mapIdentityBinding(wire: IdentityBindingWire): IdentityBinding {
     gitRef: wire.git_ref,
     environment: wire.environment ?? null,
     approvedAt: wire.approved_at,
+    registrar: registrar === null ? null : { id: registrar.id, prefix: registrar.prefix },
+    // Fail closed: a registrar-created app with no acknowledged_at is "not yet seen"; only an
+    // app with no registrar (always seen at approval) falls back to its approval time.
+    acknowledgedAt: wire.acknowledged_at ?? (registrar === null ? wire.approved_at : null),
     keys: (wire.keys ?? []).map(mapIdentityKey),
+  };
+}
+
+/** The server's app cap must be a positive integer; a missing one fails the mapping, never defaults. */
+function mapIdentityRegistrar(wire: IdentityRegistrarWire): IdentityRegistrar {
+  const limit = wire.app_limit;
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit <= 0) {
+    throw new Error('registrar response is missing a valid app_limit');
+  }
+  return {
+    id: wire.id,
+    prefix: wire.prefix,
+    githubRepository: wire.github_repository,
+    githubRepositoryId: wire.github_repository_id,
+    githubOwnerId: wire.github_owner_id,
+    workflowPath: wire.workflow_path,
+    gitRef: wire.git_ref,
+    environment: wire.environment ?? null,
+    approvedAt: wire.approved_at,
+    appCount: wire.app_count,
+    appLimit: limit,
   };
 }
 
@@ -807,6 +922,57 @@ function mapMessage(wire: MessageWire): MessageSummary {
 }
 
 const DEFAULT_BASE_URL = '';
+/** delivery-api's per-call id limit for acknowledge-all. */
+export const ACKNOWLEDGE_ALL_LIMIT = 200;
+
+/** The app-identity failures a screen tells apart; `unknown` is anything unrecognised. */
+export type IdentityErrorCode =
+  | 'invalid-prefix'
+  | 'prefix-taken'
+  | 'prefix-overlap'
+  | 'request-not-pending'
+  | 'request-not-registrar'
+  | 'workflow-bound'
+  | 'binding-gone'
+  | 'not-found'
+  | 'unknown';
+
+// delivery-api's app-identity error texts, matched on status and message together.
+const IDENTITY_ERROR_TEXTS: ReadonlyArray<{
+  status: number;
+  message: string;
+  code: IdentityErrorCode;
+}> = [
+  { status: 400, message: 'invalid prefix', code: 'invalid-prefix' },
+  { status: 409, message: 'prefix already used', code: 'prefix-taken' },
+  {
+    status: 409,
+    message: 'prefix overlaps an approved app id or registrar',
+    code: 'prefix-overlap',
+  },
+  { status: 409, message: 'request is not pending', code: 'request-not-pending' },
+  { status: 409, message: 'request is not a registrar request', code: 'request-not-registrar' },
+  { status: 409, message: 'workflow identity already bound', code: 'workflow-bound' },
+  { status: 404, message: 'binding does not exist', code: 'binding-gone' },
+];
+
+/**
+ * The typed code for a delivery-api app-identity failure. Fail closed: a rejection that is not
+ * an ApiError, or whose text is not recognised, is `unknown` (any other 404 is `not-found`).
+ */
+export function identityErrorCode(rejection: unknown): IdentityErrorCode {
+  if (!(rejection instanceof ApiError)) {
+    return 'unknown';
+  }
+  const known = IDENTITY_ERROR_TEXTS.find(
+    (candidate) => candidate.status === rejection.status && candidate.message === rejection.message,
+  );
+  if (known) {
+    return known.code;
+  }
+  return rejection.status === 404 ? 'not-found' : 'unknown';
+}
+
 const DELIVERY_PREFIX = '/delivery';
 const DEFAULT_DELIVERIES_LIMIT = 50;
 const DEFAULT_SCHEDULED_LIMIT = 50;
@@ -1263,6 +1429,51 @@ export function createDeliveryApiClient({
         method: 'GET',
       })) as { bindings: IdentityBindingWire[] | null };
       return (wire.bindings ?? []).map(mapIdentityBinding);
+    },
+
+    async approveRegistrarRequest({
+      id,
+      prefix,
+    }: ApproveRegistrarParam): Promise<IdentityRegistrar> {
+      const wire = (await request({
+        path: `/v1/admin/app-identity/requests/${id}/approve-registrar`,
+        method: 'POST',
+        body: { prefix },
+      })) as { registrar: IdentityRegistrarWire };
+      return mapIdentityRegistrar(wire.registrar);
+    },
+
+    async listRegistrars(): Promise<IdentityRegistrar[]> {
+      const wire = (await request({
+        path: '/v1/admin/app-identity/registrars',
+        method: 'GET',
+      })) as { registrars: IdentityRegistrarWire[] | null };
+      return (wire.registrars ?? []).map(mapIdentityRegistrar);
+    },
+
+    async deleteRegistrar({ id }: DeleteRegistrarParam): Promise<DeleteRegistrarResult> {
+      const wire = (await request({
+        path: `/v1/admin/app-identity/registrars/${id}`,
+        method: 'DELETE',
+      })) as { id: number; deleted: boolean; unbound_apps: number };
+      return { id: wire.id, deleted: wire.deleted, unboundApps: wire.unbound_apps };
+    },
+
+    async acknowledgeBinding({ appId }: AcknowledgeBindingParam): Promise<IdentityBinding> {
+      const wire = (await request({
+        path: `/v1/admin/app-identity/bindings/${encodeURIComponent(appId)}/acknowledge`,
+        method: 'POST',
+      })) as { binding: IdentityBindingWire };
+      return mapIdentityBinding(wire.binding);
+    },
+
+    async acknowledgeAllBindings({ appIds }: AcknowledgeAllBindingsParam): Promise<number> {
+      const wire = (await request({
+        path: '/v1/admin/app-identity/bindings/acknowledge-all',
+        method: 'POST',
+        body: { app_ids: appIds },
+      })) as { acknowledged: number };
+      return wire.acknowledged;
     },
 
     async revokeIdentityKey({ id }: IdentityKeyIdParam): Promise<IdentityKey> {

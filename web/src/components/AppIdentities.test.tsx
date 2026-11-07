@@ -7,10 +7,12 @@ import type {
   DeliveryApiClient,
   IdentityBinding,
   IdentityKey,
+  IdentityRegistrar,
   IdentityRequest,
 } from '../api/deliveryClient';
 import { strings } from '../strings';
 import { useTimeZone } from '../test-timezone';
+import { setCompactViewport } from '../test-viewport';
 import { AppIdentities } from './AppIdentities';
 
 afterEach(() => {
@@ -29,6 +31,7 @@ function deferred<T>() {
 
 function buildRequest(overrides: Partial<IdentityRequest> & { id: number }): IdentityRequest {
   return {
+    kind: 'app',
     appId: `app_${overrides.id}`,
     githubRepository: `4IRL/app_${overrides.id}`,
     githubRepositoryId: 812345600 + overrides.id,
@@ -67,6 +70,8 @@ function buildBinding(
     gitRef: 'refs/heads/main',
     environment: 'production',
     approvedAt: '2026-10-19T09:12:00Z',
+    registrar: null,
+    acknowledgedAt: '2026-10-19T09:12:00Z',
     keys: [],
     ...overrides,
   };
@@ -100,8 +105,13 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     approveIdentityRequest: vi.fn(),
     rejectIdentityRequest: vi.fn(),
     listIdentityBindings: vi.fn().mockResolvedValue([]),
+    listRegistrars: vi.fn().mockResolvedValue([]),
     revokeIdentityKey: vi.fn(),
     unbindApp: vi.fn(),
+    approveRegistrarRequest: vi.fn(),
+    deleteRegistrar: vi.fn(),
+    acknowledgeBinding: vi.fn(),
+    acknowledgeAllBindings: vi.fn(),
     ...overrides,
   };
 }
@@ -287,10 +297,13 @@ describe('AppIdentities requests', () => {
     );
 
     const [requestsTable, bindingsTable] = await screen.findAllByRole('table');
-    for (const table of [requestsTable, bindingsTable]) {
+    for (const [table, leadHeader] of [
+      [requestsTable, strings.columnIdentityAsksFor],
+      [bindingsTable, strings.columnIdentityApp],
+    ] as const) {
       expect(table).toHaveClass('admin-table');
       const headers = within(table).getAllByRole('columnheader');
-      expect(headers[0]).toHaveTextContent(strings.columnIdentityApp);
+      expect(headers[0]).toHaveTextContent(leadHeader);
       expect(headers[0]).toHaveClass('admin-table__lead');
       expect(headers[headers.length - 1]).not.toHaveClass('admin-table__lead');
     }
@@ -1406,5 +1419,774 @@ describe('AppIdentities refresh signal and approval callback', () => {
 
     expect(await within(requestRow(1)).findByRole('alert')).toBeInTheDocument();
     expect(onBindingApproved).not.toHaveBeenCalled();
+  });
+});
+
+function buildRegistrar(overrides: Partial<IdentityRegistrar> & { id: number }): IdentityRegistrar {
+  return {
+    prefix: 'hosted_',
+    githubRepository: '4IRL/hosting',
+    githubRepositoryId: 900100,
+    githubOwnerId: 55,
+    workflowPath: '.github/workflows/create-app.yml',
+    gitRef: 'refs/heads/main',
+    environment: 'production',
+    approvedAt: '2026-10-22T09:00:00Z',
+    appCount: 3,
+    appLimit: 25,
+    ...overrides,
+  };
+}
+
+const REGISTRAR_REQUEST = buildRequest({
+  id: 7,
+  kind: 'registrar',
+  appId: null,
+  githubRepository: '4IRL/hosting',
+});
+const REGISTRAR_HOSTED = buildRegistrar({ id: 1 });
+const APPROVE_REGISTRAR = strings.approveRegistrarNamed({ repository: '4IRL/hosting' });
+
+function registrarRow(id: number): HTMLElement {
+  const row = document.querySelector<HTMLElement>(`tr[data-registrar-id="${id}"]`);
+  if (row === null) {
+    throw new Error(`registrar row ${id} not found`);
+  }
+  return row;
+}
+
+describe('AppIdentities registrars', () => {
+  it('lists registrars with the server cap', async () => {
+    renderSection(buildClient({ listRegistrars: vi.fn().mockResolvedValue([REGISTRAR_HOSTED]) }));
+    await screen.findByRole('heading', { name: strings.identitiesRegistrarsHeading });
+    const row = registrarRow(1);
+    expect(row).toHaveTextContent('hosted_');
+    expect(row).toHaveTextContent('3');
+    expect(row).toHaveTextContent('25');
+  });
+
+  it('shows the empty registrars state', async () => {
+    renderSection(buildClient());
+    expect(await screen.findByText(strings.identitiesRegistrarsEmpty)).toBeInTheDocument();
+  });
+
+  it('offers registrar approve and reject named from the repository', async () => {
+    renderSection(
+      buildClient({ listIdentityRequests: vi.fn().mockResolvedValue([REGISTRAR_REQUEST]) }),
+    );
+    await screen.findAllByRole('table');
+    expect(button(APPROVE_REGISTRAR)).toBeInTheDocument();
+    expect(
+      button(strings.rejectRegistrarNamed({ repository: '4IRL/hosting' })),
+    ).toBeInTheDocument();
+  });
+
+  it('shows an unknown request kind with no actions', async () => {
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi.fn().mockResolvedValue([buildRequest({ id: 9, kind: 'unknown' })]),
+      }),
+    );
+    await screen.findAllByRole('table');
+    expect(within(requestRow(9)).queryByRole('button')).toBeNull();
+    expect(within(requestRow(9)).getAllByText(strings.identityUnknownRequestPill)).toHaveLength(1);
+  });
+
+  it('refuses platform_ and a bad grammar client-side, sending nothing', async () => {
+    const user = userEvent.setup();
+    const approve = vi.fn();
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi.fn().mockResolvedValue([REGISTRAR_REQUEST]),
+        approveRegistrarRequest: approve,
+      }),
+    );
+    await screen.findAllByRole('table');
+    await user.click(button(APPROVE_REGISTRAR));
+    const dialog = screen.getByRole('dialog', { name: strings.approveRegistrarDialogTitle });
+    const input = within(dialog).getByLabelText(strings.approveRegistrarPrefixLabel);
+    expect(input).toHaveFocus();
+
+    await user.type(input, 'platform_x_');
+    await user.click(within(dialog).getByRole('button', { name: strings.approveRegistrarConfirm }));
+    expect(within(dialog).getByText(strings.prefixReservedPlatform)).toBeInTheDocument();
+
+    await user.clear(input);
+    await user.type(input, 'Bad');
+    await user.click(within(dialog).getByRole('button', { name: strings.approveRegistrarConfirm }));
+    expect(within(dialog).getByText(strings.prefixInvalidGrammar)).toBeInTheDocument();
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it('approves with a trimmed prefix, lists the registrar and focuses its delete', async () => {
+    const user = userEvent.setup();
+    const approve = vi.fn().mockResolvedValue(REGISTRAR_HOSTED);
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi
+          .fn()
+          .mockResolvedValueOnce([REGISTRAR_REQUEST])
+          .mockResolvedValue([]),
+        listRegistrars: vi.fn().mockResolvedValueOnce([]).mockResolvedValue([REGISTRAR_HOSTED]),
+        approveRegistrarRequest: approve,
+      }),
+    );
+    await screen.findAllByRole('table');
+    await user.click(button(APPROVE_REGISTRAR));
+    const dialog = screen.getByRole('dialog', { name: strings.approveRegistrarDialogTitle });
+    await user.type(
+      within(dialog).getByLabelText(strings.approveRegistrarPrefixLabel),
+      '  hosted_ ',
+    );
+    await user.click(within(dialog).getByRole('button', { name: strings.approveRegistrarConfirm }));
+
+    await waitFor(() => expect(approve).toHaveBeenCalledWith({ id: 7, prefix: 'hosted_' }));
+    await waitFor(() => expect(registrarRow(1)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(button(strings.deleteRegistrarNamed({ prefix: 'hosted_' }))).toHaveFocus(),
+    );
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('keeps a prefix-class error under the field and closes on a request-class error', async () => {
+    const user = userEvent.setup();
+    const approve = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError({ message: 'prefix already used', status: 409 }))
+      .mockRejectedValueOnce(new ApiError({ message: 'request is not pending', status: 409 }));
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi.fn().mockResolvedValue([REGISTRAR_REQUEST]),
+        approveRegistrarRequest: approve,
+      }),
+    );
+    await screen.findAllByRole('table');
+    await user.click(button(APPROVE_REGISTRAR));
+    const dialog = screen.getByRole('dialog', { name: strings.approveRegistrarDialogTitle });
+    const input = within(dialog).getByLabelText(strings.approveRegistrarPrefixLabel);
+    await user.type(input, 'hosted_');
+    await user.click(within(dialog).getByRole('button', { name: strings.approveRegistrarConfirm }));
+    expect(await within(dialog).findByText('prefix already used')).toBeInTheDocument();
+    expect(input).toHaveFocus();
+
+    await user.click(within(dialog).getByRole('button', { name: strings.approveRegistrarConfirm }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // A row-gone error goes to the result region (error variant), never under the field.
+    expect(requestsHeading()).toHaveFocus();
+    expect(resultLine()).toHaveClass('app-identities__result--error');
+    expect(resultLine()).toHaveTextContent('request is not pending');
+  });
+
+  it('puts a workflow-already-bound error on the row and refocuses the approve trigger', async () => {
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi.fn().mockResolvedValue([REGISTRAR_REQUEST]),
+        approveRegistrarRequest: vi
+          .fn()
+          .mockRejectedValue(
+            new ApiError({ message: 'workflow identity already bound', status: 409 }),
+          ),
+      }),
+    );
+    await screen.findAllByRole('table');
+    await user.click(button(APPROVE_REGISTRAR));
+    const dialog = screen.getByRole('dialog', { name: strings.approveRegistrarDialogTitle });
+    await user.type(within(dialog).getByLabelText(strings.approveRegistrarPrefixLabel), 'hosted_');
+    await user.click(within(dialog).getByRole('button', { name: strings.approveRegistrarConfirm }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(within(requestRow(7)).getByRole('alert')).toHaveTextContent(
+      'workflow identity already bound',
+    );
+    expect(button(APPROVE_REGISTRAR)).toHaveFocus();
+  });
+
+  it('ignores Escape while the approve is in flight and shows Approving…', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<IdentityRegistrar>();
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi.fn().mockResolvedValue([REGISTRAR_REQUEST]),
+        approveRegistrarRequest: vi.fn().mockReturnValue(pending.promise),
+      }),
+    );
+    await screen.findAllByRole('table');
+    await user.click(button(APPROVE_REGISTRAR));
+    const dialog = screen.getByRole('dialog', { name: strings.approveRegistrarDialogTitle });
+    await user.type(within(dialog).getByLabelText(strings.approveRegistrarPrefixLabel), 'hosted_');
+    await user.click(within(dialog).getByRole('button', { name: strings.approveRegistrarConfirm }));
+
+    const busy = await within(dialog).findByRole('button', { name: strings.approvingRegistrar });
+    expect(busy).toHaveAttribute('aria-disabled', 'true');
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog', { name: strings.approveRegistrarDialogTitle })).toBeVisible();
+    await act(async () => {
+      pending.resolve(REGISTRAR_HOSTED);
+    });
+  });
+
+  it('ignores a hashchange while the approve is in flight', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<IdentityRegistrar>();
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi.fn().mockResolvedValue([REGISTRAR_REQUEST]),
+        approveRegistrarRequest: vi.fn().mockReturnValue(pending.promise),
+      }),
+    );
+    await screen.findAllByRole('table');
+    await user.click(button(APPROVE_REGISTRAR));
+    const dialog = screen.getByRole('dialog', { name: strings.approveRegistrarDialogTitle });
+    await user.type(within(dialog).getByLabelText(strings.approveRegistrarPrefixLabel), 'hosted_');
+    await user.click(within(dialog).getByRole('button', { name: strings.approveRegistrarConfirm }));
+    await within(dialog).findByRole('button', { name: strings.approvingRegistrar });
+
+    act(() => {
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(screen.getByRole('dialog', { name: strings.approveRegistrarDialogTitle })).toBeVisible();
+    await act(async () => {
+      pending.resolve(REGISTRAR_HOSTED);
+    });
+  });
+
+  it('returns focus to the trigger on Cancel and on Escape (restoreFocus stays true)', async () => {
+    const user = userEvent.setup();
+    const approve = vi.fn();
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi.fn().mockResolvedValue([REGISTRAR_REQUEST]),
+        approveRegistrarRequest: approve,
+      }),
+    );
+    await screen.findAllByRole('table');
+
+    await user.click(button(APPROVE_REGISTRAR));
+    await user.click(
+      within(screen.getByRole('dialog', { name: strings.approveRegistrarDialogTitle })).getByRole(
+        'button',
+        { name: 'Cancel' },
+      ),
+    );
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(button(APPROVE_REGISTRAR)).toHaveFocus();
+
+    await user.click(button(APPROVE_REGISTRAR));
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(button(APPROVE_REGISTRAR)).toHaveFocus();
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it('rejects a registrar request with registrar wording and focuses the requests heading', async () => {
+    const user = userEvent.setup();
+    const reject = vi.fn().mockResolvedValue({ ...REGISTRAR_REQUEST, status: 'rejected' });
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi
+          .fn()
+          .mockResolvedValueOnce([REGISTRAR_REQUEST])
+          .mockResolvedValue([{ ...REGISTRAR_REQUEST, status: 'rejected' }]),
+        rejectIdentityRequest: reject,
+      }),
+    );
+    await screen.findAllByRole('table');
+    const repository = '4IRL/hosting';
+    await user.click(button(strings.rejectRegistrarNamed({ repository })));
+    await user.click(button(strings.confirmRejectRegistrarNamed({ repository })));
+
+    await waitFor(() => expect(reject).toHaveBeenCalledWith({ id: 7 }));
+    await waitFor(() => expect(requestsHeading()).toHaveFocus());
+    expect(resultLine()).toHaveTextContent(strings.identityRegistrarRejected({ repository }));
+    expect(document.body.textContent).not.toContain('null');
+  });
+
+  it('moves focus to the neighbouring registrar request when an app request is approved', async () => {
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi
+          .fn()
+          .mockResolvedValueOnce([REQUEST_1, REGISTRAR_REQUEST])
+          .mockResolvedValue([REGISTRAR_REQUEST]),
+        approveIdentityRequest: vi.fn().mockResolvedValue(buildBinding({ appId: 'app_1' })),
+      }),
+    );
+    await screen.findAllByRole('table');
+    await user.click(button('Approve identity request for app_1'));
+
+    await waitFor(() => expect(button(APPROVE_REGISTRAR)).toHaveFocus());
+  });
+
+  it('focuses the neighbour registrar Delete after a delete, or the heading for the last one', async () => {
+    const user = userEvent.setup();
+    const second = buildRegistrar({ id: 2, prefix: 'other_' });
+    renderSection(
+      buildClient({
+        listRegistrars: vi
+          .fn()
+          .mockResolvedValueOnce([REGISTRAR_HOSTED, second])
+          .mockResolvedValue([second]),
+        deleteRegistrar: vi.fn().mockResolvedValue({ id: 1, deleted: true, unboundApps: 0 }),
+      }),
+    );
+    await screen.findByRole('heading', { name: strings.identitiesRegistrarsHeading });
+    await user.click(button(strings.deleteRegistrarNamed({ prefix: 'hosted_' })));
+    await user.click(button(strings.confirmDeleteRegistrarNamed({ prefix: 'hosted_' })));
+    await waitFor(() =>
+      expect(button(strings.deleteRegistrarNamed({ prefix: 'other_' }))).toHaveFocus(),
+    );
+  });
+
+  it('focuses the Registrars heading after deleting the last registrar', async () => {
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({
+        listRegistrars: vi.fn().mockResolvedValueOnce([REGISTRAR_HOSTED]).mockResolvedValue([]),
+        deleteRegistrar: vi.fn().mockResolvedValue({ id: 1, deleted: true, unboundApps: 0 }),
+      }),
+    );
+    await screen.findByRole('heading', { name: strings.identitiesRegistrarsHeading });
+    await user.click(button(strings.deleteRegistrarNamed({ prefix: 'hosted_' })));
+    await user.click(button(strings.confirmDeleteRegistrarNamed({ prefix: 'hosted_' })));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: strings.identitiesRegistrarsHeading }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it('shows a whole-section error with Retry when listRegistrars rejects', async () => {
+    renderSection(buildClient({ listRegistrars: vi.fn().mockRejectedValue(new Error('network')) }));
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(button(strings.identitiesRetry)).toBeInTheDocument();
+  });
+
+  it('shows a registrar row error when a delete fails', async () => {
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({
+        listRegistrars: vi.fn().mockResolvedValue([REGISTRAR_HOSTED]),
+        deleteRegistrar: vi.fn().mockRejectedValue(new ApiError({ message: 'boom', status: 500 })),
+      }),
+    );
+    await screen.findByRole('heading', { name: strings.identitiesRegistrarsHeading });
+    await user.click(button(strings.deleteRegistrarNamed({ prefix: 'hosted_' })));
+    await user.click(button(strings.confirmDeleteRegistrarNamed({ prefix: 'hosted_' })));
+    expect(await within(registrarRow(1)).findByRole('alert')).toHaveTextContent('boom');
+  });
+
+  it('announces the neutral already-deleted result when deleted is false', async () => {
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({
+        listRegistrars: vi.fn().mockResolvedValueOnce([REGISTRAR_HOSTED]).mockResolvedValue([]),
+        deleteRegistrar: vi.fn().mockResolvedValue({ id: 1, deleted: false, unboundApps: 0 }),
+      }),
+    );
+    await screen.findByRole('heading', { name: strings.identitiesRegistrarsHeading });
+    await user.click(button(strings.deleteRegistrarNamed({ prefix: 'hosted_' })));
+    await user.click(button(strings.confirmDeleteRegistrarNamed({ prefix: 'hosted_' })));
+    await waitFor(() =>
+      expect(resultLine()).toHaveTextContent(
+        strings.registrarAlreadyDeleted({ prefix: 'hosted_' }),
+      ),
+    );
+  });
+
+  it('deletes a registrar after a confirm and reports the unbound count', async () => {
+    const user = userEvent.setup();
+    const remove = vi.fn().mockResolvedValue({ id: 1, deleted: true, unboundApps: 3 });
+    renderSection(
+      buildClient({
+        listRegistrars: vi.fn().mockResolvedValueOnce([REGISTRAR_HOSTED]).mockResolvedValue([]),
+        deleteRegistrar: remove,
+      }),
+    );
+    await screen.findByRole('heading', { name: strings.identitiesRegistrarsHeading });
+    await user.click(button(strings.deleteRegistrarNamed({ prefix: 'hosted_' })));
+    await user.click(button(strings.confirmDeleteRegistrarNamed({ prefix: 'hosted_' })));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith({ id: 1 }));
+    await waitFor(() =>
+      expect(resultLine()).toHaveTextContent(
+        strings.registrarDeleted({ prefix: 'hosted_', count: 3 }),
+      ),
+    );
+  });
+});
+
+const HOSTED_REGISTRAR_REF = { id: 1, prefix: 'hosted_' };
+const NEW_A = buildBinding({
+  appId: 'hosted_a',
+  registrar: HOSTED_REGISTRAR_REF,
+  acknowledgedAt: null,
+});
+const NEW_B = buildBinding({
+  appId: 'hosted_b',
+  registrar: HOSTED_REGISTRAR_REF,
+  acknowledgedAt: null,
+});
+const SEEN_C = buildBinding({
+  appId: 'hosted_c',
+  registrar: HOSTED_REGISTRAR_REF,
+  acknowledgedAt: '2026-10-22T10:00:00Z',
+});
+const MARK_ALL = strings.markAllSeenAria;
+
+/** The acknowledged copy of a binding, as the server would return it. */
+function seen(binding: IdentityBinding): IdentityBinding {
+  return { ...binding, acknowledgedAt: '2026-10-22T11:00:00Z' };
+}
+
+describe('AppIdentities registrar app markers', () => {
+  it('marks a new registrar app with text, and leaves seen and normal rows unmarked', async () => {
+    renderSection(
+      buildClient({
+        listIdentityBindings: vi.fn().mockResolvedValue([NEW_A, SEEN_C, BINDING_THIRD]),
+      }),
+    );
+    await screen.findByRole('table');
+
+    const newRow = bindingRow('hosted_a');
+    expect(newRow).toHaveClass('app-identities__row--new');
+    expect(newRow).toHaveTextContent(`${strings.identityStatusLabel}${strings.identityNewMark}`);
+    expect(newRow).toHaveTextContent(
+      `${strings.identityCreatedByLabel}${strings.identityViaRegistrar({ prefix: 'hosted_' })}`,
+    );
+    expect(newRow).toHaveTextContent('created automatically');
+    expect(newRow).not.toHaveTextContent('approved');
+
+    const seenRow = bindingRow('hosted_c');
+    expect(seenRow).not.toHaveClass('app-identities__row--new');
+    expect(seenRow).not.toHaveTextContent(strings.identityNewMark);
+    expect(seenRow).toHaveTextContent(strings.identityViaRegistrar({ prefix: 'hosted_' }));
+    expect(seenRow).toHaveTextContent('created automatically');
+
+    const normalRow = bindingRow('worldwide');
+    expect(normalRow).not.toHaveClass('app-identities__row--new');
+    expect(normalRow).not.toHaveTextContent(strings.identityNewMark);
+    expect(normalRow).not.toHaveTextContent('via ');
+    expect(normalRow).not.toHaveTextContent('Created by registrar');
+    expect(normalRow).toHaveTextContent('approved');
+  });
+
+  it('appends the registrar creates-it-again suffix to the Unbind notice of a registrar app only', async () => {
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({ listIdentityBindings: vi.fn().mockResolvedValue([SEEN_C, BINDING_THIRD]) }),
+    );
+    await screen.findByRole('table');
+
+    await user.click(button('Unbind hosted_c'));
+    expect(
+      screen.getByText(strings.unbindRegistrarAppNotice({ prefix: 'hosted_' })),
+    ).toHaveTextContent('Its registrar hosted_ creates it again on the next deploy.');
+    await user.click(button('Cancel unbind hosted_c'));
+
+    await user.click(button('Unbind worldwide'));
+    expect(screen.getByText(strings.unbindAppNotice)).toBeInTheDocument();
+    expect(screen.queryByText(/creates it again/)).toBeNull();
+  });
+
+  it('words the summary for 0, 1 and many of each part, omitting a zero part', async () => {
+    const pendingMany = [REQUEST_1, REQUEST_2];
+    const cases: Array<{
+      requests: IdentityRequest[];
+      bindings: IdentityBinding[];
+      text: string;
+    }> = [
+      { requests: [], bindings: [SEEN_C], text: '' },
+      { requests: [REQUEST_1], bindings: [], text: '1 request awaiting approval' },
+      { requests: pendingMany, bindings: [], text: '2 requests awaiting approval' },
+      { requests: [], bindings: [NEW_A], text: '1 new app' },
+      { requests: [], bindings: [NEW_A, NEW_B], text: '2 new apps' },
+      {
+        requests: [REQUEST_1],
+        bindings: [NEW_A],
+        text: '1 request awaiting approval · 1 new app',
+      },
+      {
+        requests: pendingMany,
+        bindings: [NEW_A, NEW_B],
+        text: '2 requests awaiting approval · 2 new apps',
+      },
+    ];
+    for (const scenario of cases) {
+      cleanup();
+      renderSection(
+        buildClient({
+          listIdentityRequests: vi.fn().mockResolvedValue(scenario.requests),
+          listIdentityBindings: vi.fn().mockResolvedValue(scenario.bindings),
+        }),
+      );
+      await screen.findByRole('heading', { name: strings.identitiesBindingsHeading });
+      expect(summary().textContent).toBe(scenario.text);
+    }
+  });
+
+  it('renders the new-apps part inside aria-live=off', async () => {
+    renderSection(
+      buildClient({
+        listIdentityRequests: vi.fn().mockResolvedValue([REQUEST_1]),
+        listIdentityBindings: vi.fn().mockResolvedValue([NEW_A]),
+      }),
+    );
+    await screen.findByRole('table', { name: strings.identitiesBindingsHeading });
+    const part = within(summary()).getByText(/1 new app/);
+    expect(part).toHaveAttribute('aria-live', 'off');
+    expect(summary()).toHaveAttribute('aria-live', 'polite');
+    expect(within(part).queryByText(/awaiting approval/)).toBeNull();
+  });
+});
+
+describe('AppIdentities Mark seen', () => {
+  it('keeps the marker after a failed acknowledge and shows the row error', async () => {
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({
+        listIdentityBindings: vi.fn().mockResolvedValue([NEW_A]),
+        acknowledgeBinding: vi
+          .fn()
+          .mockRejectedValue(new ApiError({ status: 500, message: 'boom' })),
+      }),
+    );
+    await screen.findByRole('table');
+    await user.click(button(strings.markSeenNamed({ app: 'hosted_a' })));
+
+    expect(await within(bindingRow('hosted_a')).findByRole('alert')).toHaveTextContent('boom');
+    expect(bindingRow('hosted_a')).toHaveClass('app-identities__row--new');
+    expect(bindingRow('hosted_a')).toHaveTextContent(strings.identityNewMark);
+  });
+
+  it('removes the marker, moves focus to Unbind and announces in the result region (wide)', async () => {
+    const user = userEvent.setup();
+    const acknowledge = vi.fn().mockResolvedValue(seen(NEW_A));
+    renderSection(
+      buildClient({
+        listIdentityBindings: vi
+          .fn()
+          .mockResolvedValueOnce([NEW_A])
+          .mockResolvedValue([seen(NEW_A)]),
+        acknowledgeBinding: acknowledge,
+      }),
+    );
+    await screen.findByRole('table');
+    expect(summary().textContent).toBe('1 new app');
+
+    await user.click(button(strings.markSeenNamed({ app: 'hosted_a' })));
+
+    await waitFor(() => expect(button('Unbind hosted_a')).toHaveFocus());
+    expect(acknowledge).toHaveBeenCalledWith({ appId: 'hosted_a' });
+    expect(bindingRow('hosted_a')).not.toHaveTextContent(strings.identityNewMark);
+    expect(bindingRow('hosted_a')).not.toHaveClass('app-identities__row--new');
+    expect(resultLine()).toHaveTextContent(strings.identityMarkedSeen({ app: 'hosted_a' }));
+    // The summary updates silently: the result region is the only announcement.
+    expect(summary().textContent).toBe('');
+  });
+
+  it('puts Mark seen in the kebab and returns focus to the kebab trigger (compact)', async () => {
+    setCompactViewport(true);
+    const user = userEvent.setup();
+    renderSection(
+      buildClient({
+        listIdentityBindings: vi.fn().mockResolvedValue([NEW_A, SEEN_C]),
+        acknowledgeBinding: vi.fn().mockResolvedValue(seen(NEW_A)),
+      }),
+    );
+    await screen.findByRole('table');
+    expect(screen.queryByRole('button', { name: 'Mark hosted_a seen' })).toBeNull();
+
+    await user.click(button('Actions for hosted_a'));
+    await user.click(screen.getByRole('menuitem', { name: 'Mark hosted_a seen' }));
+
+    await waitFor(() => expect(button('Actions for hosted_a')).toHaveFocus());
+    expect(bindingRow('hosted_a')).not.toHaveTextContent(strings.identityNewMark);
+    expect(resultLine()).toHaveTextContent(strings.identityMarkedSeen({ app: 'hosted_a' }));
+
+    await user.click(button('Actions for hosted_a'));
+    expect(screen.queryByRole('menuitem', { name: 'Mark hosted_a seen' })).toBeNull();
+  });
+
+  it('treats a 404 as a neutral result, not a row error, and reloads', async () => {
+    const user = userEvent.setup();
+    const list = vi.fn().mockResolvedValueOnce([NEW_A, SEEN_C]).mockResolvedValue([SEEN_C]);
+    renderSection(
+      buildClient({
+        listIdentityBindings: list,
+        acknowledgeBinding: vi
+          .fn()
+          .mockRejectedValue(new ApiError({ status: 404, message: 'binding does not exist' })),
+      }),
+    );
+    await screen.findByRole('table');
+    await user.click(button('Mark hosted_a seen'));
+
+    await waitFor(() =>
+      expect(resultLine()).toHaveTextContent(strings.identityNoLongerBound({ app: 'hosted_a' })),
+    );
+    await waitFor(() => expect(document.querySelector('tr[data-app-id="hosted_a"]')).toBeNull());
+    expect(screen.queryByRole('alert')?.textContent ?? '').toBe('');
+    expect(resultLine()).not.toHaveClass('app-identities__result--error');
+  });
+
+  it('is aria-disabled while another ack is in flight and cannot start a second', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<IdentityBinding>();
+    const acknowledge = vi.fn().mockReturnValue(pending.promise);
+    renderSection(
+      buildClient({
+        listIdentityBindings: vi.fn().mockResolvedValue([NEW_A, NEW_B]),
+        acknowledgeBinding: acknowledge,
+        acknowledgeAllBindings: vi.fn(),
+      }),
+    );
+    await screen.findByRole('table');
+    await user.click(button('Mark hosted_a seen'));
+
+    await waitFor(() => expect(button(MARK_ALL)).toHaveAttribute('aria-disabled', 'true'));
+    expect(button('Mark hosted_b seen')).toHaveAttribute('aria-disabled', 'true');
+    await user.click(button('Mark hosted_b seen'));
+    await user.click(button(MARK_ALL));
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      pending.resolve(seen(NEW_A));
+    });
+  });
+});
+
+describe('AppIdentities Mark all seen', () => {
+  it('is shown only with 2 or more New rows', async () => {
+    renderSection(
+      buildClient({ listIdentityBindings: vi.fn().mockResolvedValue([NEW_A, NEW_B, SEEN_C]) }),
+    );
+    await screen.findByRole('table');
+    expect(button(MARK_ALL)).toHaveTextContent(strings.markAllSeen);
+    cleanup();
+
+    renderSection(
+      buildClient({ listIdentityBindings: vi.fn().mockResolvedValue([NEW_A, SEEN_C]) }),
+    );
+    await screen.findByRole('table');
+    expect(screen.queryByRole('button', { name: MARK_ALL })).toBeNull();
+    cleanup();
+
+    renderSection(buildClient({ listIdentityBindings: vi.fn().mockResolvedValue([SEEN_C]) }));
+    await screen.findByRole('table');
+    expect(screen.queryByRole('button', { name: MARK_ALL })).toBeNull();
+  });
+
+  it('sends exactly the displayed New ids, announces the server count and focuses the heading', async () => {
+    const user = userEvent.setup();
+    // The server skipped one (seen/unbound meanwhile): the count differs from the 2 displayed.
+    const acknowledgeAll = vi.fn().mockResolvedValue(1);
+    renderSection(
+      buildClient({
+        listIdentityBindings: vi
+          .fn()
+          .mockResolvedValueOnce([NEW_A, NEW_B, SEEN_C, BINDING_THIRD])
+          .mockResolvedValue([seen(NEW_A), seen(NEW_B), SEEN_C, BINDING_THIRD]),
+        acknowledgeAllBindings: acknowledgeAll,
+      }),
+    );
+    await screen.findByRole('table');
+    expect(summary().textContent).toBe('2 new apps');
+    await user.click(button(MARK_ALL));
+
+    await waitFor(() => expect(bindingsHeading()).toHaveFocus());
+    expect(acknowledgeAll).toHaveBeenCalledTimes(1);
+    expect(acknowledgeAll).toHaveBeenCalledWith({ appIds: ['hosted_a', 'hosted_b'] });
+    expect(resultLine()).toHaveTextContent(strings.identityMarkedAllSeen({ count: 1 }));
+    expect(summary().textContent).toBe('');
+    expect(screen.queryByRole('button', { name: MARK_ALL })).toBeNull();
+    expect(document.querySelector('.app-identities__row--new')).toBeNull();
+  });
+
+  it('is aria-disabled with every per-row Mark seen while it is in flight', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<number>();
+    const acknowledge = vi.fn();
+    const acknowledgeAll = vi.fn().mockReturnValue(pending.promise);
+    renderSection(
+      buildClient({
+        listIdentityBindings: vi.fn().mockResolvedValue([NEW_A, NEW_B]),
+        acknowledgeBinding: acknowledge,
+        acknowledgeAllBindings: acknowledgeAll,
+      }),
+    );
+    await screen.findByRole('table');
+    await user.click(button(MARK_ALL));
+
+    await waitFor(() => expect(button(MARK_ALL)).toHaveAttribute('aria-disabled', 'true'));
+    expect(button('Mark hosted_a seen')).toHaveAttribute('aria-disabled', 'true');
+    expect(button('Mark hosted_b seen')).toHaveAttribute('aria-disabled', 'true');
+    await user.click(button('Mark hosted_a seen'));
+    await user.click(button(MARK_ALL));
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(acknowledgeAll).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      pending.resolve(2);
+    });
+  });
+
+  it('gates the compact kebab items while it is in flight', async () => {
+    setCompactViewport(true);
+    const user = userEvent.setup();
+    const pending = deferred<number>();
+    renderSection(
+      buildClient({
+        listIdentityBindings: vi.fn().mockResolvedValue([NEW_A, NEW_B]),
+        acknowledgeAllBindings: vi.fn().mockReturnValue(pending.promise),
+      }),
+    );
+    await screen.findByRole('table');
+    await user.click(button(MARK_ALL));
+    await waitFor(() => expect(button(MARK_ALL)).toHaveAttribute('aria-disabled', 'true'));
+
+    await user.click(button('Actions for hosted_a'));
+    expect(screen.getByRole('menuitem', { name: 'Mark hosted_a seen' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await act(async () => {
+      pending.resolve(2);
+    });
+  });
+
+  it('shows a failure inline above the table, keeps the page and focus, and clears on retry', async () => {
+    const user = userEvent.setup();
+    const acknowledgeAll = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError({ status: 500, message: 'upstream down' }))
+      .mockResolvedValue(2);
+    renderSection(
+      buildClient({
+        listIdentityBindings: vi.fn().mockResolvedValue([NEW_A, NEW_B]),
+        acknowledgeAllBindings: acknowledgeAll,
+      }),
+    );
+    await screen.findByRole('table');
+    await user.click(button(MARK_ALL));
+
+    const alert = await screen.findByText(/upstream down/);
+    expect(alert).toHaveTextContent(
+      strings.identityMarkAllSeenFailed({ message: 'upstream down' }),
+    );
+    expect(alert.closest('[role="alert"]')).not.toBeNull();
+    // Directly above the Approved apps table; the load-failure slot is not used.
+    const table = screen.getByRole('table', { name: strings.identitiesBindingsHeading });
+    expect(alert.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText(/Could not load app identities/)).toBeNull();
+    expect(bindingRow('hosted_a')).toHaveTextContent(strings.identityNewMark);
+    expect(bindingRow('hosted_b')).toHaveTextContent(strings.identityNewMark);
+    expect(button(MARK_ALL)).toHaveFocus();
+    expect(button(MARK_ALL)).not.toHaveAttribute('aria-disabled', 'true');
+
+    await user.click(button(MARK_ALL));
+    await waitFor(() => expect(screen.queryByText(/upstream down/)).toBeNull());
+    expect(acknowledgeAll).toHaveBeenCalledTimes(2);
   });
 });

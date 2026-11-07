@@ -38,10 +38,21 @@ export interface DeliveryMockSeed {
   identityRequests?: Json[];
   /** Approved app identities with their keys, as the operator list returns them. */
   identityBindings?: Json[];
+  /** Registrars, as the operator list returns them; empty by default (richer mocks come with the registrar e2e tests). */
+  identityRegistrars?: Json[];
   /** When set, approving any request fails with this status and message. */
   approveError?: { status: number; message: string };
   /** When set, revoking any key fails with this status and message. */
   revokeError?: { status: number; message: string };
+  /** When set, approving a registrar request fails with this status and message. */
+  approveRegistrarError?: { status: number; message: string };
+  /**
+   * When set, the single-app acknowledge fails with this status and message; a 404 also
+   * removes the binding, as if it had been unbound since the page loaded.
+   */
+  acknowledgeError?: { status: number; message: string };
+  /** When set, acknowledge-all fails with this status and message. */
+  acknowledgeAllError?: { status: number; message: string };
 }
 
 export interface DeliveryMock {
@@ -267,18 +278,23 @@ export function heartbeatWire({
 export function identityRequestWire({
   id,
   appId,
+  kind = 'app',
   status = 'pending',
   repository = `4IRL/${appId}`,
   environment = 'production',
 }: {
   id: number;
-  appId: string;
+  /** Null for a registrar request. */
+  appId: string | null;
+  /** `app` by default, matching the Go body. */
+  kind?: string;
   status?: string;
   repository?: string;
   environment?: string | null;
 }): Json {
   return {
     id,
+    kind,
     app_id: appId,
     github_repository: repository,
     github_repository_id: 812345000 + id,
@@ -316,17 +332,60 @@ export function identityKeyWire({
   };
 }
 
-export function identityBindingWire({ appId, keys = [] }: { appId: string; keys?: Json[] }): Json {
+export function identityBindingWire({
+  appId,
+  keys = [],
+  registrar = null,
+  acknowledgedAt,
+}: {
+  appId: string;
+  keys?: Json[];
+  /** The creating registrar, or null for an app approved one by one. */
+  registrar?: { id: number; prefix: string } | null;
+  /** Null marks a registrar app New; defaults to seen (approval time) as the Go body does. */
+  acknowledgedAt?: string | null;
+}): Json {
   return {
     app_id: appId,
-    github_repository: `4IRL/${appId}`,
-    github_repository_id: 812345678,
+    github_repository: registrar === null ? `4IRL/${appId}` : '4IRL/hosting',
+    github_repository_id: registrar === null ? 812345678 : 900100,
     github_owner_id: 55,
     workflow_path: '.github/workflows/prod-deploy.yml',
     git_ref: 'refs/heads/main',
     environment: 'production',
     approved_at: TIMESTAMP,
+    registrar,
+    // An app approved one by one counts as seen at approval.
+    acknowledged_at: acknowledgedAt === undefined ? TIMESTAMP : acknowledgedAt,
     keys,
+  };
+}
+
+export const REGISTRAR_APP_LIMIT = 50;
+
+export function identityRegistrarWire({
+  id,
+  prefix = 'hosted_',
+  repository = '4IRL/hosting',
+  appCount = 0,
+}: {
+  id: number;
+  prefix?: string;
+  repository?: string;
+  appCount?: number;
+}): Json {
+  return {
+    id,
+    prefix,
+    github_repository: repository,
+    github_repository_id: 900100,
+    github_owner_id: 55,
+    workflow_path: '.github/workflows/prod-deploy.yml',
+    git_ref: 'refs/heads/main',
+    environment: 'production',
+    approved_at: TIMESTAMP,
+    app_count: appCount,
+    app_limit: REGISTRAR_APP_LIMIT,
   };
 }
 
@@ -705,6 +764,7 @@ export async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Pro
   let heartbeats = [...(seed.heartbeats ?? [])];
   let identityRequests = [...(seed.identityRequests ?? [])];
   let identityBindings = [...(seed.identityBindings ?? [])];
+  let identityRegistrars = [...(seed.identityRegistrars ?? [])];
   let nextRouteId = 100;
   let nextHeartbeatId = 100;
 
@@ -1118,6 +1178,122 @@ export async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Pro
     }
     if (method === 'GET' && pathname === '/delivery/v1/admin/app-identity/requests') {
       await reply({ route, body: { requests: identityRequests } });
+      return;
+    }
+    if (method === 'GET' && pathname === '/delivery/v1/admin/app-identity/registrars') {
+      // The real list counts the registrar's bindings; derive it so Unbind and delete stay honest.
+      await reply({
+        route,
+        body: {
+          registrars: identityRegistrars.map((registrar) => ({
+            ...registrar,
+            app_count: identityBindings.filter(
+              (binding) => (binding.registrar as { id: number } | null)?.id === registrar.id,
+            ).length,
+          })),
+        },
+      });
+      return;
+    }
+    const approveRegistrarMatch =
+      /^\/delivery\/v1\/admin\/app-identity\/requests\/(\d+)\/approve-registrar$/.exec(pathname);
+    if (method === 'POST' && approveRegistrarMatch !== null) {
+      const id = Number(approveRegistrarMatch[1]);
+      const found = identityRequests.find((candidate) => candidate.id === id);
+      if (found === undefined) {
+        await reply({ route, status: 404, body: { error: 'request does not exist' } });
+        return;
+      }
+      if (seed.approveRegistrarError !== undefined) {
+        await reply({
+          route,
+          status: seed.approveRegistrarError.status,
+          body: { error: seed.approveRegistrarError.message },
+        });
+        return;
+      }
+      const registrar = identityRegistrarWire({
+        id: Math.max(0, ...identityRegistrars.map((candidate) => candidate.id as number)) + 1,
+        prefix: (recorded.body as { prefix: string }).prefix,
+        repository: found.github_repository as string,
+      });
+      identityRegistrars = [...identityRegistrars, registrar];
+      identityRequests = identityRequests.filter((candidate) => candidate.id !== id);
+      await reply({ route, status: 201, body: { registrar } });
+      return;
+    }
+    const registrarMatch = /^\/delivery\/v1\/admin\/app-identity\/registrars\/(\d+)$/.exec(
+      pathname,
+    );
+    if (method === 'DELETE' && registrarMatch !== null) {
+      const id = Number(registrarMatch[1]);
+      const deleted = identityRegistrars.some((candidate) => candidate.id === id);
+      const owned = identityBindings.filter(
+        (binding) => (binding.registrar as { id: number } | null)?.id === id,
+      );
+      identityRegistrars = identityRegistrars.filter((candidate) => candidate.id !== id);
+      identityBindings = identityBindings.filter((binding) => !owned.includes(binding));
+      await reply({ route, body: { id, deleted, unbound_apps: owned.length } });
+      return;
+    }
+    const acknowledgeMatch =
+      /^\/delivery\/v1\/admin\/app-identity\/bindings\/([^/]+)\/acknowledge$/.exec(pathname);
+    if (method === 'POST' && acknowledgeMatch !== null) {
+      const appId = decodeURIComponent(acknowledgeMatch[1]);
+      if (seed.acknowledgeError !== undefined) {
+        if (seed.acknowledgeError.status === 404) {
+          identityBindings = identityBindings.filter((binding) => binding.app_id !== appId);
+        }
+        await reply({
+          route,
+          status: seed.acknowledgeError.status,
+          body: { error: seed.acknowledgeError.message },
+        });
+        return;
+      }
+      const existing = identityBindings.find((binding) => binding.app_id === appId);
+      if (existing === undefined) {
+        await reply({ route, status: 404, body: { error: 'binding does not exist' } });
+        return;
+      }
+      // Idempotent: the first acknowledge time is kept.
+      const acknowledged = {
+        ...existing,
+        acknowledged_at: existing.acknowledged_at ?? TIMESTAMP,
+      };
+      identityBindings = identityBindings.map((binding) =>
+        binding.app_id === appId ? acknowledged : binding,
+      );
+      await reply({ route, body: { binding: acknowledged } });
+      return;
+    }
+    if (
+      method === 'POST' &&
+      pathname === '/delivery/v1/admin/app-identity/bindings/acknowledge-all'
+    ) {
+      if (seed.acknowledgeAllError !== undefined) {
+        await reply({
+          route,
+          status: seed.acknowledgeAllError.status,
+          body: { error: seed.acknowledgeAllError.message },
+        });
+        return;
+      }
+      const listed = new Set((recorded.body as { app_ids: string[] }).app_ids);
+      let acknowledged = 0;
+      identityBindings = identityBindings.map((binding) => {
+        // Only still-unseen registrar apps in the list change; anything else is skipped silently.
+        if (
+          listed.has(binding.app_id as string) &&
+          binding.registrar !== null &&
+          binding.acknowledged_at === null
+        ) {
+          acknowledged += 1;
+          return { ...binding, acknowledged_at: TIMESTAMP };
+        }
+        return binding;
+      });
+      await reply({ route, body: { acknowledged } });
       return;
     }
     if (method === 'GET' && pathname === '/delivery/v1/admin/app-identity/bindings') {
