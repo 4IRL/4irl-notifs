@@ -145,6 +145,15 @@ type pipeline struct {
 // loopback address; false uses receiver.trustedConfig.
 func startPipeline(testInstance *testing.T, respond func(requestNumber int) int, guarded bool) *pipeline {
 	testInstance.Helper()
+	return startPipelineHolding(testInstance, respond, guarded, false)
+}
+
+// startPipelineHolding is startPipeline with the message service's hold setting
+// (DELIVERY_HOLD_UNROUTED) chosen by holdUnrouted.
+func startPipelineHolding(
+	testInstance *testing.T, respond func(requestNumber int) int, guarded, holdUnrouted bool,
+) *pipeline {
+	testInstance.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), pipelineTestTimeout)
 	testInstance.Cleanup(cancel)
 	pool := pgtest.IsolatedPool(ctx, testInstance)
@@ -179,6 +188,7 @@ func startPipeline(testInstance *testing.T, respond func(requestNumber int) int,
 		SupportedTypes: map[string]bool{registry.TypeWebhook: true},
 		Wake:           worker.Wake,
 		Logger:         logger,
+		HoldUnrouted:   holdUnrouted,
 	})
 
 	if _, createErr := registryService.CreateDestination(ctx, registry.DestinationInput{

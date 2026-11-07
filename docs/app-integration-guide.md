@@ -1378,6 +1378,10 @@ accepts such a send instead and keeps it.
   content ignored, and does not add to the held count. `release_failed` (a held message whose release could
   not build its deliveries) is terminal for its key: re-posting the key returns it unchanged, so send the
   content under a new key.
+- **Release:** once a matching route reaches an enabled destination, a held message is sent automatically,
+  oldest first (a loop checks every 5 seconds). If it has a `deliver_at` still in the future, it is then
+  scheduled for that time. `release_failed` (status) means it could never be delivered as written, for
+  example missing display text for a human-facing destination.
 - **Cancel:** `DELETE /v1/messages` (by id or by key) cancels an unscheduled held message: `200` with
   `"cancelled": true` and `"status": "cancelled"`. A cancelled message stays cancelled.
 - **Caps and expiry:** an app may hold at most 1000 messages (`DELIVERY_MAX_HELD_PER_APP`, 1 to 100000):
