@@ -278,11 +278,15 @@ func TestConcurrentHeldSweeperAndReleaseNeverReleaseThenDelete(testInstance *tes
 			testInstance.Fatalf("exists: %v", err)
 		}
 		deliveries := countDeliveries(ctx, testInstance, pool, held.ID)
+		var fetched *message.StoredMessage
+		if exists {
+			stored := mustGet(ctx, testInstance, store, held.ID)
+			fetched = &stored
+		}
 		switch {
 		case !exists && deliveries == 0 && result == message.HeldSkipped:
 		case exists && result == message.HeldReleased && deliveries == len(targets) &&
-			mustGet(ctx, testInstance, store, held.ID).ReleasedAt != nil &&
-			mustGet(ctx, testInstance, store, held.ID).HeldAt == nil:
+			fetched.ReleasedAt != nil && fetched.HeldAt == nil:
 		default:
 			testInstance.Fatalf("iteration %d: exists %v, result %q, deliveries %d; want deleted-held or released intact",
 				iteration, exists, result, deliveries)

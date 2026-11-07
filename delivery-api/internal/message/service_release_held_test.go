@@ -184,6 +184,45 @@ func TestReleaseHeldClassifiesEachMessage(testInstance *testing.T) {
 	}
 }
 
+func TestReleaseHeldStoreErrorsPropagate(testInstance *testing.T) {
+	storeErr := errors.New("database unavailable")
+	testCases := []struct {
+		name  string
+		setup func(store *fakeServiceStore)
+	}{
+		{name: "list held pairs", setup: func(store *fakeServiceStore) { store.heldPairsErr = storeErr }},
+		{name: "list releasable held", setup: func(store *fakeServiceStore) { store.releasableErr = storeErr }},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			harness := newReleaseHarness()
+			harness.store.releasableResult = []StoredMessage{heldCandidate("m1", nil)}
+			testCase.setup(harness.store)
+
+			count, err := harness.service.ReleaseHeld(context.Background(), releaseNow, 10)
+			if !errors.Is(err, storeErr) || count != 0 {
+				subTest.Fatalf("ReleaseHeld = (%d, %v), want (0, %v)", count, err, storeErr)
+			}
+			if len(harness.store.releaseCalls) != 0 || len(harness.store.failCalls) != 0 {
+				subTest.Fatalf("store written after a list error")
+			}
+		})
+	}
+}
+
+func TestReleaseHeldNonPositiveLimitDoesNothing(testInstance *testing.T) {
+	for _, limit := range []int{0, -1} {
+		harness := newReleaseHarness()
+		count, err := harness.service.ReleaseHeld(context.Background(), releaseNow, limit)
+		if count != 0 || err != nil {
+			testInstance.Fatalf("limit %d: ReleaseHeld = (%d, %v), want (0, nil)", limit, count, err)
+		}
+		if len(harness.store.heldPairsCalls) != 0 {
+			testInstance.Fatalf("limit %d: ListHeldPairs called", limit)
+		}
+	}
+}
+
 func TestReleaseHeldWakesOnlyForPendingRelease(testInstance *testing.T) {
 	harness := newReleaseHarness()
 	harness.store.releasableResult = []StoredMessage{heldCandidate("m1", nil)}

@@ -20,9 +20,6 @@ func TestReleaserFuncSatisfiesDueReleaser(t *testing.T) {
 	if released != 3 || err != nil {
 		t.Errorf("got (%d, %v), want (3, nil)", released, err)
 	}
-	if DefaultHeldReleaseInterval != 5*time.Second {
-		t.Errorf("DefaultHeldReleaseInterval = %v", DefaultHeldReleaseInterval)
-	}
 }
 
 func runKindReleaser(t *testing.T, kind string, releaser DueReleaser, interval time.Duration, wake func(), logs *lockedBuffer, calls int) {

@@ -216,8 +216,9 @@ the VPS; person-service + admin UI are Cloudflare-native.
   and the insert is not re-checked; the worker dead-letters it. The loop's own `released held messages`
   line has `released=` equal to released plus terminal-failed (the count `ReleaseHeld` returns) and wakes
   the worker on that sum; the service's `held messages released` line carries the precise `released` /
-  `failed` split (logged only when at least one message was released; a batch that only terminal-fails logs just `held message release failed`). "No route yet" pairs log at Debug only, so a quiet log with held messages means no route,
-  not a stuck releaser.
+  `failed` split (logged only when at least one message was released; a batch that only terminal-fails
+  logs just `held message release failed`). "No route yet" pairs log at Debug only, so a quiet log with
+  held messages means no route, not a stuck releaser.
   Rollback note: rolling the delivery-api image back past 0012 needs a paired schema rollback, or
   acceptance of `/readyz` `503 schema_mismatch` until rolled forward, because the version check fails
   in both directions.
