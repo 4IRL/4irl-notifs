@@ -102,7 +102,8 @@ Components:
   (`/v1/heartbeats`) and the operator heartbeat CRUD (`/v1/admin/heartbeats`), alongside `/healthz` and
   `/readyz`. Every app-facing endpoint needs the calling app's own delivery key (`dak_...`, from the
   GitHub OIDC exchange at `/v1/app-identity/exchange`, approved by the operator under
-  `/v1/admin/app-identity`), and an app manages only its own destinations, routes and checks under
+  `/v1/admin/app-identity`; a deploy workflow approved once as a **registrar** with a reserved prefix
+  exchanges bare `name`s and gets one auto-created app and key per `prefix + name`), and an app manages only its own destinations, routes and checks under
   `/v1/apps/{app_id}` (see `ARCHITECTURE.md` "App identity"). That prefix is also the app provisioning
   door (`provision`, `deprovision`, `set-password`, `reset-password`, and `ntfy-publisher` self-mint of
   the sealed publisher token), relayed to provisioning-api; `GET /healthz/provisioning` reports its

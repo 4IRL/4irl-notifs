@@ -314,6 +314,34 @@ makes no upstream call. The operator's admin reset path is exempt from the door 
    `500 internal error`, with `app identity service error` in the log. Every exchange is one log line (app, repository, workflow, ref, environment, run, outcome,
    duration), never the token or the key.
 
+**Registrars** (migration `0014_app_registrars.sql`). A workflow identity normally binds exactly one
+`app_id`. A **registrar** is a workflow identity the operator approves once together with a reserved
+**prefix** (`^[a-z0-9][a-z0-9_]{0,30}_$`, never starting with `platform_`, stem not `everyone`). Its
+exchange sends `{"name","token"}` (exactly one of `app_id` / `name`, else `400 send exactly one of app_id
+or name`); delivery-api derives `app_id = prefix + name`, and on first sight creates the person-service row,
+the `app_bindings` row (`registrar_id` set, `acknowledged_at` NULL, workflow columns copied from the
+registrar) and the key in one answer, with no operator click. Registrar apps are ordinary `app_bindings`
+rows, so keys, destinations, routes, heartbeats, the ntfy publisher, Unbind and teardown are unchanged.
+Order for a new name: verify the token, then a no-lock pre-read (`Store.ReadRegistrarExchange`: registrar
+by claims, the derived id's binding, the app count, overlap, whether the `jti` is already recorded), which
+returns replays and deterministic refusals before person-service is touched; then `CreateApp`
+(blocking, 409 = success); then the exchange transaction re-checks everything under `pendingCapLockKey`
+and records the `jti`. A bare name from an unknown, unbound workflow files a pending request with
+`kind = 'registrar'` (null `app_id`; same 20 cap and sweep). Refusals: `403 app id is not owned by this
+registrar` (derived id bound normally or by another registrar), `409 registrar app limit reached` (50 per
+registrar), `409 app id overlaps an approved app id`, `409 registration changed, retry` (a race the
+service cannot resolve; retryable), `400 invalid name`. The normal flow refuses an id equal to a registrar
+stem or inside a registrar prefix (`409 app id is reserved by a registrar`, checked in `decideClaims` and
+again under the lock when filing), and a registrar's own claims sent with an `app_id` are `403 identity
+does not match the approved binding`. The operator approves with
+`POST …/requests/{id}/approve-registrar {"prefix"}` (`201 {"registrar":…}`; pending app requests inside
+the prefix are rejected in the same transaction), lists with `GET …/registrars`, deletes with
+`DELETE …/registrars/{id}` (FK cascade unbinds every app it created), and clears the informational **New**
+state with `POST …/bindings/{app_id}/acknowledge` and `POST …/bindings/acknowledge-all {"app_ids"}`.
+`GET …/bindings` gains `registrar` and `acknowledged_at`. Registrar apps run the same
+underscore-extension overlap check as approved apps. Live coverage:
+`delivery-api/integration/app_registrar_integration_test.go`.
+
 **Keys.** `dak_` plus 43 base64url characters from 32 random bytes; only the SHA-256 is stored, plus a
 `dak_` + 4-character hint for display. A key is valid while it is not revoked and is either the newest or
 less than 24 h past being superseded. There is no time-based expiry. `requireAppKey` answers `401 app key
@@ -345,9 +373,11 @@ unmanageable through the app API until it is bound again; the operator can still
 through `/v1/admin`).
 
 **Tables** (migration `0008_app_identity.sql`; ownership columns are `0007_ownership.sql`):
-`app_bindings` (one row per `app_id`, unique on the workflow identity so one workflow cannot be bound to two
-apps), `app_registration_requests` (`pending` or `rejected`; a partial unique index on the claims of the
-pending rows), `app_keys` (hash, hint, `superseded_at`, `revoked_at`, `revoked_reason`, `last_used_at`) and
+`app_bindings` (one row per `app_id`; the workflow-identity unique index is partial, `WHERE registrar_id IS
+NULL`, so one workflow cannot be bound to two normal apps while a registrar's apps share its identity;
+`0014` adds `registrar_id` and `acknowledged_at`), `app_registrars` (`0014`: prefix plus the registrar's
+workflow identity), `app_registration_requests` (`pending` or `rejected`; `kind` `app` or `registrar`; a
+partial unique index on the claims of the pending rows), `app_keys` (hash, hint, `superseded_at`, `revoked_at`, `revoked_reason`, `last_used_at`) and
 `oidc_replay` (one row per accepted token `jti` until its expiry plus the 60 s leeway, swept every 15
 minutes by its own loop). `destinations`, `routes` and `heartbeat_checks` carry `owner_kind`
 (`operator` or `app`) and `owner_app_id`; an app-owned row can only be used by messages from that app

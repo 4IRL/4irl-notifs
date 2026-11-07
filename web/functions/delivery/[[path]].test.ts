@@ -230,6 +230,44 @@ describe('delivery proxy route', () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
+    it('forwards the registrar admin paths but never a bare-name exchange', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ status: 200, body: {} }));
+      await call({ path: '/delivery/v1/admin/app-identity/registrars' });
+      await call({
+        path: '/delivery/v1/admin/app-identity/registrars/3',
+        init: { method: 'DELETE', headers: SAME_ORIGIN },
+      });
+      await call({
+        path: '/delivery/v1/admin/app-identity/bindings/acknowledge-all',
+        init: {
+          method: 'POST',
+          headers: { ...JSON_HEADERS, ...SAME_ORIGIN },
+          body: '{"app_ids":["hosted_a"]}',
+        },
+      });
+      const forwarded = fetchMock.mock.calls.map((callArgs) => {
+        const [url, init] = callArgs as [string, RequestInit];
+        return `${init.method} ${url}`;
+      });
+      expect(forwarded).toEqual([
+        `GET ${UPSTREAM}/v1/admin/app-identity/registrars`,
+        `DELETE ${UPSTREAM}/v1/admin/app-identity/registrars/3`,
+        `POST ${UPSTREAM}/v1/admin/app-identity/bindings/acknowledge-all`,
+      ]);
+
+      fetchMock.mockClear();
+      const response = await call({
+        path: '/delivery/v1/app-identity/exchange',
+        init: {
+          method: 'POST',
+          headers: { ...JSON_HEADERS, ...SAME_ORIGIN },
+          body: '{"name":"chores","token":"t"}',
+        },
+      });
+      expect(response.status).toBe(404);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
     const heartbeatRows: Array<{ method: string; path: string; body?: string }> = [
       { method: 'GET', path: '/delivery/v1/admin/heartbeats' },
       { method: 'GET', path: '/delivery/v1/admin/heartbeats/7' },
