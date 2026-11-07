@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/envint"
@@ -194,6 +195,12 @@ type Service struct {
 	maxTotal       int
 	holdUnrouted   bool
 	heldCaps       HeldCaps
+	// heldCursor is the keyset cursor ReleaseHeld pages distinct held pairs with;
+	// heldCursorMutex guards it.
+	heldCursor      HeldPair
+	heldCursorMutex sync.Mutex
+	// warnThrottle rate-limits ReleaseHeld's warnings per key.
+	warnThrottle *logThrottle
 	// awaitSlots is a counting semaphore bounding concurrent Await pollers.
 	awaitSlots chan struct{}
 }
@@ -222,6 +229,7 @@ func NewService(config ServiceConfig) *Service {
 		maxTotal:       config.MaxScheduledTotal,
 		holdUnrouted:   config.HoldUnrouted,
 		heldCaps:       HeldCaps{PerApp: config.MaxHeldPerApp, Total: config.MaxHeldTotal},
+		warnThrottle:   newLogThrottle(),
 	}
 	for destinationType, supported := range config.SupportedTypes {
 		service.supportedTypes[destinationType] = supported
@@ -425,6 +433,19 @@ func (service *Service) resolveTargets(ctx context.Context, envelope Envelope) (
 	if envelope.ToRecipient != "" {
 		return service.resolveRecipientTarget(ctx, envelope)
 	}
+	resolved, resolveErr := service.resolveRouteDestinations(ctx, envelope)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	return service.routeTargets(envelope, resolved)
+}
+
+// resolveRouteDestinations is the pair-level half of the route branch: it asks
+// the registry for envelope's destinations and returns them in order, with no
+// type or display check. An empty result is ErrNoDestinationMatched.
+func (service *Service) resolveRouteDestinations(
+	ctx context.Context, envelope Envelope,
+) ([]registry.ResolvedDestination, error) {
 	resolved, resolveErr := service.resolver.Resolve(ctx, envelope.AppID, envelope.ToDestination, envelope.Channel)
 	if resolveErr != nil {
 		return nil, resolveErr
@@ -432,6 +453,15 @@ func (service *Service) resolveTargets(ctx context.Context, envelope Envelope) (
 	if len(resolved) == 0 {
 		return nil, ErrNoDestinationMatched
 	}
+	return resolved, nil
+}
+
+// routeTargets is the per-message half of the route branch: for each resolved
+// destination, in order, it applies the supported-type check and then the
+// display check, and snapshots the destination as a delivery target.
+func (service *Service) routeTargets(
+	envelope Envelope, resolved []registry.ResolvedDestination,
+) ([]DeliveryTarget, error) {
 	targets := make([]DeliveryTarget, 0, len(resolved))
 	for _, destination := range resolved {
 		if !service.supportedTypes[destination.Type] {
