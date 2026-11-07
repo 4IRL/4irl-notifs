@@ -9,6 +9,7 @@ import {
   DEFAULT_AUDIENCE,
   EXCHANGE_PATH,
   REQUEST_TIMEOUT_MS,
+  checkManifestAppId,
   run,
 } from './notifs-app-exchange.mjs';
 
@@ -540,6 +541,138 @@ describe('run: configuration and OIDC failures', () => {
   });
 });
 
+describe('run: registrar mode (name)', () => {
+  const registrarEnv = { NOTIFS_APP_ID: '', NOTIFS_APP_NAME: 'chores' };
+
+  it('posts {name, token}, writes the server-derived app_id with key and key_id, masks the key first', async () => {
+    const h = makeHarness({
+      env: registrarEnv,
+      exchange: json(200, { status: 'issued', app_id: 'hosted_chores', key: KEY, key_id: 9 }),
+    });
+
+    assert.equal(await run(h.deps), 0);
+    assert.deepEqual(JSON.parse(h.calls[1].init.body), { name: 'chores', token: OIDC_JWT });
+    assert.deepEqual(h.outputs, [`key=${KEY}\nkey_id=9\napp_id=hosted_chores\n`]);
+    assert.ok(maskIndex(h, KEY) < eventIndex(h, (event) => event.type === 'output'));
+    assert.match(h.text(), /issued a key for app "hosted_chores"/);
+  });
+
+  it('fails with the registrar approval text on 202, issuing nothing', async () => {
+    const h = makeHarness({
+      env: registrarEnv,
+      exchange: json(202, { status: 'pending', request_id: 5 }),
+    });
+
+    assert.equal(await run(h.deps), 1);
+    assert.deepEqual(h.outputs, []);
+    assert.ok(
+      h
+        .text()
+        .includes(
+          '::error::registrar request #5 awaits operator approval in the admin UI ' +
+            '(App identities → approve as registrar)',
+        ),
+    );
+  });
+
+  it('reports request #unknown when the registrar 202 body has no integer id', async () => {
+    const h = makeHarness({ env: registrarEnv, exchange: json(202, { request_id: 'x' }) });
+
+    assert.equal(await run(h.deps), 1);
+    assert.match(h.text(), /::error::registrar request #unknown awaits operator approval/);
+  });
+
+  it('refuses a 200 whose app_id is missing or malformed, writing no output', async () => {
+    for (const appId of [undefined, 7, 'Bad Id']) {
+      const h = makeHarness({
+        env: registrarEnv,
+        exchange: json(200, { app_id: appId, key: KEY, key_id: 1 }),
+      });
+
+      assert.equal(await run(h.deps), 1);
+      assert.deepEqual(h.outputs, []);
+      assert.match(h.text(), /::error::identity exchange returned 200 without a valid app id/);
+    }
+  });
+
+  it('surfaces a server refusal with its status and text', async () => {
+    const h = makeHarness({
+      env: registrarEnv,
+      exchange: json(403, { error: 'app id is not owned by this registrar' }),
+    });
+
+    assert.equal(await run(h.deps), 1);
+    assert.match(h.text(), /returned 403: app id is not owned by this registrar/);
+  });
+
+  it('does not add app_id to the output in normal mode', async () => {
+    const h = makeHarness({ exchange: json(200, { app_id: 'other', key: KEY, key_id: 2 }) });
+
+    assert.equal(await run(h.deps), 0);
+    assert.deepEqual(h.outputs, [`key=${KEY}\nkey_id=2\n`]);
+  });
+
+  it('refuses both or neither of app id and name before any network call', async () => {
+    for (const env of [
+      { NOTIFS_APP_ID: 'chores', NOTIFS_APP_NAME: 'chores' },
+      { NOTIFS_APP_ID: '', NOTIFS_APP_NAME: '' },
+      { NOTIFS_APP_ID: '  ', NOTIFS_APP_NAME: ' ' },
+    ]) {
+      const h = makeHarness({ env });
+      assert.equal(await run(h.deps), 1);
+      assert.match(h.text(), /::error::send exactly one of app_id or name/);
+      assert.equal(h.calls.length, 0);
+    }
+  });
+
+  it('refuses a malformed name before any network call', async () => {
+    for (const NOTIFS_APP_NAME of ['Bad Name', '_lead', 'a-b', 'hosted/x']) {
+      const h = makeHarness({ env: { NOTIFS_APP_ID: '', NOTIFS_APP_NAME } });
+      assert.equal(await run(h.deps), 1);
+      assert.match(h.text(), /NOTIFS_APP_NAME is not a valid app name/);
+      assert.equal(h.calls.length, 0);
+    }
+  });
+});
+
+describe('checkManifestAppId', () => {
+  const env = { NOTIFS_MANIFEST: 'apps/x.json', NOTIFS_DERIVED_APP_ID: 'hosted_x' };
+
+  function check(manifestText, overrides = {}) {
+    const out = [];
+    const code = checkManifestAppId({
+      env: { ...env, ...overrides },
+      stdout: (text) => out.push(text),
+      readFile: () => {
+        if (manifestText instanceof Error) throw manifestText;
+        return manifestText;
+      },
+    });
+    return { code, text: out.join('') };
+  }
+
+  it('passes when the manifest app_id equals the derived id', () => {
+    assert.deepEqual(check('{"app_id":"hosted_x"}'), { code: 0, text: '' });
+  });
+
+  it('fails when the manifest app_id differs', () => {
+    const { code, text } = check('{"app_id":"x"}');
+    assert.equal(code, 1);
+    assert.match(
+      text,
+      /::error::manifest app_id "x" does not match the app id the registrar derived \("hosted_x"\)/,
+    );
+  });
+
+  it('fails clearly on an unreadable or non-JSON manifest and on a missing derived id', () => {
+    assert.match(check(new Error('ENOENT')).text, /cannot read manifest apps\/x\.json: ENOENT/);
+    assert.equal(check('not json').code, 1);
+    const missing = check('{"app_id":"hosted_x"}', { NOTIFS_DERIVED_APP_ID: '' });
+    assert.equal(missing.code, 1);
+    assert.match(missing.text, /NOTIFS_DERIVED_APP_ID is required/);
+  });
+});
+
 describe('run: other failure shapes (table)', () => {
   const cases = [
     {
@@ -735,11 +868,38 @@ describe('.github/actions/notifs-app/action.yml', () => {
       Object.fromEntries(Object.entries(exchange.env).map(([k, v]) => [k, expression(v)])),
       {
         NOTIFS_APP_ID: 'inputs.app_id',
+        NOTIFS_APP_NAME: 'inputs.name',
         NOTIFS_DELIVERY_URL: 'inputs.delivery_url',
         NOTIFS_ACCESS_CLIENT_ID: 'inputs.access_client_id',
         NOTIFS_ACCESS_CLIENT_SECRET: 'inputs.access_client_secret',
         NOTIFS_AUDIENCE: 'inputs.audience',
       },
+    );
+  });
+
+  it('declares an optional name input (mutually exclusive with app_id) and an app_id output', () => {
+    assert.match(
+      actionText,
+      /^ {2}name:[ \t]*\n {4}description:[\s\S]*?Mutually exclusive with `app_id`[\s\S]*?\n {4}required: false\n/m,
+    );
+    assert.match(actionText, /^ {2}app_id:[ \t]*\n(?: {4}.*\n)*? {4}required: false\n/m);
+    assert.match(
+      actionText,
+      /^outputs:\n(?:.*\n)*? {2}app_id:[ \t]*\n(?: {4}.*\n)*? {4}value:\s*\$\{\{\s*steps\.exchange\.outputs\.app_id\s*\|\|\s*inputs\.app_id\s*\}\}/m,
+    );
+  });
+
+  it('checks the manifest app id against the derived id in registrar mode, before lint and apply', () => {
+    const steps = parseSteps(actionText);
+    const check = stepNamed(steps, /^Check the manifest app id/);
+    assert.equal(expression(check.env.NOTIFS_MANIFEST), 'inputs.manifest');
+    assert.equal(expression(check.env.NOTIFS_DERIVED_APP_ID), 'steps.exchange.outputs.app_id');
+    assert.match(actionText, /notifs-app-exchange\.mjs" check-manifest/);
+    assert.match(actionText, /if: inputs\.manifest != '' && inputs\.name != ''/);
+    const names = steps.map((step) => step.name);
+    assert.ok(
+      names.findIndex((n) => /^Check the manifest/.test(n)) <
+        names.findIndex((n) => /^Lint the manifest/.test(n)),
     );
   });
 
