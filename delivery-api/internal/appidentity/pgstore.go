@@ -118,23 +118,15 @@ func (exchange *pgExchangeTx) RecordJTI(ctx context.Context, jti string, expires
 
 // LockBinding implements ExchangeTx.
 func (exchange *pgExchangeTx) LockBinding(ctx context.Context, appID string) (Binding, bool, error) {
-	var (
-		binding     Binding
-		environment *string
-	)
-	scanErr := exchange.tx.QueryRow(ctx,
-		`SELECT app_id, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at
-FROM app_bindings WHERE app_id = $1 FOR UPDATE`, appID).Scan(
-		&binding.AppID, &binding.Repository, &binding.RepositoryID, &binding.RepositoryOwnerID,
-		&binding.WorkflowPath, &binding.Ref, &environment, &binding.ApprovedAt)
+	binding, scanErr := scanBinding(exchange.tx.QueryRow(ctx,
+		`SELECT `+bindingColumns+`
+FROM app_bindings b LEFT JOIN app_registrars r ON r.id = b.registrar_id
+WHERE b.app_id = $1 FOR UPDATE OF b`, appID))
 	if errors.Is(scanErr, pgx.ErrNoRows) {
 		return Binding{}, false, nil
 	}
 	if scanErr != nil {
 		return Binding{}, false, pgutil.WrapDBError("lock app binding", scanErr)
-	}
-	if environment != nil {
-		binding.Environment = *environment
 	}
 	return binding, true, nil
 }
@@ -160,6 +152,24 @@ func (exchange *pgExchangeTx) FilePendingRequest(
 	}
 	if bound {
 		return 0, ErrBindingAppeared
+	}
+
+	// ApproveRegistrarRequest holds this lock too, so a registrar approved a moment ago is
+	// visible here: its identity may not file an app request, and no request may be filed inside
+	// its prefix (the approval's reject-sweep already ran).
+	isRegistrar, registrarErr := identityIsRegistrar(ctx, exchange.tx, claims)
+	if registrarErr != nil {
+		return 0, registrarErr
+	}
+	if isRegistrar {
+		return 0, ErrBindingMismatch
+	}
+	inPrefix, prefixErr := appIDInRegistrarPrefix(ctx, exchange.tx, appID)
+	if prefixErr != nil {
+		return 0, prefixErr
+	}
+	if inPrefix {
+		return 0, ErrAppIDInRegistrarPrefix
 	}
 
 	var requestID int64

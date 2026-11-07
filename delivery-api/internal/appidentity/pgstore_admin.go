@@ -18,7 +18,7 @@ var (
 	_ PendingRequestSweeper  = (*PGStore)(nil)
 )
 
-const requestColumns = `id, app_id, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref,
+const requestColumns = `id, kind, COALESCE(app_id, ''), github_repository, github_repository_id, github_owner_id, workflow_path, git_ref,
   environment, github_run_id, status, created_at, updated_at, decided_at`
 
 const keyColumns = `id, app_id, key_hint, created_at, superseded_at, revoked_at, revoked_reason, last_used_at`
@@ -29,7 +29,7 @@ func scanRequest(row pgutil.RowScanner) (Request, error) {
 		request     Request
 		environment *string
 	)
-	if scanErr := row.Scan(&request.ID, &request.AppID, &request.Repository, &request.RepositoryID,
+	if scanErr := row.Scan(&request.ID, &request.Kind, &request.AppID, &request.Repository, &request.RepositoryID,
 		&request.RepositoryOwnerID, &request.WorkflowPath, &request.Ref, &environment, &request.GitHubRunID,
 		&request.Status, &request.CreatedAt, &request.UpdatedAt, &request.DecidedAt); scanErr != nil {
 		return Request{}, scanErr
@@ -127,6 +127,9 @@ func (store *PGStore) ApproveRequest(
 		if request.Status != RequestPending {
 			return ErrRequestNotPending
 		}
+		if request.Kind == RequestKindRegistrar {
+			return ErrRequestIsRegistrar
+		}
 		// The caller registered expectedAppID before this transaction; a request that now names
 		// another app must not be bound under it.
 		if request.AppID != expectedAppID {
@@ -138,13 +141,30 @@ func (store *PGStore) ApproveRequest(
 		// starts_with, not LIKE: "_" is a LIKE wildcard. An exact match is not an overlap; the
 		// insert below reports it as ErrAppAlreadyBound. The advisory lock above means no other
 		// approval can bind an overlapping id between this check and the insert.
-		var overlaps bool
-		if overlapErr := tx.QueryRow(ctx,
-			`SELECT EXISTS (
-  SELECT 1 FROM app_bindings
-  WHERE starts_with($1::text, app_id || '_') OR starts_with(app_id, $1::text || '_'))`,
-			request.AppID).Scan(&overlaps); overlapErr != nil {
-			return pgutil.WrapDBError("check app id overlap", overlapErr)
+		// A registrar prefix (or stem) is reserved for that registrar's apps, and a registrar's
+		// workflow identity may not also be a normal binding. Registrar approval holds the same
+		// lock, so neither can change between these checks and the insert.
+		inPrefix, prefixErr := appIDInRegistrarPrefix(ctx, tx, request.AppID)
+		if prefixErr != nil {
+			return prefixErr
+		}
+		if inPrefix {
+			return ErrAppIDInRegistrarPrefix
+		}
+		requestClaims := Claims{
+			RepositoryID: request.RepositoryID, RepositoryOwnerID: request.RepositoryOwnerID,
+			WorkflowPath: request.WorkflowPath, Ref: request.Ref, Environment: request.Environment,
+		}
+		isRegistrar, registrarErr := identityIsRegistrar(ctx, tx, requestClaims)
+		if registrarErr != nil {
+			return registrarErr
+		}
+		if isRegistrar {
+			return ErrWorkflowIdentityBound
+		}
+		overlaps, overlapErr := appIDOverlaps(ctx, tx, request.AppID)
+		if overlapErr != nil {
+			return overlapErr
 		}
 		if overlaps {
 			return ErrAppIDOverlap
@@ -155,8 +175,8 @@ func (store *PGStore) ApproveRequest(
 		// could be told apart.
 		tag, insertErr := tx.Exec(ctx,
 			`INSERT INTO app_bindings
-  (app_id, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+  (app_id, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at, acknowledged_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
 ON CONFLICT DO NOTHING`,
 			request.AppID, request.Repository, request.RepositoryID, request.RepositoryOwnerID,
 			request.WorkflowPath, request.Ref, environmentArgument(request.Environment), now)
@@ -202,6 +222,7 @@ WHERE status = 'pending'
 			Ref:               request.Ref,
 			Environment:       request.Environment,
 			ApprovedAt:        now,
+			AcknowledgedAt:    &now,
 		}
 		return nil
 	})
@@ -273,26 +294,17 @@ func (store *PGStore) ListBindings(ctx context.Context, now time.Time) ([]Bindin
 	txErr := pgutil.WithTx(ctx, store.pool,
 		pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 			bindingRows, queryErr := tx.Query(ctx,
-				`SELECT app_id, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref,
-  environment, approved_at
-FROM app_bindings ORDER BY app_id`)
+				`SELECT `+bindingColumns+`
+FROM app_bindings b LEFT JOIN app_registrars r ON r.id = b.registrar_id ORDER BY b.app_id`)
 			if queryErr != nil {
 				return pgutil.WrapDBError("list app bindings", queryErr)
 			}
 			indexByApp := map[string]int{}
 			for bindingRows.Next() {
-				var (
-					binding     Binding
-					environment *string
-				)
-				if scanErr := bindingRows.Scan(&binding.AppID, &binding.Repository, &binding.RepositoryID,
-					&binding.RepositoryOwnerID, &binding.WorkflowPath, &binding.Ref, &environment,
-					&binding.ApprovedAt); scanErr != nil {
+				binding, scanErr := scanBinding(bindingRows)
+				if scanErr != nil {
 					bindingRows.Close()
 					return pgutil.WrapDBError("scan app binding", scanErr)
-				}
-				if environment != nil {
-					binding.Environment = *environment
 				}
 				indexByApp[binding.AppID] = len(listed)
 				listed = append(listed, BindingWithKeys{Binding: binding, Keys: []Key{}})

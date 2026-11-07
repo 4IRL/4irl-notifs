@@ -44,8 +44,8 @@ func testClaims(repositoryID int64, environment string) Claims {
 func insertTestBinding(ctx context.Context, testInstance *testing.T, pool *pgxpool.Pool, appID string, claims Claims) {
 	testInstance.Helper()
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO app_bindings (app_id, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, now())`,
+		`INSERT INTO app_bindings (app_id, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at, acknowledged_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())`,
 		appID, claims.Repository, claims.RepositoryID, claims.RepositoryOwnerID, claims.WorkflowPath, claims.Ref,
 		environmentArgument(claims.Environment)); err != nil {
 		testInstance.Fatalf("insert binding: %v", err)

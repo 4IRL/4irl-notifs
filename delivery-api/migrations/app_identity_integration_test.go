@@ -20,8 +20,8 @@ const (
 	appIdentityVersion = 8
 
 	insertBindingSQL = `INSERT INTO app_bindings
-  (app_id, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, now())`
+  (app_id, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at, acknowledged_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())`
 	insertRequestSQL = `INSERT INTO app_registration_requests
   (app_id, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, github_run_id, status, decided_at)
 VALUES ($1, 'o/r', $2, 7, $3, 'refs/heads/main', $4, '1', $5, $6)`
