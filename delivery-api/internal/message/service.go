@@ -727,6 +727,24 @@ func (service *Service) ListScheduled(ctx context.Context, limit int) ([]Schedul
 	return scheduled, total, nil
 }
 
+// ListHeldFailures returns up to limit held messages whose release failed
+// terminally, newest first, and the uncapped total. limit must be in [1,
+// MaxListLimit], else a *ValidationError. The slice is never nil without an
+// error.
+func (service *Service) ListHeldFailures(ctx context.Context, limit int) ([]HeldFailure, int, error) {
+	if limit < 1 || limit > MaxListLimit {
+		return nil, 0, &ValidationError{Message: "invalid limit"}
+	}
+	failures, total, listErr := service.store.ListHeldFailures(ctx, limit)
+	if listErr != nil {
+		return nil, 0, listErr
+	}
+	if failures == nil {
+		failures = []HeldFailure{}
+	}
+	return failures, total, nil
+}
+
 // Replay returns a dead delivery to the queue with a fresh retry budget and
 // wakes the worker. It returns ErrDeliveryNotFound for an unknown delivery and
 // ErrDeliveryNotDead unless the delivery is dead.
