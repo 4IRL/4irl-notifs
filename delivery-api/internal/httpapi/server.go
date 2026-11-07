@@ -7,7 +7,8 @@
 // endpoints under /v1/admin/heartbeats, the app identity token exchange under
 // /v1/app-identity and the operator identity endpoints under
 // /v1/admin/app-identity, and the app-scoped destination endpoints under
-// /v1/apps/{app_id}/destinations, and the operator provisioning endpoints
+// /v1/apps/{app_id}/destinations, the app-scoped personal destination endpoints under
+// /v1/apps/{app_id}/personal-destinations, and the operator provisioning endpoints
 // (/v1/admin/provision, /deprovision, /reset-password, /users, /users/{user_id}
 // and /test-notify).
 package httpapi
@@ -116,6 +117,11 @@ type ServerConfig struct {
 	// nil, every one of those routes answers 503 (fail closed). The same typed-nil
 	// caveat as Registry applies.
 	AppHeartbeats AppHeartbeats
+	// PersonalDestinations backs the app-scoped /v1/apps/{app_id}/personal-destinations endpoints. When
+	// nil, every one of those routes answers 503 (fail closed). Callers must leave this an untyped nil
+	// when no service exists: a typed-nil pointer stored here is a non-nil interface and would bypass
+	// that guard.
+	PersonalDestinations PersonalDestinations
 	// AppProvisioning backs the app-scoped /v1/apps/{app_id}/provision, /deprovision,
 	// /set-password and /reset-password endpoints. When nil, all answer 503 (fail closed).
 	// Callers must leave this an untyped nil when no client exists: a typed-nil pointer
@@ -174,6 +180,8 @@ type Server struct {
 	appRegistry AppRegistry
 	// appHeartbeats backs the app-scoped heartbeat check endpoints.
 	appHeartbeats AppHeartbeats
+	// personalDestinations backs the app-scoped personal destination endpoints.
+	personalDestinations PersonalDestinations
 	// appProvisioning backs the app-scoped provisioning endpoints (provision, deprovision, set and reset password).
 	appProvisioning AppProvisioning
 	// resetLimiter is the door limit of the app reset-password route.
@@ -236,25 +244,26 @@ func NewServer(config ServerConfig) *Server {
 	}
 
 	server := &Server{
-		logger:             logger,
-		readiness:          config.Readiness,
-		checker:            config.HeartbeatChecker,
-		prober:             config.HeartbeatProber,
-		registry:           config.Registry,
-		appRegistry:        config.AppRegistry,
-		appHeartbeats:      config.AppHeartbeats,
-		appProvisioning:    config.AppProvisioning,
-		resetLimiter:       config.ResetLimiter,
-		adminProvisioning:  config.AdminProvisioning,
-		bindingChecker:     config.BindingChecker,
-		appTeardown:        config.AppTeardown,
-		messages:           config.Messages,
-		publishers:         config.Publishers,
-		heartbeats:         config.Heartbeats,
-		appIdentity:        config.AppIdentity,
-		provisioningHealth: config.ProvisioningHealth,
-		now:                config.Now,
-		mux:                http.NewServeMux(),
+		logger:               logger,
+		readiness:            config.Readiness,
+		checker:              config.HeartbeatChecker,
+		prober:               config.HeartbeatProber,
+		registry:             config.Registry,
+		appRegistry:          config.AppRegistry,
+		appHeartbeats:        config.AppHeartbeats,
+		personalDestinations: config.PersonalDestinations,
+		appProvisioning:      config.AppProvisioning,
+		resetLimiter:         config.ResetLimiter,
+		adminProvisioning:    config.AdminProvisioning,
+		bindingChecker:       config.BindingChecker,
+		appTeardown:          config.AppTeardown,
+		messages:             config.Messages,
+		publishers:           config.Publishers,
+		heartbeats:           config.Heartbeats,
+		appIdentity:          config.AppIdentity,
+		provisioningHealth:   config.ProvisioningHealth,
+		now:                  config.Now,
+		mux:                  http.NewServeMux(),
 	}
 	if server.now == nil {
 		server.now = time.Now
@@ -312,6 +321,20 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("DELETE /v1/apps/{app_id}/heartbeats/{id}", server.appHeartbeatScoped(server.handleAppDeleteCheck))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/heartbeats/{id}/pause", server.appHeartbeatScoped(server.handleAppPauseCheck))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/heartbeats/{id}/resume", server.appHeartbeatScoped(server.handleAppResumeCheck))
+
+	// App-scoped personal destinations: the person is always in the body (never the URL), every app may
+	// list and opt in, only the registering app edits or deletes.
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/personal-destinations", server.appPersonalScoped(server.handleAppCreatePersonal))
+	server.mux.HandleFunc("POST /v1/apps/{app_id}/personal-destinations/lookup", server.appPersonalScoped(server.handleAppLookupPersonal))
+	server.mux.HandleFunc("PATCH /v1/apps/{app_id}/personal-destinations/{id}", server.appPersonalScoped(server.handleAppUpdatePersonal))
+	server.mux.HandleFunc("DELETE /v1/apps/{app_id}/personal-destinations/{id}", server.appPersonalScoped(server.handleAppDeletePersonal))
+	server.mux.HandleFunc("PUT /v1/apps/{app_id}/personal-destinations/{id}/opt-in", server.appPersonalScoped(server.handleAppOptInPersonal))
+	server.mux.HandleFunc("DELETE /v1/apps/{app_id}/personal-destinations/{id}/opt-in", server.appPersonalScoped(server.handleAppOptOutPersonal))
+
+	server.mux.HandleFunc("GET /v1/admin/personal-destinations", server.requirePersonalDestinations(server.handleAdminListPersonal))
+	server.mux.HandleFunc("PATCH /v1/admin/personal-destinations/{id}", server.requirePersonalDestinations(server.handleAdminPatchPersonal))
+	server.mux.HandleFunc("DELETE /v1/admin/personal-destinations/{id}", server.requirePersonalDestinations(server.handleAdminDeletePersonal))
+
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/provision", server.appProvisioningScoped(server.handleAppProvision))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/deprovision", server.appProvisioningScoped(server.handleAppDeprovision))
 	server.mux.HandleFunc("POST /v1/apps/{app_id}/set-password", server.appProvisioningScoped(server.handleAppSetPassword))
