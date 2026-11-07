@@ -53,6 +53,7 @@ type fakeServiceStore struct {
 
 	scheduledStoreScript
 	heldStoreScript
+	heldReleaseStoreScript
 }
 
 type insertCall struct {
