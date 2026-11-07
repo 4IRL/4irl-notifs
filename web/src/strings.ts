@@ -520,6 +520,11 @@ export const strings = {
   replayQueued: ({ next }: { next: string | null }): string =>
     next === null ? 'Replay queued' : `Replay queued — next attempt ${next}`,
   destinationWasDeleted: 'destination was deleted',
+  personOptedOut: 'person opted out',
+  deliveryPersonalEndpoint: ({ id }: { id: string }): string => `#${id}`,
+  deliveryPersonalPill: 'Personal',
+  deliveryPersonalSub: ({ type, hash }: { type: string; hash: string | null }): string =>
+    hash === null ? type : `${type} · ${hash}`,
 
   // Pending sends section.
   pendingSendsHeading: 'Pending sends',
@@ -782,6 +787,82 @@ export const strings = {
   invalidProbeCredential: 'Use 1 to 256 visible ASCII characters with no spaces.',
   heartbeatNeedsDestination: 'Select at least one alert destination.',
   heartbeatTooManyDestinations: 'Select at most 20 alert destinations.',
+
+  // Personal destinations section.
+  personalHeading: 'Personal destinations',
+  personalRefresh: 'Refresh personal destinations',
+  personalHint:
+    "Endpoints people registered through an app. Each one receives a person's messages only from the apps it is opted in for. People are shown by person hash, the same hash as the People table on the Provisioning tab. Opt-in is controlled by the person's apps; you can disable or delete an endpoint.",
+  personalLoading: 'Loading personal destinations…',
+  personalLoadFailed: ({ message }: { message: string }): string =>
+    `Could not load personal destinations: ${message}.`,
+  personalLoadFailedFallback: 'request failed',
+  personalRetry: 'Retry',
+  personalEmpty:
+    'No personal destinations yet. People add them in the settings of an app that uses notifs.',
+  personalSummaryEmpty: '0 personal destinations',
+  personalSummary: ({
+    total,
+    disabled,
+    shown,
+  }: {
+    total: number;
+    disabled: number;
+    shown: number;
+  }): string => {
+    const noun = total === 1 ? 'personal destination' : 'personal destinations';
+    const scope = total > shown ? ` among the newest ${shown}` : '';
+    return `${total} ${noun}, ${disabled} disabled${scope}`;
+  },
+  personalTruncatedHint: ({ shown, total }: { shown: number; total: number }): string =>
+    `Showing the newest ${shown} of ${total}.`,
+  columnPersonalHash: 'Person hash',
+  columnPersonalLabel: 'Label',
+  columnPersonalType: 'Type',
+  columnPersonalTarget: 'Target',
+  columnPersonalRegisteredBy: 'Registered by',
+  columnPersonalOptedIn: 'Opted in for',
+  columnPersonalStatus: 'Status',
+  columnPersonalCreated: 'Created',
+  columnPersonalActions: 'Actions',
+  personalRegisteredByPrefix: 'Registered by: ',
+  personalLabelSeparator: '·',
+  personalAppRemoved: 'App removed',
+  personalNoApps: 'No apps',
+  personalDisabledBySystem: 'Disabled automatically.',
+  personalDisabledByApp: 'Disabled by the app.',
+  personalDisabledUnknown: 'Disabled.',
+  personalRowName: ({ label, hash }: { label: string; hash: string }): string =>
+    `${label} of ${hash}`,
+  disablePersonal: ({ row }: { row: string }): string => `Disable personal destination ${row}`,
+  confirmDisablePersonal: ({ row }: { row: string }): string =>
+    `Confirm disable personal destination ${row}`,
+  enablePersonal: ({ row }: { row: string }): string => `Enable personal destination ${row}`,
+  deletePersonal: ({ row }: { row: string }): string => `Delete personal destination ${row}`,
+  confirmDeletePersonal: ({ row }: { row: string }): string =>
+    `Confirm delete personal destination ${row}`,
+  dialogItemPersonalDestination: 'Personal destination',
+  personalDialogItem: ({ label, id, hash }: { label: string; id: number; hash: string }): string =>
+    `${label} · #${id} · ${hash}`,
+  disablePersonalDialogTitle: 'Disable personal destination?',
+  disablePersonalNotice:
+    'Sending to this endpoint stops for every app. The app cannot re-enable an operator disable; only you can.',
+  deletePersonalDialogTitle: 'Delete personal destination?',
+  deletePersonalNotice: ({ apps }: { apps: string[] }): string =>
+    `This person stops receiving messages here from every app it is opted in for (${apps.join(', ')}). The app can register it again; disable it instead to keep it off.`,
+  deletePersonalNoAppsNotice:
+    'No app is opted in, so no messages are affected. The app can register it again.',
+  personalDisabledResult: ({ label, id }: { label: string; id: number }): string =>
+    `Disabled personal destination ${label} (#${id}).`,
+  personalEnabledResult: ({ label, id }: { label: string; id: number }): string =>
+    `Enabled personal destination ${label} (#${id}).`,
+  personalDeletedResult: ({ label, id }: { label: string; id: number }): string =>
+    `Deleted personal destination ${label} (#${id}).`,
+  personalGone: ({ label, id }: { label: string; id: number }): string =>
+    `Personal destination ${label} (#${id}) no longer exists.`,
+  personalDisableFailed: 'Could not disable the personal destination. Try again.',
+  personalEnableFailed: 'Could not enable the personal destination. Try again.',
+  personalDeleteFailed: 'Could not delete the personal destination. Try again.',
 
   // App identities section.
   identitiesHeading: 'App identities',

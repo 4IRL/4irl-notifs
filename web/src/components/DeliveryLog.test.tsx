@@ -38,6 +38,8 @@ function buildDelivery(overrides: Partial<DeliverySummary> & { id: number }): De
     deliveredAt: null,
     createdAt: '2026-10-17T07:00:00Z',
     updatedAt: '2026-10-17T08:12:44Z',
+    targetKind: 'destination',
+    personHash: null,
     ...overrides,
   };
 }
@@ -89,6 +91,9 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     deleteRegistrar: vi.fn(),
     acknowledgeBinding: vi.fn(),
     acknowledgeAllBindings: vi.fn(),
+    listPersonalDestinations: vi.fn().mockResolvedValue({ personalDestinations: [], total: 0 }),
+    setPersonalDestinationEnabled: vi.fn(),
+    deletePersonalDestination: vi.fn(),
     ...overrides,
   };
 }
@@ -272,6 +277,65 @@ describe('DeliveryLog', () => {
 
     expect(await screen.findByText(strings.destinationWasDeleted)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: strings.replayDelivery({ id: 5 }) })).toBeNull();
+  });
+
+  it('marks a personal delivery with a Personal pill, endpoint number, type and person hash', async () => {
+    const client = buildClient({
+      listDeliveries: vi.fn().mockResolvedValue([
+        buildDelivery({
+          id: 21,
+          destination: '@personal_12',
+          targetKind: 'personal',
+          personHash: '76gzqgp4byjl6dje',
+          deadReason: 'opted_out',
+        }),
+        buildDelivery({ id: 22 }),
+      ]),
+    });
+    render(<DeliveryLog client={client} />);
+
+    expect(await screen.findByText(strings.deliveryPersonalPill)).toBeInTheDocument();
+    expect(screen.getByText('#12')).toBeInTheDocument();
+    expect(screen.getByText('Webhook · 76gzqgp4byjl6dje')).toBeInTheDocument();
+    expect(screen.queryByText('@personal_12')).toBeNull();
+    // The operator row is unchanged and carries no marker.
+    expect(screen.getByText('chores_hook')).toBeInTheDocument();
+    expect(screen.getAllByText(strings.deliveryPersonalPill)).toHaveLength(1);
+  });
+
+  it('shows opted out with no Replay and the person opted out hint', async () => {
+    const client = buildClient({
+      listDeliveries: vi.fn().mockResolvedValue([
+        buildDelivery({
+          id: 30,
+          destination: '@personal_4',
+          targetKind: 'personal',
+          personHash: 'k3m2xq7wd4r5nb2a',
+          deadReason: 'opted_out',
+        }),
+      ]),
+    });
+    render(<DeliveryLog client={client} />);
+
+    expect(await screen.findByText('opted out')).toBeInTheDocument();
+    expect(screen.getByText(strings.personOptedOut)).toBeInTheDocument();
+    expect(screen.queryByText(strings.destinationWasDeleted)).toBeNull();
+    expect(screen.queryByRole('button', { name: strings.replayDelivery({ id: 30 }) })).toBeNull();
+  });
+
+  it('keeps Replay on a destination_disabled row and shows no opted-out hint', async () => {
+    const client = buildClient({
+      listDeliveries: vi
+        .fn()
+        .mockResolvedValue([buildDelivery({ id: 31, deadReason: 'destination_disabled' })]),
+    });
+    render(<DeliveryLog client={client} />);
+
+    expect(
+      await screen.findByRole('button', { name: strings.replayDelivery({ id: 31 }) }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(strings.personOptedOut)).toBeNull();
+    expect(screen.queryByText(strings.destinationWasDeleted)).toBeNull();
   });
 
   it('offers no Replay on non-dead rows', async () => {

@@ -61,7 +61,13 @@ export interface DeliverySummary {
   deliveredAt: string | null;
   createdAt: string;
   updatedAt: string;
+  targetKind: DeliveryTargetKind;
+  /** The message's recipient hash for recipient and personal rows, else null. */
+  personHash: string | null;
 }
+
+/** Which kind of target a delivery went to. */
+export type DeliveryTargetKind = 'destination' | 'recipient' | 'personal';
 
 /** One delivery attempt. */
 export interface AttemptSummary {
@@ -189,7 +195,11 @@ export interface ScheduledMessageSummary {
   idempotencyKey: string;
   deliverAt: string;
   createdAt: string;
-  /** True when the message targets `to.recipient`; `destinations` is then empty. */
+  /**
+   * True when the message targets `to.recipient`; `destinations` is then empty.
+   * A recipient message fans out to the person's ntfy topic plus their opted-in
+   * personal destinations (`@personal_<id>` deliveries), none of which are listed here.
+   */
   recipient: boolean;
   destinations: { name: string; type: DestinationType }[];
 }
@@ -437,6 +447,51 @@ export interface UnbindAppResult {
   deleted: boolean;
 }
 
+/** Who disabled a personal destination; `null` while it is enabled. */
+export type PersonalDisabledBy = 'app' | 'operator' | 'system';
+
+/** A person's own endpoint as the operator sees it (the admin view). Secrets are masked. */
+export interface PersonalDestinationSummary {
+  id: number;
+  personHash: string;
+  label: string;
+  type: DestinationType;
+  config: Record<string, string>;
+  secrets: Record<string, string>;
+  enabled: boolean;
+  /** `null` while enabled, and for a disabler this build does not recognise. */
+  disabledBy: PersonalDisabledBy | null;
+  disabledReason: string | null;
+  registeredByAppId: string;
+  /** True when the registering app was removed; no app can edit the row any more. */
+  registrarRemoved: boolean;
+  /** The apps this endpoint receives messages from, sorted. */
+  optedInAppIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListPersonalDestinationsParams {
+  /** Narrows the list to one person; omitted lists everyone's. */
+  personHash?: string;
+}
+
+export interface PersonalDestinationsList {
+  personalDestinations: PersonalDestinationSummary[];
+  /** The full count, which exceeds `personalDestinations.length` when the list is capped. */
+  total: number;
+}
+
+export interface SetPersonalDestinationEnabledParams {
+  id: number;
+  enabled: boolean;
+  disabledReason?: string;
+}
+
+export interface PersonalDestinationIdParam {
+  id: number;
+}
+
 /** Configuration for createDeliveryApiClient. */
 export interface DeliveryApiClientConfig {
   baseUrl?: string;
@@ -480,6 +535,13 @@ export interface DeliveryApiClient {
   acknowledgeAllBindings(param: AcknowledgeAllBindingsParam): Promise<number>;
   revokeIdentityKey(param: IdentityKeyIdParam): Promise<IdentityKey>;
   unbindApp(param: UnbindAppParam): Promise<UnbindAppResult>;
+  listPersonalDestinations(
+    params?: ListPersonalDestinationsParams,
+  ): Promise<PersonalDestinationsList>;
+  setPersonalDestinationEnabled(
+    params: SetPersonalDestinationEnabledParams,
+  ): Promise<PersonalDestinationSummary>;
+  deletePersonalDestination(param: PersonalDestinationIdParam): Promise<void>;
 }
 
 /** Owner fields as sent on the wire; optional because an older server omits them. */
@@ -524,6 +586,8 @@ interface DeliveryWire {
   delivered_at: string | null;
   created_at: string;
   updated_at: string;
+  target_kind: DeliveryTargetKind;
+  person_hash: string | null;
 }
 
 interface ScheduledMessageWire {
@@ -654,6 +718,23 @@ interface IdentityRegistrarWire {
   approved_at: string;
   app_count: number;
   app_limit?: unknown;
+}
+
+interface PersonalDestinationWire {
+  id: number;
+  person_hash: string;
+  label: string;
+  type: DestinationType;
+  config?: Record<string, string> | null;
+  secrets?: Record<string, string> | null;
+  enabled: boolean;
+  disabled_by?: string | null;
+  disabled_reason?: string | null;
+  registered_by_app_id: string;
+  registrar_removed?: boolean;
+  opted_in_app_ids?: string[] | null;
+  created_at: string;
+  updated_at: string;
 }
 
 interface ReadinessWire {
@@ -847,6 +928,32 @@ function mapDestination(wire: DestinationWire): DestinationSummary {
   };
 }
 
+/** Fail closed: a disabler this build does not know reads as no disabler, never as an app's. */
+function mapPersonalDisabledBy(disabledBy: string | null | undefined): PersonalDisabledBy | null {
+  return disabledBy === 'app' || disabledBy === 'operator' || disabledBy === 'system'
+    ? disabledBy
+    : null;
+}
+
+function mapPersonalDestination(wire: PersonalDestinationWire): PersonalDestinationSummary {
+  return {
+    id: wire.id,
+    personHash: wire.person_hash,
+    label: wire.label,
+    type: wire.type,
+    config: wire.config ?? {},
+    secrets: wire.secrets ?? {},
+    enabled: wire.enabled,
+    disabledBy: mapPersonalDisabledBy(wire.disabled_by),
+    disabledReason: wire.disabled_reason ?? null,
+    registeredByAppId: wire.registered_by_app_id,
+    registrarRemoved: wire.registrar_removed === true,
+    optedInAppIds: wire.opted_in_app_ids ?? [],
+    createdAt: wire.created_at,
+    updatedAt: wire.updated_at,
+  };
+}
+
 function mapRoute(wire: RouteWire): RouteSummary {
   return {
     ...mapOwner(wire),
@@ -876,6 +983,8 @@ function mapDelivery(wire: DeliveryWire): DeliverySummary {
     deliveredAt: wire.delivered_at,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    targetKind: wire.target_kind,
+    personHash: wire.person_hash,
   };
 }
 
@@ -1490,6 +1599,41 @@ export function createDeliveryApiClient({
         method: 'DELETE',
       })) as { app_id: string; deleted: boolean };
       return { appId: wire.app_id, deleted: wire.deleted };
+    },
+
+    async listPersonalDestinations({
+      personHash,
+    }: ListPersonalDestinationsParams = {}): Promise<PersonalDestinationsList> {
+      const query =
+        personHash === undefined ? '' : `?person_hash=${encodeURIComponent(personHash)}`;
+      const wire = (await request({
+        path: `/v1/admin/personal-destinations${query}`,
+        method: 'GET',
+      })) as { personal_destinations: PersonalDestinationWire[] | null; total?: number | null };
+      const rows = (wire.personal_destinations ?? []).map(mapPersonalDestination);
+      // A missing or short total never reads smaller than the rows in hand.
+      return { personalDestinations: rows, total: Math.max(wire.total ?? 0, rows.length) };
+    },
+
+    async setPersonalDestinationEnabled({
+      id,
+      enabled,
+      disabledReason,
+    }: SetPersonalDestinationEnabledParams): Promise<PersonalDestinationSummary> {
+      const body: { enabled: boolean; disabled_reason?: string } = { enabled };
+      if (disabledReason !== undefined) {
+        body.disabled_reason = disabledReason;
+      }
+      const wire = (await request({
+        path: `/v1/admin/personal-destinations/${id}`,
+        method: 'PATCH',
+        body,
+      })) as { personal_destination: PersonalDestinationWire };
+      return mapPersonalDestination(wire.personal_destination);
+    },
+
+    async deletePersonalDestination({ id }: PersonalDestinationIdParam): Promise<void> {
+      await request({ path: `/v1/admin/personal-destinations/${id}`, method: 'DELETE' });
     },
   };
 }

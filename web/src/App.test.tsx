@@ -109,6 +109,9 @@ function buildFakeDeliveryClient(overrides: Partial<DeliveryApiClient> = {}): De
     deleteRegistrar: vi.fn(),
     acknowledgeBinding: vi.fn(),
     acknowledgeAllBindings: vi.fn(),
+    listPersonalDestinations: vi.fn().mockResolvedValue({ personalDestinations: [], total: 0 }),
+    setPersonalDestinationEnabled: vi.fn(),
+    deletePersonalDestination: vi.fn(),
     ...overrides,
   };
 }
