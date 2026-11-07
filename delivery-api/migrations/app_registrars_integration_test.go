@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	appRegistrarsVersion = 13
+	appRegistrarsVersion = 14
 
 	insertRegistrarSQL = `INSERT INTO app_registrars
   (prefix, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at)
@@ -31,7 +31,7 @@ VALUES ($1, $2, 'o/r', $3, 7, $4, 'refs/heads/main', NULL, '1')`
 VALUES ($1, 'o/r', $2, 7, $3, 'refs/heads/main', NULL, now(), $4)`
 )
 
-// TestAppRegistrarsAppliesOverAPopulatedSchema runs 0013 over a table that already holds a
+// TestAppRegistrarsAppliesOverAPopulatedSchema runs 0014 over a table that already holds a
 // normal binding: it migrates, the binding is marked acknowledged at its approval time and
 // has no registrar.
 func TestAppRegistrarsAppliesOverAPopulatedSchema(testInstance *testing.T) {
@@ -48,7 +48,7 @@ VALUES ('urls4irl', 'o/r', 1, 2, $1, 'refs/heads/main', NULL, now() - interval '
 		testInstance.Fatalf("load migrations: %v", loadErr)
 	}
 	if _, runErr := migrate.Run(ctx, migrate.NewPGStore(pool), loaded, slog.New(slog.DiscardHandler)); runErr != nil {
-		testInstance.Fatalf("apply 0013 over a populated 0012 schema: %v", runErr)
+		testInstance.Fatalf("apply 0014 over a populated 0013 schema: %v", runErr)
 	}
 
 	var acknowledgedAtMatches, registrarIsNull bool
