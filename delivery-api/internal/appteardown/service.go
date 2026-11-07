@@ -164,7 +164,8 @@ func (service *Service) Deprovision(ctx context.Context, appID string) (Result, 
 		"app_id", appID, "phase", "objects", "duration", time.Since(started),
 		"checks", deleted.Checks, "routes", deleted.Routes, "destinations", deleted.Destinations,
 		"orphaned_routes", deleted.OrphanedRoutes, "orphaned_checks", deleted.OrphanedChecks,
-		"held_messages", deleted.HeldMessages)
+		"held_messages", deleted.HeldMessages,
+		"personal_opt_ins", deleted.PersonalOptIns, "personal_destinations", deleted.PersonalDestinations)
 
 	return Result{AppID: appID, Removed: true, Unbound: unbound, Deleted: deleted}, nil
 }

@@ -71,7 +71,7 @@ func (rec *recorder) DeleteOwnedObjects(ctx context.Context, _ string) (Deleted,
 	rec.noteDeadline("delete", ctx)
 	err := rec.deleteErr
 	rec.deleteErr = nil
-	return Deleted{Checks: 1, Routes: 2, Destinations: 3, OrphanedRoutes: 4, OrphanedChecks: 5, HeldMessages: 6}, err
+	return Deleted{Checks: 1, Routes: 2, Destinations: 3, OrphanedRoutes: 4, OrphanedChecks: 5, HeldMessages: 6, PersonalOptIns: 7, PersonalDestinations: 8}, err
 }
 
 func newTestService(rec *recorder) *Service {
@@ -91,7 +91,8 @@ func TestDeprovisionRunsPhasesInOrder(testInstance *testing.T) {
 		testInstance.Fatalf("calls = %v, want %v", rec.calls, want)
 	}
 	if !result.Removed || !result.Unbound || result.AppID != "urls4irl" || result.Deleted.Destinations != 3 ||
-		result.Deleted.OrphanedRoutes != 4 || result.Deleted.OrphanedChecks != 5 || result.Deleted.HeldMessages != 6 {
+		result.Deleted.OrphanedRoutes != 4 || result.Deleted.OrphanedChecks != 5 || result.Deleted.HeldMessages != 6 ||
+		result.Deleted.PersonalOptIns != 7 || result.Deleted.PersonalDestinations != 8 {
 		testInstance.Fatalf("result = %+v", result)
 	}
 }
