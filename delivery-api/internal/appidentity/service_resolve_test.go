@@ -38,6 +38,10 @@ func (fake *fakeKeyStore) Exchange(context.Context, func(tx ExchangeTx) error) e
 	return errors.New("not used by key resolution")
 }
 
+func (fake *fakeKeyStore) ReadRegistrarExchange(context.Context, Claims, string) (RegistrarExchangeState, error) {
+	return RegistrarExchangeState{}, errors.New("not used by key resolution")
+}
+
 func (fake *fakeKeyStore) DeleteExpiredReplay(context.Context, time.Time) (int64, error) {
 	return 0, errors.New("not used by key resolution")
 }
