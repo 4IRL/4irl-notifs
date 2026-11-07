@@ -22,6 +22,11 @@ type Deleted struct {
 	OrphanedChecks int64 `json:"orphaned_checks"`
 	// HeldMessages counts the app's held messages (held_at IS NOT NULL) the cascade deleted.
 	HeldMessages int64 `json:"held_messages"`
+	// PersonalOptIns counts the app's personal destination opt-ins removed. PersonalDestinations counts
+	// the personal destinations deleted: the ones only this app used plus any rows orphaned earlier by a
+	// previously torn-down registrar that this teardown left with no opt-in.
+	PersonalOptIns       int64 `json:"personal_opt_ins"`
+	PersonalDestinations int64 `json:"personal_destinations"`
 }
 
 // PGStore deletes the delivery objects an app owns.
@@ -94,10 +99,16 @@ func (store *PGStore) DeleteOwnedObjects(ctx context.Context, appID string) (Del
 		if execErr != nil {
 			return pgutil.WrapDBError("delete app destinations", execErr)
 		}
+		personalOptIns, personalDestinations, personalErr := deletePersonalObjects(ctx, tx, appID)
+		if personalErr != nil {
+			return personalErr
+		}
 		deleted = Deleted{
 			Checks: checkTag.RowsAffected(), Routes: routeTag.RowsAffected(), Destinations: destinationTag.RowsAffected(),
 			OrphanedRoutes: orphanedRoutes, OrphanedChecks: orphanedChecks,
-			HeldMessages: heldTag.RowsAffected(),
+			HeldMessages:         heldTag.RowsAffected(),
+			PersonalOptIns:       personalOptIns,
+			PersonalDestinations: personalDestinations,
 		}
 		return nil
 	})
@@ -105,6 +116,48 @@ func (store *PGStore) DeleteOwnedObjects(ctx context.Context, appID string) (Del
 		return Deleted{}, txErr
 	}
 	return deleted, nil
+}
+
+// deletePersonalObjects removes the app's personal destination footprint inside the teardown transaction.
+// Lock-first (the plan's Reap serialisation rule): the rows holding the app's opt-ins, the rows the app
+// registered and every registrar-removed row are locked FOR UPDATE in ascending id order before any opt-in
+// is deleted, so a concurrent opt-in PUT (which holds FOR SHARE on its row) either commits first and is seen
+// by the re-checks below, or finds the row gone. Then: delete the app's opt-ins; delete the rows it
+// registered that now have no opt-ins; mark the rest it registered registrar-removed; finally delete every
+// registrar-removed row with no opt-ins (rows orphaned earlier whose last opt-in was this app's). Each
+// delete is its own statement, so it re-checks "no opt-ins" against the then-current state.
+func deletePersonalObjects(ctx context.Context, tx pgx.Tx, appID string) (optIns int64, destinations int64, err error) {
+	if _, lockErr := tx.Exec(ctx,
+		`SELECT id FROM personal_destinations pd
+WHERE pd.registered_by_app_id = $1 OR pd.registrar_removed_at IS NOT NULL
+   OR EXISTS (SELECT 1 FROM personal_destination_opt_ins oi
+              WHERE oi.personal_destination_id = pd.id AND oi.app_id = $1)
+ORDER BY pd.id FOR UPDATE`, appID); lockErr != nil {
+		return 0, 0, pgutil.WrapDBError("lock app personal destinations", lockErr)
+	}
+	optInTag, execErr := tx.Exec(ctx, `DELETE FROM personal_destination_opt_ins WHERE app_id = $1`, appID)
+	if execErr != nil {
+		return 0, 0, pgutil.WrapDBError("delete app personal opt-ins", execErr)
+	}
+	ownedTag, execErr := tx.Exec(ctx,
+		`DELETE FROM personal_destinations pd WHERE pd.registered_by_app_id = $1
+  AND NOT EXISTS (SELECT 1 FROM personal_destination_opt_ins oi WHERE oi.personal_destination_id = pd.id)`, appID)
+	if execErr != nil {
+		return 0, 0, pgutil.WrapDBError("delete app personal destinations", execErr)
+	}
+	// The rows are already locked in id order above, so this UPDATE acquires no new lock.
+	if _, execErr = tx.Exec(ctx,
+		`UPDATE personal_destinations SET registrar_removed_at = now()
+WHERE registered_by_app_id = $1 AND registrar_removed_at IS NULL`, appID); execErr != nil {
+		return 0, 0, pgutil.WrapDBError("mark personal destinations registrar-removed", execErr)
+	}
+	orphanTag, execErr := tx.Exec(ctx,
+		`DELETE FROM personal_destinations pd WHERE pd.registrar_removed_at IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM personal_destination_opt_ins oi WHERE oi.personal_destination_id = pd.id)`)
+	if execErr != nil {
+		return 0, 0, pgutil.WrapDBError("delete orphaned personal destinations", execErr)
+	}
+	return optInTag.RowsAffected(), ownedTag.RowsAffected() + orphanTag.RowsAffected(), nil
 }
 
 // linkTable names a link table, its owner-id column and the owner table. The values are package-local
