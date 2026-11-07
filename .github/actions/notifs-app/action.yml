@@ -7,8 +7,17 @@ description: >-
 
 inputs:
   app_id:
-    description: The app's id (the manifest's app_id).
-    required: true
+    description: >-
+      The app's id (the manifest's app_id). Exactly one of `app_id` or `name` is required.
+    required: false
+    default: ''
+  name:
+    description: >-
+      Registrar mode: the bare app name; the server derives the app id (registrar prefix + name) and
+      the `app_id` output reports it. Mutually exclusive with `app_id`. The calling workflow must be
+      an approved registrar.
+    required: false
+    default: ''
   delivery_url:
     description: Base URL of delivery-api, e.g. https://delivery.example.com (https only).
     required: true
@@ -43,6 +52,9 @@ outputs:
   key:
     description: The new delivery key (masked in logs). Pass it to the deploy as a secret.
     value: ${{ steps.exchange.outputs.key }}
+  app_id:
+    description: The app id the key was issued for (the server-derived id in registrar mode).
+    value: ${{ steps.exchange.outputs.app_id || inputs.app_id }}
 
 runs:
   using: composite
@@ -57,12 +69,22 @@ runs:
       shell: bash
       env:
         NOTIFS_APP_ID: ${{ inputs.app_id }}
+        NOTIFS_APP_NAME: ${{ inputs.name }}
         NOTIFS_DELIVERY_URL: ${{ inputs.delivery_url }}
         NOTIFS_ACCESS_CLIENT_ID: ${{ inputs.access_client_id }}
         NOTIFS_ACCESS_CLIENT_SECRET: ${{ inputs.access_client_secret }}
         NOTIFS_AUDIENCE: ${{ inputs.audience }}
       run: |
         node "$GITHUB_ACTION_PATH/../../../scripts/notifs-app-exchange.mjs"
+
+    - name: Check the manifest app id matches the derived id
+      if: inputs.manifest != '' && inputs.name != ''
+      shell: bash
+      env:
+        NOTIFS_MANIFEST: ${{ inputs.manifest }}
+        NOTIFS_DERIVED_APP_ID: ${{ steps.exchange.outputs.app_id }}
+      run: |
+        node "$GITHUB_ACTION_PATH/../../../scripts/notifs-app-exchange.mjs" check-manifest
 
     - name: Lint the manifest
       if: inputs.manifest != ''

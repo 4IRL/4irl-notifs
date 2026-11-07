@@ -19,14 +19,15 @@
  * only to `$GITHUB_OUTPUT` (never echoed). No npm dependencies.
  *
  * Environment (the action maps its inputs onto these):
- *   NOTIFS_APP_ID, NOTIFS_DELIVERY_URL, NOTIFS_ACCESS_CLIENT_ID, NOTIFS_ACCESS_CLIENT_SECRET,
+ *   exactly one of NOTIFS_APP_ID (normal) or NOTIFS_APP_NAME (registrar: the server derives the app
+ *   id and the 200 outputs `app_id`), NOTIFS_DELIVERY_URL, NOTIFS_ACCESS_CLIENT_ID, NOTIFS_ACCESS_CLIENT_SECRET,
  *   NOTIFS_AUDIENCE (default `notifs-delivery`, matching DELIVERY_OIDC_AUDIENCE's server default),
  *   plus the runner's ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN / GITHUB_OUTPUT.
  *
  * `run(deps)` is what tests drive: `deps` swaps `env`, `fetchImpl`, `stdout`, `appendOutput` and
  * `timeoutMs`.
  */
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,6 +38,7 @@ export const DEFAULT_AUDIENCE = 'notifs-delivery';
 export const EXCHANGE_PATH = '/v1/app-identity/exchange';
 export const REQUEST_TIMEOUT_MS = 10000;
 
+const APP_NAME_PATTERN = /^[a-z0-9][a-z0-9_]*$/;
 const APP_KEY_PATTERN = /^dak_[A-Za-z0-9_-]{43}$/;
 const ERROR_TEXT_LIMIT = 200;
 
@@ -176,10 +178,25 @@ export async function run({
   timeoutMs = REQUEST_TIMEOUT_MS,
 } = {}) {
   try {
-    const appId = required(env, 'NOTIFS_APP_ID');
-    if (!APP_ID_PATTERN.test(appId)) {
-      throw new ExchangeError(`NOTIFS_APP_ID is not a valid app id: ${appId}`);
+    // Exactly one of app id (normal flow) or name (registrar flow), checked before any network call.
+    const appIdInput = (env.NOTIFS_APP_ID ?? '').trim();
+    const nameInput = (env.NOTIFS_APP_NAME ?? '').trim();
+    if ((appIdInput === '') === (nameInput === '')) {
+      throw new ExchangeError(
+        'send exactly one of app_id or name (NOTIFS_APP_ID / NOTIFS_APP_NAME)',
+      );
     }
+    const registrarMode = nameInput !== '';
+    if (registrarMode) {
+      if (!APP_NAME_PATTERN.test(nameInput)) {
+        throw new ExchangeError(`NOTIFS_APP_NAME is not a valid app name: ${nameInput}`);
+      }
+    } else if (!APP_ID_PATTERN.test(appIdInput)) {
+      throw new ExchangeError(`NOTIFS_APP_ID is not a valid app id: ${appIdInput}`);
+    }
+    // In registrar mode the server derives the app id (prefix + name); this stays the bare name
+    // until the 200 response names the derived id.
+    let appId = registrarMode ? nameInput : appIdInput;
     const audience = (env.NOTIFS_AUDIENCE ?? '').trim() || DEFAULT_AUDIENCE;
 
     // Reuses onboard's fail-closed target rules: https (or loopback http) and a complete Access
@@ -215,7 +232,13 @@ export async function run({
     const response = await timedFetch(
       fetchImpl,
       `${target.baseUrl}${EXCHANGE_PATH}`,
-      { method: 'POST', headers, body: JSON.stringify({ app_id: appId, token: oidcToken }) },
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(
+          registrarMode ? { name: appId, token: oidcToken } : { app_id: appId, token: oidcToken },
+        ),
+      },
       { what: 'identity exchange', timeoutMs },
     );
 
@@ -226,6 +249,12 @@ export async function run({
       });
       // Server-controlled: print only an integer, never an arbitrary value.
       const requestId = Number.isInteger(body?.request_id) ? body.request_id : 'unknown';
+      if (registrarMode) {
+        throw new ExchangeError(
+          `registrar request #${requestId} awaits operator approval in the admin UI ` +
+            '(App identities → approve as registrar); re-run this deploy once it is approved',
+        );
+      }
       throw new ExchangeError(
         `identity request #${requestId} for app "${appId}" awaits operator approval in the admin UI; ` +
           're-run this deploy once it is approved',
@@ -251,11 +280,51 @@ export async function run({
     // Mask FIRST: nothing below (or any later step) may print the key unmasked.
     stdout(maskLine(key));
     const keyId = Number.isInteger(body.key_id) ? String(body.key_id) : '';
-    appendOutput(`key=${key}\nkey_id=${keyId}\n`);
+    let appIdOutput = '';
+    if (registrarMode) {
+      // The derived id is the server's, never computed client-side.
+      const derived = body.app_id;
+      if (typeof derived !== 'string' || !APP_ID_PATTERN.test(derived)) {
+        throw new ExchangeError('identity exchange returned 200 without a valid app id');
+      }
+      appId = derived;
+      appIdOutput = `app_id=${derived}\n`;
+    }
+    appendOutput(`key=${key}\nkey_id=${keyId}\n${appIdOutput}`);
     stdout(`identity exchange issued a key for app "${appId}" (key id ${keyId || 'unknown'})\n`);
     return 0;
   } catch (err) {
     stdout(errorLine(err?.message || 'identity exchange failed'));
+    return 1;
+  }
+}
+
+/**
+ * Registrar mode only: the manifest's `app_id` must equal the app id the server derived. Returns 0
+ * when it matches, 1 (with an `::error::`) otherwise.
+ */
+export function checkManifestAppId({
+  env = process.env,
+  stdout = (text) => process.stdout.write(text),
+  readFile = readFileSync,
+} = {}) {
+  try {
+    const manifestPath = required(env, 'NOTIFS_MANIFEST');
+    const derived = required(env, 'NOTIFS_DERIVED_APP_ID');
+    let manifest;
+    try {
+      manifest = JSON.parse(readFile(manifestPath, 'utf8'));
+    } catch (err) {
+      throw new ExchangeError(`cannot read manifest ${manifestPath}: ${err?.message ?? err}`);
+    }
+    if (manifest?.app_id !== derived) {
+      throw new ExchangeError(
+        `manifest app_id "${manifest?.app_id}" does not match the app id the registrar derived ("${derived}")`,
+      );
+    }
+    return 0;
+  } catch (err) {
+    stdout(errorLine(err?.message || 'manifest check failed'));
     return 1;
   }
 }
@@ -267,7 +336,11 @@ function requiredOutputFile(env) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  run().then((code) => {
-    process.exitCode = code;
-  });
+  if (process.argv[2] === 'check-manifest') {
+    process.exitCode = checkManifestAppId();
+  } else {
+    run().then((code) => {
+      process.exitCode = code;
+    });
+  }
 }
