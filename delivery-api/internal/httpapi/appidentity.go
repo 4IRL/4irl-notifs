@@ -30,6 +30,20 @@ const (
 	errMsgRequestChanged         = "registration request changed during approval"
 	errMsgAppRegistryUnavailable = "app registry unavailable"
 	errMsgAppIDReserved          = "app id is reserved"
+
+	errMsgInvalidName            = "invalid name"
+	errMsgInvalidPrefix          = "invalid prefix"
+	errMsgExchangeTarget         = "send exactly one of app_id or name"
+	errMsgRegistrarOwnership     = "app id is not owned by this registrar"
+	errMsgBindingNotFound        = "binding does not exist"
+	errMsgRegistrarAppLimit      = "registrar app limit reached"
+	errMsgPrefixTaken            = "prefix already used"
+	errMsgPrefixOverlap          = "prefix overlaps an approved app id or registrar"
+	errMsgRequestIsRegistrar     = "request is a registrar request"
+	errMsgRequestNotRegistrar    = "request is not a registrar request"
+	errMsgAppIDInRegistrarPrefix = "app id is reserved by a registrar"
+	errMsgRegistrationChanged    = "registration changed, retry"
+	errMsgInvalidRegistrarID     = "invalid registrar id"
 )
 
 // AppIdentity is the app identity surface the exchange, the /v1/admin/app-identity endpoints and
@@ -38,19 +52,73 @@ type AppIdentity interface {
 	// ResolveKey authenticates a presented app key. An error wrapping appidentity.ErrInvalidKey
 	// means the key is not usable; any other error is a lookup failure.
 	ResolveKey(ctx context.Context, key string) (appidentity.ResolvedKey, error)
-	Exchange(ctx context.Context, appID string, token string) (appidentity.ExchangeResult, error)
+	Exchange(ctx context.Context, input appidentity.ExchangeInput) (appidentity.ExchangeResult, error)
 	ListRequests(ctx context.Context) ([]appidentity.Request, error)
 	ApproveRequest(ctx context.Context, requestID int64) (appidentity.Binding, error)
 	RejectRequest(ctx context.Context, requestID int64) (appidentity.Request, error)
 	ListBindings(ctx context.Context) ([]appidentity.BindingWithKeys, error)
 	RevokeKey(ctx context.Context, keyID int64) (appidentity.Key, error)
 	Unbind(ctx context.Context, appID string) (bool, error)
+	ApproveRegistrarRequest(ctx context.Context, requestID int64, prefix string) (appidentity.WorkflowRegistrar, error)
+	ListRegistrars(ctx context.Context) ([]appidentity.WorkflowRegistrar, error)
+	DeleteRegistrar(ctx context.Context, registrarID int64) (bool, int, error)
+	AcknowledgeBinding(ctx context.Context, appID string) (appidentity.BindingWithKeys, error)
+	AcknowledgeAllBindings(ctx context.Context, appIDs []string) (int, error)
 }
 
-// exchangeRequestBody is the JSON body of POST /v1/app-identity/exchange.
+// exchangeRequestBody is the JSON body of POST /v1/app-identity/exchange. Exactly one of
+// app_id (normal app) or name (registrar) is sent; the service enforces that.
 type exchangeRequestBody struct {
 	AppID string `json:"app_id"`
+	Name  string `json:"name"`
 	Token string `json:"token"`
+}
+
+type approveRegistrarRequestBody struct {
+	Prefix string `json:"prefix"`
+}
+
+type acknowledgeAllRequestBody struct {
+	AppIDs []string `json:"app_ids"`
+}
+
+// identityRegistrarBody is the JSON form of one registrar.
+type identityRegistrarBody struct {
+	ID                 int64   `json:"id"`
+	Prefix             string  `json:"prefix"`
+	GitHubRepository   string  `json:"github_repository"`
+	GitHubRepositoryID int64   `json:"github_repository_id"`
+	GitHubOwnerID      int64   `json:"github_owner_id"`
+	WorkflowPath       string  `json:"workflow_path"`
+	GitRef             string  `json:"git_ref"`
+	Environment        *string `json:"environment"`
+	ApprovedAt         string  `json:"approved_at"`
+	AppCount           int     `json:"app_count"`
+	AppLimit           int     `json:"app_limit"`
+}
+
+// identityBindingRegistrarBody is the registrar reference inside a binding.
+type identityBindingRegistrarBody struct {
+	ID     int64  `json:"id"`
+	Prefix string `json:"prefix"`
+}
+
+type identityRegistrarResponseBody struct {
+	Registrar identityRegistrarBody `json:"registrar"`
+}
+
+type identityRegistrarsResponseBody struct {
+	Registrars []identityRegistrarBody `json:"registrars"`
+}
+
+type deleteRegistrarResponseBody struct {
+	ID          int64 `json:"id"`
+	Deleted     bool  `json:"deleted"`
+	UnboundApps int   `json:"unbound_apps"`
+}
+
+type acknowledgeAllResponseBody struct {
+	Acknowledged int `json:"acknowledged"`
 }
 
 // exchangePendingResponseBody is the 202 body: the request awaits the operator.
@@ -70,7 +138,8 @@ type exchangeIssuedResponseBody struct {
 // identityRequestBody is the JSON form of one registration request.
 type identityRequestBody struct {
 	ID                 int64   `json:"id"`
-	AppID              string  `json:"app_id"`
+	Kind               string  `json:"kind"`
+	AppID              *string `json:"app_id"`
 	GitHubRepository   string  `json:"github_repository"`
 	GitHubRepositoryID int64   `json:"github_repository_id"`
 	WorkflowPath       string  `json:"workflow_path"`
@@ -97,15 +166,17 @@ type identityKeyBody struct {
 
 // identityBindingBody is the JSON form of one binding; keys is never null.
 type identityBindingBody struct {
-	AppID              string            `json:"app_id"`
-	GitHubRepository   string            `json:"github_repository"`
-	GitHubRepositoryID int64             `json:"github_repository_id"`
-	GitHubOwnerID      int64             `json:"github_owner_id"`
-	WorkflowPath       string            `json:"workflow_path"`
-	GitRef             string            `json:"git_ref"`
-	Environment        *string           `json:"environment"`
-	ApprovedAt         string            `json:"approved_at"`
-	Keys               []identityKeyBody `json:"keys"`
+	AppID              string                        `json:"app_id"`
+	GitHubRepository   string                        `json:"github_repository"`
+	GitHubRepositoryID int64                         `json:"github_repository_id"`
+	GitHubOwnerID      int64                         `json:"github_owner_id"`
+	WorkflowPath       string                        `json:"workflow_path"`
+	GitRef             string                        `json:"git_ref"`
+	Environment        *string                       `json:"environment"`
+	ApprovedAt         string                        `json:"approved_at"`
+	Registrar          *identityBindingRegistrarBody `json:"registrar"`
+	AcknowledgedAt     *string                       `json:"acknowledged_at"`
+	Keys               []identityKeyBody             `json:"keys"`
 }
 
 type identityRequestsResponseBody struct {
@@ -154,7 +225,8 @@ func (server *Server) handleExchange(responseWriter http.ResponseWriter, request
 	if !decodeJSON(responseWriter, request, &body, maxExchangeBodyBytes) {
 		return
 	}
-	result, exchangeErr := server.appIdentity.Exchange(request.Context(), body.AppID, body.Token)
+	result, exchangeErr := server.appIdentity.Exchange(request.Context(),
+		appidentity.ExchangeInput{AppID: body.AppID, Name: body.Name, Token: body.Token})
 	if exchangeErr != nil {
 		server.writeIdentityError(responseWriter, request, exchangeErr)
 		return
@@ -258,10 +330,99 @@ func (server *Server) handleUnbindApp(responseWriter http.ResponseWriter, reques
 	writeJSON(responseWriter, http.StatusOK, unbindResponseBody{AppID: appID, Deleted: deleted})
 }
 
+// handleApproveRegistrarRequest serves POST /v1/admin/app-identity/requests/{id}/approve-registrar (201).
+func (server *Server) handleApproveRegistrarRequest(responseWriter http.ResponseWriter, request *http.Request) {
+	requestID, ok := parsePositiveID(responseWriter, request, errMsgInvalidRequestID)
+	if !ok {
+		return
+	}
+	var body approveRegistrarRequestBody
+	if !decodeJSON(responseWriter, request, &body, maxExchangeBodyBytes) {
+		return
+	}
+	registrar, approveErr := server.appIdentity.ApproveRegistrarRequest(request.Context(), requestID, body.Prefix)
+	if approveErr != nil {
+		server.writeIdentityError(responseWriter, request, approveErr)
+		return
+	}
+	writeJSON(responseWriter, http.StatusCreated, identityRegistrarResponseBody{Registrar: newIdentityRegistrarBody(registrar)})
+}
+
+// handleListRegistrars serves GET /v1/admin/app-identity/registrars.
+func (server *Server) handleListRegistrars(responseWriter http.ResponseWriter, request *http.Request) {
+	registrars, listErr := server.appIdentity.ListRegistrars(request.Context())
+	if listErr != nil {
+		server.writeIdentityError(responseWriter, request, listErr)
+		return
+	}
+	bodies := make([]identityRegistrarBody, 0, len(registrars))
+	for _, listed := range registrars {
+		bodies = append(bodies, newIdentityRegistrarBody(listed))
+	}
+	writeJSON(responseWriter, http.StatusOK, identityRegistrarsResponseBody{Registrars: bodies})
+}
+
+// handleDeleteRegistrar serves DELETE /v1/admin/app-identity/registrars/{id} (200), idempotently.
+func (server *Server) handleDeleteRegistrar(responseWriter http.ResponseWriter, request *http.Request) {
+	registrarID, ok := parsePositiveID(responseWriter, request, errMsgInvalidRegistrarID)
+	if !ok {
+		return
+	}
+	deleted, unbound, deleteErr := server.appIdentity.DeleteRegistrar(request.Context(), registrarID)
+	if deleteErr != nil {
+		server.writeIdentityError(responseWriter, request, deleteErr)
+		return
+	}
+	writeJSON(responseWriter, http.StatusOK,
+		deleteRegistrarResponseBody{ID: registrarID, Deleted: deleted, UnboundApps: unbound})
+}
+
+// handleAcknowledgeBinding serves POST /v1/admin/app-identity/bindings/{app_id}/acknowledge (200).
+func (server *Server) handleAcknowledgeBinding(responseWriter http.ResponseWriter, request *http.Request) {
+	listed, acknowledgeErr := server.appIdentity.AcknowledgeBinding(request.Context(), request.PathValue(pathValueAppID))
+	if acknowledgeErr != nil {
+		server.writeIdentityError(responseWriter, request, acknowledgeErr)
+		return
+	}
+	writeJSON(responseWriter, http.StatusOK,
+		identityBindingResponseBody{Binding: newIdentityBindingBody(listed.Binding, listed.Keys)})
+}
+
+// handleAcknowledgeAllBindings serves POST /v1/admin/app-identity/bindings/acknowledge-all (200).
+func (server *Server) handleAcknowledgeAllBindings(responseWriter http.ResponseWriter, request *http.Request) {
+	var body acknowledgeAllRequestBody
+	if !decodeJSON(responseWriter, request, &body, maxExchangeBodyBytes) {
+		return
+	}
+	changed, acknowledgeErr := server.appIdentity.AcknowledgeAllBindings(request.Context(), body.AppIDs)
+	if acknowledgeErr != nil {
+		server.writeIdentityError(responseWriter, request, acknowledgeErr)
+		return
+	}
+	writeJSON(responseWriter, http.StatusOK, acknowledgeAllResponseBody{Acknowledged: changed})
+}
+
+func newIdentityRegistrarBody(registrar appidentity.WorkflowRegistrar) identityRegistrarBody {
+	return identityRegistrarBody{
+		ID:                 registrar.ID,
+		Prefix:             registrar.Prefix,
+		GitHubRepository:   registrar.Repository,
+		GitHubRepositoryID: registrar.RepositoryID,
+		GitHubOwnerID:      registrar.RepositoryOwnerID,
+		WorkflowPath:       registrar.WorkflowPath,
+		GitRef:             registrar.Ref,
+		Environment:        optionalText(registrar.Environment),
+		ApprovedAt:         registrar.ApprovedAt.UTC().Format(time.RFC3339),
+		AppCount:           registrar.AppCount,
+		AppLimit:           registrar.AppLimit,
+	}
+}
+
 func newIdentityRequestBody(request appidentity.Request) identityRequestBody {
 	return identityRequestBody{
 		ID:                 request.ID,
-		AppID:              request.AppID,
+		Kind:               request.Kind,
+		AppID:              optionalText(request.AppID),
 		GitHubRepository:   request.Repository,
 		GitHubRepositoryID: request.RepositoryID,
 		WorkflowPath:       request.WorkflowPath,
@@ -279,7 +440,13 @@ func newIdentityBindingBody(binding appidentity.Binding, keys []appidentity.Key)
 	for _, key := range keys {
 		keyBodies = append(keyBodies, newIdentityKeyBody(key))
 	}
+	var registrar *identityBindingRegistrarBody
+	if binding.RegistrarID != nil {
+		registrar = &identityBindingRegistrarBody{ID: *binding.RegistrarID, Prefix: binding.RegistrarPrefix}
+	}
 	return identityBindingBody{
+		Registrar:          registrar,
+		AcknowledgedAt:     formatUTC(binding.AcknowledgedAt),
 		AppID:              binding.AppID,
 		GitHubRepository:   binding.Repository,
 		GitHubRepositoryID: binding.RepositoryID,
@@ -328,8 +495,32 @@ func (server *Server) writeIdentityError(responseWriter http.ResponseWriter, req
 		writeError(responseWriter, http.StatusUnauthorized, errMsgInvalidIdentityToken)
 	case errors.Is(err, appidentity.ErrKeysUnavailable):
 		writeError(responseWriter, http.StatusServiceUnavailable, errMsgIdentityUnavailable)
+	case errors.Is(err, appidentity.ErrInvalidName):
+		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidName)
+	case errors.Is(err, appidentity.ErrInvalidPrefix):
+		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidPrefix)
+	case errors.Is(err, appidentity.ErrExchangeTarget):
+		writeError(responseWriter, http.StatusBadRequest, errMsgExchangeTarget)
 	case errors.Is(err, appidentity.ErrBindingMismatch):
 		writeError(responseWriter, http.StatusForbidden, errMsgBindingMismatch)
+	case errors.Is(err, appidentity.ErrRegistrarOwnership):
+		writeError(responseWriter, http.StatusForbidden, errMsgRegistrarOwnership)
+	case errors.Is(err, appidentity.ErrBindingNotFound):
+		writeError(responseWriter, http.StatusNotFound, errMsgBindingNotFound)
+	case errors.Is(err, appidentity.ErrRegistrarAppLimit):
+		writeError(responseWriter, http.StatusConflict, errMsgRegistrarAppLimit)
+	case errors.Is(err, appidentity.ErrPrefixTaken):
+		writeError(responseWriter, http.StatusConflict, errMsgPrefixTaken)
+	case errors.Is(err, appidentity.ErrPrefixOverlap):
+		writeError(responseWriter, http.StatusConflict, errMsgPrefixOverlap)
+	case errors.Is(err, appidentity.ErrRequestIsRegistrar):
+		writeError(responseWriter, http.StatusConflict, errMsgRequestIsRegistrar)
+	case errors.Is(err, appidentity.ErrRequestNotRegistrar):
+		writeError(responseWriter, http.StatusConflict, errMsgRequestNotRegistrar)
+	case errors.Is(err, appidentity.ErrAppIDInRegistrarPrefix):
+		writeError(responseWriter, http.StatusConflict, errMsgAppIDInRegistrarPrefix)
+	case errors.Is(err, appidentity.ErrBindingAppeared):
+		writeError(responseWriter, http.StatusConflict, errMsgRegistrationChanged)
 	case errors.Is(err, appidentity.ErrPendingCap):
 		writeError(responseWriter, http.StatusTooManyRequests, errMsgTooManyPendingRequests)
 	case errors.Is(err, appidentity.ErrRequestNotFound):

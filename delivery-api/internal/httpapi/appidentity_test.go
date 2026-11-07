@@ -51,6 +51,46 @@ type fakeAppIdentity struct {
 	rejectedID     int64
 	revokedID      int64
 	unboundApp     string
+
+	exchangedName    string
+	registrar        appidentity.WorkflowRegistrar
+	registrars       []appidentity.WorkflowRegistrar
+	unboundCount     int
+	acknowledged     appidentity.BindingWithKeys
+	acknowledgedN    int
+	approvedPrefix   string
+	deletedRegistrar int64
+	acknowledgedApp  string
+	acknowledgedApps []string
+}
+
+func (fake *fakeAppIdentity) ApproveRegistrarRequest(_ context.Context, requestID int64, prefix string) (appidentity.WorkflowRegistrar, error) {
+	fake.calls++
+	fake.approvedID, fake.approvedPrefix = requestID, prefix
+	return fake.registrar, fake.err
+}
+
+func (fake *fakeAppIdentity) ListRegistrars(context.Context) ([]appidentity.WorkflowRegistrar, error) {
+	fake.calls++
+	return fake.registrars, fake.err
+}
+
+func (fake *fakeAppIdentity) DeleteRegistrar(_ context.Context, registrarID int64) (bool, int, error) {
+	fake.calls++
+	fake.deletedRegistrar = registrarID
+	return fake.deleted, fake.unboundCount, fake.err
+}
+
+func (fake *fakeAppIdentity) AcknowledgeBinding(_ context.Context, appID string) (appidentity.BindingWithKeys, error) {
+	fake.calls++
+	fake.acknowledgedApp = appID
+	return fake.acknowledged, fake.err
+}
+
+func (fake *fakeAppIdentity) AcknowledgeAllBindings(_ context.Context, appIDs []string) (int, error) {
+	fake.calls++
+	fake.acknowledgedApps = appIDs
+	return fake.acknowledgedN, fake.err
 }
 
 func (fake *fakeAppIdentity) ResolveKey(_ context.Context, key string) (appidentity.ResolvedKey, error) {
@@ -58,9 +98,9 @@ func (fake *fakeAppIdentity) ResolveKey(_ context.Context, key string) (appident
 	return fake.resolved, fake.resolveErr
 }
 
-func (fake *fakeAppIdentity) Exchange(_ context.Context, appID string, token string) (appidentity.ExchangeResult, error) {
+func (fake *fakeAppIdentity) Exchange(_ context.Context, input appidentity.ExchangeInput) (appidentity.ExchangeResult, error) {
 	fake.calls++
-	fake.exchangedApp, fake.exchangedToken = appID, token
+	fake.exchangedApp, fake.exchangedName, fake.exchangedToken = input.AppID, input.Name, input.Token
 	return fake.exchangeResult, fake.err
 }
 
@@ -110,7 +150,7 @@ func identityTime() time.Time { return time.Date(2026, 10, 22, 12, 0, 0, 0, time
 
 func sampleIdentityRequest(status string) appidentity.Request {
 	return appidentity.Request{
-		ID: 3, AppID: "urls4irl", Repository: "4IRL/urls4irl", RepositoryID: 1001, RepositoryOwnerID: 678,
+		ID: 3, Kind: appidentity.RequestKindApp, AppID: "urls4irl", Repository: "4IRL/urls4irl", RepositoryID: 1001, RepositoryOwnerID: 678,
 		WorkflowPath: ".github/workflows/prod-deploy.yml", Ref: "refs/heads/main", Environment: "production",
 		GitHubRunID: "run-9", Status: status, CreatedAt: identityTime(), UpdatedAt: identityTime(),
 	}
@@ -128,12 +168,12 @@ func sampleIdentityKey(state appidentity.KeyState) appidentity.Key {
 }
 
 const (
-	sampleRequestJSON = `{"id":3,"app_id":"urls4irl","github_repository":"4IRL/urls4irl","github_repository_id":1001,` +
+	sampleRequestJSON = `{"id":3,"kind":"app","app_id":"urls4irl","github_repository":"4IRL/urls4irl","github_repository_id":1001,` +
 		`"workflow_path":".github/workflows/prod-deploy.yml","git_ref":"refs/heads/main","environment":"production",` +
 		`"github_run_id":"run-9","status":"%s","created_at":"2026-10-22T12:00:00Z","updated_at":"2026-10-22T12:00:00Z"}`
 	sampleBindingJSON = `{"app_id":"urls4irl","github_repository":"4IRL/urls4irl","github_repository_id":1001,` +
 		`"github_owner_id":678,"workflow_path":".github/workflows/prod-deploy.yml","git_ref":"refs/heads/main",` +
-		`"environment":null,"approved_at":"2026-10-22T12:00:00Z","keys":%s}`
+		`"environment":null,"approved_at":"2026-10-22T12:00:00Z","registrar":null,"acknowledged_at":null,"keys":%s}`
 	sampleActiveKeyJSON = `{"id":4,"app_id":"urls4irl","key_hint":"dak_abcd","state":"active",` +
 		`"created_at":"2026-10-22T12:00:00Z","superseded_at":null,"revoked_at":null,"revoked_reason":null,"last_used_at":null}`
 )
@@ -260,6 +300,48 @@ func TestIdentityMapsServiceErrors(testInstance *testing.T) {
 			http.StatusInternalServerError, `{"error":"internal error"}`},
 		{"list bindings store failure", http.MethodGet, identityBase + "/bindings", "", errors.New("pq: connection refused"),
 			http.StatusInternalServerError, `{"error":"internal error"}`},
+		{"invalid name", http.MethodPost, exchangePath, exchangeBody, appidentity.ErrInvalidName,
+			http.StatusBadRequest, `{"error":"invalid name"}`},
+		{"invalid prefix", http.MethodPost, identityBase + "/requests/9/approve-registrar", `{"prefix":"x"}`, appidentity.ErrInvalidPrefix,
+			http.StatusBadRequest, `{"error":"invalid prefix"}`},
+		{"exchange target", http.MethodPost, exchangePath, exchangeBody, appidentity.ErrExchangeTarget,
+			http.StatusBadRequest, `{"error":"send exactly one of app_id or name"}`},
+		{"registrar ownership", http.MethodPost, exchangePath, exchangeBody, appidentity.ErrRegistrarOwnership,
+			http.StatusForbidden, `{"error":"app id is not owned by this registrar"}`},
+		{"registrar app limit", http.MethodPost, exchangePath, exchangeBody, appidentity.ErrRegistrarAppLimit,
+			http.StatusConflict, `{"error":"registrar app limit reached"}`},
+		{"exchange overlap", http.MethodPost, exchangePath, exchangeBody, appidentity.ErrAppIDOverlap,
+			http.StatusConflict, `{"error":"app id overlaps an approved app id"}`},
+		{"exchange in registrar prefix", http.MethodPost, exchangePath, exchangeBody, appidentity.ErrAppIDInRegistrarPrefix,
+			http.StatusConflict, `{"error":"app id is reserved by a registrar"}`},
+		{"exchange binding appeared", http.MethodPost, exchangePath, exchangeBody, appidentity.ErrBindingAppeared,
+			http.StatusConflict, `{"error":"registration changed, retry"}`},
+		{"exchange binding appeared wrapped", http.MethodPost, exchangePath, `{"name":"a","token":"x"}`,
+			fmt.Errorf("lock: %w", appidentity.ErrBindingAppeared),
+			http.StatusConflict, `{"error":"registration changed, retry"}`},
+		{"approve registrar request", http.MethodPost, identityBase + "/requests/9/approve", "", appidentity.ErrRequestIsRegistrar,
+			http.StatusConflict, `{"error":"request is a registrar request"}`},
+		{"approve-registrar app request", http.MethodPost, identityBase + "/requests/9/approve-registrar", `{"prefix":"hosted_"}`,
+			appidentity.ErrRequestNotRegistrar, http.StatusConflict, `{"error":"request is not a registrar request"}`},
+		{"approve-registrar prefix taken", http.MethodPost, identityBase + "/requests/9/approve-registrar", `{"prefix":"hosted_"}`,
+			appidentity.ErrPrefixTaken, http.StatusConflict, `{"error":"prefix already used"}`},
+		{"approve-registrar prefix overlap", http.MethodPost, identityBase + "/requests/9/approve-registrar", `{"prefix":"hosted_"}`,
+			appidentity.ErrPrefixOverlap, http.StatusConflict, `{"error":"prefix overlaps an approved app id or registrar"}`},
+		{"approve-registrar workflow bound", http.MethodPost, identityBase + "/requests/9/approve-registrar", `{"prefix":"hosted_"}`,
+			appidentity.ErrWorkflowIdentityBound, http.StatusConflict, `{"error":"workflow identity already bound"}`},
+		{"approve-registrar unknown", http.MethodPost, identityBase + "/requests/9/approve-registrar", `{"prefix":"hosted_"}`,
+			appidentity.ErrRequestNotFound, http.StatusNotFound, `{"error":"request does not exist"}`},
+		{"approve-registrar not pending", http.MethodPost, identityBase + "/requests/9/approve-registrar", `{"prefix":"hosted_"}`,
+			appidentity.ErrRequestNotPending, http.StatusConflict, `{"error":"request is not pending"}`},
+		{"approve in registrar prefix", http.MethodPost, identityBase + "/requests/9/approve", "", appidentity.ErrAppIDInRegistrarPrefix,
+			http.StatusConflict, `{"error":"app id is reserved by a registrar"}`},
+		{"acknowledge unknown binding", http.MethodPost, identityBase + "/bindings/urls4irl/acknowledge", "", appidentity.ErrBindingNotFound,
+			http.StatusNotFound, `{"error":"binding does not exist"}`},
+		{"acknowledge invalid app", http.MethodPost, identityBase + "/bindings/Bad-App/acknowledge", "", &appidentity.ValidationError{Message: "invalid app_id"},
+			http.StatusBadRequest, `{"error":"invalid app_id"}`},
+		{"acknowledge-all bad list", http.MethodPost, identityBase + "/bindings/acknowledge-all", `{"app_ids":[]}`,
+			&appidentity.ValidationError{Message: "app_ids must list 1 to 200 apps"},
+			http.StatusBadRequest, `{"error":"app_ids must list 1 to 200 apps"}`},
 		{"exchange store failure", http.MethodPost, exchangePath, exchangeBody, errors.New("pq: connection refused"),
 			http.StatusInternalServerError, `{"error":"internal error"}`},
 	}
@@ -489,6 +571,11 @@ func TestIdentityRoutesFailClosedWithoutAService(testInstance *testing.T) {
 		{http.MethodGet, identityBase + "/bindings"},
 		{http.MethodPost, identityBase + "/keys/1/revoke"},
 		{http.MethodDelete, identityBase + "/bindings/urls4irl"},
+		{http.MethodPost, identityBase + "/requests/1/approve-registrar"},
+		{http.MethodGet, identityBase + "/registrars"},
+		{http.MethodDelete, identityBase + "/registrars/1"},
+		{http.MethodPost, identityBase + "/bindings/urls4irl/acknowledge"},
+		{http.MethodPost, identityBase + "/bindings/acknowledge-all"},
 	} {
 		testInstance.Run(route.method+" "+route.path, func(subTest *testing.T) {
 			recorder := serveIdentity(nil, nil, route.method, route.path, exchangeBody)
