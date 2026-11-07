@@ -249,6 +249,14 @@ export function createAppApi(http) {
     async sendMessage(body) {
       return http.request({ method: 'POST', path: '/v1/messages?wait=10', body });
     },
+    /** Cancels a message by app id and idempotency key. The server answers 200
+     * `{message_id, cancelled, status}` even for misses, so callers must check `cancelled`. */
+    async cancelMessage({ appId, idempotencyKey }) {
+      return http.request({
+        method: 'DELETE',
+        path: `/v1/messages?app_id=${encodeSegment(appId)}&idempotency_key=${encodeSegment(idempotencyKey)}`,
+      });
+    },
     async pingCheck(appId, name) {
       return http.request({
         method: 'POST',

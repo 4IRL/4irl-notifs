@@ -54,6 +54,7 @@ function createFakeApi() {
   const dropPatch = { destination: 0, route: 0, check: 0 };
   const sendMessageQueue = [];
   const pingCheckQueue = [];
+  const cancelMessageQueue = [];
   let pendingMidRunSeed = null;
   let failCreateDestination = null;
 
@@ -276,6 +277,15 @@ function createFakeApi() {
       }
       return { message: { deliveries: [{ destination: 'dest', state: 'delivered' }] } };
     },
+    async cancelMessage({ appId, idempotencyKey }) {
+      calls.push({ method: 'cancelMessage', appId, idempotencyKey });
+      if (cancelMessageQueue.length > 0) {
+        const next = cancelMessageQueue.shift();
+        if (next.throws) throw next.throws;
+        return next.payload;
+      }
+      return { message_id: 'm1', cancelled: true, status: 'cancelled' };
+    },
     async pingCheck(appId, name) {
       calls.push({ method: 'pingCheck', appId, name });
       if (pingCheckQueue.length > 0) {
@@ -322,6 +332,9 @@ function createFakeApi() {
     },
     queuePingCheck(entry) {
       pingCheckQueue.push(entry);
+    },
+    queueCancelMessage(entry) {
+      cancelMessageQueue.push(entry);
     },
   };
 }
@@ -774,6 +787,114 @@ describe('onboard.mjs verify', () => {
         .join('\n')
         .includes('ops: fail: myapp_ops state=dead dead_reason=boom last_status_code=500'),
     );
+  });
+
+  describe('unrouted 202', () => {
+    const UNROUTED_LINE =
+      'ops: fail: unrouted (no route for this channel, or its destinations are all disabled; ' +
+      'the test message was held and will be cancelled)';
+    const UNROUTED_RESULT = { message: { status: 'unrouted', deliveries: [] } };
+
+    function writeUnroutedManifest(dir) {
+      writeManifest(dir, 'myapp.json', {
+        app_id: 'myapp',
+        destinations: [
+          {
+            name: 'myapp_ops',
+            type: 'discord',
+            secrets: { webhook_url: { env: 'MYAPP_OPS_WEBHOOK' } },
+          },
+        ],
+        routes: [
+          { channel: 'ops', destinations: ['myapp_ops'] },
+          { channel: 'later', destinations: ['myapp_ops'] },
+        ],
+        heartbeats: [],
+      });
+    }
+
+    async function runVerify(fake) {
+      const dir = tmpDir();
+      writeUnroutedManifest(dir);
+      const deps = buildDeps(fake, { env: { MYAPP_OPS_WEBHOOK: 'wh-secret-value' } });
+      return captureOutput(() => main(['verify', path.join(dir, 'myapp.json')], deps));
+    }
+
+    it('prints the distinct line, exits 1 and cancels once with the app id and key', async () => {
+      const fake = createFakeApi();
+      fake.queueSendMessage({ result: UNROUTED_RESULT });
+      const out = await runVerify(fake);
+      assert.equal(process.exitCode, 1);
+      const lines = out.stdout;
+      assert.ok(lines.includes(UNROUTED_LINE));
+      assert.ok(!lines.join('\n').includes('no deliveries'));
+      assert.ok(!lines.join('\n').includes('warning: could not cancel'));
+      const cancels = fake.calls.filter((c) => c.method === 'cancelMessage');
+      assert.equal(cancels.length, 1);
+      const send = fake.calls.find((c) => c.method === 'sendMessage');
+      assert.equal(cancels[0].appId, 'myapp');
+      assert.equal(cancels[0].idempotencyKey, send.body.idempotency_key);
+    });
+
+    it('still reports unrouted when the cancel throws an ApiError', async () => {
+      const fake = createFakeApi();
+      fake.queueSendMessage({ result: UNROUTED_RESULT });
+      fake.queueCancelMessage({ throws: fake.apiError(500, 'boom') });
+      const out = await runVerify(fake);
+      assert.equal(process.exitCode, 1);
+      const stdout = out.stdout.join('\n');
+      assert.ok(stdout.includes(UNROUTED_LINE));
+      assert.ok(stdout.includes('ops: warning: could not cancel the held test message: 500 boom'));
+    });
+
+    it('still reports unrouted when the cancel throws a plain Error, and verifies later channels', async () => {
+      const fake = createFakeApi();
+      fake.queueSendMessage({ result: UNROUTED_RESULT });
+      fake.queueCancelMessage({ throws: new Error('network down') });
+      const out = await runVerify(fake);
+      assert.equal(process.exitCode, 1);
+      const stdout = out.stdout.join('\n');
+      assert.ok(stdout.includes(UNROUTED_LINE));
+      assert.ok(
+        stdout.includes('ops: warning: could not cancel the held test message: network down'),
+      );
+      assert.ok(stdout.includes('later: pass'));
+    });
+
+    it('warns when the cancel returns cancelled=false', async () => {
+      const fake = createFakeApi();
+      fake.queueSendMessage({ result: UNROUTED_RESULT });
+      fake.queueCancelMessage({
+        payload: { message_id: 'm1', cancelled: false, status: 'unrouted' },
+      });
+      const out = await runVerify(fake);
+      assert.equal(process.exitCode, 1);
+      const stdout = out.stdout.join('\n');
+      assert.ok(stdout.includes(UNROUTED_LINE));
+      assert.ok(
+        stdout.includes(
+          'ops: warning: could not cancel the held test message: server reported cancelled=false status=unrouted',
+        ),
+      );
+    });
+
+    it('warns when the cancel payload has no cancelled field', async () => {
+      const fake = createFakeApi();
+      fake.queueSendMessage({ result: UNROUTED_RESULT });
+      fake.queueCancelMessage({ payload: {} });
+      const out = await runVerify(fake);
+      assert.equal(process.exitCode, 1);
+      const stdout = out.stdout.join('\n');
+      assert.ok(stdout.includes(UNROUTED_LINE));
+      assert.ok(stdout.includes('ops: warning: could not cancel the held test message:'));
+    });
+
+    it('never cancels a routed, delivered message', async () => {
+      const fake = createFakeApi();
+      await runVerify(fake);
+      assert.equal(process.exitCode, undefined);
+      assert.equal(fake.calls.filter((c) => c.method === 'cancelMessage').length, 0);
+    });
   });
 
   it('fails a heartbeat 404 and warns with the correct down-at time only for a pinged heartbeat', async () => {

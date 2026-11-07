@@ -461,6 +461,23 @@ function formatApiErrorMessage(err, target = TARGET_OPERATOR) {
   return hint ? `${base} (${hint})` : base;
 }
 
+/** Best-effort cancel of a held verify message. Catches every error so it never masks the
+ * unrouted failure; a failure or a 200 with `cancelled` not exactly `true` only logs a warning. */
+async function cancelHeldTestMessage({ appApi, appId, idempotencyKey, channel, target }) {
+  const prefix = `${channel}: warning: could not cancel the held test message:`;
+  try {
+    const result = await appApi.cancelMessage({ appId, idempotencyKey });
+    if (result?.cancelled !== true) {
+      console.log(
+        `${prefix} server reported cancelled=${result?.cancelled} status=${result?.status}`,
+      );
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? formatApiErrorMessage(err, target) : String(err);
+    console.log(`${prefix} ${detail}`);
+  }
+}
+
 /** App target only: runs `fn`, rethrowing an `ApiError` from it as a plain `Error` carrying the
  * formatted status, message and hint, so a failed listing reads the same as a failed write.
  * Operator mode is passed through untouched. */
@@ -881,7 +898,19 @@ export async function runVerify({ manifest, manifestPath, options, deps }) {
         console.log(`${route.channel_pattern}: pass`);
       } else {
         overallPassed = false;
-        if (deliveries.length === 0) {
+        if (payload?.message?.status === 'unrouted') {
+          console.log(
+            `${route.channel_pattern}: fail: unrouted (no route for this channel, or its ` +
+              'destinations are all disabled; the test message was held and will be cancelled)',
+          );
+          await cancelHeldTestMessage({
+            appApi,
+            appId,
+            idempotencyKey,
+            channel: route.channel_pattern,
+            target: options.target,
+          });
+        } else if (deliveries.length === 0) {
           console.log(`${route.channel_pattern}: fail: no deliveries`);
         } else {
           for (const delivery of deliveries) {

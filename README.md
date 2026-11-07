@@ -70,9 +70,13 @@ delivery-api runtime configuration (environment):
 | `DELIVERY_NTFY_URL` | unset | Internal ntfy origin, e.g. `http://ntfy:80`; unset disables the ntfy sink and `to.recipient` delivery |
 | `DELIVERY_PROVISIONING_URL` | unset | Internal provisioning-api origin, e.g. `http://provisioning-api:8080` (the host must be exactly `provisioning-api`, any other host is a startup error so the internal credential never leaves the compose network); unset makes the whole app provisioning door, the `/v1/admin` operator relay and publisher minting answer 503 |
 | `DELIVERY_PROVISIONING_CREDENTIAL` (or `_FILE`) | unset | Internal credential delivery-api sends to provisioning-api as `X-Notifs-Internal-Credential` (64 lowercase hex, shared with provisioning-api's `PROVISIONING_INTERNAL_CREDENTIAL`); unset or unreadable likewise makes the whole app provisioning door, the operator relay and publisher minting answer 503 and logs one WARN |
-| `DELIVERY_RETENTION_DAYS` | `30` | Days a message is kept before the retention sweeper deletes it (integer 1-3650; a message with a `pending` or `scheduled` delivery is never deleted; age counts from the later of `created_at` and `deliver_at`, and a cancelled message ages from `cancelled_at`; an invalid value fails startup) |
+| `DELIVERY_RETENTION_DAYS` | `30` | Days a message is kept before the retention sweeper deletes it (integer 1-3650; a message with a `pending` or `scheduled` delivery is never deleted; age counts from the latest of `created_at`, `deliver_at`, `released_at` and `release_failed_at`, and a cancelled message ages from `cancelled_at`; a still-held message is never deleted by this sweep; an invalid value fails startup) |
 | `DELIVERY_MAX_SCHEDULED_PER_APP` | `1000` | Most scheduled (`deliver_at`) messages one app may hold; a new scheduled submit over it is a `429` (integer 1-100000; an invalid value fails startup) |
 | `DELIVERY_MAX_SCHEDULED_TOTAL` | `100000` | Most scheduled messages all apps may hold together; a new scheduled submit over it is a `429` `scheduled message capacity reached`, distinct from the per-app `too many scheduled messages` (integer 1-10000000; an invalid value fails startup; the per-app cap is checked first) |
+| `DELIVERY_HOLD_UNROUTED` | `0` | Hold an app message that matches no route (`202`, status `unrouted`) instead of refusing it with `422`. `0`/`false` off, `1`/`true` on; anything else fails startup. Do not enable before the releaser ships: nothing releases held messages until then |
+| `DELIVERY_MAX_HELD_PER_APP` | `1000` | Most held messages one app may have; a new held message over it is a `429` (integer 1-100000; an invalid value fails startup) |
+| `DELIVERY_MAX_HELD_TOTAL` | `100000` | Most held messages all apps may have together; a new held message over it is a `429` (integer 1-10000000; an invalid value fails startup) |
+| `DELIVERY_HELD_TTL_DAYS` | `7` | Days an unreleased held message is kept before it expires, counted from `held_at` (integer 1-365; an invalid value fails startup) |
 | `DELIVERY_OIDC_AUDIENCE` | `notifs-delivery` | The `aud` a GitHub Actions OIDC token must carry for the app identity exchange (printable non-space ASCII, 1-200 characters). The `notifs-app` action's `audience` input must equal it. Production sets only this variable |
 | `DELIVERY_PENDING_IDENTITY_REQUEST_DAYS` | `7` | Days a pending app identity request may go without a refresh (a repeat exchange with the same claims) before the periodic cleanup deletes it, freeing a slot under the 20-request pending cap (integer 1-365; an invalid value, including `0`, fails startup) |
 | `DELIVERY_OIDC_DEV_MODE` | unset | **Local and CI only, never production.** `1` allows `DELIVERY_OIDC_JWKS_FILE`; empty, `0` or `1` are the valid values (anything else fails startup) |
@@ -91,6 +95,16 @@ Start the stack and run the suite with the same value:
 `make local-up DELIVERY_MAX_SCHEDULED_PER_APP=2`, then
 `make delivery-integration-test DELIVERY_MAX_SCHEDULED_PER_APP=2`.
 The CI integration job starts its stack with a cap of 2, so the case runs there.
+
+The live hold tests (an unrouted app message accepted as `202` `unrouted`, the held caps, cancel, replay,
+and the `onboard verify` unrouted outcome) need a stack with `DELIVERY_HOLD_UNROUTED=1`, so the default
+`make delivery-integration-test` and `make onboard-integration-test` runs (flag off, `422`) skip them.
+`make delivery-integration-test-hold` (local stack must be up) recreates delivery-api with the flag on and a
+small `DELIVERY_MAX_HELD_PER_APP` (`HOLD_TEST_MAX_HELD`, default 3) and `DELIVERY_MAX_HELD_TOTAL` (`HOLD_TEST_MAX_HELD_TOTAL`, default 20), runs the Go `TestHold*` tests and the
+onboard integration test, then recreates delivery-api flag-off and waits for it to be healthy; the restore
+runs even when the tests fail. `make delivery-integration-test-hold-run` only runs the tests against a stack
+that is already flag-on (set `NOTIFS_DELIVERY_MAX_HELD` and `NOTIFS_DELIVERY_MAX_HELD_TOTAL` to the stack's per-app and total caps); CI uses it after
+recreating its own stack. Both fail if either runner ran zero hold tests.
 
 Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own
 compose project and ports; see [`docs/worktrees.md`](docs/worktrees.md). In a worktree, start the

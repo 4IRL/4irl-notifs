@@ -148,6 +148,52 @@ async function preClean() {
   }
 }
 
+/** The skip reason for the flag-on case, or false when it must run. Unset or `0` skips; `1` runs;
+ * anything else is not skipped, so requireHoldStack fails it loudly. */
+function holdSkipReason(flag) {
+  if (flag === undefined || flag === '' || flag === '0') {
+    return 'NOTIFS_DELIVERY_HOLD_UNROUTED is unset or 0: needs a stack with DELIVERY_HOLD_UNROUTED=1 (make delivery-integration-test-hold)';
+  }
+  return false;
+}
+
+/** Behavioural probe that the stack holds unrouted app messages: submits one to a channel with no
+ * route and requires 202 (a flag-off stack answers 422). The probe's message is cancelled
+ * afterwards. Fails, never skips, on a mismatch. */
+async function requireHoldStack(key) {
+  const flag = process.env.NOTIFS_DELIVERY_HOLD_UNROUTED;
+  assert.equal(flag, '1', `NOTIFS_DELIVERY_HOLD_UNROUTED=${flag}: only 0, 1 or unset is valid`);
+  const authorization = { Authorization: `Bearer ${key}` };
+  const response = await fetch(`${INTEGRATION_URL}/v1/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authorization },
+    body: JSON.stringify({
+      app_id: APP_ID,
+      channel: 'it_hold_probe',
+      idempotency_key: `hold-probe-${Date.now()}`,
+      payload: { probe: true },
+    }),
+    signal: AbortSignal.timeout(PROVISIONING_TIMEOUT_MS),
+  });
+  const text = await response.text();
+  assert.equal(
+    response.status,
+    202,
+    `NOTIFS_DELIVERY_HOLD_UNROUTED=1 but an unrouted submit answered ${response.status} (${text}): the stack was not recreated with DELIVERY_HOLD_UNROUTED=1`,
+  );
+  const probeMessage = JSON.parse(text)?.message;
+  const messageId = probeMessage?.message_id;
+  assert.ok(messageId, `hold probe: no message_id in ${text}`);
+  // Cancel first so a failed status assertion below cannot leak the held message.
+  const cancelled = await fetch(`${INTEGRATION_URL}/v1/messages/${messageId}?app_id=${APP_ID}`, {
+    method: 'DELETE',
+    headers: authorization,
+    signal: AbortSignal.timeout(PROVISIONING_TIMEOUT_MS),
+  });
+  assert.equal(cancelled.status, 200, `hold probe cancel answered ${cancelled.status}`);
+  assert.equal(probeMessage.status, 'unrouted', `hold probe status: ${text}`);
+}
+
 /** Captures console.log/console.error output around `fn`, restoring both afterward even if `fn`
  * throws, same pattern as onboard.test.mjs's captureOutput. */
 async function captureOutput(fn) {
@@ -372,6 +418,38 @@ describe(
         false,
       );
     });
+
+    // Needs a stack with DELIVERY_HOLD_UNROUTED on (`make delivery-integration-test-hold-run` runs it
+    // there); with the flag off the unrouted send is a 422 and verify prints a `failed:` line instead.
+    // NOTIFS_DELIVERY_HOLD_UNROUTED unset or `0` skips with a reason; `1` first probes that the stack
+    // really holds (an unrouted app-key submit answers 202, not 422) and fails on a mismatch, never
+    // skipping; any other value fails.
+    it(
+      'reports an unrouted channel and cancels the held test message',
+      { skip: holdSkipReason(process.env.NOTIFS_DELIVERY_HOLD_UNROUTED) },
+      async () => {
+        await requireHoldStack(appKey);
+        writeFullManifest(dir);
+        const manifestPath = manifestPathFor(dir);
+        const deps = { env: envFor(ntfyToken) };
+        const applyResult = await captureOutput(() => main(['apply', manifestPath], deps));
+        assert.equal(process.exitCode, undefined, applyResult.stderr);
+
+        // Add a route to the manifest that is never applied, so the server has no match for it.
+        const unroutedChannel = 'it_unrouted';
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        manifest.routes.push({ channel: unroutedChannel, destinations: [DESTINATION_NAME] });
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+
+        process.exitCode = undefined;
+        const verifyDeps = { env: { ...deps.env, ONBOARD_APP_KEY: appKey } };
+        const verifyResult = await captureOutput(() => main(['verify', manifestPath], verifyDeps));
+        assert.equal(process.exitCode, 1, `${verifyResult.stdout}\n${verifyResult.stderr}`);
+        assert.match(verifyResult.stdout, new RegExp(`^${unroutedChannel}: fail: unrouted `, 'm'));
+        assert.match(verifyResult.stdout, new RegExp(`^${CHANNEL}: pass$`, 'm'));
+        assert.doesNotMatch(verifyResult.stdout, /could not cancel the held test message/);
+      },
+    );
 
     it("refuses another app's manifest with the app key's 403 and creates nothing", async () => {
       const otherManifestPath = manifestPathFor(appDir, `${OTHER_APP_ID}.json`);
