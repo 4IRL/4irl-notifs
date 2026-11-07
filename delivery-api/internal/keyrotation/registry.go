@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/pgutil"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/publisher"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
@@ -60,6 +61,19 @@ func Registry() []SealedTable {
 					return nil, fmt.Errorf("heartbeat_check_probes row key %q is not an integer check id", rowKey)
 				}
 				return heartbeat.ProbeAccessAAD(checkID), nil
+			},
+		},
+		{
+			Table:        "personal_destinations",
+			KeyColumn:    "id",
+			SealedColumn: "sealed_secrets",
+			Nullable:     false,
+			AAD: func(rowKey string) ([]byte, error) {
+				destinationID, parseErr := strconv.ParseInt(rowKey, 10, 64)
+				if parseErr != nil {
+					return nil, fmt.Errorf("personal_destinations row key %q is not an integer id", rowKey)
+				}
+				return personal.SecretsAAD(destinationID), nil
 			},
 		},
 	}

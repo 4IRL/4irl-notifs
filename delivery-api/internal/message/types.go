@@ -75,6 +75,9 @@ const (
 	// DeadReasonNoPublisher is a recipient delivery whose app has no ntfy
 	// publisher token.
 	DeadReasonNoPublisher = "no_publisher"
+	// DeadReasonOptedOut is a personal delivery whose app opt-in was withdrawn
+	// after the message was submitted; it is never sent.
+	DeadReasonOptedOut = "opted_out"
 )
 
 // Attempt outcomes, stored in delivery_attempts.outcome.
@@ -208,6 +211,8 @@ type AdminDelivery struct {
 	Delivery
 	AppID   string
 	Channel string
+	// ToRecipient is the parent message's person hash; empty for a to.destination message.
+	ToRecipient string
 }
 
 // StoredMessage is a message as persisted, with its deliveries ordered by

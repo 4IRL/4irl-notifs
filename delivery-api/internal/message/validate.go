@@ -114,7 +114,7 @@ func ValidateTo(toDestination string, toRecipient string) error {
 		return &ValidationError{Message: "to.destination and to.recipient cannot both be set"}
 	}
 	if toRecipient != "" {
-		if !personhash.IsHash(toRecipient) && !isValidEmail(toRecipient) {
+		if !personhash.IsHash(toRecipient) && !personhash.ValidEmail(toRecipient) {
 			return &ValidationError{Message: "to.recipient must be an email or person_hash"}
 		}
 		return nil

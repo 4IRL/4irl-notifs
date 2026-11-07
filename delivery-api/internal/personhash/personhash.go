@@ -11,6 +11,7 @@ import (
 	"encoding/base32"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // personHashPattern is the required shape of a person hash: 16 characters of the
@@ -33,6 +34,32 @@ const ntfyUserPrefix = "u_"
 // Worker applies the same rule before persisting).
 func Normalize(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// maxEmailLength is the stack-wide maximum accepted email length.
+const maxEmailLength = 254
+
+// ValidEmail reports whether email is well-formed per the stack-wide rule:
+// after trimming surrounding whitespace and lowercasing, the address must be
+// non-empty, at most 254 bytes, contain no internal whitespace, and contain
+// exactly one "@" with a non-empty local part and a non-empty domain part.
+//
+// It ports provisioning-api internal/validation.IsValidEmail in behavior. Go
+// internal/ rules block importing it across modules, so the rule is duplicated
+// here, following the repo's duplication convention; keep the two in step.
+func ValidEmail(email string) bool {
+	normalized := Normalize(email)
+	if normalized == "" || len(normalized) > maxEmailLength {
+		return false
+	}
+	if strings.IndexFunc(normalized, unicode.IsSpace) != -1 {
+		return false
+	}
+	if strings.Count(normalized, "@") != 1 {
+		return false
+	}
+	localPart, domainPart, _ := strings.Cut(normalized, "@")
+	return localPart != "" && domainPart != ""
 }
 
 // Hash returns the person hash for an email address:
@@ -63,6 +90,16 @@ func PersonChannelTopic(appID, hash, channel string) string {
 // use this so the "u_" prefix stays single-sourced here.
 func NtfyUserFromHash(hash string) string {
 	return ntfyUserPrefix + hash
+}
+
+// HashFromNtfyUser is the inverse of NtfyUserFromHash: it returns the person hash
+// inside a derived ntfy user id, and ok only for "u_" followed by a valid hash.
+func HashFromNtfyUser(userID string) (string, bool) {
+	hash, found := strings.CutPrefix(userID, ntfyUserPrefix)
+	if !found || !IsHash(hash) {
+		return "", false
+	}
+	return hash, true
 }
 
 // NtfyUser returns the global ntfy username for an email address:
