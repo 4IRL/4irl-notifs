@@ -102,8 +102,13 @@ function buildFakeDeliveryClient(overrides: Partial<DeliveryApiClient> = {}): De
     approveIdentityRequest: vi.fn(),
     rejectIdentityRequest: vi.fn(),
     listIdentityBindings: vi.fn().mockResolvedValue([]),
+    listRegistrars: vi.fn().mockResolvedValue([]),
     revokeIdentityKey: vi.fn(),
     unbindApp: vi.fn(),
+    approveRegistrarRequest: vi.fn(),
+    deleteRegistrar: vi.fn(),
+    acknowledgeBinding: vi.fn(),
+    acknowledgeAllBindings: vi.fn(),
     ...overrides,
   };
 }
@@ -1739,6 +1744,7 @@ describe('App delivery refresh after Remove App and binding approval', () => {
   };
   const pendingRequest = {
     id: 1,
+    kind: 'app' as const,
     appId: 'app_1',
     githubRepository: '4IRL/app_1',
     githubRepositoryId: 812345601,
@@ -1885,6 +1891,8 @@ describe('App delivery refresh after Remove App and binding approval', () => {
         gitRef: 'refs/heads/main',
         environment: 'production',
         approvedAt: '2026-10-21T18:10:00Z',
+        registrar: null,
+        acknowledgedAt: '2026-10-21T18:10:00Z',
         keys: [],
       }),
     });

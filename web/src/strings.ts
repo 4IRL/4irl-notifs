@@ -795,6 +795,31 @@ export const strings = {
   identitiesRetry: 'Retry',
   identitiesPendingSummary: ({ count }: { count: number }): string =>
     count === 1 ? '1 request awaiting approval' : `${count} requests awaiting approval`,
+  identitiesNewAppsSummary: ({ count }: { count: number }): string =>
+    count === 1 ? '1 new app' : `${count} new apps`,
+  identityNewMark: 'New',
+  identityStatusLabel: 'Status: ',
+  identityViaRegistrar: ({ prefix }: { prefix: string }): string => `via ${prefix}`,
+  identityCreatedByLabel: 'Created by registrar: ',
+  identityCreatedAutomaticallySub: ({ time }: { time: string }): string =>
+    `created automatically ${time}`,
+  markSeen: 'Mark seen',
+  markingSeen: 'Marking…',
+  markSeenNamed: ({ app }: { app: string }): string => `Mark ${app} seen`,
+  markingSeenNamed: ({ app }: { app: string }): string => `Marking ${app} seen`,
+  markAllSeen: 'Mark all seen',
+  markAllSeenAria: 'Mark all new apps seen',
+  markingAllSeen: 'Marking…',
+  identityMarkedSeen: ({ app }: { app: string }): string => `Marked ${app} seen`,
+  identityNoLongerBound: ({ app }: { app: string }): string => `${app} is no longer bound`,
+  identityMarkedAllSeen: ({ count }: { count: number }): string =>
+    count === 1 ? 'Marked 1 app seen' : `Marked ${count} apps seen`,
+  identityMarkSeenFailed: ({ message }: { message: string }): string =>
+    `Could not mark seen: ${message}`,
+  identityMarkAllSeenFailed: ({ message }: { message: string }): string =>
+    `Could not mark apps seen: ${message}`,
+  unbindRegistrarAppNotice: ({ prefix }: { prefix: string }): string =>
+    `Revokes every key. Objects the app owns are kept but can't be managed until it is bound again. Its registrar ${prefix} creates it again on the next deploy.`,
   identitiesRequestsHeading: 'Requests',
   identitiesBindingsHeading: 'Approved apps',
   identitiesRequestsEmpty:
@@ -912,6 +937,88 @@ export const strings = {
     `Could not revoke: ${message}`,
   identityUnbindFailed: ({ message }: { message: string }): string =>
     `Could not unbind: ${message}`,
+
+  // Registrars (a workflow approved to create apps under a reserved prefix).
+  identitiesRegistrarsHeading: 'Registrars',
+  identitiesRegistrarsEmpty:
+    'No registrars yet. A deploy workflow that sends an app name instead of an app id asks to become one.',
+  columnIdentityAsksFor: 'Asks for',
+  columnRegistrarPrefix: 'Prefix',
+  columnRegistrarWorkflow: 'Workflow (GitHub)',
+  columnRegistrarApps: 'Apps',
+  columnRegistrarApproved: 'Approved',
+  identityRegistrarPill: 'Registrar',
+  identityRequestKindLabel: 'Request kind: ',
+  identityRegistrarRequestSub: 'a workflow that creates apps under a prefix',
+  identityUnknownRequestPill: 'Unknown request',
+  identityUnknownRequestSub:
+    'This UI does not recognise the request kind, so no action is offered.',
+  registrarAppsOf: ({ limit }: { limit: number }): string => `of ${limit}`,
+  approveRegistrar: 'Approve as registrar…',
+  approveRegistrarNamed: ({ repository }: { repository: string }): string =>
+    `Approve registrar request from ${repository}`,
+  approvingRegistrarNamed: ({ repository }: { repository: string }): string =>
+    `Approving registrar request from ${repository}`,
+  rejectRegistrarNamed: ({ repository }: { repository: string }): string =>
+    `Reject registrar request from ${repository}`,
+  confirmRejectRegistrarNamed: ({ repository }: { repository: string }): string =>
+    `Confirm reject registrar request from ${repository}`,
+  cancelRejectRegistrarNamed: ({ repository }: { repository: string }): string =>
+    `Cancel reject registrar request from ${repository}`,
+  rejectingRegistrarNamed: ({ repository }: { repository: string }): string =>
+    `Rejecting registrar request from ${repository}`,
+  registrarRequestRowLabel: ({ repository }: { repository: string }): string =>
+    `${repository} (registrar)`,
+  dialogItemWorkflow: 'Workflow',
+  dialogWorkflowValue: ({
+    repository,
+    workflowPath,
+  }: {
+    repository: string;
+    workflowPath: string;
+  }): string => `${repository} · ${workflowPath}`,
+  identityRegistrarRejected: ({ repository }: { repository: string }): string =>
+    `Rejected registrar request from ${repository}`,
+  approveRegistrarDialogTitle: 'Approve registrar?',
+  approveRegistrarPrefixLabel: 'Reserved prefix',
+  approveRegistrarPrefixHint:
+    'Lowercase letters, digits and underscores, ending in "_", up to 32 characters. Every app this workflow creates is named prefix + app name.',
+  approveRegistrarNotice:
+    'This workflow can then create a capped number of apps under the prefix without asking you; the Registrars table shows the limit. Each app still gets its own key and data.',
+  approveRegistrarConfirm: 'Approve registrar',
+  approvingRegistrar: 'Approving…',
+  prefixInvalidGrammar:
+    'Use 2 to 32 lowercase letters, digits or underscores, starting with a letter or digit and ending in "_".',
+  prefixReservedPlatform: 'Prefixes starting with "platform_" are reserved.',
+  prefixReservedEveryone: 'The prefix "everyone_" is reserved.',
+  registrarApproved: ({ prefix, repository }: { prefix: string; repository: string }): string =>
+    `Approved registrar ${prefix} for ${repository}`,
+  registrarApproveFailed: ({ message }: { message: string }): string =>
+    `Could not approve registrar: ${message}`,
+  deleteRegistrar: 'Delete registrar',
+  deleteRegistrarNamed: ({ prefix }: { prefix: string }): string => `Delete registrar ${prefix}`,
+  confirmDeleteRegistrar: 'Confirm delete',
+  confirmDeleteRegistrarNamed: ({ prefix }: { prefix: string }): string =>
+    `Confirm delete registrar ${prefix}`,
+  cancelDeleteRegistrarNamed: ({ prefix }: { prefix: string }): string =>
+    `Cancel delete registrar ${prefix}`,
+  deletingRegistrar: 'Deleting…',
+  deletingRegistrarNamed: ({ prefix }: { prefix: string }): string =>
+    `Deleting registrar ${prefix}`,
+  deleteRegistrarDialogTitle: 'Delete registrar?',
+  dialogItemRegistrar: 'Registrar',
+  dialogRegistrarValue: ({ prefix, repository }: { prefix: string; repository: string }): string =>
+    `${prefix} · ${repository}`,
+  deleteRegistrarNotice: ({ count }: { count: number }): string =>
+    count === 0
+      ? 'It has created no apps.'
+      : `Unbinds the ${count} apps it created and revokes every key they hold. Objects those apps own are kept but can't be managed until they are bound again.`,
+  registrarDeleted: ({ prefix, count }: { prefix: string; count: number }): string =>
+    `Deleted registrar ${prefix}; unbound ${count} apps`,
+  registrarAlreadyDeleted: ({ prefix }: { prefix: string }): string =>
+    `Registrar ${prefix} was already deleted`,
+  registrarDeleteFailed: ({ message }: { message: string }): string =>
+    `Could not delete registrar: ${message}`,
 
   genericError: 'Something went wrong. Please try again.',
   appNotBoundError: ({ appId }: { appId: string }) =>

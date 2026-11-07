@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { JSX } from 'react';
 
+import { ACKNOWLEDGE_ALL_LIMIT, identityErrorCode } from '../api/deliveryClient';
 import type {
   DeliveryApiClient,
   IdentityBinding,
   IdentityKey,
+  IdentityRegistrar,
   IdentityRequest,
 } from '../api/deliveryClient';
 import { useExclusive } from '../hooks/useExclusive';
@@ -13,6 +15,8 @@ import { useCompactTable } from '../hooks/useCompactTable';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { strings } from '../strings';
 import { ConfirmButton } from './ConfirmButton';
+import { ConfirmActions, ConfirmItem, ConfirmNotice } from './ConfirmDialog';
+import { Modal } from './Modal';
 import { formatRelativePast } from './formatRelative';
 import { formatDateTimeZone } from './formatLocalTime';
 import { LocalTime } from './LocalTime';
@@ -34,9 +38,110 @@ interface AppIdentitiesProps {
 
 const REQUESTS_HEADING_KEY = 'requests-heading';
 const BINDINGS_HEADING_KEY = 'bindings-heading';
-// Match the data attributes rendered on each request and binding row.
+const REGISTRARS_HEADING_KEY = 'registrars-heading';
+// Match the data attributes rendered on each request, registrar and binding row.
 const REQUEST_ROW_ATTRIBUTE = 'data-request-id';
+const REGISTRAR_ROW_ATTRIBUTE = 'data-registrar-id';
 const BINDING_ROW_ATTRIBUTE = 'data-app-id';
+
+// Mirrors the server's registrar prefix grammar (2-32 chars ending in "_"); the server stays
+// the authority, this only keeps an obviously invalid prefix from being sent.
+const PREFIX_GRAMMAR = /^[a-z0-9][a-z0-9_]{0,30}_$/;
+const PLATFORM_PREFIX = 'platform_';
+const EVERYONE_PREFIX = 'everyone_';
+
+type ApproveRegistrarErrorClass = 'prefix' | 'request-gone' | 'request-pending' | 'other';
+
+/**
+ * Where an approve-registrar failure belongs. Fail closed: anything not recognised is `other`,
+ * shown in the dialog but never under the prefix field.
+ */
+function classifyApproveRegistrarError(rejection: unknown): ApproveRegistrarErrorClass {
+  switch (identityErrorCode(rejection)) {
+    case 'invalid-prefix':
+    case 'prefix-taken':
+    case 'prefix-overlap':
+      return 'prefix';
+    case 'request-not-pending':
+    case 'request-not-registrar':
+    case 'binding-gone':
+    case 'not-found':
+      return 'request-gone';
+    case 'workflow-bound':
+      return 'request-pending';
+    default:
+      return 'other';
+  }
+}
+
+/** The client-side problem with a trimmed prefix, or null when it may be sent. */
+function prefixProblem(prefix: string): string | null {
+  if (prefix.startsWith(PLATFORM_PREFIX)) {
+    return strings.prefixReservedPlatform;
+  }
+  if (prefix === EVERYONE_PREFIX) {
+    return strings.prefixReservedEveryone;
+  }
+  return PREFIX_GRAMMAR.test(prefix) ? null : strings.prefixInvalidGrammar;
+}
+
+/** How a request is named in every label: the app id, or `<repository> (registrar)`. */
+interface RequestLabels {
+  rowLabel: string;
+  approveLabel: string;
+  approveAria: string;
+  approvingAria: string;
+  rejectAria: string;
+  confirmRejectAria: string;
+  cancelRejectAria: string;
+  rejectingAria: string;
+  dialogItem: { label: string; value: string };
+  rejectedResult: string;
+}
+
+/** The labels for a request an action is offered on, or null (unknown kind: no actions). */
+function requestLabels(request: IdentityRequest): RequestLabels | null {
+  const { appId, githubRepository: repository } = request;
+  switch (request.kind) {
+    case 'app':
+      if (appId === null) {
+        return null;
+      }
+      return {
+        rowLabel: appId,
+        approveLabel: strings.approveIdentity,
+        approveAria: strings.approveIdentityNamed({ app: appId }),
+        approvingAria: strings.approvingIdentityNamed({ app: appId }),
+        rejectAria: strings.rejectIdentityNamed({ app: appId }),
+        confirmRejectAria: strings.confirmRejectIdentityNamed({ app: appId }),
+        cancelRejectAria: strings.cancelRejectIdentityNamed({ app: appId }),
+        rejectingAria: strings.rejectingIdentityNamed({ app: appId }),
+        dialogItem: { label: strings.dialogItemApp, value: appId },
+        rejectedResult: strings.identityRejected({ app: appId }),
+      };
+    case 'registrar':
+      return {
+        rowLabel: strings.registrarRequestRowLabel({ repository }),
+        approveLabel: strings.approveRegistrar,
+        approveAria: strings.approveRegistrarNamed({ repository }),
+        approvingAria: strings.approvingRegistrarNamed({ repository }),
+        rejectAria: strings.rejectRegistrarNamed({ repository }),
+        confirmRejectAria: strings.confirmRejectRegistrarNamed({ repository }),
+        cancelRejectAria: strings.cancelRejectRegistrarNamed({ repository }),
+        rejectingAria: strings.rejectingRegistrarNamed({ repository }),
+        dialogItem: {
+          label: strings.dialogItemWorkflow,
+          value: strings.dialogWorkflowValue({
+            repository,
+            workflowPath: request.workflowPath,
+          }),
+        },
+        rejectedResult: strings.identityRegistrarRejected({ repository }),
+      };
+    default:
+      return null;
+  }
+}
 // A superseded key keeps working this long after the deploy that replaced it.
 const SUPERSEDED_GRACE_MS = 24 * 60 * 60 * 1000;
 
@@ -51,9 +156,20 @@ function rowIdOf({
   return element?.closest(`[${attribute}]`)?.getAttribute(attribute) ?? null;
 }
 
-/** The registry key of a request row's first control, or null when it has none (not pending). */
+/**
+ * The registry key of a request row's first control, or null when it has none (not pending, or
+ * a kind this build does not know). Request ids are unique across kinds, so an app request's
+ * Approve and a registrar request's "Approve as registrar…" share this key shape.
+ */
 function requestControlKey(request: IdentityRequest): string | null {
-  return request.status === 'pending' ? `approve:${request.id}` : null;
+  return request.status === 'pending' && request.kind !== 'unknown'
+    ? `approve:${request.id}`
+    : null;
+}
+
+/** A registrar-created app the operator has not marked seen yet. */
+function isNewBinding(binding: IdentityBinding): boolean {
+  return binding.registrar !== null && binding.acknowledgedAt === null;
 }
 
 /** The registry key of a binding row's first control: its first revocable key, else Unbind. */
@@ -167,6 +283,14 @@ function renderKeyPill(identityKey: IdentityKey): JSX.Element {
 }
 
 function renderRequestStatusPill(request: IdentityRequest): JSX.Element {
+  if (request.kind === 'unknown') {
+    // Fail closed: whatever its status says, a request this build cannot read is never "Pending".
+    return (
+      <span className="app-identities__pill app-identities__pill--unknown">
+        {strings.identityRequestUnknown}
+      </span>
+    );
+  }
   switch (request.status) {
     case 'pending':
       return (
@@ -205,16 +329,48 @@ export function AppIdentities({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [registrars, setRegistrars] = useState<IdentityRegistrar[]>([]);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
-  const [result, setResult] = useState<string | null>(null);
+  const [resultState, setResultState] = useState<{
+    message: string;
+    kind: 'success' | 'error';
+  } | null>(null);
+  // The approve-as-registrar dialog. `dialogRequest` is kept after a close (the closed Modal
+  // renders nothing); `dialogRestoreFocus` is set in the same update as `dialogOpen`, so Modal's
+  // close cleanup sees the right value for that close.
+  const [dialogRequest, setDialogRequest] = useState<IdentityRequest | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogRestoreFocus, setDialogRestoreFocus] = useState(true);
+  const [prefixValue, setPrefixValue] = useState('');
+  const [prefixError, setPrefixError] = useState<string | null>(null);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   const compact = useCompactTable();
   const requestsRef = useRef<IdentityRequest[]>([]);
+  const registrarsRef = useRef<IdentityRegistrar[]>([]);
   const bindingsRef = useRef<IdentityBinding[]>([]);
   const loadingRef = useRef(true);
-  const { registerControl, requestFocus } = useFocusRegistry();
+  const prefixInputRef = useRef<HTMLInputElement | null>(null);
+  const approveReturnRef = useRef<HTMLElement | null>(null);
+  const prefixHintId = useId();
+  const prefixErrorId = useId();
+  const dialogErrorId = useId();
+  const { registerControl, requestFocus, getControl } = useFocusRegistry();
   const { isBusy, exclusive } = useExclusive<string>();
   const trackList = useLatestRequest();
+
+  function setResult(message: string | null) {
+    setResultState(message === null ? null : { message, kind: 'success' });
+  }
+
+  function announceError(message: string) {
+    setResultState({ message, kind: 'error' });
+  }
+
+  const commitRegistrars = useCallback((next: IdentityRegistrar[]) => {
+    registrarsRef.current = next;
+    setRegistrars(next);
+  }, []);
 
   const commitRequests = useCallback((next: IdentityRequest[]) => {
     requestsRef.current = next;
@@ -233,35 +389,41 @@ export function AppIdentities({
 
   const loadAll = useCallback(
     ({ quiet }: { quiet: boolean }): Promise<void> =>
-      trackList(Promise.all([client.listIdentityRequests(), client.listIdentityBindings()])).then(
-        (outcome) => {
-          if (outcome.stale) {
-            return;
-          }
-          // A quiet reload that superseded the initial or Retry load must still
-          // settle the loading state, so it only stays quiet otherwise.
-          const stayQuiet = quiet && !loadingRef.current;
-          if (outcome.ok) {
-            commitRequests(outcome.value[0]);
-            commitBindings(outcome.value[1]);
-            setError(null);
-            setNow(Date.now());
-          } else if (!stayQuiet) {
-            commitRequests([]);
-            commitBindings([]);
-            setError(
-              messageOf({
-                rejection: outcome.error,
-                fallback: strings.identitiesLoadFailedFallback,
-              }),
-            );
-          } else {
-            return;
-          }
-          commitLoading(false);
-        },
-      ),
-    [client, trackList, commitRequests, commitBindings, commitLoading],
+      trackList(
+        Promise.all([
+          client.listIdentityRequests(),
+          client.listIdentityBindings(),
+          client.listRegistrars(),
+        ]),
+      ).then((outcome) => {
+        if (outcome.stale) {
+          return;
+        }
+        // A quiet reload that superseded the initial or Retry load must still
+        // settle the loading state, so it only stays quiet otherwise.
+        const stayQuiet = quiet && !loadingRef.current;
+        if (outcome.ok) {
+          commitRequests(outcome.value[0]);
+          commitBindings(outcome.value[1]);
+          commitRegistrars(outcome.value[2]);
+          setError(null);
+          setNow(Date.now());
+        } else if (!stayQuiet) {
+          commitRequests([]);
+          commitBindings([]);
+          commitRegistrars([]);
+          setError(
+            messageOf({
+              rejection: outcome.error,
+              fallback: strings.identitiesLoadFailedFallback,
+            }),
+          );
+        } else {
+          return;
+        }
+        commitLoading(false);
+      }),
+    [client, trackList, commitRequests, commitBindings, commitRegistrars, commitLoading],
   );
 
   // Initial load.
@@ -315,6 +477,10 @@ export function AppIdentities({
 
   function handleApprove(request: IdentityRequest) {
     const { id, appId } = request;
+    if (request.kind !== 'app' || appId === null) {
+      // A registrar request is approved only through the prefix dialog.
+      return;
+    }
     const rowKey = `request:${id}`;
     clearRowError(rowKey);
     exclusive({
@@ -360,7 +526,11 @@ export function AppIdentities({
   }
 
   function handleReject(request: IdentityRequest) {
-    const { id, appId } = request;
+    const { id } = request;
+    const labels = requestLabels(request);
+    if (labels === null) {
+      return;
+    }
     const rowKey = `request:${id}`;
     clearRowError(rowKey);
     exclusive({
@@ -371,7 +541,7 @@ export function AppIdentities({
           commitRequests(
             requestsRef.current.map((candidate) => (candidate.id === id ? rejected : candidate)),
           );
-          setResult(strings.identityRejected({ app: appId }));
+          setResult(labels.rejectedResult);
           // The row's whole Actions cell is now a status pill, so no control is
           // left in it to land on.
           requestFocusIfRowOwnsIt({
@@ -475,49 +645,307 @@ export function AppIdentities({
     }).catch(() => undefined);
   }
 
+  function handleMarkSeen(binding: IdentityBinding) {
+    const { appId } = binding;
+    if (isBusy('ack-all') || anyAckBusy()) {
+      return;
+    }
+    const rowKey = `app:${appId}`;
+    clearRowError(rowKey);
+    exclusive({
+      key: `ack:${appId}`,
+      work: async () => {
+        try {
+          const updated = await client.acknowledgeBinding({ appId });
+          commitBindings(
+            bindingsRef.current.map((candidate) =>
+              candidate.appId === appId
+                ? { ...candidate, acknowledgedAt: updated.acknowledgedAt }
+                : candidate,
+            ),
+          );
+          setResult(strings.identityMarkedSeen({ app: appId }));
+          // Mark seen is gone from the row; `unbind:<app>` is the row's Unbind in the wide
+          // layout and its kebab trigger in the compact one (Unbind is then a menu item).
+          requestFocusIfRowOwnsIt({
+            attribute: BINDING_ROW_ATTRIBUTE,
+            id: appId,
+            key: `unbind:${appId}`,
+          });
+        } catch (rejection: unknown) {
+          if (identityErrorCode(rejection) === 'binding-gone') {
+            // Unbound meanwhile: not a row error. Show the neutral result and refresh.
+            setResult(strings.identityNoLongerBound({ app: appId }));
+            requestFocusIfRowOwnsIt({
+              attribute: BINDING_ROW_ATTRIBUTE,
+              id: appId,
+              key: BINDINGS_HEADING_KEY,
+            });
+            void loadAll({ quiet: true });
+            return;
+          }
+          failRow({
+            rowKey,
+            message: strings.identityMarkSeenFailed({
+              message: messageOf({ rejection, fallback: strings.genericError }),
+            }),
+          });
+        }
+      },
+    }).catch(() => undefined);
+  }
+
+  function handleMarkAllSeen() {
+    if (isBusy('ack-all') || anyAckBusy()) {
+      return;
+    }
+    clearRowError('ack-all');
+    const appIds = bindingsRef.current
+      .filter(isNewBinding)
+      .map((candidate) => candidate.appId)
+      .slice(0, ACKNOWLEDGE_ALL_LIMIT);
+    if (appIds.length === 0) {
+      return;
+    }
+    exclusive({
+      key: 'ack-all',
+      work: async () => {
+        try {
+          const acknowledged = await client.acknowledgeAllBindings({ appIds });
+          const listed = new Set(appIds);
+          const seenAt = new Date().toISOString();
+          commitBindings(
+            bindingsRef.current.map((candidate) =>
+              listed.has(candidate.appId) && isNewBinding(candidate)
+                ? { ...candidate, acknowledgedAt: seenAt }
+                : candidate,
+            ),
+          );
+          setResult(strings.identityMarkedAllSeen({ count: acknowledged }));
+          requestFocus(BINDINGS_HEADING_KEY);
+          void loadAll({ quiet: true });
+        } catch (rejection: unknown) {
+          failRow({
+            rowKey: 'ack-all',
+            message: strings.identityMarkAllSeenFailed({
+              message: messageOf({ rejection, fallback: strings.genericError }),
+            }),
+          });
+        }
+      },
+    }).catch(() => undefined);
+  }
+
+  /** True while any per-row Mark seen request is in flight. */
+  function anyAckBusy(): boolean {
+    return bindingsRef.current.some((candidate) => isBusy(`ack:${candidate.appId}`));
+  }
+
+  /** Opens the prefix dialog for a registrar request; focus returns to its trigger on Cancel. */
+  function openApproveRegistrarDialog(request: IdentityRequest) {
+    clearRowError(`request:${request.id}`);
+    approveReturnRef.current = getControl(`approve:${request.id}`);
+    setDialogRequest(request);
+    setPrefixValue('');
+    setPrefixError(null);
+    setDialogError(null);
+    setDialogRestoreFocus(true);
+    setDialogOpen(true);
+  }
+
+  /** Closes the dialog; `restoreFocus` false when the caller moves focus to an explicit target. */
+  function closeApproveRegistrarDialog({ restoreFocus }: { restoreFocus: boolean }) {
+    setDialogRestoreFocus(restoreFocus);
+    setDialogOpen(false);
+  }
+
+  const approveRegistrarBusy =
+    dialogRequest !== null && isBusy(`approve-registrar:${dialogRequest.id}`);
+
+  function dismissApproveRegistrarDialog() {
+    if (approveRegistrarBusy) {
+      return;
+    }
+    closeApproveRegistrarDialog({ restoreFocus: true });
+  }
+
+  function focusPrefixInput() {
+    prefixInputRef.current?.focus();
+  }
+
+  function submitApproveRegistrar() {
+    if (dialogRequest === null || approveRegistrarBusy) {
+      return;
+    }
+    const { id } = dialogRequest;
+    const prefix = prefixValue.trim();
+    setPrefixValue(prefix);
+    setDialogError(null);
+    const problem = prefixProblem(prefix);
+    if (problem !== null) {
+      setPrefixError(problem);
+      focusPrefixInput();
+      return;
+    }
+    setPrefixError(null);
+    exclusive({
+      key: `approve-registrar:${id}`,
+      work: async () => {
+        try {
+          const registrar = await client.approveRegistrarRequest({ id, prefix });
+          closeApproveRegistrarDialog({ restoreFocus: false });
+          commitRequests(requestsRef.current.filter((candidate) => candidate.id !== id));
+          commitRegistrars(
+            [
+              ...registrarsRef.current.filter((candidate) => candidate.id !== registrar.id),
+              registrar,
+            ].sort((left, right) => left.prefix.localeCompare(right.prefix)),
+          );
+          setResult(
+            strings.registrarApproved({
+              prefix: registrar.prefix,
+              repository: registrar.githubRepository,
+            }),
+          );
+          requestFocus(`delete-registrar:${registrar.id}`);
+          // The sibling requests it swept and any apps are server-side state: refetch.
+          void loadAll({ quiet: true });
+        } catch (rejection: unknown) {
+          const message = messageOf({ rejection, fallback: strings.genericError });
+          switch (classifyApproveRegistrarError(rejection)) {
+            case 'prefix':
+              // The dialog stays open with the server's reason under the field.
+              setPrefixError(message);
+              focusPrefixInput();
+              break;
+            case 'request-gone':
+              // The request row is no longer pending: its trigger is gone, so the message goes
+              // to the result region and focus to the Requests heading.
+              closeApproveRegistrarDialog({ restoreFocus: false });
+              announceError(strings.registrarApproveFailed({ message }));
+              requestFocus(REQUESTS_HEADING_KEY);
+              void loadAll({ quiet: true });
+              break;
+            case 'request-pending':
+              // The row stays pending, so the error sits on it and focus returns to its trigger.
+              closeApproveRegistrarDialog({ restoreFocus: false });
+              failRow({
+                rowKey: `request:${id}`,
+                message: strings.registrarApproveFailed({ message }),
+              });
+              requestFocus(`approve:${id}`);
+              void loadAll({ quiet: true });
+              break;
+            default:
+              // Not about the prefix and not about the row (network, 5xx): retry from the dialog.
+              setDialogError(strings.registrarApproveFailed({ message }));
+              focusPrefixInput();
+              break;
+          }
+        }
+      },
+    }).catch(() => undefined);
+  }
+
+  function handleDeleteRegistrar(registrar: IdentityRegistrar) {
+    const { id, prefix } = registrar;
+    const rowKey = `registrar:${id}`;
+    clearRowError(rowKey);
+    exclusive({
+      key: `delete-registrar:${id}`,
+      work: async () => {
+        try {
+          const outcome = await client.deleteRegistrar({ id });
+          const latest = registrarsRef.current;
+          const index = latest.findIndex((candidate) => candidate.id === id);
+          const neighbour = index === -1 ? undefined : (latest[index + 1] ?? latest[index - 1]);
+          commitRegistrars(latest.filter((candidate) => candidate.id !== id));
+          commitBindings(bindingsRef.current.filter((candidate) => candidate.registrar?.id !== id));
+          // The count comes from the response: registrars create apps, so a cached one drifts.
+          setResult(
+            outcome.deleted
+              ? strings.registrarDeleted({ prefix, count: outcome.unboundApps })
+              : strings.registrarAlreadyDeleted({ prefix }),
+          );
+          requestFocusIfRowOwnsIt({
+            attribute: REGISTRAR_ROW_ATTRIBUTE,
+            id: String(id),
+            key:
+              neighbour === undefined ? REGISTRARS_HEADING_KEY : `delete-registrar:${neighbour.id}`,
+          });
+          void loadAll({ quiet: true });
+        } catch (rejection: unknown) {
+          failRow({
+            rowKey,
+            message: strings.registrarDeleteFailed({
+              message: messageOf({ rejection, fallback: strings.genericError }),
+            }),
+          });
+        }
+      },
+    }).catch(() => undefined);
+  }
+
   function renderRequestActions(request: IdentityRequest): JSX.Element {
-    const { id, appId } = request;
+    const { id } = request;
     const rowError = rowErrors[`request:${id}`];
+    const labels = requestLabels(request);
+    if (labels === null) {
+      // Fail closed: a request kind this build does not know offers no action at all.
+      return compact ? (
+        <></>
+      ) : (
+        <span className="app-identities__sub">{strings.identityUnknownRequestSub}</span>
+      );
+    }
     switch (request.status) {
       case 'pending': {
-        const approving = isBusy(`approve:${id}`);
+        const isRegistrar = request.kind === 'registrar';
+        // The approve button registers as `approve:<id>` for both kinds (request ids are unique
+        // across kinds, so the neighbour-focus helpers need no change); only the busy key
+        // differs, because the registrar flow runs from the dialog under its own key.
+        const approveBusyKey = isRegistrar ? `approve-registrar:${id}` : `approve:${id}`;
+        const approving = isBusy(approveBusyKey);
         const rejecting = isBusy(`reject:${id}`);
         const anyBusy = approving || rejecting;
+        const approve = () => {
+          if (isRegistrar) {
+            openApproveRegistrarDialog(request);
+          } else {
+            handleApprove(request);
+          }
+        };
         if (compact) {
           const items: RowMenuItem[] = [
             {
               id: 'approve',
-              label: approving ? strings.approvingIdentity : strings.approveIdentity,
-              ariaLabel: approving
-                ? strings.approvingIdentityNamed({ app: appId })
-                : strings.approveIdentityNamed({ app: appId }),
+              label: approving ? strings.approvingIdentity : labels.approveLabel,
+              ariaLabel: approving ? labels.approvingAria : labels.approveAria,
               tone: 'primary',
               disabled: anyBusy,
-              onSelect: () => handleApprove(request),
+              onSelect: approve,
             },
             {
               id: 'reject',
               label: rejecting ? strings.rejectingIdentity : strings.rejectIdentity,
-              ariaLabel: rejecting
-                ? strings.rejectingIdentityNamed({ app: appId })
-                : strings.rejectIdentityNamed({ app: appId }),
+              ariaLabel: rejecting ? labels.rejectingAria : labels.rejectAria,
               tone: 'danger',
               disabled: anyBusy,
               confirm: {
                 confirmLabel: strings.confirmRejectIdentity,
-                confirmAriaLabel: strings.confirmRejectIdentityNamed({ app: appId }),
+                confirmAriaLabel: labels.confirmRejectAria,
                 cancelLabel: strings.cancelAction,
-                cancelAriaLabel: strings.cancelRejectIdentityNamed({ app: appId }),
+                cancelAriaLabel: labels.cancelRejectAria,
                 notice: strings.rejectIdentityNotice,
                 dialogTitle: strings.rejectIdentityDialogTitle,
-                dialogItem: { label: strings.dialogItemApp, value: appId },
+                dialogItem: labels.dialogItem,
                 onConfirm: () => handleReject(request),
               },
             },
           ];
           return (
             <RowActionsMenu
-              rowLabel={appId}
+              rowLabel={labels.rowLabel}
               items={items}
               errors={rowError === undefined ? undefined : [rowError]}
               focusKeys={[`approve:${id}`, `reject:${id}`]}
@@ -531,38 +959,30 @@ export function AppIdentities({
               ref={(element) => registerControl({ key: `approve:${id}`, element })}
               type="button"
               className="app-identities__button app-identities__button--primary"
-              aria-label={
-                approving
-                  ? strings.approvingIdentityNamed({ app: appId })
-                  : strings.approveIdentityNamed({ app: appId })
-              }
+              aria-label={approving ? labels.approvingAria : labels.approveAria}
               aria-disabled={anyBusy ? 'true' : undefined}
               onClick={() => {
                 if (anyBusy) {
                   return;
                 }
-                handleApprove(request);
+                approve();
               }}
             >
-              {approving ? strings.approvingIdentity : strings.approveIdentity}
+              {approving ? strings.approvingIdentity : labels.approveLabel}
             </button>
             <ConfirmButton
               triggerLabel={strings.rejectIdentity}
-              triggerAriaLabel={strings.rejectIdentityNamed({ app: appId })}
+              triggerAriaLabel={labels.rejectAria}
               confirmLabel={strings.confirmRejectIdentity}
-              confirmAriaLabel={strings.confirmRejectIdentityNamed({ app: appId })}
-              dismissAriaLabel={strings.cancelRejectIdentityNamed({ app: appId })}
+              confirmAriaLabel={labels.confirmRejectAria}
+              dismissAriaLabel={labels.cancelRejectAria}
               className="app-identities__button app-identities__button--danger"
               confirmNotice={strings.rejectIdentityNotice}
               busy={anyBusy}
               busyLabel={rejecting ? strings.rejectingIdentity : strings.rejectIdentity}
-              busyAriaLabel={
-                rejecting
-                  ? strings.rejectingIdentityNamed({ app: appId })
-                  : strings.rejectIdentityNamed({ app: appId })
-              }
+              busyAriaLabel={rejecting ? labels.rejectingAria : labels.rejectAria}
               dialogTitle={strings.rejectIdentityDialogTitle}
-              dialogItem={{ label: strings.dialogItemApp, value: appId }}
+              dialogItem={labels.dialogItem}
               registerTrigger={(element) => registerControl({ key: `reject:${id}`, element })}
               onConfirm={() => handleReject(request)}
             />
@@ -585,6 +1005,126 @@ export function AppIdentities({
           <></>
         ) : (
           <span className="app-identities__sub">{strings.identityRequestUnknownSub}</span>
+        );
+    }
+  }
+
+  function renderRegistrarRow(registrar: IdentityRegistrar): JSX.Element {
+    const { id, prefix, githubRepository: repository } = registrar;
+    const rowError = rowErrors[`registrar:${id}`];
+    const deleting = isBusy(`delete-registrar:${id}`);
+    const notice = strings.deleteRegistrarNotice({ count: registrar.appCount });
+    const dialogItem = {
+      label: strings.dialogItemRegistrar,
+      value: strings.dialogRegistrarValue({ prefix, repository }),
+    };
+    return (
+      <tr key={id} data-registrar-id={id}>
+        <td className="admin-table__lead" title={prefix}>
+          <span className="app-identities__pill app-identities__pill--prefix">{prefix}</span>
+        </td>
+        <td className="admin-table__fill">
+          <span className="app-identities__mono">{repository}</span>
+          <span className="app-identities__sub">
+            {strings.identityBoundSub({
+              workflow: registrar.workflowPath,
+              ref: registrar.gitRef,
+              environment: registrar.environment,
+            })}
+          </span>
+        </td>
+        <td>
+          {registrar.appCount}
+          <span className="app-identities__sub">
+            {strings.registrarAppsOf({ limit: registrar.appLimit })}
+          </span>
+        </td>
+        <td>
+          <LocalTime timestamp={registrar.approvedAt} />
+        </td>
+        {compact ? (
+          <td className="admin-table__actions admin-table__kebab app-identities__actions-cell">
+            <RowActionsMenu
+              rowLabel={prefix}
+              items={[
+                {
+                  id: 'delete',
+                  label: deleting
+                    ? strings.deletingRegistrarNamed({ prefix })
+                    : strings.deleteRegistrarNamed({ prefix }),
+                  tone: 'danger',
+                  disabled: deleting,
+                  confirm: {
+                    confirmLabel: strings.confirmDeleteRegistrar,
+                    confirmAriaLabel: strings.confirmDeleteRegistrarNamed({ prefix }),
+                    cancelLabel: strings.cancelAction,
+                    cancelAriaLabel: strings.cancelDeleteRegistrarNamed({ prefix }),
+                    notice,
+                    dialogTitle: strings.deleteRegistrarDialogTitle,
+                    dialogItem,
+                    onConfirm: () => handleDeleteRegistrar(registrar),
+                  },
+                },
+              ]}
+              errors={rowError === undefined ? undefined : [rowError]}
+              focusKeys={[`delete-registrar:${id}`]}
+              registerControl={registerControl}
+            />
+          </td>
+        ) : (
+          <td className="admin-table__actions app-identities__actions-cell">
+            <div className="app-identities__actions">
+              <ConfirmButton
+                triggerLabel={strings.deleteRegistrar}
+                triggerAriaLabel={strings.deleteRegistrarNamed({ prefix })}
+                confirmLabel={strings.confirmDeleteRegistrar}
+                confirmAriaLabel={strings.confirmDeleteRegistrarNamed({ prefix })}
+                dismissAriaLabel={strings.cancelDeleteRegistrarNamed({ prefix })}
+                className="app-identities__button app-identities__button--danger"
+                confirmNotice={notice}
+                dialogTitle={strings.deleteRegistrarDialogTitle}
+                dialogItem={dialogItem}
+                busy={deleting}
+                busyLabel={strings.deletingRegistrar}
+                busyAriaLabel={strings.deletingRegistrarNamed({ prefix })}
+                registerTrigger={(element) =>
+                  registerControl({ key: `delete-registrar:${id}`, element })
+                }
+                onConfirm={() => handleDeleteRegistrar(registrar)}
+              />
+              {rowError !== undefined && (
+                <p role="alert" className="app-identities__row-error">
+                  {rowError}
+                </p>
+              )}
+            </div>
+          </td>
+        )}
+      </tr>
+    );
+  }
+
+  /** The lead cell of a request row: what the request asks for. */
+  function renderRequestLead(request: IdentityRequest): JSX.Element {
+    switch (request.kind) {
+      case 'app':
+        return <span className="app-identities__mono">{request.appId}</span>;
+      case 'registrar':
+        return (
+          <>
+            <span className="app-identities__pill app-identities__pill--prefix">
+              <span className="visually-hidden">{strings.identityRequestKindLabel}</span>
+              {strings.identityRegistrarPill}
+            </span>
+            <span className="app-identities__sub">{strings.identityRegistrarRequestSub}</span>
+          </>
+        );
+      default:
+        return (
+          <span className="app-identities__pill app-identities__pill--unknown">
+            <span className="visually-hidden">{strings.identityRequestKindLabel}</span>
+            {strings.identityUnknownRequestPill}
+          </span>
         );
     }
   }
@@ -636,8 +1176,15 @@ export function AppIdentities({
     );
   }
 
-  const pendingCount = requests.filter((candidate) => candidate.status === 'pending').length;
+  // Only requests an action is offered on count as awaiting approval.
+  const pendingCount = requests.filter(
+    (candidate) => candidate.status === 'pending' && candidate.kind !== 'unknown',
+  ).length;
   const showContent = !loading && error === null;
+  const newCount = bindings.filter(isNewBinding).length;
+  const ackAllBusy = isBusy('ack-all');
+  const ackBusy = bindings.some((candidate) => isBusy(`ack:${candidate.appId}`));
+  const ackAllError = rowErrors['ack-all'];
 
   return (
     <section className="app-identities" aria-labelledby="app-identities-heading">
@@ -657,9 +1204,20 @@ export function AppIdentities({
         {showContent && pendingCount > 0
           ? strings.identitiesPendingSummary({ count: pendingCount })
           : ''}
+        {/* The new-apps part updates silently: Mark seen announces through the result region. */}
+        {showContent && newCount > 0 && (
+          <span aria-live="off">
+            {pendingCount > 0 ? ' · ' : ''}
+            {strings.identitiesNewAppsSummary({ count: newCount })}
+          </span>
+        )}
       </p>
-      <p role="status" aria-live="polite" className="app-identities__result">
-        {result}
+      <p
+        role="status"
+        aria-live="polite"
+        className={`app-identities__result${resultState?.kind === 'error' ? ' app-identities__result--error' : ''}`}
+      >
+        {resultState?.message ?? ''}
       </p>
       {loading && <p className="app-identities__status">{strings.identitiesLoading}</p>}
       {!loading && error !== null && (
@@ -703,7 +1261,7 @@ export function AppIdentities({
                 <thead>
                   <tr>
                     <th scope="col" className="admin-table__lead">
-                      {strings.columnIdentityApp}
+                      {strings.columnIdentityAsksFor}
                     </th>
                     <th scope="col">{strings.columnIdentityStatus}</th>
                     <th scope="col" className="admin-table__fill">
@@ -726,12 +1284,18 @@ export function AppIdentities({
                         request.status === 'pending' ? 'app-identities__row--pending' : undefined
                       }
                     >
-                      <td className="admin-table__lead" title={request.appId}>
-                        <span className="app-identities__mono">{request.appId}</span>
+                      <td className="admin-table__lead" title={requestLabels(request)?.rowLabel}>
+                        {renderRequestLead(request)}
                       </td>
                       <td>
                         {renderRequestStatusPill(request)}
+                        {compact && request.kind === 'unknown' && (
+                          <span className="app-identities__sub">
+                            {strings.identityUnknownRequestSub}
+                          </span>
+                        )}
                         {compact &&
+                          request.kind !== 'unknown' &&
                           request.status !== 'pending' &&
                           request.status !== 'rejected' && (
                             <span className="app-identities__sub">
@@ -774,12 +1338,78 @@ export function AppIdentities({
           )}
 
           <h3
+            id="registrars-heading"
+            tabIndex={-1}
+            ref={(element) => registerControl({ key: REGISTRARS_HEADING_KEY, element })}
+          >
+            {strings.identitiesRegistrarsHeading}
+          </h3>
+          {registrars.length === 0 ? (
+            <p className="app-identities__empty">{strings.identitiesRegistrarsEmpty}</p>
+          ) : (
+            <div
+              className="admin-table__scroll app-identities__scroll"
+              onFocus={revealFocusedControl}
+              role="group"
+              aria-labelledby="registrars-heading"
+              tabIndex={0}
+            >
+              <table
+                className="admin-table app-identities__table"
+                aria-labelledby="registrars-heading"
+              >
+                <thead>
+                  <tr>
+                    <th scope="col" className="admin-table__lead">
+                      {strings.columnRegistrarPrefix}
+                    </th>
+                    <th scope="col" className="admin-table__fill">
+                      {strings.columnRegistrarWorkflow}
+                    </th>
+                    <th scope="col">{strings.columnRegistrarApps}</th>
+                    <th scope="col">{strings.columnRegistrarApproved}</th>
+                    <th
+                      scope="col"
+                      className={`admin-table__actions app-identities__actions-cell${compact ? ' admin-table__kebab' : ''}`}
+                      aria-label={strings.columnIdentityActions}
+                    />
+                  </tr>
+                </thead>
+                <tbody>{registrars.map((registrar) => renderRegistrarRow(registrar))}</tbody>
+              </table>
+            </div>
+          )}
+
+          <h3
             id="bindings-heading"
             tabIndex={-1}
             ref={(element) => registerControl({ key: BINDINGS_HEADING_KEY, element })}
           >
             {strings.identitiesBindingsHeading}
           </h3>
+          {newCount >= 2 && (
+            <p className="app-identities__bulk">
+              <button
+                type="button"
+                className="app-identities__button app-identities__button--ghost"
+                aria-label={strings.markAllSeenAria}
+                aria-disabled={ackAllBusy || ackBusy ? 'true' : undefined}
+                onClick={handleMarkAllSeen}
+              >
+                {ackAllBusy ? strings.markingAllSeen : strings.markAllSeen}
+              </button>
+            </p>
+          )}
+          {/* Always mounted (`hidden` while empty, so it is also out of the accessibility tree);
+              a bulk failure shows here, never in the load-failure slot (which would unmount the
+              tables). */}
+          <p
+            role="alert"
+            className="app-identities__row-error app-identities__row-error--block"
+            hidden={ackAllError === undefined}
+          >
+            {ackAllError}
+          </p>
           {bindings.length === 0 ? (
             <p className="app-identities__empty">{strings.identitiesBindingsEmpty}</p>
           ) : (
@@ -815,7 +1445,28 @@ export function AppIdentities({
                     const { appId } = binding;
                     const rowError = rowErrors[`app:${appId}`];
                     const unbinding = isBusy(`unbind:${appId}`);
+                    const isNew = isNewBinding(binding);
+                    const registrarPrefix = binding.registrar?.prefix ?? null;
+                    const marking = isBusy(`ack:${appId}`);
+                    const markDisabled = marking || ackAllBusy || ackBusy;
+                    const unbindNotice =
+                      registrarPrefix === null
+                        ? strings.unbindAppNotice
+                        : strings.unbindRegistrarAppNotice({ prefix: registrarPrefix });
                     const menuItems: RowMenuItem[] = [
+                      ...(isNew
+                        ? [
+                            {
+                              id: 'mark-seen',
+                              label: marking
+                                ? strings.markingSeenNamed({ app: appId })
+                                : strings.markSeenNamed({ app: appId }),
+                              tone: 'default',
+                              disabled: markDisabled,
+                              onSelect: () => handleMarkSeen(binding),
+                            } satisfies RowMenuItem,
+                          ]
+                        : []),
                       ...binding.keys
                         .filter((identityKey) => identityKey.state !== 'revoked')
                         .map((identityKey): RowMenuItem => {
@@ -862,7 +1513,7 @@ export function AppIdentities({
                           confirmAriaLabel: strings.confirmUnbindAppNamed({ app: appId }),
                           cancelLabel: strings.cancelAction,
                           cancelAriaLabel: strings.cancelUnbindAppNamed({ app: appId }),
-                          notice: strings.unbindAppNotice,
+                          notice: unbindNotice,
                           dialogTitle: strings.unbindAppDialogTitle,
                           dialogItem: { label: strings.dialogItemApp, value: appId },
                           onConfirm: () => handleUnbind(binding),
@@ -875,13 +1526,39 @@ export function AppIdentities({
                       ...binding.keys.map((identityKey) => rowErrors[`key:${identityKey.id}`]),
                     ].filter((message): message is string => message !== undefined);
                     return (
-                      <tr key={appId} data-app-id={appId}>
+                      <tr
+                        key={appId}
+                        data-app-id={appId}
+                        className={isNew ? 'app-identities__row--new' : undefined}
+                      >
                         <td className="admin-table__lead" title={appId}>
                           <span className="app-identities__mono">{appId}</span>
+                          {registrarPrefix !== null && (
+                            <span className="app-identities__marks">
+                              {isNew && (
+                                <span className="app-identities__pill app-identities__pill--pending">
+                                  <span className="visually-hidden">
+                                    {strings.identityStatusLabel}
+                                  </span>
+                                  {strings.identityNewMark}
+                                </span>
+                              )}
+                              <span className="app-identities__pill app-identities__pill--prefix">
+                                <span className="visually-hidden">
+                                  {strings.identityCreatedByLabel}
+                                </span>
+                                {strings.identityViaRegistrar({ prefix: registrarPrefix })}
+                              </span>
+                            </span>
+                          )}
                           <span className="app-identities__sub">
-                            {strings.identityApprovedSub({
-                              time: formatDateTimeZone({ timestamp: binding.approvedAt }),
-                            })}
+                            {registrarPrefix === null
+                              ? strings.identityApprovedSub({
+                                  time: formatDateTimeZone({ timestamp: binding.approvedAt }),
+                                })
+                              : strings.identityCreatedAutomaticallySub({
+                                  time: formatDateTimeZone({ timestamp: binding.approvedAt }),
+                                })}
                           </span>
                         </td>
                         <td>
@@ -921,6 +1598,24 @@ export function AppIdentities({
                         ) : (
                           <td className="admin-table__actions app-identities__actions-cell">
                             <div className="app-identities__actions">
+                              {isNew && (
+                                <button
+                                  ref={(element) =>
+                                    registerControl({ key: `ack:${appId}`, element })
+                                  }
+                                  type="button"
+                                  className="app-identities__button app-identities__button--ghost"
+                                  aria-label={
+                                    marking
+                                      ? strings.markingSeenNamed({ app: appId })
+                                      : strings.markSeenNamed({ app: appId })
+                                  }
+                                  aria-disabled={markDisabled ? 'true' : undefined}
+                                  onClick={() => handleMarkSeen(binding)}
+                                >
+                                  {marking ? strings.markingSeen : strings.markSeen}
+                                </button>
+                              )}
                               <ConfirmButton
                                 triggerLabel={strings.unbindApp}
                                 triggerAriaLabel={strings.unbindAppNamed({ app: appId })}
@@ -928,7 +1623,7 @@ export function AppIdentities({
                                 confirmAriaLabel={strings.confirmUnbindAppNamed({ app: appId })}
                                 dismissAriaLabel={strings.cancelUnbindAppNamed({ app: appId })}
                                 className="app-identities__button app-identities__button--danger"
-                                confirmNotice={strings.unbindAppNotice}
+                                confirmNotice={unbindNotice}
                                 dialogTitle={strings.unbindAppDialogTitle}
                                 dialogItem={{ label: strings.dialogItemApp, value: appId }}
                                 busy={isBusy(`unbind:${appId}`)}
@@ -956,6 +1651,84 @@ export function AppIdentities({
           )}
         </>
       )}
+      {/* Always mounted (closed it renders nothing) so its close cleanup reads the
+          `restoreFocus` set for that very close. */}
+      <Modal
+        open={dialogOpen && dialogRequest !== null}
+        title={strings.approveRegistrarDialogTitle}
+        onDismiss={dismissApproveRegistrarDialog}
+        dismissible={!approveRegistrarBusy}
+        closeOnHashChange={!approveRegistrarBusy}
+        busy={approveRegistrarBusy}
+        initialFocusRef={prefixInputRef}
+        returnFocusRef={approveReturnRef}
+        restoreFocus={dialogRestoreFocus}
+        actions={
+          <ConfirmActions
+            cancel={{
+              label: strings.cancelAction,
+              disabled: approveRegistrarBusy,
+              onClick: dismissApproveRegistrarDialog,
+            }}
+            confirm={{
+              label: approveRegistrarBusy
+                ? strings.approvingRegistrar
+                : strings.approveRegistrarConfirm,
+              tone: 'primary',
+              disabled: approveRegistrarBusy,
+              onClick: submitApproveRegistrar,
+            }}
+          />
+        }
+      >
+        {dialogRequest !== null && (
+          <>
+            <ConfirmItem
+              label={strings.dialogItemWorkflow}
+              value={strings.dialogWorkflowValue({
+                repository: dialogRequest.githubRepository,
+                workflowPath: dialogRequest.workflowPath,
+              })}
+            />
+            <div className="app-identities__field">
+              <label htmlFor={`${prefixHintId}-input`}>{strings.approveRegistrarPrefixLabel}</label>
+              <input
+                id={`${prefixHintId}-input`}
+                ref={prefixInputRef}
+                type="text"
+                value={prefixValue}
+                readOnly={approveRegistrarBusy}
+                autoCapitalize="none"
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={prefixError === null ? undefined : true}
+                aria-describedby={[
+                  prefixHintId,
+                  prefixError === null ? null : prefixErrorId,
+                  dialogError === null ? null : dialogErrorId,
+                ]
+                  .filter((id): id is string => id !== null)
+                  .join(' ')}
+                onChange={(event) => setPrefixValue(event.target.value)}
+              />
+              <p id={prefixHintId} className="app-identities__field-hint">
+                {strings.approveRegistrarPrefixHint}
+              </p>
+              {prefixError !== null && (
+                <p id={prefixErrorId} role="alert" className="app-identities__field-error">
+                  {prefixError}
+                </p>
+              )}
+            </div>
+            <ConfirmNotice>{strings.approveRegistrarNotice}</ConfirmNotice>
+            {dialogError !== null && (
+              <p id={dialogErrorId} role="alert" className="app-identities__field-error">
+                {dialogError}
+              </p>
+            )}
+          </>
+        )}
+      </Modal>
     </section>
   );
 }

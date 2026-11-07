@@ -86,8 +86,13 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     approveIdentityRequest: vi.fn(),
     rejectIdentityRequest: vi.fn(),
     listIdentityBindings: vi.fn().mockResolvedValue([]),
+    listRegistrars: vi.fn().mockResolvedValue([]),
     revokeIdentityKey: vi.fn(),
     unbindApp: vi.fn(),
+    approveRegistrarRequest: vi.fn(),
+    deleteRegistrar: vi.fn(),
+    acknowledgeBinding: vi.fn(),
+    acknowledgeAllBindings: vi.fn(),
     ...overrides,
   };
 }

@@ -716,6 +716,7 @@ describe('delivery api client', () => {
   describe('app identities', () => {
     const requestWire = {
       id: 7,
+      kind: 'app',
       app_id: 'urls4irl',
       github_repository: '4IRL/urls4irl',
       github_repository_id: 812345678,
@@ -730,6 +731,7 @@ describe('delivery api client', () => {
 
     const requestSummary = {
       id: 7,
+      kind: 'app',
       appId: 'urls4irl',
       githubRepository: '4IRL/urls4irl',
       githubRepositoryId: 812345678,
@@ -775,6 +777,8 @@ describe('delivery api client', () => {
       git_ref: 'refs/heads/main',
       environment: null,
       approved_at: '2026-10-21T18:06:00Z',
+      registrar: null,
+      acknowledged_at: '2026-10-21T18:06:00Z',
       keys: [keyWire],
     };
 
@@ -787,8 +791,153 @@ describe('delivery api client', () => {
       gitRef: 'refs/heads/main',
       environment: null,
       approvedAt: '2026-10-21T18:06:00Z',
+      registrar: null,
+      acknowledgedAt: '2026-10-21T18:06:00Z',
       keys: [keySummary],
     };
+
+    const registrarWire = {
+      id: 2,
+      prefix: 'hosted_',
+      github_repository: 'GPropersi/apps',
+      github_repository_id: 99,
+      github_owner_id: 55,
+      workflow_path: '.github/workflows/deploy.yml',
+      git_ref: 'refs/heads/main',
+      environment: null,
+      approved_at: '2026-10-22T12:00:00Z',
+      app_count: 3,
+      app_limit: 50,
+    };
+
+    const registrarSummary = {
+      id: 2,
+      prefix: 'hosted_',
+      githubRepository: 'GPropersi/apps',
+      githubRepositoryId: 99,
+      githubOwnerId: 55,
+      workflowPath: '.github/workflows/deploy.yml',
+      gitRef: 'refs/heads/main',
+      environment: null,
+      approvedAt: '2026-10-22T12:00:00Z',
+      appCount: 3,
+      appLimit: 50,
+    };
+
+    it('maps registrar requests, and an unknown or inconsistent kind, fail closed', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          body: {
+            requests: [
+              { ...requestWire, kind: 'registrar', app_id: null },
+              { ...requestWire, kind: 'future' },
+              { ...requestWire, kind: 'app', app_id: null },
+              { ...requestWire, kind: 'registrar', app_id: 'urls4irl' },
+              { ...requestWire, kind: undefined },
+            ],
+          },
+        }),
+      );
+      const mapped = await makeClient().listIdentityRequests();
+      expect(mapped.map((entry) => [entry.kind, entry.appId])).toEqual([
+        ['registrar', null],
+        ['unknown', 'urls4irl'],
+        ['unknown', null],
+        ['unknown', 'urls4irl'],
+        ['unknown', 'urls4irl'],
+      ]);
+    });
+
+    it('maps a binding registrar and acknowledgedAt, failing closed when absent', async () => {
+      const { registrar: omittedRegistrar, acknowledged_at: omittedAck, ...bare } = bindingWire;
+      expect(omittedRegistrar).toBeNull();
+      expect(omittedAck).not.toBeNull();
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          body: {
+            bindings: [
+              { ...bindingWire, registrar: { id: 2, prefix: 'hosted_' }, acknowledged_at: null },
+              bare,
+              { ...bare, registrar: { id: 2, prefix: 'hosted_' } },
+            ],
+          },
+        }),
+      );
+      const [unseen, legacy, absentWithRegistrar] = await makeClient().listIdentityBindings();
+      expect(unseen.registrar).toEqual({ id: 2, prefix: 'hosted_' });
+      expect(unseen.acknowledgedAt).toBeNull();
+      expect(legacy.registrar).toBeNull();
+      expect(legacy.acknowledgedAt).toBe('2026-10-21T18:06:00Z');
+      expect(absentWithRegistrar.acknowledgedAt).toBeNull();
+    });
+
+    it('approveRegistrarRequest POSTs the prefix and maps the registrar', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ status: 201, body: { registrar: registrarWire } }),
+      );
+
+      const registrar = await makeClient().approveRegistrarRequest({ id: 7, prefix: 'hosted_' });
+
+      const { url, init, headers } = lastCall();
+      expect(url).toBe(
+        'https://admin.test/delivery/v1/admin/app-identity/requests/7/approve-registrar',
+      );
+      expect(init.method).toBe('POST');
+      expect(headers['X-Requested-With']).toBe('admin-ui');
+      expect(JSON.parse(init.body as string)).toEqual({ prefix: 'hosted_' });
+      expect(registrar).toEqual(registrarSummary);
+    });
+
+    it('listRegistrars GETs and maps registrars, and a null list to []', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: { registrars: [registrarWire] } }));
+      expect(await makeClient().listRegistrars()).toEqual([registrarSummary]);
+      expect(lastCall().url).toBe('https://admin.test/delivery/v1/admin/app-identity/registrars');
+      expect(lastCall().init.method).toBe('GET');
+
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: { registrars: null } }));
+      expect(await makeClient().listRegistrars()).toEqual([]);
+    });
+
+    it('fails the registrars mapping when app_limit is absent or not positive', async () => {
+      const { app_limit: omitted, ...withoutLimit } = registrarWire;
+      expect(omitted).toBe(50);
+      for (const wire of [withoutLimit, { ...registrarWire, app_limit: 0 }]) {
+        fetchMock.mockResolvedValueOnce(jsonResponse({ body: { registrars: [wire] } }));
+        await expect(makeClient().listRegistrars()).rejects.toThrow('app_limit');
+      }
+    });
+
+    it('deleteRegistrar DELETEs the path and maps unbound_apps', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ body: { id: 2, deleted: true, unbound_apps: 4 } }),
+      );
+
+      const result = await makeClient().deleteRegistrar({ id: 2 });
+
+      expect(lastCall().url).toBe('https://admin.test/delivery/v1/admin/app-identity/registrars/2');
+      expect(lastCall().init.method).toBe('DELETE');
+      expect(lastCall().headers['X-Requested-With']).toBe('admin-ui');
+      expect(result).toEqual({ id: 2, deleted: true, unboundApps: 4 });
+    });
+
+    it('acknowledgeBinding and acknowledgeAllBindings post to their paths', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: { binding: bindingWire } }));
+      expect(await makeClient().acknowledgeBinding({ appId: 'hosted_a' })).toEqual(bindingSummary);
+      expect(lastCall().url).toBe(
+        'https://admin.test/delivery/v1/admin/app-identity/bindings/hosted_a/acknowledge',
+      );
+      expect(lastCall().init.method).toBe('POST');
+
+      fetchMock.mockResolvedValueOnce(jsonResponse({ body: { acknowledged: 2 } }));
+      const count = await makeClient().acknowledgeAllBindings({ appIds: ['hosted_a', 'hosted_b'] });
+      expect(count).toBe(2);
+      expect(lastCall().url).toBe(
+        'https://admin.test/delivery/v1/admin/app-identity/bindings/acknowledge-all',
+      );
+      expect(JSON.parse(lastCall().init.body as string)).toEqual({
+        app_ids: ['hosted_a', 'hosted_b'],
+      });
+    });
 
     it('listIdentityRequests GETs the admin list and maps snake_case to camelCase', async () => {
       fetchMock.mockResolvedValue(jsonResponse({ body: { requests: [requestWire] } }));
