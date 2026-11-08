@@ -19,7 +19,44 @@ const (
 
 	// heldCountTotalSQL counts every held message.
 	heldCountTotalSQL = `SELECT count(*) FROM messages WHERE held_at IS NOT NULL`
+
+	// heldSummarySQL groups held messages per app with the oldest held_at, biggest
+	// first, ties by app id in byte order. It probes messages_held_app_idx.
+	heldSummarySQL = `SELECT app_id, count(*), min(held_at) FROM messages WHERE held_at IS NOT NULL
+GROUP BY app_id ORDER BY count(*) DESC, app_id COLLATE "C"`
 )
+
+// HeldAppSummary is one app's held-message count and its oldest held_at.
+type HeldAppSummary struct {
+	AppID        string
+	Count        int
+	OldestHeldAt time.Time
+}
+
+// HeldSummary returns every app with held messages, ordered by count descending
+// then app id ascending. It is a read-only query that takes no lock, and returns
+// an empty non-nil slice when nothing is held. It is deliberately not on the
+// Store interface: only the readiness reporter calls it.
+func (store *PGStore) HeldSummary(ctx context.Context) ([]HeldAppSummary, error) {
+	rows, queryErr := store.pool.Query(ctx, heldSummarySQL)
+	if queryErr != nil {
+		return nil, pgutil.WrapDBError("query held summary", queryErr)
+	}
+	defer rows.Close()
+
+	summary := []HeldAppSummary{}
+	for rows.Next() {
+		var row HeldAppSummary
+		if scanErr := rows.Scan(&row.AppID, &row.Count, &row.OldestHeldAt); scanErr != nil {
+			return nil, pgutil.WrapDBError("scan held summary", scanErr)
+		}
+		summary = append(summary, row)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, pgutil.WrapDBError("read held summary", rowsErr)
+	}
+	return summary, nil
+}
 
 // insertHeldFunc is the signature of one held-insert transaction attempt.
 type insertHeldFunc func(
