@@ -270,7 +270,7 @@ func TestProbeFailedPatchRollsBackEverything(testInstance *testing.T) {
 			sealedBefore := stack.sealedBytes(subTest, probe.ID)
 			store := stack.store
 			if scenario.sealerless {
-				store = heartbeat.NewPGStore(stack.pool, nil)
+				store = heartbeat.NewPGStore(stack.pool, nil, nil)
 			}
 
 			_, patchErr := store.Patch(stack.ctx, probe.ID, scenario.patch, created.Add(2*time.Minute))

@@ -55,15 +55,23 @@ AND c.anchor_at + (c.period_seconds + c.grace_seconds) * interval '1 second' < $
 type PGStore struct {
 	pool   *pgxpool.Pool
 	sealer *seal.Sealer
+	// supportedTypes is the sorted list of deliverable destination types, for SQL binding.
+	supportedTypes []string
 }
 
 // Compile-time check that PGStore satisfies Store.
 var _ Store = (*PGStore)(nil)
 
 // NewPGStore returns a PGStore over pool. sealer seals a probe check's Access credentials; it may be
-// nil for push-only use, in which case sealing a token fails closed.
-func NewPGStore(pool *pgxpool.Pool, sealer *seal.Sealer) *PGStore {
-	return &PGStore{pool: pool, sealer: sealer}
+// nil for push-only use, in which case sealing a token fails closed. supportedTypes is the same set
+// the message service uses; the store keeps its own sorted copy of the true keys.
+func NewPGStore(pool *pgxpool.Pool, sealer *seal.Sealer, supportedTypes map[string]bool) *PGStore {
+	return &PGStore{pool: pool, sealer: sealer, supportedTypes: supportedTypeList(supportedTypes)}
+}
+
+// SupportedTypes returns a copy of the sorted deliverable destination types the store binds into SQL.
+func (store *PGStore) SupportedTypes() []string {
+	return append([]string{}, store.supportedTypes...)
 }
 
 // Create implements Store.

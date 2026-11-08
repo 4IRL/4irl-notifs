@@ -104,6 +104,10 @@ type ServerConfig struct {
 	// /readyz reports the prober as never ticked and stale (fail closed). Callers
 	// must leave this an untyped nil when no tracker exists.
 	HeartbeatProber CheckerFreshness
+	// Held backs the held field of GET /readyz. Optional: when nil the block is
+	// omitted. Callers must leave this an untyped nil when no reporter exists,
+	// like HeartbeatChecker.
+	Held HeldReporter
 	// Registry backs the /v1/admin endpoints. When nil, every admin route
 	// answers 503 (fail closed). Callers must leave this an untyped nil when no
 	// service exists: a typed-nil pointer stored here is a non-nil interface
@@ -199,7 +203,9 @@ type Server struct {
 	// provisioningHealth backs GET /healthz/provisioning.
 	provisioningHealth ProvisioningHealth
 	now                func() time.Time
-	mux                *http.ServeMux
+	// held backs the held block of GET /readyz; nil omits the block.
+	held HeldReporter
+	mux  *http.ServeMux
 }
 
 // readinessResponseBody is the /readyz JSON body when the database answered.
@@ -210,6 +216,7 @@ type readinessResponseBody struct {
 	LastMigrationFailure  *migrationFailureBody `json:"last_migration_failure"`
 	HeartbeatChecker      heartbeatCheckerBody  `json:"heartbeat_checker"`
 	HeartbeatProber       heartbeatCheckerBody  `json:"heartbeat_prober"`
+	Held                  *heldBody             `json:"held,omitempty"`
 }
 
 // heartbeatCheckerBody is the JSON form of the heartbeat checker's or prober's
@@ -263,6 +270,7 @@ func NewServer(config ServerConfig) *Server {
 		appIdentity:          config.AppIdentity,
 		provisioningHealth:   config.ProvisioningHealth,
 		now:                  config.Now,
+		held:                 config.Held,
 		mux:                  http.NewServeMux(),
 	}
 	if server.now == nil {
@@ -473,6 +481,9 @@ func (server *Server) handleReadyz(responseWriter http.ResponseWriter, request *
 		ExpectedSchemaVersion: readiness.ExpectedSchemaVersion,
 		HeartbeatChecker:      server.checkerStatus(),
 		HeartbeatProber:       server.proberStatus(),
+	}
+	if server.held != nil {
+		body.Held = server.heldStatus(request.Context())
 	}
 	if failure := readiness.LastMigrationFailure; failure != nil {
 		body.LastMigrationFailure = &migrationFailureBody{

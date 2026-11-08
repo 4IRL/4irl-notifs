@@ -839,7 +839,7 @@ Message object (illustrative values; `status` is `pending`, `delivered`, `dead`,
 }
 ```
 
-Readiness body: `{"status":"ok","schema_version":12,"expected_schema_version":12,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false},"heartbeat_prober":{"last_tick_at":"<RFC3339>","stale":false}}`.
+Readiness body: `{"status":"ok","schema_version":14,"expected_schema_version":14,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false},"heartbeat_prober":{"last_tick_at":"<RFC3339>","stale":false},"held":{"available":true,"stale":false,"as_of":"<RFC3339>","total":0,"messages":{"count":0,"oldest_held_at":null,"oldest_age_seconds":null},"unassigned_alerts":{"count":0},"apps":[],"apps_more":0}}`. The `held` block is informational (messages and heartbeat alerts waiting for a destination) and never changes the status.
 The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_prober.stale` is `true`; read the fields.
 
 ### Operator endpoints (proxy token; used to onboard an app)

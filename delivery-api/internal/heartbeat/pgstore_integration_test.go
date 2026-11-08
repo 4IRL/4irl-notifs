@@ -45,7 +45,7 @@ func newFixture(testInstance *testing.T) fixture {
 	return fixture{
 		ctx:      ctx,
 		pool:     pool,
-		store:    heartbeat.NewPGStore(pool, sealer),
+		store:    heartbeat.NewPGStore(pool, sealer, map[string]bool{registry.TypeWebhook: true}),
 		registry: registry.NewPGStore(pool),
 		sealer:   sealer,
 	}
