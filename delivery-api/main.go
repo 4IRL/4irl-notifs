@@ -462,6 +462,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		Readiness:            checker,
 		HeartbeatChecker:     heartbeatFreshness,
 		HeartbeatProber:      prober.freshness,
+		Held:                 readiness.NewHeldCache(readiness.HeldConfig{Messages: messageStore, Alerts: heartbeatStore, Logger: logger}),
 		Registry:             registryService,
 		AppRegistry:          registryService,
 		Messages:             messageService,

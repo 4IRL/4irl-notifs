@@ -30,6 +30,20 @@ the VPS; person-service + admin UI are Cloudflare-native.
   website probe loop). Staleness never changes the status or the HTTP code, because the prod compose
   healthcheck probes `/readyz` and a stalled checker must not mark the container unhealthy; the watchdog
   and the admin status card interpret the field instead.
+  `/readyz` also carries a `held` block on `200 ok` and `503 schema_mismatch` bodies (never on `503
+  unavailable`): `{available, stale, as_of, total, messages: {count, oldest_held_at, oldest_age_seconds},
+  unassigned_alerts: {count}, apps: [{app_id, count}], apps_more}`. `messages.count` is held app messages
+  (`held_at IS NOT NULL`); `unassigned_alerts.count` is pending heartbeat alerts on checks with no
+  deliverable destination; `total` is their sum. `apps` lists apps with held messages by count desc then
+  app id, capped at 20 with `apps_more` for the rest. The counts are cached in memory for 30 s;
+  `oldest_age_seconds` is computed at serve time. A failed refresh after a success serves the last good
+  counts with `stale: true`; with no prior success the block is exactly `{"available": false}` and must be
+  treated like an absent block, never as zero. Like the checker fields it is status-neutral: it never
+  changes the status or the HTTP code. Accepted exposure: `/readyz` is readable by every per-app service
+  token (the whole-hostname Access app admits them; only `/v1/admin` is restricted to the proxy token), so
+  any app token can read other apps' ids and held counts; the operator accepted this.
+  A destination is deliverable when it is enabled and its type is in the supported-types set (the one
+  rule heartbeat delivery shares with held counting).
 - `POST /v1/heartbeats/{app_id}/{name}` and `POST /v1/heartbeats/{app_id}/{name}/fail` — the app-facing
   pings (outside `/v1/admin`, so an app's Access token reaches them). They need an app key
   (`Authorization: Bearer dak_...`) whose app is the `{app_id}` in the path (another app's id is `403
@@ -1150,6 +1164,7 @@ account IDs stay in the Cloudflare dashboard and are never committed.
 | Exchange `403 identity does not match the approved binding` | The app is bound, but the token's repository, workflow file, ref or environment differs from the approved binding (a renamed workflow, a deploy from another branch, a new `environment:`). Nothing is filed. Fix the workflow, or unbind the app and approve the new request. |
 | Exchange `401 invalid identity token`                 | The token failed a check: wrong audience (the action's `audience` input differs from `DELIVERY_OIDC_AUDIENCE`), expired, a replayed `jti` (the same token exchanged twice), a bad signature or issuer, or an unknown signing key inside the one-minute refetch window. The exact reason is in the delivery-api log, not the response. |
 | Held message stays `unrouted` | No enabled, app-usable destination is reachable by a route yet (the "no route yet" state logs at Debug only, so a quiet log is normal). Otherwise read `held messages released` (service: precise `released` / `failed` split), `held message release failed` (a message went terminal `release_invalid`) and `held release failed` (the loop's batch hit an error; the next 5 s tick retries). A message stuck on an unsupported type, missing publisher or unseal error shows only the throttled Warns `held pair cannot release` / `held message cannot release`. |
+| `/readyz` `held` block shows non-zero counts | `messages.count` > 0: held messages wait for a route or destination, add one that reaches the app (`apps` names the apps). `unassigned_alerts.count` > 0: assign the heartbeat check a deliverable (enabled, supported-type) destination. `available: false`: the count query is failing, read the Warn log in `docker compose logs delivery-api`; `stale: true` means the last refresh failed and the counts are from `as_of`. The block never changes the `/readyz` status. |
 | Exchange `429 too many pending identity requests`     | 20 requests are already pending (any GitHub repo that can mint a token for the audience can file one). Reject the stale ones in the admin UI (undecided ones also expire after `DELIVERY_PENDING_IDENTITY_REQUEST_DAYS`, 7 by default); the app's next deploy retries. |
 | Exchange `503 identity unavailable`                   | GitHub's signing keys could not be fetched (the log has `oidc jwks fetch failed`; retries are limited to one fetch a minute). A Postgres failure during an exchange is instead `500 internal error` (log `app identity service error`). |
 | delivery-api exits at start with `DELIVERY_OIDC_JWKS_FILE requires DELIVERY_OIDC_DEV_MODE=1` or `invalid DELIVERY_OIDC_DEV_MODE: must be empty, 0 or 1` | The dev-only JWKS file variable is set without the dev flag, or the dev flag has an invalid value. Production must set neither: remove both. |
