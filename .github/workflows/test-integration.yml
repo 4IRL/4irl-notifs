@@ -14,6 +14,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Restic comes from the one pinned definition in ops/backup/pins.env (sha256-checked), never a version literal here.
+      - name: Install pinned restic
+        run: bash ops/backup/fetch-pinned.sh restic --dest .local/bin
+
+      # Real backup.sh + restore.sh round trip against throwaway Postgres, sqlite and a local restic repo. Runs before
+      # the compose stack so the two never compete for memory; CI fails (not skips) when docker or restic is missing.
+      - name: Backup live round trip
+        env:
+          REQUIRE_DOCKER: "1"
+        run: make backup-test-live
+
       - name: Setup node
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
         with:
