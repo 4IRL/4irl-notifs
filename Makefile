@@ -1,4 +1,4 @@
-.PHONY: help lint test local-up local-down local-logs dev-oidc-keys dev-web dev-web-bg dev-web-stop notif-smoke-test \
+.PHONY: help lint test backup-lint backup-test backup-test-live host-backup host-backup-status local-up local-down local-logs dev-oidc-keys dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-test-race go-integration-test go-lint go-fmt golangci-pin-check \
 	delivery-test delivery-integration-test delivery-integration-test-hold delivery-integration-test-hold-run delivery-lint delivery-vet-integration delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
@@ -50,9 +50,47 @@ NTFY_URL := http://127.0.0.1:$(NTFY_PORT)
 help: ## Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-lint: go-lint delivery-lint web-lint setup-web-lint scripts-lint workflows-lint onboard-lint ## Run all linters (Go + frontends + scripts + workflows + app onboarding manifests)
+lint: go-lint delivery-lint web-lint setup-web-lint scripts-lint workflows-lint onboard-lint backup-lint ## Run all linters (Go + frontends + scripts + workflows + app onboarding manifests + backup shell)
 
-test: go-test delivery-test web-test setup-web-test worker-test watchdog-test scripts-test ## Run all unit tests (Go, web + setup-web Vitest, worker Vitest, watchdog Vitest, scripts)
+test: go-test delivery-test web-test setup-web-test worker-test watchdog-test scripts-test backup-test ## Run all unit tests (Go, web + setup-web Vitest, worker Vitest, watchdog Vitest, scripts, backup bash)
+
+# Backup shell scripts (ops/backup, ops/notifs-ops): shellcheck is the exact release in ops/backup/pins.env, fetched
+# (sha256-checked, idempotent) into the gitignored .local/bin by ops/backup/fetch-pinned.sh; the system shellcheck is never used.
+BACKUP_SH_DIRS := $(wildcard ops/backup ops/notifs-ops)
+
+backup-lint: ## Pinned shellcheck over ops/backup/**/*.sh and ops/notifs-ops/*.sh (passes when a tree has no .sh files)
+	@bash ops/backup/fetch-pinned.sh shellcheck --dest .local/bin
+	@find $(BACKUP_SH_DIRS) -type f -name '*.sh' -print0 | xargs -0 -r .local/bin/shellcheck -x -P SCRIPTDIR
+
+backup-test: ## Run the offline ops/backup bash tests (every ops/backup/test/test_*.sh except the live ones)
+	@bash ops/backup/test/run.sh
+
+backup-test-live: ## Docker round trip: real backup.sh + restore.sh against throwaway Postgres, sqlite and a local restic repo (REQUIRE_DOCKER=1 fails instead of skipping; NBLIVE_SKIP=1 opts out)
+	@PATH="$(CURDIR)/.local/bin:$$PATH" bash ops/backup/test/test_backup_live_skip.sh
+	@PATH="$(CURDIR)/.local/bin:$$PATH" bash ops/backup/test/test_backup_live.sh
+
+# Host install/verify of the nightly backup. HOST has no default and is only honoured from the command line (a stray HOST
+# in the environment never selects a host); the guard runs at parse time, so even `make -n` refuses without it.
+BACKUP_HOST_ARGS := install status verify run-now init-repo
+ifneq (,$(filter host-backup host-backup-status,$(MAKECMDGOALS)))
+ifeq (,$(and $(filter command line,$(origin HOST)),$(strip $(HOST))))
+$(error HOST is required: make host-backup HOST=<ssh-alias> ARGS="install|status|verify|run-now|init-repo")
+endif
+endif
+ifneq (,$(filter host-backup,$(MAKECMDGOALS)))
+ifneq ($(words $(ARGS)),1)
+$(error ARGS must be exactly one of: $(BACKUP_HOST_ARGS))
+endif
+ifeq (,$(filter $(BACKUP_HOST_ARGS),$(ARGS)))
+$(error ARGS must be one of: $(BACKUP_HOST_ARGS))
+endif
+endif
+
+host-backup: ## Run the backup installer on the VPS with sudo: make host-backup HOST=<ssh-alias> ARGS="install|status|verify|run-now|init-repo"
+	@d="$$(ssh $(HOST) mktemp -d)" && trap 'ssh $(HOST) rm -rf "$$d"' EXIT && scp -r ops/backup $(HOST):"$$d"/ && ssh -t $(HOST) sudo bash "$$d"/backup/install-backup.sh $(ARGS) --source "$$d"/backup
+
+host-backup-status: ## Last backup result and timer, no sudo: make host-backup-status HOST=<ssh-alias>
+	@ssh $(HOST) 'cat /var/lib/notifs-backup/status/last-run.tsv; systemctl list-timers notifs-backup.timer'
 
 scripts-test: ## Run scripts/ unit tests
 	node --test "scripts/*.test.mjs"
@@ -310,8 +348,9 @@ onboard: ## Plan/apply/verify app onboarding: make onboard app=<app_id|_platform
 	@$(if $(findstring /,$(app)),$(error app must be a bare app_id or _platform, not a path))
 	@ONBOARD_URL="$${ONBOARD_URL:-$(DELIVERY_URL)}" node scripts/onboard.mjs '$(subst ','\'',$(or $(cmd),plan))' 'apps/$(subst ','\'',$(app)).json' $(if $(env),--env '$(subst ','\'',$(env))') $(if $(filter 1,$(prune)),--prune) $(if $(filter 1,$(resend_secrets)),--resend-secrets)
 
-onboard-lint: ## Offline lint of every manifest under apps/ (no network call; part of `make lint`)
+onboard-lint: ## Offline lint of every manifest under apps/ and the notifs_ops manifest (no network call; part of `make lint`)
 	node scripts/onboard.mjs lint apps
+	node scripts/onboard.mjs lint --manifest ops/notifs-ops/manifest.json --target app
 
 # Shared shell lookup of the harness credential (scripts/internal-credential.sh, unit-tested by
 # internal-credential.test.mjs): an already-set NOTIFS_INTERNAL_CREDENTIAL wins as is; otherwise the

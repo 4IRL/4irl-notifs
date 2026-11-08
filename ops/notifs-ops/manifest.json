@@ -1,0 +1,18 @@
+{
+  "app_id": "notifs_ops",
+  "destinations": [
+    {
+      "name": "notifs_ops_discord",
+      "type": "discord",
+      "secrets": { "webhook_url": { "env": "NOTIFS_OPS_DISCORD_WEBHOOK" } }
+    }
+  ],
+  "heartbeats": [
+    {
+      "name": "nightly_backup",
+      "period": "24h",
+      "grace": "12h",
+      "destinations": ["notifs_ops_discord"]
+    }
+  ]
+}
