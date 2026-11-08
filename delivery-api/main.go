@@ -447,11 +447,13 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	}))
 	// The checker reads the message service as its alert sender, and its freshness tracker backs /readyz.
 	heartbeatFreshness := heartbeat.NewFreshness(time.Now)
-	heartbeatStore := heartbeat.NewPGStore(pool, sealer)
+	heartbeatStore := heartbeat.NewPGStore(pool, sealer, supportedTypes)
 	heartbeatService := heartbeat.NewService(heartbeat.ServiceConfig{
 		Store:    heartbeatStore,
 		Messages: messageService,
 		Logger:   logger,
+
+		SupportedTypes: supportedTypes,
 	})
 	prober := newProberWiring(heartbeatStore, heartbeatService.HoldOffUntil, guardedClient, sealer, logger)
 	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.

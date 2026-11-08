@@ -58,6 +58,9 @@ type ServiceConfig struct {
 	// clock.
 	Now    func() time.Time
 	Logger *slog.Logger
+	// SupportedTypes is the same set as message.ServiceConfig.SupportedTypes.
+	// Nil or empty means nothing is deliverable.
+	SupportedTypes map[string]bool
 }
 
 // Service is the heartbeat use-case layer: check CRUD, pause and resume, pings,
@@ -70,6 +73,14 @@ type Service struct {
 	// holdOffUntil is when the startup hold-off ends: Tick does not advance
 	// overdue checks before it.
 	holdOffUntil time.Time
+	// supportedTypes is a defensive copy of ServiceConfig.SupportedTypes.
+	supportedTypes map[string]bool
+}
+
+// deliverable reports whether destination can deliver under this service's
+// supported-types set (see Deliverable).
+func (service *Service) deliverable(destination DestinationRef) bool {
+	return Deliverable(destination, service.supportedTypes)
 }
 
 // NewService builds a Service from config. It panics when Store or Messages is
@@ -87,6 +98,11 @@ func NewService(config ServiceConfig) *Service {
 		messages: config.Messages,
 		now:      config.Now,
 		logger:   config.Logger,
+
+		supportedTypes: make(map[string]bool, len(config.SupportedTypes)),
+	}
+	for destinationType, supported := range config.SupportedTypes {
+		service.supportedTypes[destinationType] = supported
 	}
 	if service.now == nil {
 		service.now = time.Now

@@ -192,7 +192,7 @@ func startHeartbeatStack(testInstance *testing.T) *heartbeatStack {
 	})
 
 	clock := &shiftedClock{}
-	store := heartbeat.NewPGStore(pool, sealer)
+	store := heartbeat.NewPGStore(pool, sealer, map[string]bool{registry.TypeWebhook: true})
 	return &heartbeatStack{
 		ctx: ctx,
 		service: heartbeat.NewService(heartbeat.ServiceConfig{

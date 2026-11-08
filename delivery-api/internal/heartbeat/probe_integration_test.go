@@ -164,7 +164,7 @@ func TestProbeSealedTokenIsNotPlaintextAndBindsToTheCheck(testInstance *testing.
 func TestProbeCreateWithTokenAndNilSealerFailsClosed(testInstance *testing.T) {
 	stack := newFixture(testInstance)
 	stack.destination(testInstance, "alpha")
-	unsealed := heartbeat.NewPGStore(stack.pool, nil)
+	unsealed := heartbeat.NewPGStore(stack.pool, nil, nil)
 
 	_, createErr := unsealed.Create(stack.ctx, heartbeat.NewCheck{
 		AppID: "billing", Name: "site", DestinationNames: []string{"alpha"},
