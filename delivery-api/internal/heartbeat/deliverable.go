@@ -6,8 +6,8 @@ import "sort"
 // type is mapped to true in supportedTypes. A nil or empty set means nothing is
 // deliverable (fail closed), and a type mapped to false is not supported.
 //
-// It is the one rule shared by the consumers: Step 3's flush, Step 4's readyz
-// count and Step 6's unassigned_checks. It matches message.Service's
+// It is the one rule shared by the consumers: the heartbeat flush, the readyz
+// held count and the unassigned checks listing. It matches message.Service's
 // supportedTypes check in routeTargets. It is deliberately enabled AND
 // supported type only: it does not apply registry.DestinationUsableBy's owner
 // check, so a destination message.Submit would reject as

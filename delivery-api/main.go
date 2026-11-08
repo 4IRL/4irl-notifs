@@ -228,6 +228,22 @@ func buildSinks(guardedClient *http.Client, ntfyURL string, logger *slog.Logger)
 	return sinks, supportedTypes
 }
 
+// buildHeartbeat builds the heartbeat store and service from the one supportedTypes set the message
+// service also receives, so the unassigned-alert count and the deliverable rule agree with submit.
+func buildHeartbeat(
+	pool *pgxpool.Pool, sealer *seal.Sealer, supportedTypes map[string]bool,
+	messages heartbeat.Messages, logger *slog.Logger,
+) (*heartbeat.PGStore, *heartbeat.Service) {
+	store := heartbeat.NewPGStore(pool, sealer, supportedTypes)
+	service := heartbeat.NewService(heartbeat.ServiceConfig{
+		Store:          store,
+		Messages:       messages,
+		Logger:         logger,
+		SupportedTypes: supportedTypes,
+	})
+	return store, service
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
@@ -447,14 +463,7 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 	}))
 	// The checker reads the message service as its alert sender, and its freshness tracker backs /readyz.
 	heartbeatFreshness := heartbeat.NewFreshness(time.Now)
-	heartbeatStore := heartbeat.NewPGStore(pool, sealer, supportedTypes)
-	heartbeatService := heartbeat.NewService(heartbeat.ServiceConfig{
-		Store:    heartbeatStore,
-		Messages: messageService,
-		Logger:   logger,
-
-		SupportedTypes: supportedTypes,
-	})
+	heartbeatStore, heartbeatService := buildHeartbeat(pool, sealer, supportedTypes, messageService, logger)
 	prober := newProberWiring(heartbeatStore, heartbeatService.HoldOffUntil, guardedClient, sealer, logger)
 	// See ServerConfig.Messages and ServerConfig.Publishers for why they are set only here.
 	handler := httpapi.NewServer(httpapi.ServerConfig{

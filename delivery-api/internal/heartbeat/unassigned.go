@@ -9,7 +9,7 @@ import (
 // undeliverableCheckPredicate selects checks (aliased c) with a pending alert
 // and no deliverable destination: no link to a destination that is enabled AND
 // of a supported type. It is the SQL form of Deliverable (keep them in step) and
-// Step 6's unassigned_checks reuses it. $1 is the supported-types text[].
+// the unassigned checks listing reuses it. $1 is the supported-types text[].
 const undeliverableCheckPredicate = `c.pending_alert IS NOT NULL AND NOT EXISTS (
 	SELECT 1 FROM heartbeat_check_destinations cd
 	JOIN destinations d ON d.id = cd.destination_id

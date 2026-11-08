@@ -77,9 +77,9 @@ type Service struct {
 	supportedTypes map[string]bool
 }
 
-// deliverable reports whether destination can deliver under this service's
-// supported-types set (see Deliverable).
-func (service *Service) deliverable(destination DestinationRef) bool {
+// Deliverable reports whether destination can deliver under this service's
+// supported-types set (see the package-level Deliverable).
+func (service *Service) Deliverable(destination DestinationRef) bool {
 	return Deliverable(destination, service.supportedTypes)
 }
 
@@ -94,11 +94,10 @@ func NewService(config ServiceConfig) *Service {
 		panic("heartbeat.NewService: Messages is required")
 	}
 	service := &Service{
-		store:    config.Store,
-		messages: config.Messages,
-		now:      config.Now,
-		logger:   config.Logger,
-
+		store:          config.Store,
+		messages:       config.Messages,
+		now:            config.Now,
+		logger:         config.Logger,
 		supportedTypes: make(map[string]bool, len(config.SupportedTypes)),
 	}
 	for destinationType, supported := range config.SupportedTypes {

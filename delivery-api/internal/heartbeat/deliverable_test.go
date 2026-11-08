@@ -53,12 +53,12 @@ func TestNewServiceCopiesSupportedTypes(testInstance *testing.T) {
 	supported := map[string]bool{"ntfy": true}
 	service := NewService(ServiceConfig{Store: &fakeStore{}, Messages: &fakeMessages{}, SupportedTypes: supported})
 	destination := DestinationRef{Type: "ntfy", Enabled: true}
-	if !service.deliverable(destination) {
+	if !service.Deliverable(destination) {
 		testInstance.Fatal("expected deliverable before mutation")
 	}
 	supported["ntfy"] = false
 	delete(supported, "ntfy")
-	if !service.deliverable(destination) {
+	if !service.Deliverable(destination) {
 		testInstance.Fatal("mutating the caller's map changed the service")
 	}
 }

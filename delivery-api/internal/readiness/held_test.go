@@ -189,6 +189,37 @@ func TestHeldFailureAfterSuccessServesStale(testInstance *testing.T) {
 	}
 }
 
+func TestHeldRecoveryClearsStale(testInstance *testing.T) {
+	harness := newHeldHarness()
+	harness.messages.set([]message.HeldAppSummary{{AppID: "a", Count: 3, OldestHeldAt: harness.clock.Now()}}, nil)
+	harness.cache.HeldSnapshot(context.Background())
+	harness.messages.set(nil, errors.New("db down"))
+	harness.clock.Advance(HeldCacheTTL)
+	if stale := harness.cache.HeldSnapshot(context.Background()); !stale.Stale {
+		testInstance.Fatalf("stale = %+v, want Stale", stale)
+	}
+	harness.messages.set([]message.HeldAppSummary{{AppID: "a", Count: 7, OldestHeldAt: harness.clock.Now()}}, nil)
+	harness.clock.Advance(HeldCacheTTL)
+	recovered := harness.cache.HeldSnapshot(context.Background())
+	if !recovered.Available || recovered.Stale || recovered.HeldMessages != 7 || !recovered.AsOf.Equal(harness.clock.Now()) {
+		testInstance.Fatalf("recovered = %+v", recovered)
+	}
+}
+
+func TestHeldAlertsFailureAfterSuccessServesStale(testInstance *testing.T) {
+	harness := newHeldHarness()
+	harness.messages.set([]message.HeldAppSummary{{AppID: "a", Count: 3, OldestHeldAt: harness.clock.Now()}}, nil)
+	harness.alerts.set(2, nil)
+	first := harness.cache.HeldSnapshot(context.Background())
+	harness.messages.set([]message.HeldAppSummary{{AppID: "a", Count: 9, OldestHeldAt: harness.clock.Now()}}, nil)
+	harness.alerts.set(0, errors.New("alerts down"))
+	harness.clock.Advance(HeldCacheTTL)
+	second := harness.cache.HeldSnapshot(context.Background())
+	if !second.Available || !second.Stale || second.HeldMessages != 3 || second.UnassignedAlerts != 2 || !second.AsOf.Equal(first.AsOf) {
+		testInstance.Fatalf("second = %+v, want previous counts served stale", second)
+	}
+}
+
 func TestHeldPartialFailureIsFailure(testInstance *testing.T) {
 	harness := newHeldHarness()
 	harness.messages.set([]message.HeldAppSummary{{AppID: "a", Count: 3, OldestHeldAt: harness.clock.Now()}}, nil)

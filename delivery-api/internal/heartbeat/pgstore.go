@@ -69,6 +69,11 @@ func NewPGStore(pool *pgxpool.Pool, sealer *seal.Sealer, supportedTypes map[stri
 	return &PGStore{pool: pool, sealer: sealer, supportedTypes: supportedTypeList(supportedTypes)}
 }
 
+// SupportedTypes returns a copy of the sorted deliverable destination types the store binds into SQL.
+func (store *PGStore) SupportedTypes() []string {
+	return append([]string{}, store.supportedTypes...)
+}
+
 // Create implements Store.
 func (store *PGStore) Create(ctx context.Context, check NewCheck, now time.Time) (StoredCheck, error) {
 	now = storeTime(now)

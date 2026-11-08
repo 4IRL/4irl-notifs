@@ -484,6 +484,29 @@ func TestBuildSinksAddsNtfyOnlyWhenConfigured(testInstance *testing.T) {
 	}
 }
 
+type stubHeartbeatMessages struct{}
+
+func (stubHeartbeatMessages) Submit(context.Context, message.Envelope) (message.StoredMessage, message.SubmitOutcome, error) {
+	return message.StoredMessage{}, message.SubmitOutcome{}, errors.New("not used")
+}
+
+func TestBuildHeartbeatWiresSupportedTypesIntoStoreAndService(testInstance *testing.T) {
+	_, supportedTypes := buildSinks(http.DefaultClient, "", newTestLogger())
+	store, service := buildHeartbeat(nil, nil, supportedTypes, stubHeartbeatMessages{}, newTestLogger())
+
+	if want := []string{"discord", "webhook"}; !slices.Equal(store.SupportedTypes(), want) {
+		testInstance.Fatalf("store supported types = %v, want %v", store.SupportedTypes(), want)
+	}
+	for _, destinationType := range []string{"webhook", "discord"} {
+		if !service.Deliverable(heartbeat.DestinationRef{Type: destinationType, Enabled: true}) {
+			testInstance.Errorf("service does not treat enabled %q as deliverable", destinationType)
+		}
+	}
+	if service.Deliverable(heartbeat.DestinationRef{Type: "ntfy", Enabled: true}) {
+		testInstance.Error("service treats ntfy as deliverable although the sink is unconfigured")
+	}
+}
+
 func TestBuildMinterNeedsBothOriginAndCredential(testInstance *testing.T) {
 	const fakeCredential = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	const resolverErrorText = "read secret file for DELIVERY_PROVISIONING_CREDENTIAL: no such file"

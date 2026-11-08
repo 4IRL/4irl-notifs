@@ -154,6 +154,33 @@ func TestReadyzHeldNilReporterOmitsKey(testInstance *testing.T) {
 	}
 }
 
+// nilSafeHeldReporter tolerates a nil receiver and reports unavailable.
+type nilSafeHeldReporter struct{}
+
+func (reporter *nilSafeHeldReporter) HeldSnapshot(context.Context) HeldSnapshot {
+	return HeldSnapshot{Available: false}
+}
+
+// A typed-nil reporter is outside the documented contract (Held must be an
+// untyped nil when absent): the server cannot detect it, so it calls the
+// reporter and renders whatever it returns. This pins that behaviour for a
+// nil-safe receiver (the key is present, not omitted).
+func TestReadyzHeldTypedNilReporterIsCalledNotOmitted(testInstance *testing.T) {
+	var reporter *nilSafeHeldReporter
+	recorder := httptest.NewRecorder()
+	NewServer(ServerConfig{Readiness: readinessFor(false), Held: reporter}).Handler().ServeHTTP(
+		recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	var body struct {
+		Held json.RawMessage `json:"held"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		testInstance.Fatalf("decode body %q: %v", recorder.Body.String(), err)
+	}
+	if recorder.Code != http.StatusOK || string(body.Held) != `{"available":false}` {
+		testInstance.Fatalf("code, held = %d, %s", recorder.Code, body.Held)
+	}
+}
+
 func TestReadyzHeldNotCalledWhenUnavailable(testInstance *testing.T) {
 	testCases := map[string]*fakeReadinessChecker{
 		"checker error": {err: errors.New("database down")},

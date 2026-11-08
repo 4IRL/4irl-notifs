@@ -43,7 +43,7 @@ the VPS; person-service + admin UI are Cloudflare-native.
   token (the whole-hostname Access app admits them; only `/v1/admin` is restricted to the proxy token), so
   any app token can read other apps' ids and held counts; the operator accepted this.
   A destination is deliverable when it is enabled and its type is in the supported-types set (the one
-  rule heartbeat delivery shares with held counting).
+  rule held counting uses; heartbeat flush adopts it in a later step, and today checks only `enabled`).
 - `POST /v1/heartbeats/{app_id}/{name}` and `POST /v1/heartbeats/{app_id}/{name}/fail` — the app-facing
   pings (outside `/v1/admin`, so an app's Access token reaches them). They need an app key
   (`Authorization: Bearer dak_...`) whose app is the `{app_id}` in the path (another app's id is `403
