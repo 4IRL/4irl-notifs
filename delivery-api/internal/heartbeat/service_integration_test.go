@@ -197,6 +197,7 @@ func startHeartbeatStack(testInstance *testing.T) *heartbeatStack {
 		ctx: ctx,
 		service: heartbeat.NewService(heartbeat.ServiceConfig{
 			Store: store, Messages: messageService, Now: clock.Now, Logger: logger,
+			SupportedTypes: map[string]bool{registry.TypeWebhook: true},
 		}),
 		store:    store,
 		messages: messageService,
@@ -363,6 +364,7 @@ func TestRetryAfterATransientSubmitFailureDeliversEachDestinationExactlyOnce(tes
 	flaky := &flakyMessages{real: stack.messages, failOnce: e2eFirstHook}
 	service := heartbeat.NewService(heartbeat.ServiceConfig{
 		Store: stack.store, Messages: flaky, Now: stack.clock.Now, Logger: slog.New(slog.DiscardHandler),
+		SupportedTypes: map[string]bool{registry.TypeWebhook: true},
 	})
 
 	if _, createErr := service.Create(stack.ctx, heartbeat.NewCheck{

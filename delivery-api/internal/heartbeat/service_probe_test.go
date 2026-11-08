@@ -76,6 +76,37 @@ func TestTickProbeDownBodies(t *testing.T) {
 	}
 }
 
+func TestTickProbeFollowsTheFlushRule(t *testing.T) {
+	disabled := DestinationRef{Name: "off", Type: registry.TypeNtfy, Enabled: false}
+	testCases := []struct {
+		name      string
+		refs      []DestinationRef
+		wantClear int
+	}{
+		{"zero destinations", nil, 0},
+		{"only disabled", []DestinationRef{disabled}, 0},
+		{"one deliverable", []DestinationRef{ntfyRef("ops_ntfy")}, 1},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			check := probeDownCheck(stringPointer(ReasonTimeout), nil)
+			check.Destinations = testCase.refs
+			store := &fakeStore{pending: []StoredCheck{check}}
+			messages := &fakeMessages{}
+			service, _ := newTestService(t, store, messages)
+			if err := service.Tick(context.Background()); err != nil {
+				t.Fatalf("Tick: %v", err)
+			}
+			if got := len(store.clearedCalls()); got != testCase.wantClear {
+				t.Errorf("clears = %d, want %d", got, testCase.wantClear)
+			}
+			if testCase.wantClear == 0 && len(messages.submitted()) != 0 {
+				t.Errorf("submits = %d, want none", len(messages.submitted()))
+			}
+		})
+	}
+}
+
 func TestTickProbeRecoveredBody(t *testing.T) {
 	check := recoveredCheck("ops_ntfy")
 	check.Probe = &ProbeState{Config: validProbeConfigForTest()}

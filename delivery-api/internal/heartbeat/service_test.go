@@ -238,6 +238,8 @@ func newServiceStartedAt(t *testing.T, store *fakeStore, messages *fakeMessages,
 		Messages: messages,
 		Now:      clock.Now,
 		Logger:   slog.New(slog.NewTextHandler(logs, nil)),
+
+		SupportedTypes: map[string]bool{registry.TypeNtfy: true},
 	})
 	return service, clock, logs
 }
@@ -677,7 +679,7 @@ func TestTickOneChecksFailureDoesNotStopTheNext(t *testing.T) {
 	}
 }
 
-func TestTickAllDestinationsDisabledStillClears(t *testing.T) {
+func TestTickAllDestinationsDisabledStaysPending(t *testing.T) {
 	check := downMissedCheck("ops_ntfy")
 	check.Destinations[0].Enabled = false
 	store := &fakeStore{pending: []StoredCheck{check}}
@@ -687,8 +689,132 @@ func TestTickAllDestinationsDisabledStillClears(t *testing.T) {
 	if err := service.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
-	if len(messages.submitted()) != 0 || len(store.clearedCalls()) != 1 {
-		t.Errorf("submits = %d, cleared = %v, want none and one clear", len(messages.submitted()), store.clearedCalls())
+	if len(messages.submitted()) != 0 || len(store.clearedCalls()) != 0 {
+		t.Errorf("submits = %d, cleared = %v, want none and no clear", len(messages.submitted()), store.clearedCalls())
+	}
+}
+
+// flushCheck builds a pending down alert whose destinations are the given refs.
+func flushCheck(refs ...DestinationRef) StoredCheck {
+	check := downMissedCheck("ops_ntfy")
+	check.Destinations = refs
+	return check
+}
+
+func ntfyRef(name string) DestinationRef {
+	return DestinationRef{Name: name, Type: registry.TypeNtfy, Enabled: true}
+}
+
+func TestFlushClearsOnlyAfterADeliverableDestinationAccepted(t *testing.T) {
+	disabled := DestinationRef{Name: "off", Type: registry.TypeNtfy, Enabled: false}
+	unsupported := DestinationRef{Name: "odd", Type: "carrier_pigeon", Enabled: true}
+	transient := errors.New("database unavailable")
+	testCases := []struct {
+		name       string
+		refs       []DestinationRef
+		errs       map[string]error
+		wantSubmit int
+		wantClear  int
+		wantErr    bool
+	}{
+		{name: "zero destinations", refs: nil},
+		{name: "all disabled", refs: []DestinationRef{disabled}},
+		{name: "only unsupported type", refs: []DestinationRef{unsupported}},
+		{name: "unknown rejection", refs: []DestinationRef{ntfyRef("a")}, errs: map[string]error{"a": registry.ErrUnknownDestination}, wantSubmit: 1},
+		{name: "disabled rejection", refs: []DestinationRef{ntfyRef("a")}, errs: map[string]error{"a": registry.ErrDestinationDisabled}, wantSubmit: 1},
+		{name: "unsupported rejection", refs: []DestinationRef{ntfyRef("a")}, errs: map[string]error{"a": message.ErrUnsupportedDestinationType}, wantSubmit: 1},
+		{name: "accepted plus disabled", refs: []DestinationRef{ntfyRef("a"), disabled}, wantSubmit: 1, wantClear: 1},
+		{name: "accepted plus permanently rejected", refs: []DestinationRef{ntfyRef("a"), ntfyRef("b")}, errs: map[string]error{"b": registry.ErrUnknownDestination}, wantSubmit: 2, wantClear: 1},
+		{name: "accepted plus transient", refs: []DestinationRef{ntfyRef("a"), ntfyRef("b")}, errs: map[string]error{"b": transient}, wantSubmit: 2, wantErr: true},
+		{name: "transient alone", refs: []DestinationRef{ntfyRef("a")}, errs: map[string]error{"a": transient}, wantSubmit: 1, wantErr: true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := &fakeStore{pending: []StoredCheck{flushCheck(testCase.refs...)}}
+			messages := &fakeMessages{}
+			for destination, submitErr := range testCase.errs {
+				messages.setError(destination, submitErr)
+			}
+			service, _ := newTestService(t, store, messages)
+
+			tickErr := service.Tick(context.Background())
+			if (tickErr != nil) != testCase.wantErr {
+				t.Errorf("Tick error = %v, wantErr %v", tickErr, testCase.wantErr)
+			}
+			if got := len(messages.submitted()); got != testCase.wantSubmit {
+				t.Errorf("submits = %d, want %d", got, testCase.wantSubmit)
+			}
+			if got := len(store.clearedCalls()); got != testCase.wantClear {
+				t.Errorf("clears = %d, want %d", got, testCase.wantClear)
+			}
+		})
+	}
+}
+
+func TestFlushDuplicateResubmitStillClears(t *testing.T) {
+	store := &fakeStore{pending: []StoredCheck{flushCheck(ntfyRef("a"))}}
+	messages := &fakeMessages{}
+	service, _ := newTestService(t, store, messages)
+
+	for tick := 0; tick < 2; tick++ {
+		if err := service.Tick(context.Background()); err != nil {
+			t.Fatalf("Tick %d: %v", tick, err)
+		}
+	}
+	if got := len(messages.deliveredKeys()); got != 1 {
+		t.Errorf("delivered keys = %d, want 1 (deduplicated)", got)
+	}
+	if got := len(store.clearedCalls()); got != 2 {
+		t.Errorf("clears = %d, want 2: a duplicate resubmit counts as accepted", got)
+	}
+}
+
+func TestFlushLogsAreThrottled(t *testing.T) {
+	const waiting = "heartbeat alert waiting for a deliverable destination"
+	store := &fakeStore{pending: []StoredCheck{flushCheck()}}
+	service, clock, logs := newServiceStartedAt(t, store, &fakeMessages{}, serviceNow.Add(-StartupHoldOff))
+	clock.Set(serviceNow)
+
+	for tick := 0; tick < 5; tick++ {
+		if err := service.Tick(context.Background()); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+	if got := strings.Count(logs.String(), waiting); got != 1 {
+		t.Errorf("waiting lines = %d, want 1", got)
+	}
+	clock.Set(serviceNow.Add(heldAlertWarnInterval))
+	if err := service.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := strings.Count(logs.String(), waiting); got != 2 {
+		t.Errorf("waiting lines after the interval = %d, want 2", got)
+	}
+	store.mutex.Lock()
+	next := flushCheck()
+	next.AlertSeq++
+	store.pending = []StoredCheck{next}
+	store.mutex.Unlock()
+	if err := service.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := strings.Count(logs.String(), waiting); got != 3 {
+		t.Errorf("waiting lines for a new alert seq = %d, want 3", got)
+	}
+}
+
+func TestFlushSkipLogIsThrottled(t *testing.T) {
+	disabled := DestinationRef{Name: "off_dest", Type: registry.TypeNtfy, Enabled: false}
+	store := &fakeStore{pending: []StoredCheck{flushCheck(disabled)}}
+	service, logs := newTestService(t, store, &fakeMessages{})
+
+	for tick := 0; tick < 4; tick++ {
+		if err := service.Tick(context.Background()); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+	if got := strings.Count(logs.String(), "destination skipped"); got != 1 {
+		t.Errorf("skip lines = %d, want 1", got)
 	}
 }
 
