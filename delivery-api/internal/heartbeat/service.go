@@ -195,7 +195,8 @@ func (service *Service) recordPing(ctx context.Context, appID string, name strin
 }
 
 // Tick advances overdue checks (skipped during the startup hold-off, which never delays
-// flushing) and flushes pending alerts (an alert no deliverable destination accepted stays pending); one check's failed flush never blocks the others.
+// flushing) and flushes pending alerts (an alert no deliverable destination accepted stays pending);
+// one check's failed flush never blocks the others.
 func (service *Service) Tick(ctx context.Context) error {
 	now := service.now()
 	if now.Before(service.holdOffUntil) {

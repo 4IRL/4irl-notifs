@@ -234,11 +234,10 @@ func newServiceStartedAt(t *testing.T, store *fakeStore, messages *fakeMessages,
 	logs := &lockedBuffer{}
 	clock := &testClock{current: start}
 	service := NewService(ServiceConfig{
-		Store:    store,
-		Messages: messages,
-		Now:      clock.Now,
-		Logger:   slog.New(slog.NewTextHandler(logs, nil)),
-
+		Store:          store,
+		Messages:       messages,
+		Now:            clock.Now,
+		Logger:         slog.New(slog.NewTextHandler(logs, nil)),
 		SupportedTypes: map[string]bool{registry.TypeNtfy: true},
 	})
 	return service, clock, logs
@@ -716,10 +715,11 @@ func TestFlushClearsOnlyAfterADeliverableDestinationAccepted(t *testing.T) {
 		wantSubmit int
 		wantClear  int
 		wantErr    bool
+		wantReason string
 	}{
 		{name: "zero destinations", refs: nil},
-		{name: "all disabled", refs: []DestinationRef{disabled}},
-		{name: "only unsupported type", refs: []DestinationRef{unsupported}},
+		{name: "all disabled", refs: []DestinationRef{disabled}, wantReason: "destination disabled"},
+		{name: "only unsupported type", refs: []DestinationRef{unsupported}, wantReason: "destination type not supported"},
 		{name: "unknown rejection", refs: []DestinationRef{ntfyRef("a")}, errs: map[string]error{"a": registry.ErrUnknownDestination}, wantSubmit: 1},
 		{name: "disabled rejection", refs: []DestinationRef{ntfyRef("a")}, errs: map[string]error{"a": registry.ErrDestinationDisabled}, wantSubmit: 1},
 		{name: "unsupported rejection", refs: []DestinationRef{ntfyRef("a")}, errs: map[string]error{"a": message.ErrUnsupportedDestinationType}, wantSubmit: 1},
@@ -735,9 +735,12 @@ func TestFlushClearsOnlyAfterADeliverableDestinationAccepted(t *testing.T) {
 			for destination, submitErr := range testCase.errs {
 				messages.setError(destination, submitErr)
 			}
-			service, _ := newTestService(t, store, messages)
+			service, logs := newTestService(t, store, messages)
 
 			tickErr := service.Tick(context.Background())
+			if testCase.wantReason != "" && !strings.Contains(logs.String(), `reason="`+testCase.wantReason+`"`) {
+				t.Errorf("logs missing skip reason %q:\n%s", testCase.wantReason, logs.String())
+			}
 			if (tickErr != nil) != testCase.wantErr {
 				t.Errorf("Tick error = %v, wantErr %v", tickErr, testCase.wantErr)
 			}
@@ -815,6 +818,30 @@ func TestFlushSkipLogIsThrottled(t *testing.T) {
 	}
 	if got := strings.Count(logs.String(), "destination skipped"); got != 1 {
 		t.Errorf("skip lines = %d, want 1", got)
+	}
+}
+
+func TestFlushSkipLogKeysAreIndependentPerDestinationAndCheck(t *testing.T) {
+	firstOff := DestinationRef{Name: "off_one", Type: registry.TypeNtfy, Enabled: false}
+	secondOff := DestinationRef{Name: "off_two", Type: registry.TypeNtfy, Enabled: false}
+	otherCheck := flushCheck(firstOff)
+	otherCheck.ID = 99
+	store := &fakeStore{pending: []StoredCheck{flushCheck(firstOff, secondOff), otherCheck}}
+	service, logs := newTestService(t, store, &fakeMessages{})
+
+	for tick := 0; tick < 3; tick++ {
+		if err := service.Tick(context.Background()); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+	if got := strings.Count(logs.String(), "destination skipped"); got != 3 {
+		t.Errorf("skip lines = %d, want 3 (two destinations on one check, one on another, each once):\n%s", got, logs.String())
+	}
+	if got := strings.Count(logs.String(), "destination=off_one"); got != 2 {
+		t.Errorf("off_one lines = %d, want 2 (once per check)", got)
+	}
+	if got := strings.Count(logs.String(), "destination=off_two"); got != 1 {
+		t.Errorf("off_two lines = %d, want 1", got)
 	}
 }
 
