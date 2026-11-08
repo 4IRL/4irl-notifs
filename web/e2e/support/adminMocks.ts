@@ -53,6 +53,10 @@ export interface DeliveryMockSeed {
   acknowledgeError?: { status: number; message: string };
   /** When set, acknowledge-all fails with this status and message. */
   acknowledgeAllError?: { status: number; message: string };
+  /** Personal destinations, as the operator list returns them (empty by default). */
+  personalDestinations?: Json[];
+  /** The `total` the list reports; defaults to the number of rows served. */
+  personalDestinationsTotal?: number;
 }
 
 export interface DeliveryMock {
@@ -136,16 +140,32 @@ export function routeWire({
   };
 }
 
-export function deliveryWire({ id, state = 'dead' }: { id: number; state?: string }): Json {
+export function deliveryWire({
+  id,
+  state = 'dead',
+  targetKind = 'destination',
+  personHash = null,
+  destination = 'hook1',
+  deadReason = 'max_attempts',
+}: {
+  id: number;
+  state?: string;
+  targetKind?: 'destination' | 'recipient' | 'personal';
+  personHash?: string | null;
+  destination?: string;
+  deadReason?: string;
+}): Json {
   return {
+    target_kind: targetKind,
+    person_hash: personHash,
     id,
     message_id: 'b3a1c6f0-1111-4222-8333-444455556666',
     app_id: 'urls4irl',
     channel: 'alerts',
-    destination: 'hook1',
+    destination,
     destination_type: 'webhook',
     state,
-    dead_reason: state === 'dead' ? 'max_attempts' : null,
+    dead_reason: state === 'dead' ? deadReason : null,
     attempt_count: 3,
     last_status_code: 500,
     next_attempt_at: null,
@@ -386,6 +406,53 @@ export function identityRegistrarWire({
     approved_at: TIMESTAMP,
     app_count: appCount,
     app_limit: REGISTRAR_APP_LIMIT,
+  };
+}
+
+export interface PersonalDestinationWireSeed {
+  id: number;
+  personHash?: string;
+  label?: string;
+  type?: 'discord' | 'webhook';
+  registeredByAppId?: string;
+  registrarRemoved?: boolean;
+  optedInAppIds?: string[];
+  enabled?: boolean;
+  disabledBy?: 'app' | 'operator' | 'system' | null;
+  disabledReason?: string | null;
+}
+
+/** The operator (admin) view of a personal destination, secrets masked like the server does. */
+export function personalDestinationWire({
+  id,
+  personHash = '76gzqgp4byjl6dje',
+  label = `Endpoint ${id}`,
+  type = 'discord',
+  registeredByAppId = 'urls4irl',
+  registrarRemoved = false,
+  optedInAppIds = [registeredByAppId],
+  enabled = true,
+  disabledBy = null,
+  disabledReason = null,
+}: PersonalDestinationWireSeed): Json {
+  return {
+    id,
+    person_hash: personHash,
+    label,
+    type,
+    config: {},
+    secrets:
+      type === 'discord'
+        ? { webhook_url: 'https://discord.com/****' }
+        : { url: 'https://hooks.example.net/****', signing_secret: '****' },
+    enabled,
+    disabled_by: enabled ? null : (disabledBy ?? 'operator'),
+    disabled_reason: enabled ? null : disabledReason,
+    registered_by_app_id: registeredByAppId,
+    registrar_removed: registrarRemoved,
+    opted_in_app_ids: [...optedInAppIds].sort(),
+    created_at: TIMESTAMP,
+    updated_at: TIMESTAMP,
   };
 }
 
@@ -765,6 +832,7 @@ export async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Pro
   let identityRequests = [...(seed.identityRequests ?? [])];
   let identityBindings = [...(seed.identityBindings ?? [])];
   let identityRegistrars = [...(seed.identityRegistrars ?? [])];
+  let personalDestinations = [...(seed.personalDestinations ?? [])];
   let nextRouteId = 100;
   let nextHeartbeatId = 100;
 
@@ -1375,6 +1443,49 @@ export async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Pro
       const deleted = identityBindings.some((binding) => binding.app_id === appId);
       identityBindings = identityBindings.filter((binding) => binding.app_id !== appId);
       await reply({ route, body: { app_id: appId, deleted } });
+      return;
+    }
+    if (method === 'GET' && pathname === '/delivery/v1/admin/personal-destinations') {
+      const personHash = url.searchParams.get('person_hash');
+      const served =
+        personHash === null
+          ? personalDestinations
+          : personalDestinations.filter((row) => row.person_hash === personHash);
+      await reply({
+        route,
+        body: {
+          personal_destinations: served,
+          total: seed.personalDestinationsTotal ?? served.length,
+        },
+      });
+      return;
+    }
+    const personalMatch = /^\/delivery\/v1\/admin\/personal-destinations\/(\d+)$/.exec(pathname);
+    if (personalMatch !== null && (method === 'PATCH' || method === 'DELETE')) {
+      const id = Number(personalMatch[1]);
+      const existing = personalDestinations.find((row) => row.id === id);
+      if (existing === undefined) {
+        await reply({
+          route,
+          status: 404,
+          body: { error: 'personal destination does not exist' },
+        });
+        return;
+      }
+      if (method === 'DELETE') {
+        personalDestinations = personalDestinations.filter((row) => row.id !== id);
+        await reply({ route, body: { id, deleted: true } });
+        return;
+      }
+      const body = recorded.body as { enabled: boolean; disabled_reason?: string };
+      const updated: Json = {
+        ...existing,
+        enabled: body.enabled,
+        disabled_by: body.enabled ? null : 'operator',
+        disabled_reason: body.enabled ? null : (body.disabled_reason ?? null),
+      };
+      personalDestinations = personalDestinations.map((row) => (row.id === id ? updated : row));
+      await reply({ route, body: { personal_destination: updated } });
       return;
     }
     if (method === 'POST' && pathname === '/delivery/v1/admin/messages') {

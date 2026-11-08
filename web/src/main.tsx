@@ -35,12 +35,15 @@ const heartbeatsEnabled = destinationsEnabled && import.meta.env.VITE_HEARTBEATS
 // App identities (approve an app's GitHub deploy identity, manage its keys) is
 // independent of the registry, so its flag stands alone.
 const appIdentitiesEnabled = import.meta.env.VITE_APP_IDENTITIES_ENABLED === 'true';
+// Personal destinations (the operator view of people's own endpoints) is likewise independent.
+const personalDestinationsEnabled = import.meta.env.VITE_PERSONAL_DESTINATIONS_ENABLED === 'true';
 const deliveryClient =
   destinationsEnabled ||
   deliveryLogEnabled ||
   pendingSendsEnabled ||
   heartbeatsEnabled ||
-  appIdentitiesEnabled
+  appIdentitiesEnabled ||
+  personalDestinationsEnabled
     ? createDeliveryApiClient({})
     : undefined;
 
@@ -61,6 +64,7 @@ createRoot(rootElement).render(
       pendingSendsEnabled={pendingSendsEnabled}
       heartbeatsEnabled={heartbeatsEnabled}
       appIdentitiesEnabled={appIdentitiesEnabled}
+      personalDestinationsEnabled={personalDestinationsEnabled}
     />
   </StrictMode>,
 );

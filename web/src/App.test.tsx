@@ -658,6 +658,48 @@ describe('App', () => {
     );
   });
 
+  it('reloads the personal destinations after a person is deleted', async () => {
+    const client = buildFakeClient();
+    const deliveryClient = buildFakeDeliveryClient();
+    const personClient = buildFakePersonClient({
+      listPeople: vi.fn().mockResolvedValue([
+        {
+          personHash: '76gzqgp4byjl6dje',
+          email: 'alice@example.com',
+          createdAt: '2026-07-19T18:12:03Z',
+        },
+      ]),
+    });
+    render(
+      <App
+        client={client}
+        personClient={personClient}
+        deliveryClient={deliveryClient}
+        personalDestinationsEnabled
+      />,
+    );
+    // The section mounts with the Delivery tab; go back to People to delete.
+    await userEvent.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+    await waitFor(() => expect(deliveryClient.listPersonalDestinations).toHaveBeenCalledTimes(1));
+    await userEvent.click(screen.getByRole('tab', { name: strings.tabProvisioning }));
+
+    const row = (await screen.findByText('alice@example.com')).closest('tr');
+    if (row === null) {
+      throw new Error('person row not found');
+    }
+    await userEvent.click(
+      within(row).getByRole('button', { name: `${strings.deleteAction} alice@example.com` }),
+    );
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: `${strings.confirmDeleteAction} alice@example.com`,
+      }),
+    );
+
+    await waitFor(() => expect(client.deleteUser).toHaveBeenCalled());
+    await waitFor(() => expect(deliveryClient.listPersonalDestinations).toHaveBeenCalledTimes(2));
+  });
+
   it('does not render the Apps section unless appsEnabled is set', async () => {
     const personClient = buildFakePersonClient();
     render(<App client={buildFakeClient()} personClient={personClient} />);
@@ -1533,6 +1575,41 @@ describe('App Delivery tab', () => {
         await screen.findByRole('heading', { name: strings.identitiesHeading }),
       ).toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: strings.routesHeading })).toBeNull();
+    });
+  });
+
+  describe('Personal destinations section', () => {
+    it('renders and loads when its flag is on, with no other flag', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient();
+      render(
+        <App
+          client={buildFakeClient()}
+          deliveryClient={deliveryClient}
+          personalDestinationsEnabled
+        />,
+      );
+
+      await user.click(tab(strings.tabDelivery));
+
+      expect(
+        await screen.findByRole('heading', { name: strings.personalHeading }),
+      ).toBeInTheDocument();
+      expect(deliveryClient.listPersonalDestinations).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders nothing and never calls the client when the flag is off', async () => {
+      const user = userEvent.setup();
+      const deliveryClient = buildFakeDeliveryClient();
+      render(
+        <App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />,
+      );
+
+      await user.click(tab(strings.tabDelivery));
+      await screen.findByRole('heading', { name: strings.routesHeading });
+
+      expect(screen.queryByRole('heading', { name: strings.personalHeading })).toBeNull();
+      expect(deliveryClient.listPersonalDestinations).not.toHaveBeenCalled();
     });
   });
 

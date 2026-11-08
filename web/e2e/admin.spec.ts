@@ -12,6 +12,7 @@ import {
   expectTouchTarget,
   heartbeatWire,
   identityBindingWire,
+  personalDestinationWire,
   identityKeyWire,
   identityRegistrarWire,
   identityRequestWire,
@@ -2428,6 +2429,74 @@ test.describe('admin UI Delivery tab', () => {
     await expect(approve).toBeFocused();
     await expect(approve).not.toHaveAttribute('aria-disabled', 'true');
     expect(mock.mutations).toHaveLength(1);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('personal destinations: disable, enable and delete a row, with focus and announcements', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      personalDestinations: [
+        personalDestinationWire({ id: 1, label: 'Alpha' }),
+        personalDestinationWire({ id: 2, label: 'Beta' }),
+      ],
+    });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Personal destinations' });
+    await expect(section.getByText('2 personal destinations, 0 disabled')).toBeVisible();
+
+    await section
+      .getByRole('button', {
+        name: 'Disable personal destination Alpha of 76gzqgp4byjl6dje',
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole('button', {
+        name: 'Confirm disable personal destination Alpha of 76gzqgp4byjl6dje',
+        exact: true,
+      })
+      .click();
+    const enable = section.getByRole('button', {
+      name: 'Enable personal destination Alpha of 76gzqgp4byjl6dje',
+      exact: true,
+    });
+    await expect(enable).toBeFocused();
+    await expect(section.getByText('2 personal destinations, 1 disabled')).toBeVisible();
+
+    await enable.click();
+    await expect(
+      section.getByRole('button', {
+        name: 'Disable personal destination Alpha of 76gzqgp4byjl6dje',
+        exact: true,
+      }),
+    ).toBeFocused();
+
+    await section
+      .getByRole('button', {
+        name: 'Delete personal destination Alpha of 76gzqgp4byjl6dje',
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole('button', {
+        name: 'Confirm delete personal destination Alpha of 76gzqgp4byjl6dje',
+        exact: true,
+      })
+      .click();
+    await expect(section.getByText('Alpha', { exact: true })).toHaveCount(0);
+    await expect(
+      section.getByRole('button', {
+        name: 'Disable personal destination Beta of 76gzqgp4byjl6dje',
+        exact: true,
+      }),
+    ).toBeFocused();
+
+    expect(mock.mutations.map((entry) => `${entry.method} ${entry.pathname}`)).toEqual([
+      'PATCH /delivery/v1/admin/personal-destinations/1',
+      'PATCH /delivery/v1/admin/personal-destinations/1',
+      'DELETE /delivery/v1/admin/personal-destinations/1',
+    ]);
     expect(mock.unmocked).toEqual([]);
   });
 
