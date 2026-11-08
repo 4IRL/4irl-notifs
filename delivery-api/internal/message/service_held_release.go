@@ -12,6 +12,10 @@ import (
 // ReleaseHeld batch resolves.
 const heldReleasePairPage = 100
 
+// heldReleaseWarnInterval is the minimum gap between two throttled held
+// release warnings with the same key.
+const heldReleaseWarnInterval = 10 * time.Minute
+
 // Error classes used in throttle keys and in the pair-level screen.
 const (
 	heldClassUnsupportedType = "unsupported_type"

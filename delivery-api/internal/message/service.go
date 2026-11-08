@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/envint"
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/logthrottle"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
@@ -212,7 +213,7 @@ type Service struct {
 	heldCursor      HeldPair
 	heldCursorMutex sync.Mutex
 	// warnThrottle rate-limits ReleaseHeld's warnings per key.
-	warnThrottle *logThrottle
+	warnThrottle *logthrottle.Throttle
 	// awaitSlots is a counting semaphore bounding concurrent Await pollers.
 	awaitSlots chan struct{}
 }
@@ -242,7 +243,7 @@ func NewService(config ServiceConfig) *Service {
 		maxTotal:       config.MaxScheduledTotal,
 		holdUnrouted:   config.HoldUnrouted,
 		heldCaps:       HeldCaps{PerApp: config.MaxHeldPerApp, Total: config.MaxHeldTotal},
-		warnThrottle:   newLogThrottle(),
+		warnThrottle:   logthrottle.New(heldReleaseWarnInterval),
 	}
 	for destinationType, supported := range config.SupportedTypes {
 		service.supportedTypes[destinationType] = supported
