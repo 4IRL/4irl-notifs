@@ -12,6 +12,7 @@ import type {
   IdentityBinding,
   IdentityKey,
   IdentityRequest,
+  PersonalDestinationSummary,
   RouteSummary,
 } from '../api/deliveryClient';
 import { strings } from '../strings';
@@ -22,6 +23,7 @@ import { AppsTable } from './AppsTable';
 import { DestinationsSection } from './DestinationsSection';
 import { Heartbeats } from './Heartbeats';
 import { PeopleTable } from './PeopleTable';
+import { PersonalDestinations } from './PersonalDestinations';
 import { RoutesSection } from './RoutesSection';
 import type { DestinationsLoadState } from './RoutesSection';
 import { UsersTable } from './UsersTable';
@@ -1824,5 +1826,73 @@ describe('Provisioning tables, roomy layout', () => {
     ]);
     expect(allKebabs()).toHaveLength(0);
     expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Personal destinations: one control set per layout.
+// ---------------------------------------------------------------------------------------
+
+const PERSONAL_ROW: PersonalDestinationSummary = {
+  id: 1,
+  personHash: '76gzqgp4byjl6dje',
+  label: 'Alpha',
+  type: 'discord',
+  config: {},
+  secrets: { webhook_url: 'https://discord.com/****' },
+  enabled: true,
+  disabledBy: null,
+  disabledReason: null,
+  registeredByAppId: 'urls4irl',
+  registrarRemoved: false,
+  optedInAppIds: ['urls4irl'],
+  createdAt: '2026-10-21T18:04:00Z',
+  updatedAt: '2026-10-21T18:04:00Z',
+};
+const PERSONAL_NAME = 'Alpha of 76gzqgp4byjl6dje';
+
+function renderPersonal() {
+  return render(
+    <PersonalDestinations
+      client={buildClient({
+        listPersonalDestinations: vi
+          .fn()
+          .mockResolvedValue({ personalDestinations: [PERSONAL_ROW], total: 1 }),
+      })}
+    />,
+  );
+}
+
+describe('Personal destinations table, narrow layout', () => {
+  beforeEach(() => {
+    setCompactViewport(true);
+  });
+
+  it('has a kebab per row and no inline buttons', async () => {
+    renderPersonal();
+    await screen.findByRole('button', { name: `Actions for ${PERSONAL_NAME}` });
+
+    expect(allKebabs()).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /^(Disable|Enable|Delete) personal/ })).toBeNull();
+  });
+});
+
+describe('Personal destinations table, roomy layout', () => {
+  it('keeps the inline buttons, has no kebab, and names contain the visible verb', async () => {
+    renderPersonal();
+    await screen.findByRole('button', { name: `Disable personal destination ${PERSONAL_NAME}` });
+
+    expect(allKebabs()).toHaveLength(0);
+    expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
+  });
+
+  it('swapping to the narrow layout while mounted leaves one control set', async () => {
+    renderPersonal();
+    await screen.findByRole('button', { name: `Disable personal destination ${PERSONAL_NAME}` });
+
+    setCompactViewport(true);
+
+    await screen.findByRole('button', { name: `Actions for ${PERSONAL_NAME}` });
+    expect(screen.queryByRole('button', { name: /^Disable personal/ })).toBeNull();
   });
 });

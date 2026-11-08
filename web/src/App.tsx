@@ -26,6 +26,7 @@ import { AppIdentities } from './components/AppIdentities';
 import { DeliveryRegistry } from './components/DeliveryRegistry';
 import { Heartbeats } from './components/Heartbeats';
 import { PendingSends } from './components/PendingSends';
+import { PersonalDestinations } from './components/PersonalDestinations';
 import type { DestinationsLoadState } from './components/RoutesSection';
 import { ProvisionForm } from './components/ProvisionForm';
 import { SendTestNotification } from './components/SendTestNotification';
@@ -79,6 +80,8 @@ interface AppProps {
   heartbeatsEnabled?: boolean;
   /** VITE_APP_IDENTITIES_ENABLED: the App identities section. */
   appIdentitiesEnabled?: boolean;
+  /** VITE_PERSONAL_DESTINATIONS_ENABLED: the Personal destinations section. */
+  personalDestinationsEnabled?: boolean;
 }
 
 function App({
@@ -91,6 +94,7 @@ function App({
   pendingSendsEnabled = false,
   heartbeatsEnabled = false,
   appIdentitiesEnabled = false,
+  personalDestinationsEnabled = false,
 }: AppProps) {
   // The destinations list as the Destinations section last reported it. Lifted
   // here so DeliveryRegistry (Routes) and Heartbeats share the one fetch.
@@ -102,6 +106,8 @@ function App({
   const [loading, setLoading] = useState(true);
   // Bumped when a removal may have deleted checks/routes/destinations; the Delivery sections reload on change.
   const [appRemovedSignal, setAppRemovedSignal] = useState(0);
+  // Bumped after a People delete, which removes that person's personal destinations server-side.
+  const [personDeletedSignal, setPersonDeletedSignal] = useState(0);
   // appIds with a removal running: the ref dedupes synchronously, the state drives rendering.
   const inFlightRemovalsRef = useRef<Set<string>>(new Set());
   const [removingAppIds, setRemovingAppIds] = useState<ReadonlySet<string>>(new Set());
@@ -287,6 +293,7 @@ function App({
         .deleteUser({ userId: `u_${personHash}` })
         .then(() => {
           setError(null);
+          setPersonDeletedSignal((value) => value + 1);
           return Promise.all([refreshUsers(), refreshPeople()]);
         })
         .then(() => undefined)
@@ -489,7 +496,8 @@ function App({
       deliveryLogEnabled ||
       pendingSendsEnabled ||
       heartbeatsSectionEnabled ||
-      appIdentitiesEnabled);
+      appIdentitiesEnabled ||
+      personalDestinationsEnabled);
 
   return (
     <div className="app">
@@ -518,6 +526,12 @@ function App({
                   destinationsState={destinationsState}
                   onDestinationsStateChange={setDestinationsState}
                   refreshSignal={appRemovedSignal}
+                />
+              )}
+              {personalDestinationsEnabled && (
+                <PersonalDestinations
+                  client={deliveryClient}
+                  refreshSignal={appRemovedSignal + personDeletedSignal}
                 />
               )}
               {heartbeatsSectionEnabled && (
