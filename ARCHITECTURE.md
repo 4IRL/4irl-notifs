@@ -43,14 +43,20 @@ the VPS; person-service + admin UI are Cloudflare-native.
   token (the whole-hostname Access app admits them; only `/v1/admin` is restricted to the proxy token), so
   any app token can read other apps' ids and held counts; the operator accepted this.
   A destination is deliverable when it is enabled and its type is in the supported-types set (the one
-  rule held counting uses; heartbeat flush adopts it in a later step, and today checks only `enabled`).
+  rule held counting uses; heartbeat flush uses it too).
 - `POST /v1/heartbeats/{app_id}/{name}` and `POST /v1/heartbeats/{app_id}/{name}/fail` — the app-facing
   pings (outside `/v1/admin`, so an app's Access token reaches them). They need an app key
   (`Authorization: Bearer dak_...`) whose app is the `{app_id}` in the path (another app's id is `403
   app_id does not match app key`). `200 {"app_id","name","state"}`; `404` for an unknown check. `/v1/admin/heartbeats` (`POST`, `GET`) and `/v1/admin/heartbeats/{id}` (`GET`, `PATCH`,
   `DELETE`) plus `POST /v1/admin/heartbeats/{id}/pause` and `/resume` — the operator check CRUD (Heartbeats
-  section of the Delivery tab). A check holds 1-20 destinations (a destination a check uses cannot be
-  deleted); a `down` or `recovered` alert is one message per destination through the normal pipeline.
+  section of the Delivery tab). A check holds 0-20 destinations (a destination a check uses cannot be
+  deleted); a `down` or `recovered` alert is one message per destination through the normal pipeline. With no
+  destination, or none deliverable, the alert stays pending (flush clears it only after at least one deliverable
+  destination accepted it) and is counted in the readyz `unassigned_alerts` block. That count covers only checks
+  with no deliverable destination: an alert held solely because every deliverable destination permanently
+  rejects the Submit (unknown, disabled at the registry, unsupported type at Submit) is not counted and shows up
+  only in the throttled waiting log. `PATCH` with `"destinations":[]` clears them; omitted or `null` leaves them
+  unchanged. The admin UI and onboard manifests still require one destination until a later release.
   The ping routes bind `app_id` to the caller's key (the same model as `/v1/messages`), so one app can
   no longer ping or fail another app's check.
   **Probe checks.** `POST /v1/admin/heartbeats` also creates a website probe check: instead of
@@ -132,7 +138,8 @@ the VPS; person-service + admin UI are Cloudflare-native.
   `"owner_app_id":"<app_id>"`. Other errors: `400 invalid check id`, `400 request violates a data
   constraint` (a database CHECK the validators did not catch, mapped defensively) and `413 request body too
   large`. A check may alert only destinations the app can use (its own and the
-  operator's), else `400 unknown destination`. A list returns only the app's own checks; a check the app does
+  operator's), else `400 unknown destination`. Zero destinations is also accepted (omitted, `null` or `[]` on
+  create; `PATCH` `[]` clears, omitted or `null` leaves them unchanged), as on the admin routes. A list returns only the app's own checks; a check the app does
   not own (the operator's under the same `app_id`, or another app's) is `404 check not found`, byte-identical
   to an absent one on every method, `PATCH` with an empty body included. The owner travels in the row lock of
   `PATCH`, `pause` and `resume` and in the `DELETE` statement. The checker and its alert flush are unchanged:

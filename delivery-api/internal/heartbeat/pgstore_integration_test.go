@@ -265,19 +265,55 @@ func TestPatchRefusesAnotherAppsDestination(testInstance *testing.T) {
 	}
 }
 
-func TestCreateWithoutDestinationsFailsClosed(testInstance *testing.T) {
+func TestCreateAndPatchAcceptZeroDestinations(testInstance *testing.T) {
 	stack := newFixture(testInstance)
 
-	_, err := stack.store.Create(stack.ctx, heartbeat.NewCheck{
+	zero, err := stack.store.Create(stack.ctx, heartbeat.NewCheck{
 		AppID: "billing", Name: "nightly", PeriodSeconds: 60, GraceSeconds: 60,
 	}, created)
+	if err != nil {
+		testInstance.Fatalf("create with no destinations: %v", err)
+	}
+	if len(zero.Destinations) != 0 {
+		testInstance.Fatalf("destinations = %+v, want none", zero.Destinations)
+	}
+	if rows := stack.count(testInstance, "heartbeat_checks"); rows != 1 {
+		testInstance.Fatalf("heartbeat_checks rows = %d, want 1", rows)
+	}
+	if rows := stack.count(testInstance, "heartbeat_check_destinations"); rows != 0 {
+		testInstance.Fatalf("heartbeat_check_destinations rows = %d, want 0", rows)
+	}
 
+	// More than MaxDestinations is still refused, and inserts nothing.
+	tooMany := make([]string, 0, heartbeat.MaxDestinations+1)
+	for index := 0; index <= heartbeat.MaxDestinations; index++ {
+		tooMany = append(tooMany, "dest_"+string(rune('a'+index)))
+	}
+	_, err = stack.store.Create(stack.ctx, heartbeat.NewCheck{
+		AppID: "billing", Name: "too_many", PeriodSeconds: 60, GraceSeconds: 60, DestinationNames: tooMany,
+	}, created)
 	var validationErr *heartbeat.ValidationError
 	if !errors.As(err, &validationErr) {
-		testInstance.Fatalf("create with no destinations error = %v, want *ValidationError", err)
+		testInstance.Fatalf("create with 21 destinations error = %v, want *ValidationError", err)
 	}
-	if rows := stack.count(testInstance, "heartbeat_checks"); rows != 0 {
-		testInstance.Fatalf("heartbeat_checks rows = %d, want 0", rows)
+	if rows := stack.count(testInstance, "heartbeat_checks"); rows != 1 {
+		testInstance.Fatalf("heartbeat_checks rows = %d, want 1 (the 21-name create inserted nothing)", rows)
+	}
+
+	stack.destination(testInstance, "ops")
+	linked := stack.check(testInstance, "linked", "ops")
+	later := created.Add(time.Hour)
+
+	kept, err := stack.store.Patch(stack.ctx, linked.ID, heartbeat.CheckPatch{GraceSeconds: &linked.GraceSeconds}, later)
+	if err != nil || len(kept.Destinations) != 1 {
+		testInstance.Fatalf("patch with nil destinations = (%+v, %v), want the link kept", kept.Destinations, err)
+	}
+	cleared, err := stack.store.Patch(stack.ctx, linked.ID, heartbeat.CheckPatch{DestinationNames: []string{}}, later)
+	if err != nil || len(cleared.Destinations) != 0 {
+		testInstance.Fatalf("patch with [] = (%+v, %v), want every link removed", cleared.Destinations, err)
+	}
+	if rows := stack.count(testInstance, "heartbeat_check_destinations"); rows != 0 {
+		testInstance.Fatalf("heartbeat_check_destinations rows = %d, want 0 after clearing", rows)
 	}
 }
 

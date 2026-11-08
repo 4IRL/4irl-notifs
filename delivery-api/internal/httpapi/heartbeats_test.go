@@ -682,6 +682,29 @@ func TestCreatePassesTheDecodedCheckToTheService(testInstance *testing.T) {
 	}
 }
 
+func TestCreateAcceptsMissingAndEmptyDestinations(testInstance *testing.T) {
+	created := sampleCheck()
+	created.Destinations = nil
+	for name, body := range map[string]string{
+		"missing": `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":60}`,
+		"null":    `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":60,"destinations":null}`,
+		"empty":   `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":60,"destinations":[]}`,
+	} {
+		testInstance.Run(name, func(subTest *testing.T) {
+			fake := &fakeHeartbeats{createResult: created}
+
+			recorder := serveHeartbeats(fake, nil, http.MethodPost, "/v1/admin/heartbeats", body)
+
+			if recorder.Code != http.StatusCreated {
+				subTest.Fatalf("status = %d, want 201; body = %s", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), `"destinations":[]`) {
+				subTest.Fatalf("body = %s, want an empty destinations array", recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestGetCheckReportsAnAppOwner(testInstance *testing.T) {
 	check := sampleCheck()
 	check.OwnerKind = registry.OwnerApp
@@ -710,8 +733,6 @@ func TestCreateRejectsEachInvalidFieldByName(testInstance *testing.T) {
 		{name: "missing grace", body: `{"app_id":"a","name":"n","period_seconds":60,"destinations":["d"]}`, wantBody: `{"error":"invalid grace_seconds"}`},
 		{name: "grace too small", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":59,"destinations":["d"]}`, wantBody: `{"error":"invalid grace_seconds"}`},
 		{name: "grace too large", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":604801,"destinations":["d"]}`, wantBody: `{"error":"invalid grace_seconds"}`},
-		{name: "missing destinations", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":60}`, wantBody: `{"error":"invalid destinations"}`},
-		{name: "empty destinations", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":60,"destinations":[]}`, wantBody: `{"error":"invalid destinations"}`},
 		{name: "duplicate destinations", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":60,"destinations":["d","d"]}`, wantBody: `{"error":"invalid destinations"}`},
 		{name: "bad destination name", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":60,"destinations":["Bad Name"]}`, wantBody: `{"error":"invalid destinations"}`},
 		{name: "too many destinations", body: `{"app_id":"a","name":"n","period_seconds":60,"grace_seconds":60,"destinations":[` + quotedNames(21) + `]}`, wantBody: `{"error":"invalid destinations"}`},
@@ -758,6 +779,7 @@ func TestPatchPassesOnlyTheNamedFieldsToTheService(testInstance *testing.T) {
 		{name: "period only", body: `{"period_seconds":120}`, want: heartbeat.CheckPatch{PeriodSeconds: intPointer(120)}},
 		{name: "grace only", body: `{"grace_seconds":3600}`, want: heartbeat.CheckPatch{GraceSeconds: intPointer(3600)}},
 		{name: "destinations only", body: `{"destinations":["ops_ntfy"]}`, want: heartbeat.CheckPatch{DestinationNames: []string{"ops_ntfy"}}},
+		{name: "empty destinations clears", body: `{"destinations":[]}`, want: heartbeat.CheckPatch{DestinationNames: []string{}}},
 		{
 			name: "everything", body: `{"period_seconds":300,"grace_seconds":120,"destinations":["ops_discord"]}`,
 			want: heartbeat.CheckPatch{PeriodSeconds: intPointer(300), GraceSeconds: intPointer(120), DestinationNames: []string{"ops_discord"}},
@@ -935,7 +957,6 @@ func TestPatchRejectsEachInvalidFieldByName(testInstance *testing.T) {
 		{name: "period too large", body: `{"period_seconds":2678401}`, wantBody: `{"error":"invalid period_seconds"}`},
 		{name: "grace too small", body: `{"grace_seconds":0}`, wantBody: `{"error":"invalid grace_seconds"}`},
 		{name: "grace too large", body: `{"grace_seconds":604801}`, wantBody: `{"error":"invalid grace_seconds"}`},
-		{name: "empty destinations", body: `{"destinations":[]}`, wantBody: `{"error":"invalid destinations"}`},
 		{name: "duplicate destinations", body: `{"destinations":["d","d"]}`, wantBody: `{"error":"invalid destinations"}`},
 		{name: "unknown field", body: `{"bogus":1}`, wantBody: `{"error":"invalid JSON body"}`},
 		{name: "not json", body: `nope`, wantBody: `{"error":"invalid JSON body"}`},
@@ -1049,7 +1070,7 @@ func TestUnknownDestinationIsDistinctFromAFieldValidationError(testInstance *tes
 	update := serveHeartbeats(fake, nil, http.MethodPatch, "/v1/admin/heartbeats/7", `{"destinations":["gone"]}`)
 	assertResponse(testInstance, update, http.StatusBadRequest, `{"error":"unknown destination"}`+"\n")
 
-	invalid := serveHeartbeats(&fakeHeartbeats{getResult: sampleCheck()}, nil, http.MethodPatch, "/v1/admin/heartbeats/7", `{"destinations":[]}`)
+	invalid := serveHeartbeats(&fakeHeartbeats{getResult: sampleCheck()}, nil, http.MethodPatch, "/v1/admin/heartbeats/7", `{"destinations":["d","d"]}`)
 	assertResponse(testInstance, invalid, http.StatusBadRequest, `{"error":"invalid destinations"}`+"\n")
 }
 

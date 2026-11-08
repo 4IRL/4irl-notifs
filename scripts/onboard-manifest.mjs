@@ -40,7 +40,8 @@ export const MIN_GRACE_SECONDS = 60;
 export const MAX_GRACE_SECONDS = 604_800;
 
 // Mirrors registry/validate.go's minRouteDestinations / maxRouteDestinations and
-// heartbeat/validate.go's MinDestinations / MaxDestinations (the two are the same bound).
+// heartbeat/validate.go's MaxDestinations. The heartbeat API accepts 0..20 destinations, but
+// manifests keep requiring 1..20 until the later release that makes them optional.
 export const MIN_ROUTE_DESTINATIONS = 1;
 export const MAX_ROUTE_DESTINATIONS = 20;
 

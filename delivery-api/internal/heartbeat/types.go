@@ -307,8 +307,10 @@ type AccessTokenPatch struct {
 // value. The store merges it into the row it holds locked (see Store.Patch), so
 // two patches naming different fields can never revert each other.
 type CheckPatch struct {
-	PeriodSeconds    *int
-	GraceSeconds     *int
+	PeriodSeconds *int
+	GraceSeconds  *int
+	// DestinationNames: nil keeps the current destinations; a non-nil empty slice
+	// clears them to zero.
 	DestinationNames []string
 	Probe            *ProbePatch
 	AccessToken      AccessTokenPatch

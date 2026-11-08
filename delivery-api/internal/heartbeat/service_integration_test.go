@@ -279,6 +279,104 @@ func (stack *heartbeatStack) requireQuiet(testInstance *testing.T, wantTotal int
 	}
 }
 
+// requireQuietWithPending is requireQuiet for a check that has nothing to deliver
+// to: the receiver saw exactly wantTotal requests and the one pending alert is
+// still of kind wantKind.
+func (stack *heartbeatStack) requireQuietWithPending(testInstance *testing.T, wantTotal int, wantKind string) {
+	testInstance.Helper()
+	for range 3 {
+		stack.clock.Advance(time.Second)
+		stack.tick(testInstance)
+		time.Sleep(e2eQuietPeriod / 3)
+	}
+	if got := len(stack.receiver.received()); got != wantTotal {
+		testInstance.Fatalf("receiver saw %d requests after further ticks, want exactly %d", got, wantTotal)
+	}
+	pending, listErr := stack.store.ListPendingAlerts(stack.ctx)
+	if listErr != nil {
+		testInstance.Fatalf("ListPendingAlerts: %v", listErr)
+	}
+	if len(pending) != 1 || pending[0].PendingAlert == nil || *pending[0].PendingAlert != wantKind {
+		testInstance.Fatalf("pending alerts = %+v, want exactly one of kind %q", pending, wantKind)
+	}
+}
+
+// requireSingleRequestOfType asserts the receiver's requests from index `from` are
+// exactly one call, to the first hook, carrying the given heartbeat payload type.
+func requireSingleRequestOfType(testInstance *testing.T, requests []hookRequest, from int, wantType string) {
+	testInstance.Helper()
+	window := requests[from:]
+	if len(window) != 1 || window[0].path != "/"+e2eFirstHook {
+		testInstance.Fatalf("requests from %d = %+v, want exactly one call to %s", from, window, e2eFirstHook)
+	}
+	var body struct {
+		Payload struct {
+			Type string `json:"type"`
+		} `json:"payload"`
+	}
+	if decodeErr := json.Unmarshal(window[0].body, &body); decodeErr != nil {
+		testInstance.Fatalf("decode webhook body %q: %v", window[0].body, decodeErr)
+	}
+	if body.Payload.Type != wantType {
+		testInstance.Fatalf("webhook payload type = %q, want %q: %s", body.Payload.Type, wantType, window[0].body)
+	}
+}
+
+func TestZeroDestinationCheckKeepsItsDownAlertUntilADestinationIsAssigned(testInstance *testing.T) {
+	stack := startHeartbeatStack(testInstance)
+
+	created, createErr := stack.service.Create(stack.ctx, heartbeat.NewCheck{
+		AppID: e2eAppID, Name: e2eCheckName, PeriodSeconds: e2ePeriodSeconds, GraceSeconds: e2eGraceSeconds,
+	})
+	if createErr != nil {
+		testInstance.Fatalf("Create with no destinations: %v", createErr)
+	}
+	if _, failErr := stack.service.Fail(stack.ctx, e2eAppID, e2eCheckName); failErr != nil {
+		testInstance.Fatalf("Fail: %v", failErr)
+	}
+	stack.tick(testInstance)
+	stack.requireQuietWithPending(testInstance, 0, heartbeat.AlertDown)
+
+	if _, patchErr := stack.service.Patch(stack.ctx, created.ID, heartbeat.CheckPatch{
+		DestinationNames: []string{e2eFirstHook},
+	}); patchErr != nil {
+		testInstance.Fatalf("Patch assigning a destination: %v", patchErr)
+	}
+	stack.tick(testInstance)
+	stack.receiver.waitForRequests(testInstance, 1)
+	requireSingleRequestOfType(testInstance, stack.receiver.received(), 0, "heartbeat.down")
+	stack.requireQuiet(testInstance, 1)
+}
+
+func TestZeroDestinationCheckThatRecoveredSendsOnlyRecoveredOnceAssigned(testInstance *testing.T) {
+	stack := startHeartbeatStack(testInstance)
+
+	created, createErr := stack.service.Create(stack.ctx, heartbeat.NewCheck{
+		AppID: e2eAppID, Name: e2eCheckName, PeriodSeconds: e2ePeriodSeconds, GraceSeconds: e2eGraceSeconds,
+	})
+	if createErr != nil {
+		testInstance.Fatalf("Create with no destinations: %v", createErr)
+	}
+	if _, failErr := stack.service.Fail(stack.ctx, e2eAppID, e2eCheckName); failErr != nil {
+		testInstance.Fatalf("Fail: %v", failErr)
+	}
+	if _, pingErr := stack.service.Ping(stack.ctx, e2eAppID, e2eCheckName); pingErr != nil {
+		testInstance.Fatalf("Ping: %v", pingErr)
+	}
+	stack.tick(testInstance)
+	stack.requireQuietWithPending(testInstance, 0, heartbeat.AlertRecovered)
+
+	if _, patchErr := stack.service.Patch(stack.ctx, created.ID, heartbeat.CheckPatch{
+		DestinationNames: []string{e2eFirstHook},
+	}); patchErr != nil {
+		testInstance.Fatalf("Patch assigning a destination: %v", patchErr)
+	}
+	stack.tick(testInstance)
+	stack.receiver.waitForRequests(testInstance, 1)
+	requireSingleRequestOfType(testInstance, stack.receiver.received(), 0, "heartbeat.recovered")
+	stack.requireQuiet(testInstance, 1)
+}
+
 func TestMissedPingDeliversOneDownAlertAndOneRecoveryAlert(testInstance *testing.T) {
 	stack := startHeartbeatStack(testInstance)
 

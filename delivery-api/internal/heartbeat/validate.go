@@ -43,8 +43,6 @@ const (
 	MinGraceSeconds = 60
 	// MaxGraceSeconds bounds a check's grace from above (7 days).
 	MaxGraceSeconds = 604_800
-	// MinDestinations bounds a check's destination set from below.
-	MinDestinations = 1
 	// MaxDestinations bounds a check's destination set from above.
 	MaxDestinations = 20
 )
@@ -81,10 +79,10 @@ func ValidateGraceSeconds(graceSeconds int) error {
 	return nil
 }
 
-// ValidateDestinations checks a check's destination names: 1-20 valid, distinct
+// ValidateDestinations checks a check's destination names: 0-20 valid, distinct
 // destination names. Whether they exist is the store's job.
 func ValidateDestinations(names []string) error {
-	if len(names) < MinDestinations || len(names) > MaxDestinations {
+	if len(names) > MaxDestinations {
 		return &ValidationError{Message: "invalid destinations"}
 	}
 	seen := make(map[string]bool, len(names))

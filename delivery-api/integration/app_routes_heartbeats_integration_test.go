@@ -602,6 +602,54 @@ func TestAppCheckDestinationRules(testInstance *testing.T) {
 	rig.requireRefused("POST a duplicate check", status, body, http.StatusConflict, checkExistsMessage)
 }
 
+// An app may create a check with `destinations: []`, PATCH [] to clear the destinations and PATCH null to leave
+// them alone. A 400 here means the compose delivery-api was not rebuilt from this worktree (make local-up).
+func TestAppCheckAcceptsZeroDestinations(testInstance *testing.T) {
+	rig := newAppDestinationsRig(testInstance)
+	destinationA := rig.appA + "_hook"
+	rig.create(rig.appA, destinationA, publicWebhookURL)
+	sweepChecksOfApps(testInstance, rig.appA)
+
+	status, body := rig.onCollection(rig.appA, rig.appA, "heartbeats", http.MethodPost, "", map[string]any{
+		"name": "zero", "period_seconds": 3600, "grace_seconds": 3600, "destinations": []string{},
+	})
+	requireStatus(testInstance, "POST check with destinations []", status, http.StatusCreated, body)
+	var created struct {
+		Check appCheckJSON `json:"check"`
+	}
+	decodeBody(testInstance, "created zero-destination check", body, &created)
+	cleanupHeartbeatCheck(testInstance, created.Check.ID)
+	if created.Check.Destinations == nil || len(created.Check.Destinations) != 0 {
+		testInstance.Fatalf("created destinations = %#v, want an empty array", created.Check.Destinations)
+	}
+
+	status, body = rig.onCollection(rig.appA, rig.appA, "heartbeats", http.MethodPatch, routePath(created.Check.ID),
+		map[string]any{"destinations": []string{destinationA}})
+	requireStatus(testInstance, "PATCH assigning a destination", status, http.StatusOK, body)
+
+	status, body = rig.onCollection(rig.appA, rig.appA, "heartbeats", http.MethodPatch, routePath(created.Check.ID),
+		map[string]any{"destinations": nil, "grace_seconds": 1800})
+	requireStatus(testInstance, "PATCH destinations null", status, http.StatusOK, body)
+	var kept struct {
+		Check appCheckJSON `json:"check"`
+	}
+	decodeBody(testInstance, "patched check", body, &kept)
+	if len(kept.Check.Destinations) != 1 || kept.Check.Destinations[0].Name != destinationA {
+		testInstance.Fatalf("destinations after PATCH null = %+v, want %s kept", kept.Check.Destinations, destinationA)
+	}
+
+	status, body = rig.onCollection(rig.appA, rig.appA, "heartbeats", http.MethodPatch, routePath(created.Check.ID),
+		map[string]any{"destinations": []string{}})
+	requireStatus(testInstance, "PATCH destinations []", status, http.StatusOK, body)
+	var cleared struct {
+		Check appCheckJSON `json:"check"`
+	}
+	decodeBody(testInstance, "cleared check", body, &cleared)
+	if cleared.Check.Destinations == nil || len(cleared.Check.Destinations) != 0 {
+		testInstance.Fatalf("destinations after PATCH [] = %#v, want an empty array", cleared.Check.Destinations)
+	}
+}
+
 func TestAnotherOwnersCheckIsNotFoundAndNeverChanged(testInstance *testing.T) {
 	rig := newAppDestinationsRig(testInstance)
 	destinationA := rig.appA + "_hook"
