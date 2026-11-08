@@ -47,6 +47,13 @@ jobs:
       - name: Lint app onboarding manifests
         run: make onboard-lint
 
+      # The shellcheck release and its sha256 live only in ops/backup/pins.env; fetch-pinned.sh refuses a hash mismatch.
+      - name: Install pinned shellcheck
+        run: bash ops/backup/fetch-pinned.sh shellcheck --dest .local/bin
+
+      - name: Lint backup shell scripts
+        run: make backup-lint
+
       - name: Install frontend dependencies
         working-directory: web
         run: npm ci
