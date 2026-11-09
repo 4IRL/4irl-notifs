@@ -27,10 +27,32 @@ export interface WatchdogState {
   last_summary_date: string | null;
 }
 
+export interface HeldApp {
+  appId: string;
+  count: number;
+}
+
+/** The validated in-memory form of one probe's `held` block from delivery-api `/readyz`. */
+export interface HeldSnapshot {
+  /** delivery-api could not refresh the counts (block.stale === true). */
+  stale: boolean;
+  /** Held app messages (block.messages.count; 0 when absent). */
+  messages: number;
+  /** Age in seconds of the oldest held message; null when none or unknown. */
+  oldestAgeSeconds: number | null;
+  /** Heartbeat alerts waiting for a destination (block.unassigned_alerts.count; 0 when absent). */
+  unassigned: number;
+  apps: HeldApp[];
+  /** Apps beyond the capped `apps` list. */
+  appsMore: number;
+}
+
 export interface ProbeVerdict {
   ok: boolean;
   /** Human-readable failure detail; null when ok. */
   detail: string | null;
+  /** Held-message counts, set only by the delivery-api evaluator for an HTTP 200 body with a valid block. */
+  held?: HeldSnapshot;
 }
 
 /** One external health probe. `evaluate` judges a response that already passed the redirect/auth checks. */
@@ -48,4 +70,6 @@ export interface ProbeResult {
   /** HTTP status of the response, or null when none arrived (network error, or a timeout before the headers). */
   httpStatus: number | null;
   durationMs: number;
+  /** Copied from the verdict only for a non-aborted probe. */
+  held?: HeldSnapshot;
 }

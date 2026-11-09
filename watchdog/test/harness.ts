@@ -37,6 +37,31 @@ export function healthyDelivery(now: number): Route {
     });
 }
 
+/** A valid `available:true` held block with one waiting message group; override any field. */
+export function heldBlock(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    available: true,
+    total: 3,
+    messages: { count: 3, oldest_held_at: '2026-10-19T09:00:00Z', oldest_age_seconds: 3600 },
+    unassigned_alerts: { count: 0 },
+    apps: [{ app_id: 'urls4irl', count: 3 }],
+    ...overrides,
+  };
+}
+
+/** `healthyDelivery(now)` plus a `held` key (any value, so malformed blocks can be tested). */
+export function heldDelivery({ now, held, status = 200 }: { now: number; held: unknown; status?: number }): Route {
+  return () =>
+    Response.json(
+      {
+        status: 'ok',
+        heartbeat_checker: { last_tick_at: new Date(now - 10_000).toISOString(), stale: false },
+        held,
+      },
+      { status },
+    );
+}
+
 export function healthyRoutes(now: number): Routes {
   return {
     delivery: healthyDelivery(now),
