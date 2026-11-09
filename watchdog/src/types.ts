@@ -25,6 +25,18 @@ export interface WatchdogState {
   targets: Record<string, TargetState>;
   /** UTC date (YYYY-MM-DD) of the last daily summary that was posted. */
   last_summary_date: string | null;
+  /** Present only while a held-message alert is open; omitted (never null) otherwise. */
+  held?: HeldState;
+}
+
+/** An open held-message alert. */
+export interface HeldState {
+  /** ISO timestamp of the first alert. */
+  alert_since: string;
+  /** UTC date (YYYY-MM-DD) of the last reminder posted (or the date that suppresses one). */
+  last_reminder_date: string;
+  /** ISO timestamp of the first run of the current all-zero streak; null when not counting. */
+  zero_seen_at: string | null;
 }
 
 export interface HeldApp {

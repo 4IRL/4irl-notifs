@@ -1,4 +1,4 @@
-import type { TargetState, WatchdogState } from './types';
+import type { HeldState, TargetState, WatchdogState } from './types';
 
 export const STATE_KEY = 'state';
 
@@ -22,6 +22,33 @@ function isTargetState(value: unknown): value is TargetState {
     typeof candidate.since === 'string' &&
     !Number.isNaN(Date.parse(candidate.since)) &&
     (candidate.detail === null || typeof candidate.detail === 'string')
+  );
+}
+
+const HELD_MALFORMED_WARNING = 'watchdog: stored held state is malformed, dropping it';
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function isParseableTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value));
+}
+
+/** A `YYYY-MM-DD` that is a real calendar date (rejects roll-overs such as 2026-02-30). */
+function isRealDate(value: string): boolean {
+  const parsed = Date.parse(value);
+  return !Number.isNaN(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
+}
+
+function isHeldState(value: unknown): value is HeldState {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    isParseableTimestamp(candidate.alert_since) &&
+    typeof candidate.last_reminder_date === 'string' &&
+    ISO_DATE_PATTERN.test(candidate.last_reminder_date) &&
+    isRealDate(candidate.last_reminder_date) &&
+    (candidate.zero_seen_at === null || isParseableTimestamp(candidate.zero_seen_at))
   );
 }
 
@@ -55,7 +82,16 @@ export function parseState(raw: string): WatchdogState | null {
     }
     targets[id] = { status: value.status, since: value.since, detail: value.detail };
   }
-  return { version: 1, targets, last_summary_date: summaryDate };
+  const state: WatchdogState = { version: 1, targets, last_summary_date: summaryDate };
+  if (candidate.held !== undefined) {
+    if (isHeldState(candidate.held)) {
+      const { alert_since, last_reminder_date, zero_seen_at } = candidate.held;
+      state.held = { alert_since, last_reminder_date, zero_seen_at };
+    } else {
+      console.warn(HELD_MALFORMED_WARNING);
+    }
+  }
+  return state;
 }
 
 /** Exactly one `get` per run. A throw or an unparseable value is reported as unavailable. */
