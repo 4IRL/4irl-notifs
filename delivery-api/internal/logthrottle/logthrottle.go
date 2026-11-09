@@ -1,54 +1,55 @@
-package message
+// Package logthrottle rate-limits repeating log lines per key.
+package logthrottle
 
 import (
 	"sync"
 	"time"
 )
 
-const (
-	// heldReleaseWarnInterval is the minimum gap between two throttled held
-	// release warnings with the same key.
-	heldReleaseWarnInterval = 10 * time.Minute
-	// logThrottleMaxKeys is the hard bound on keys a logThrottle remembers.
-	logThrottleMaxKeys = 1024
-)
+// MaxKeys is the hard bound on keys a Throttle remembers.
+const MaxKeys = 1024
 
-// logThrottle lets a repeating log line through at most once per interval per
-// key. It remembers at most logThrottleMaxKeys keys.
-type logThrottle struct {
+// Throttle lets a repeating log line through at most once per interval per
+// key. It remembers at most MaxKeys keys. Safe for concurrent use.
+type Throttle struct {
 	mutex    sync.Mutex
 	interval time.Duration
 	last     map[string]time.Time
 }
 
-func newLogThrottle() *logThrottle {
-	return &logThrottle{interval: heldReleaseWarnInterval, last: make(map[string]time.Time)}
+// New returns a Throttle with the given interval. A non-positive interval is a
+// programmer error and panics.
+func New(interval time.Duration) *Throttle {
+	if interval <= 0 {
+		panic("logthrottle: interval must be positive")
+	}
+	return &Throttle{interval: interval, last: make(map[string]time.Time)}
 }
 
 // Allow reports whether a log for key may be emitted at now, and records it
 // when so. At the key bound it first drops entries older than the interval,
 // then, if still full, evicts the oldest entry, so a new key is always
 // rate-limited from its first log.
-func (throttle *logThrottle) Allow(key string, now time.Time) bool {
+func (throttle *Throttle) Allow(key string, now time.Time) bool {
 	throttle.mutex.Lock()
 	defer throttle.mutex.Unlock()
 	if previous, ok := throttle.last[key]; ok && now.Sub(previous) < throttle.interval {
 		return false
 	}
-	if _, ok := throttle.last[key]; !ok && len(throttle.last) >= logThrottleMaxKeys {
+	if _, ok := throttle.last[key]; !ok && len(throttle.last) >= MaxKeys {
 		throttle.makeRoom(now)
 	}
 	throttle.last[key] = now
 	return true
 }
 
-func (throttle *logThrottle) makeRoom(now time.Time) {
+func (throttle *Throttle) makeRoom(now time.Time) {
 	for key, loggedAt := range throttle.last {
 		if now.Sub(loggedAt) >= throttle.interval {
 			delete(throttle.last, key)
 		}
 	}
-	if len(throttle.last) < logThrottleMaxKeys {
+	if len(throttle.last) < MaxKeys {
 		return
 	}
 	var oldestKey string

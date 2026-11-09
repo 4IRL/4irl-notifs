@@ -237,6 +237,47 @@ func TestAppCheckEndpointsReachTheServiceWithTheKeysAppAndTheDecodedFields(testI
 	}
 }
 
+// Zero destinations are accepted on app-scoped create (omitted, null or []) and a PATCH [] reaches the service
+// as a non-nil empty slice, while a PATCH null leaves it nil.
+func TestAppCheckEndpointsAcceptZeroDestinations(testInstance *testing.T) {
+	checks := &fakeAppHeartbeats{result: sampleAppCheck()}
+	rig := newAppCheckRig(checks)
+
+	for _, body := range []string{
+		`{"name":"n","period_seconds":60,"grace_seconds":30}`,
+		`{"name":"n","period_seconds":60,"grace_seconds":30,"destinations":null}`,
+		`{"name":"n","period_seconds":60,"grace_seconds":30,"destinations":[]}`,
+	} {
+		if recorder := rig.serve(http.MethodPost, appChecksPath, body, bearerKey); recorder.Code != http.StatusCreated {
+			testInstance.Fatalf("POST %s: status = %d, want 201; body = %s", body, recorder.Code, recorder.Body.String())
+		}
+	}
+	if recorder := rig.serve(http.MethodPatch, appCheckPath, `{"destinations":[]}`, bearerKey); recorder.Code != http.StatusOK {
+		testInstance.Fatalf("PATCH []: status = %d, want 200", recorder.Code)
+	}
+	if recorder := rig.serve(http.MethodPatch, appCheckPath, `{"destinations":null,"period_seconds":120}`, bearerKey); recorder.Code != http.StatusOK {
+		testInstance.Fatalf("PATCH null: status = %d, want 200", recorder.Code)
+	}
+
+	if len(checks.createCalls) != 3 {
+		testInstance.Fatalf("create calls = %d, want 3", len(checks.createCalls))
+	}
+	for _, call := range checks.createCalls {
+		if len(call.input.DestinationNames) != 0 {
+			testInstance.Fatalf("create destinations = %v, want none", call.input.DestinationNames)
+		}
+	}
+	if len(checks.patchCalls) != 2 {
+		testInstance.Fatalf("patch calls = %d, want 2", len(checks.patchCalls))
+	}
+	if cleared := checks.patchCalls[0].patch.DestinationNames; cleared == nil || len(cleared) != 0 {
+		testInstance.Fatalf("PATCH [] destinations = %#v, want a non-nil empty slice", cleared)
+	}
+	if unchanged := checks.patchCalls[1].patch.DestinationNames; unchanged != nil {
+		testInstance.Fatalf("PATCH null destinations = %#v, want nil", unchanged)
+	}
+}
+
 // A check's body app_id may be omitted, empty or the app's own; anything else is a 400 that never reaches the
 // service, on create and on PATCH alike.
 func TestAppCheckBodyAppIDMustBeTheCallersOwn(testInstance *testing.T) {

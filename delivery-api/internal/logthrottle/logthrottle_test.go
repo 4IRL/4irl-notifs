@@ -1,4 +1,4 @@
-package message
+package logthrottle
 
 import (
 	"fmt"
@@ -8,21 +8,23 @@ import (
 
 var throttleStart = time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 
-func TestLogThrottleAllowsOncePerInterval(testInstance *testing.T) {
-	throttle := newLogThrottle()
+const testInterval = 10 * time.Minute
+
+func TestAllowsOncePerInterval(testInstance *testing.T) {
+	throttle := New(testInterval)
 	if !throttle.Allow("a", throttleStart) {
 		testInstance.Fatal("first call must be allowed")
 	}
-	if throttle.Allow("a", throttleStart.Add(heldReleaseWarnInterval-time.Second)) {
+	if throttle.Allow("a", throttleStart.Add(testInterval-time.Second)) {
 		testInstance.Error("repeat inside the interval must be suppressed")
 	}
-	if !throttle.Allow("a", throttleStart.Add(heldReleaseWarnInterval)) {
+	if !throttle.Allow("a", throttleStart.Add(testInterval)) {
 		testInstance.Error("call after the interval must be allowed")
 	}
 }
 
-func TestLogThrottleKeysAreIndependent(testInstance *testing.T) {
-	throttle := newLogThrottle()
+func TestKeysAreIndependent(testInstance *testing.T) {
+	throttle := New(testInterval)
 	throttle.Allow("a", throttleStart)
 	if !throttle.Allow("b", throttleStart) {
 		testInstance.Error("a distinct key must be allowed")
@@ -32,12 +34,12 @@ func TestLogThrottleKeysAreIndependent(testInstance *testing.T) {
 	}
 }
 
-func TestLogThrottleDropsStaleEntriesAtTheBound(testInstance *testing.T) {
-	throttle := newLogThrottle()
-	for index := 0; index < logThrottleMaxKeys; index++ {
+func TestDropsStaleEntriesAtTheBound(testInstance *testing.T) {
+	throttle := New(testInterval)
+	for index := 0; index < MaxKeys; index++ {
 		throttle.Allow(fmt.Sprintf("old-%d", index), throttleStart)
 	}
-	later := throttleStart.Add(heldReleaseWarnInterval + time.Second)
+	later := throttleStart.Add(testInterval + time.Second)
 	if !throttle.Allow("new", later) {
 		testInstance.Fatal("new key must be allowed")
 	}
@@ -46,15 +48,15 @@ func TestLogThrottleDropsStaleEntriesAtTheBound(testInstance *testing.T) {
 	}
 }
 
-func TestLogThrottleNeverExceedsTheBoundWithFreshKeys(testInstance *testing.T) {
-	throttle := newLogThrottle()
-	total := logThrottleMaxKeys + 50
+func TestNeverExceedsTheBoundWithFreshKeys(testInstance *testing.T) {
+	throttle := New(testInterval)
+	total := MaxKeys + 50
 	for index := 0; index < total; index++ {
 		key := fmt.Sprintf("key-%d", index)
 		if !throttle.Allow(key, throttleStart.Add(time.Duration(index)*time.Millisecond)) {
 			testInstance.Fatalf("fresh key %s must be allowed", key)
 		}
-		if got := len(throttle.last); got > logThrottleMaxKeys {
+		if got := len(throttle.last); got > MaxKeys {
 			testInstance.Fatalf("map grew to %d", got)
 		}
 	}
@@ -67,5 +69,18 @@ func TestLogThrottleNeverExceedsTheBoundWithFreshKeys(testInstance *testing.T) {
 	}
 	if throttle.Allow(newest, throttleStart.Add(time.Duration(total)*time.Millisecond)) {
 		testInstance.Error("newest key must be throttled")
+	}
+}
+
+func TestNewPanicsOnNonPositiveInterval(testInstance *testing.T) {
+	for _, interval := range []time.Duration{0, -time.Second} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					testInstance.Errorf("New(%v) must panic", interval)
+				}
+			}()
+			New(interval)
+		}()
 	}
 }

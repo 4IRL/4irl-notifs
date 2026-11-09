@@ -271,6 +271,58 @@ func TestHeartbeatConcurrentPatchesOfDifferentFieldsAllPersist(testInstance *tes
 	}
 }
 
+// TestHeartbeatCheckAcceptsZeroDestinations covers create with [], PATCH [] clearing a linked destination, and
+// PATCH null leaving the destinations alone. A 400 "invalid destinations" here means the compose delivery-api was
+// not rebuilt from this worktree (make local-up).
+func TestHeartbeatCheckAcceptsZeroDestinations(testInstance *testing.T) {
+	waitForReady(testInstance)
+
+	suffix := randomSuffix(testInstance)
+	appID := heartbeatAppPrefix + suffix
+	destinationName := "itest_" + suffix
+	registerHeartbeatMessagesCleanup(testInstance, appID)
+	createDestination(testInstance, destinationName, map[string]any{
+		"type": registry.TypeWebhook,
+		"secrets": map[string]string{
+			"url":            blockedWebhookURL,
+			"signing_secret": ("sign" + suffix + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")[:signingSecretLength],
+		},
+	})
+
+	status, body := adminRequest(testInstance, http.MethodPost, heartbeatsAdminPath, map[string]any{
+		"app_id": appID, "name": heartbeatCheckName, "period_seconds": 3600, "grace_seconds": 3600,
+		"destinations": []string{},
+	})
+	var created checkEnvelope
+	if status == http.StatusCreated {
+		decodeBody(testInstance, "created heartbeat check", body, &created)
+		cleanupHeartbeatCheck(testInstance, created.Check.ID)
+	}
+	requireStatus(testInstance, "POST heartbeat check with no destinations", status, http.StatusCreated, body)
+	if created.Check.Destinations == nil || len(created.Check.Destinations) != 0 {
+		testInstance.Fatalf("created destinations = %#v, want an empty array", created.Check.Destinations)
+	}
+	checkPath := fmt.Sprintf("%s/%d", heartbeatsAdminPath, created.Check.ID)
+
+	status, body = adminRequest(testInstance, http.MethodPatch, checkPath, map[string]any{"destinations": []string{destinationName}})
+	requireStatus(testInstance, "PATCH assigning a destination", status, http.StatusOK, body)
+	if got := getCheck(testInstance, created.Check.ID); len(got.Destinations) != 1 {
+		testInstance.Fatalf("destinations after assigning = %+v, want 1", got.Destinations)
+	}
+
+	status, body = adminRequest(testInstance, http.MethodPatch, checkPath, map[string]any{"destinations": nil, "grace_seconds": 1800})
+	requireStatus(testInstance, "PATCH destinations null", status, http.StatusOK, body)
+	if got := getCheck(testInstance, created.Check.ID); len(got.Destinations) != 1 || got.GraceSeconds != 1800 {
+		testInstance.Fatalf("after PATCH null = grace %d destinations %+v, want 1800 and the destination kept", got.GraceSeconds, got.Destinations)
+	}
+
+	status, body = adminRequest(testInstance, http.MethodPatch, checkPath, map[string]any{"destinations": []string{}})
+	requireStatus(testInstance, "PATCH destinations []", status, http.StatusOK, body)
+	if got := getCheck(testInstance, created.Check.ID); got.Destinations == nil || len(got.Destinations) != 0 {
+		testInstance.Fatalf("destinations after PATCH [] = %#v, want an empty array", got.Destinations)
+	}
+}
+
 func TestHeartbeatCheckPingFailAndDownAlert(testInstance *testing.T) {
 	waitForReady(testInstance)
 

@@ -14,7 +14,8 @@ import (
 // operator or another app) is ErrCheckNotFound, exactly like an absent one, so an app cannot probe for
 // existence. The destinations a check alerts must be usable by the app (operator-owned, or the app's own);
 // the store enforces that atomically with the write and reports anything else as
-// registry.ErrUnknownDestination. The checker and its alert flush are unchanged.
+// registry.ErrUnknownDestination. The checker is unchanged; the alert flush clears an alert only after a
+// deliverable destination accepted it.
 
 // AppCheckInput is the request to create a check as an app. It carries no app_id and no owner: both are the
 // calling app's.

@@ -102,8 +102,8 @@ func TestValidateDestinations(t *testing.T) {
 		{"one", []string{"ops"}, true},
 		{"twenty", twenty, true},
 		{"twenty one", append(append([]string{}, twenty...), "extra"), false},
-		{"nil", nil, false},
-		{"empty", []string{}, false},
+		{"nil", nil, true},
+		{"empty", []string{}, true},
 		{"duplicate", []string{"ops", "ops"}, false},
 		{"bad name", []string{"ops", "Bad Name"}, false},
 		{"empty name", []string{""}, false},
@@ -142,7 +142,8 @@ func TestValidateNewCheckReportsFirstFailingField(t *testing.T) {
 		{"name", func(check *NewCheck) { check.Name = "" }, "invalid name"},
 		{"period", func(check *NewCheck) { check.PeriodSeconds = 59 }, "invalid period_seconds"},
 		{"grace", func(check *NewCheck) { check.GraceSeconds = 59 }, "invalid grace_seconds"},
-		{"destinations", func(check *NewCheck) { check.DestinationNames = nil }, "invalid destinations"},
+		{"destinations", func(check *NewCheck) { check.DestinationNames = []string{"ops", "ops"} }, "invalid destinations"},
+		{"no destinations is valid", func(check *NewCheck) { check.DestinationNames = nil }, ""},
 		{"app_id before name", func(check *NewCheck) { check.AppID, check.Name = "Bad", "Bad" }, "invalid app_id"},
 	}
 	for _, test := range tests {
@@ -154,11 +155,23 @@ func TestValidateNewCheckReportsFirstFailingField(t *testing.T) {
 	}
 }
 
+// tooManyDestinationNames returns MaxDestinations+1 distinct valid names.
+func tooManyDestinationNames() []string {
+	names := make([]string, 0, MaxDestinations+1)
+	for index := range MaxDestinations + 1 {
+		names = append(names, fmt.Sprintf("dest_%d", index))
+	}
+	return names
+}
+
 func TestValidateCheckUpdate(t *testing.T) {
 	assertValidationMessage(t, ValidateCheckUpdate(CheckUpdate{
 		PeriodSeconds: 60, GraceSeconds: 60, DestinationNames: []string{"ops"},
 	}), "")
 	assertValidationMessage(t, ValidateCheckUpdate(CheckUpdate{
 		PeriodSeconds: 60, GraceSeconds: 60,
+	}), "")
+	assertValidationMessage(t, ValidateCheckUpdate(CheckUpdate{
+		PeriodSeconds: 60, GraceSeconds: 60, DestinationNames: tooManyDestinationNames(),
 	}), "invalid destinations")
 }

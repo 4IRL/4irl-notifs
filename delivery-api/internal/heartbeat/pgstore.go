@@ -548,9 +548,10 @@ func lockChecks(ctx context.Context, tx pgx.Tx, where string, args ...any) ([]St
 // authoritative check on the returned rows.
 func resolveDestinationIDs(ctx context.Context, tx pgx.Tx, names []string, appID string) ([]int64, error) {
 	distinctNames := pgutil.Distinct(names)
-	// Fail closed even if the caller skipped ValidateDestinations: a check with no
-	// destinations would go down without ever alerting anywhere.
-	if len(distinctNames) < MinDestinations || len(distinctNames) > MaxDestinations {
+	// Zero destinations is allowed: the flush guard keeps the alert pending until a
+	// deliverable destination is assigned. Still fail closed on too many even if the
+	// caller skipped ValidateDestinations.
+	if len(distinctNames) > MaxDestinations {
 		return nil, &ValidationError{Message: "invalid destinations"}
 	}
 	rows, queryErr := tx.Query(ctx,

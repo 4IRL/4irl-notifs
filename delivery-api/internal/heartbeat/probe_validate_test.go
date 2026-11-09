@@ -185,7 +185,9 @@ func TestValidateNewCheckProbe(t *testing.T) {
 			check.Probe = &bad
 		}, "invalid probe.url"},
 		{"bad token", func(check *NewCheck) { check.AccessToken = &AccessToken{ClientID: "id"} }, "invalid probe.access_token"},
-		{"bad destinations", func(check *NewCheck) { check.DestinationNames = nil }, "invalid destinations"},
+		{"bad destinations", func(check *NewCheck) { check.DestinationNames = tooManyDestinationNames() }, "invalid destinations"},
+		{"nil destinations", func(check *NewCheck) { check.DestinationNames = nil }, ""},
+		{"empty destinations", func(check *NewCheck) { check.DestinationNames = []string{} }, ""},
 		{"app owner with probe", func(check *NewCheck) { check.OwnerKind = registry.OwnerApp; check.OwnerAppID = &appOwner }, "probe config is not allowed on an app-owned check"},
 		{"unknown owner kind", func(check *NewCheck) { check.OwnerKind = "mystery" }, "probe config is not allowed on an app-owned check"},
 		{"app owner with token only", func(check *NewCheck) {

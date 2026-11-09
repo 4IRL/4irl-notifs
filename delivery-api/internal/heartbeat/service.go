@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/logthrottle"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/message"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
@@ -41,6 +42,9 @@ const (
 	// arrive before any check is marked down, so a restart never announces down
 	// alerts for checks that were only unreachable.
 	StartupHoldOff = MinGraceSeconds * time.Second
+
+	// heldAlertWarnInterval is how often a still-waiting alert repeats its log lines.
+	heldAlertWarnInterval = 10 * time.Minute
 )
 
 // Messages is the narrow slice of the message service the checker needs: submit
@@ -75,6 +79,8 @@ type Service struct {
 	holdOffUntil time.Time
 	// supportedTypes is a defensive copy of ServiceConfig.SupportedTypes.
 	supportedTypes map[string]bool
+	// logThrottle limits the per-tick waiting and skip logs of a pending alert.
+	logThrottle *logthrottle.Throttle
 }
 
 // Deliverable reports whether destination can deliver under this service's
@@ -99,6 +105,7 @@ func NewService(config ServiceConfig) *Service {
 		now:            config.Now,
 		logger:         config.Logger,
 		supportedTypes: make(map[string]bool, len(config.SupportedTypes)),
+		logThrottle:    logthrottle.New(heldAlertWarnInterval),
 	}
 	for destinationType, supported := range config.SupportedTypes {
 		service.supportedTypes[destinationType] = supported
@@ -188,7 +195,8 @@ func (service *Service) recordPing(ctx context.Context, appID string, name strin
 }
 
 // Tick advances overdue checks (skipped during the startup hold-off, which never delays
-// flushing) and flushes pending alerts; one check's failed flush never blocks the others.
+// flushing) and flushes pending alerts (an alert no deliverable destination accepted stays pending);
+// one check's failed flush never blocks the others.
 func (service *Service) Tick(ctx context.Context) error {
 	now := service.now()
 	if now.Before(service.holdOffUntil) {
@@ -212,8 +220,10 @@ func (service *Service) Tick(ctx context.Context) error {
 	return errors.Join(flushErrs...)
 }
 
-// flush submits the pending alert to every destination, then clears it; a failure leaves it
-// pending and the next tick resubmits with the same idempotency keys, so repeats deduplicate.
+// flush submits the pending alert to every deliverable destination and clears it only once at
+// least one accepted it. A failure, or nothing accepted (no destination, or all disabled,
+// unsupported or permanently rejected), leaves it pending; the next tick resubmits with the same
+// idempotency keys, so repeats deduplicate. Nothing accepted returns nil so the tick stays successful.
 func (service *Service) flush(ctx context.Context, check StoredCheck) error {
 	if check.PendingAlert == nil {
 		return nil
@@ -225,9 +235,14 @@ func (service *Service) flush(ctx context.Context, check StoredCheck) error {
 		return fmt.Errorf("unknown pending alert kind %q", kind)
 	}
 	var failures []error
+	accepted := 0
 	for _, destination := range check.Destinations {
-		if !destination.Enabled {
-			service.logSkipped(check, destination.Name, "destination disabled")
+		if !service.Deliverable(destination) {
+			reason := "destination type not supported"
+			if !destination.Enabled {
+				reason = "destination disabled"
+			}
+			service.logSkipped(check, destination.Name, reason)
 			continue
 		}
 		envelope, envelopeErr := buildAlertEnvelope(check, kind, destination.Name)
@@ -239,6 +254,7 @@ func (service *Service) flush(ctx context.Context, check StoredCheck) error {
 		switch {
 		case submitErr == nil:
 			// Sent, or a duplicate of an earlier send of the same alert.
+			accepted++
 		case errors.Is(submitErr, registry.ErrUnknownDestination),
 			errors.Is(submitErr, registry.ErrDestinationDisabled),
 			errors.Is(submitErr, message.ErrUnsupportedDestinationType):
@@ -250,6 +266,14 @@ func (service *Service) flush(ctx context.Context, check StoredCheck) error {
 	if len(failures) > 0 {
 		return errors.Join(failures...)
 	}
+	if accepted == 0 {
+		if service.logThrottle.Allow(fmt.Sprintf("%d/%d/waiting", check.ID, check.AlertSeq), service.now()) {
+			service.logger.Warn("heartbeat alert waiting for a deliverable destination",
+				"check_id", check.ID, "app_id", check.AppID, "check", check.Name,
+				"alert", kind, "alert_seq", check.AlertSeq, "destinations", len(check.Destinations))
+		}
+		return nil
+	}
 	if _, clearErr := service.store.ClearPendingAlert(ctx, check.ID, check.AlertSeq); clearErr != nil {
 		return fmt.Errorf("clear pending alert: %w", clearErr)
 	}
@@ -258,6 +282,10 @@ func (service *Service) flush(ctx context.Context, check StoredCheck) error {
 
 // logSkipped records a destination an alert was not sent to and why.
 func (service *Service) logSkipped(check StoredCheck, destination string, reason string) {
+	key := fmt.Sprintf("%d/%d/skip/%s", check.ID, check.AlertSeq, destination)
+	if !service.logThrottle.Allow(key, service.now()) {
+		return
+	}
 	service.logger.Warn("heartbeat alert destination skipped",
 		"check_id", check.ID, "app_id", check.AppID, "check", check.Name,
 		"destination", destination, "reason", reason)

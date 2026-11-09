@@ -32,7 +32,8 @@ func (stack fixture) typedDestination(
 }
 
 // zeroDestinationCheck inserts a check with no destination links by raw SQL (the
-// API cannot create one yet). appOwned makes it an app-owned check.
+// API can create one now, but this keeps the fixture independent of the service
+// path under test). appOwned makes it an app-owned check.
 func (stack fixture) zeroDestinationCheck(testInstance *testing.T, name string, appOwned bool) {
 	testInstance.Helper()
 	statement := `INSERT INTO heartbeat_checks (app_id, name, period_seconds, grace_seconds, anchor_at, created_at, updated_at)

@@ -197,6 +197,22 @@ func TestCreateForAppIsOwnedByAndRegisteredUnderTheCallingApp(testInstance *test
 	}
 }
 
+func TestCreateForAppAcceptsZeroDestinations(testInstance *testing.T) {
+	for label, destinations := range map[string][]string{"nil": nil, "empty": {}} {
+		store := newAppCheckStore()
+		service := newAppCheckService(testInstance, store)
+		input := validAppCheckInput()
+		input.DestinationNames = destinations
+
+		if _, err := service.CreateForApp(context.Background(), checkAppA, input); err != nil {
+			testInstance.Fatalf("%s: CreateForApp: %v", label, err)
+		}
+		if len(store.created) != 1 || len(store.created[0].DestinationNames) != 0 {
+			testInstance.Fatalf("%s: store creates = %+v, want one with no destinations", label, store.created)
+		}
+	}
+}
+
 func TestCreateForAppValidatesBeforeTheStore(testInstance *testing.T) {
 	for label, test := range map[string]struct {
 		appID string
@@ -213,7 +229,7 @@ func TestCreateForAppValidatesBeforeTheStore(testInstance *testing.T) {
 			return input
 		}},
 		"no destinations": {appID: checkAppA, input: func(input AppCheckInput) AppCheckInput {
-			input.DestinationNames = nil
+			input.DestinationNames = tooManyDestinationNames()
 			return input
 		}},
 	} {
