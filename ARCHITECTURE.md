@@ -998,10 +998,21 @@ graph TD
   deploy fails before touching the VPS if it is missing or malformed, so set it before the first merge.
   Like the DB password it is written to `secrets-persistent/` on every deploy and never deleted, but only
   delivery-api receives it (as `DELIVERY_MASTER_KEY_FILE`; `delivery-migrate` never needs it). **Back it up
-  offline**: it seals four tables (destination secrets, app publisher tokens, probe Access credentials,
+  offline in Infisical** (it is deliberately not in the nightly R2 backup): it seals four tables (destination secrets, app publisher tokens, probe Access credentials,
   personal destination secrets: `personal_destinations.sealed_secrets`, AAD `delivery-api/personal-destination/v1:<id>`, registered in `keyrotation.Registry()`),
   and changing it without the rotation runbook below orphans all of them. Keys are read only at process
   start (no reload), so a key change takes effect only when delivery-api is recreated.
+- **`NOTIFS_OPS_ACCESS_CLIENT_ID`, `NOTIFS_OPS_ACCESS_CLIENT_SECRET`, `NOTIFS_OPS_DISCORD_WEBHOOK` (repo or
+  `production` environment secrets)**: used only by `notifs-ops-key.yml`, a separate workflow that runs on
+  every push to `main` (and by manual dispatch on `main`) and never blocks the stack deploy. The first two are
+  the Cloudflare Access service token the `notifs_ops` app uses to reach delivery-api; the webhook is the
+  Discord destination (`notifs_ops_discord`) that receives the nightly backup heartbeat alerts. The workflow
+  validates all three before any ssh or exchange, mints a delivery key for the `notifs_ops` app through the
+  GitHub OIDC exchange, applies `ops/notifs-ops/manifest.json`, and replaces
+  `/home/4irl-notifs/secrets-persistent/NOTIFS_OPS_DELIVERY_KEY` on the VPS on every push to `main` (a
+  successful exchange supersedes the previous key). The first run only files an identity request (repository,
+  workflow `.github/workflows/notifs-ops-key.yml`, `refs/heads/main`, environment `production`) that the
+  operator approves in the admin UI; re-run the workflow after approving.
 - **`DELIVERY_MASTER_KEY_PREVIOUS` (optional repo secret)**: the old master key during a rotation window,
   64 lowercase hex characters and different from `DELIVERY_MASTER_KEY`. Unset normally. When unset, the
   deploy writes an empty `secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS` file (compose needs the file to
@@ -1010,7 +1021,8 @@ graph TD
 
   **Master-key rotation runbook** (`rotate-keys` and `verify-keys` are delivery-api subcommands; run them
   on the VPS):
-  1. Back up: take a `pg_dump` of the delivery database and keep it until step 4 is done.
+  1. Back up: the nightly snapshot exists (see "Backups"), but take a fresh manual `pg_dump` of the delivery
+     database right before rotating and keep it until step 4 is done.
   2. Set the new key as the `DELIVERY_MASTER_KEY` secret and the old key as `DELIVERY_MASTER_KEY_PREVIOUS`,
      then deploy. A deploy alone does not restart delivery-api (a changed secret file does not trigger a
      recreate), so run `docker compose -f docker-compose.prod.yml up -d --force-recreate --no-deps
@@ -1067,6 +1079,24 @@ graph TD
   the dashboard (keeps the CI token account-scoped, no zone perms).
 - Access apps, policies, service tokens, and Pages bindings are **dashboard-managed** (no Terraform,
   not in CI).
+
+### Backups
+
+A root systemd timer on the VPS runs `ops/backup/backup.sh` every night at 03:35 America/Los_Angeles (window
+03:30 to 05:00). It dumps the delivery Postgres database (`pg_dump -Fc`, checked with `pg_restore --list`) and takes a
+consistent online copy of ntfy's `auth.db`, then uploads both with restic to a dedicated Cloudflare R2 bucket
+(encrypted client-side; retention 7 daily, 4 weekly, 6 monthly snapshots; a metadata `restic check` after each run).
+
+- **In the backup:** the delivery database and ntfy's subscriber accounts.
+- **Not in the backup, on purpose:** everything under `secrets-persistent/`, above all `DELIVERY_MASTER_KEY` and
+  `DELIVERY_MASTER_KEY_PREVIOUS`. The dump holds sealed secrets, so it is safe offsite but useless without the key; the
+  key lives in Infisical and the GitHub secret, and a restore needs it. `backup.env` and the `ntfy-cache` volume are
+  not backed up either.
+- **Signals:** one Discord notice per run (ok or failed with the failing phase); a ping to the `notifs_ops/nightly_backup`
+  heartbeat (period 24 h, grace 12 h, declared in `ops/notifs-ops/manifest.json`) so a run that silently stops
+  alerts; and the external watchdog Worker, which alerts if delivery-api itself is down.
+- **Operating it:** `make host-backup` / `make host-backup-status`; setup, restores, the full rebuild order and the drill
+  are in [`ops/backup/RUNBOOK.md`](ops/backup/RUNBOOK.md).
 
 ### Operator runbook: heartbeat watchdog (one-time, manual)
 

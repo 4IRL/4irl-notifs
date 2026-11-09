@@ -39,6 +39,9 @@ Guidance for Claude Code when working in this repository.
   | End-to-end smoke test | `make notif-smoke-test` (`scripts/notif-smoke-test.mjs`: provision → `to.recipient` message → subscriber delivery, all through delivery-api) |
   | Help / all lint / all unit tests | `make help` / `make lint` / `make test` |
   | Script tests | `make scripts-test` (`scripts/*.test.mjs`, node:test) |
+  | Backup shell lint / tests | `make backup-lint` (pinned shellcheck from `ops/backup/pins.env`, fetched into gitignored `.local/bin` by `ops/backup/fetch-pinned.sh`; covers `ops/backup/**/*.sh` and `ops/notifs-ops/*.sh`) / `make backup-test` (`ops/backup/test/run.sh`: every `test_*.sh` except the live ones); both are part of `make lint` / `make test` |
+  | Backup live round trip | `make backup-test-live` (docker round trip: real `backup.sh` + `restore.sh` against throwaway Postgres, sqlite and a local restic repo, using the pinned restic from `.local/bin`; `REQUIRE_DOCKER=1` fails instead of skipping, `NBLIVE_SKIP=1` opts out; runs in CI's integration job) |
+  | Backup host install / status | `make host-backup HOST=<ssh-alias> ARGS=install\|status\|verify\|run-now\|init-repo` (runs `ops/backup/install-backup.sh` on the VPS with sudo; `HOST` has no default and is honoured only from the command line) / `make host-backup-status HOST=<ssh-alias>` (last `last-run.tsv` result and the timer, no sudo) |
   | Watchdog Worker tests / build | `make watchdog-test` (`npm test` in `watchdog/`, Vitest + workers pool) / `make watchdog-build` (tsc + `wrangler deploy --dry-run`) |
   | App onboarding (plan/apply/verify) / manifest lint | `make onboard app=<app_id\|_platform> [cmd=plan\|apply\|verify] [env=<name>] [prune=1] [resend_secrets=1]` / `make onboard-lint` (`node scripts/onboard.mjs lint apps`, part of `make lint`) |
   | App onboarding integration test | `make onboard-integration-test` (needs local stack up; sends `NOTIFS_INTERNAL_CREDENTIAL`, auto-read from the running provisioning-api container or exported to override; `node --test scripts/onboard.integration.test.mjs`; also runs in CI's integration job) |
@@ -57,7 +60,9 @@ Guidance for Claude Code when working in this repository.
   | `watchdog/**`                                                      | `make watchdog-test`   |
   | `scripts/**`                                                       | `make scripts-test`    |
   | `apps/**`                                                          | `make onboard-lint`    |
-  | `.github/**`                                                       | `make workflows-lint`  |
+  | `ops/backup/**`                                                    | `make backup-lint && make backup-test` |
+  | `ops/notifs-ops/**`                                                | `make onboard-lint && make backup-lint && make scripts-test` |
+  | `.github/**`                                                       | `make workflows-lint && make scripts-test` |
   | `docs/** *.md .claude/** .gitignore`                               | na docs and config only |
   | `**`                                                               | `make test`            |
 - **GitHub project board:** n/a
@@ -165,6 +170,11 @@ shown for reference only.
 | `make lint` | Run all linters (both Go modules, both frontends, scripts, workflow YAML) |
 | `make test` | Run all unit tests (both Go modules, web + setup-web Vitest, worker Vitest, watchdog Vitest, scripts) |
 | `make scripts-test` (`node --test "scripts/*.test.mjs"`) | Run the `scripts/` unit tests |
+| `make backup-lint` (`ops/backup/fetch-pinned.sh shellcheck` + pinned shellcheck) | Shellcheck `ops/backup/**/*.sh` and `ops/notifs-ops/*.sh` with the release pinned in `ops/backup/pins.env` (installed into gitignored `.local/bin`; passes when a tree has no `.sh` files) |
+| `make backup-test` (`ops/backup/test/run.sh`) | Run the offline `ops/backup` bash tests (every `test_*.sh` except the live ones) |
+| `make backup-test-live` | Docker round trip: real `backup.sh` + `restore.sh` against throwaway Postgres, sqlite and a local restic repo (pinned restic from `.local/bin`); `REQUIRE_DOCKER=1` fails instead of skipping, `NBLIVE_SKIP=1` opts out |
+| `make host-backup HOST=<ssh-alias> ARGS=install\|status\|verify\|run-now\|init-repo` | Run the backup installer on the VPS with sudo (`HOST` has no default and is honoured only from the command line) |
+| `make host-backup-status HOST=<ssh-alias>` | Print the last backup result (`last-run.tsv`) and the timer's next run, no sudo |
 | `make watchdog-test` / `make watchdog-build` | Run the watchdog Worker tests (Vitest + workers pool) / typecheck and dry-run bundle it |
 | `make onboard app=<app_id\|_platform> [cmd=plan\|apply\|verify] [env=<name>] [prune=1] [resend_secrets=1]` | Plan/apply/verify an app's (or `_platform`'s) declarative onboarding manifest under `apps/` |
 | `make onboard-lint` (`node scripts/onboard.mjs lint apps`) | Offline schema + cross-manifest lint of every manifest under `apps/` (part of `make lint`, run in CI) |
