@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { formatDuration, truncateContent } from '../src/format';
+import { DISCORD_CONTENT_LIMIT, formatDuration, truncateContent } from '../src/format';
 import {
   ACCESS_ID,
   ACCESS_SECRET,
@@ -14,6 +14,8 @@ import {
   buildEnv,
   healthyDelivery,
   healthyRoutes,
+  heldBlock,
+  heldDelivery,
   readStoredState,
   runScheduled,
   spyKv,
@@ -710,7 +712,7 @@ describe('probe and run logging', () => {
     await run({ at: MORNING, routes: healthyRoutes(MORNING) });
     expect(logLines()).toContainEqual(
       expect.stringMatching(
-        /^watchdog: run state=loaded up=3 down=0 transitions=0 discord=none kv_write=written duration_ms=\d+$/,
+        /^watchdog: run state=loaded up=3 down=0 transitions=0 discord=none kv_write=written duration_ms=\d+ held=absent held_alert=closed$/,
       ),
     );
     logSpy.mockClear();
@@ -730,7 +732,7 @@ describe('probe and run logging', () => {
     await run({ at: MORNING, routes });
     expect(logLines()).toContainEqual(
       expect.stringMatching(
-        /^watchdog: run state=loaded up=2 down=1 transitions=1 discord=failed kv_write=skipped duration_ms=\d+$/,
+        /^watchdog: run state=loaded up=2 down=1 transitions=1 discord=failed kv_write=skipped duration_ms=\d+ held=absent held_alert=closed$/,
       ),
     );
   });
@@ -814,6 +816,321 @@ describe('daily summary', () => {
   });
 });
 
+describe('held messages', () => {
+  const day = (hour: number, minute = 0) => Date.UTC(2026, 9, 19, hour, minute, 0);
+  const nextDay16 = Date.UTC(2026, 9, 20, 16, 0, 0);
+
+  const ALERT_LINES =
+    '🟠 **HELD** 3 app messages waiting, oldest 1 h: add a route or destination\n↳ `urls4irl` 3';
+  const SUMMARY_9AM =
+    '📋 Daily watchdog summary: 3/3 up\n' +
+    '🟢 `delivery-api` up since 10-19 09:00\n' +
+    '🟢 `provisioning-api` up since 10-19 09:00\n' +
+    '🟢 `ntfy` up since 10-19 09:00';
+
+  function zeroBlock(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return heldBlock({
+      total: 0,
+      messages: { count: 0, oldest_held_at: null, oldest_age_seconds: null },
+      unassigned_alerts: { count: 0 },
+      apps: [],
+      ...overrides,
+    });
+  }
+
+  function withHeld(
+    at: number,
+    held: unknown,
+    overrides: Partial<Routes> = {},
+    status = 200,
+    bodyStatus = 'ok',
+  ): Routes {
+    return { ...healthyRoutes(at), delivery: heldDelivery({ now: at, held, status, bodyStatus }), ...overrides };
+  }
+
+  async function storedRaw(): Promise<string | null> {
+    return env.WATCHDOG_STATE.get('state');
+  }
+
+  async function storedHeldJson(): Promise<string> {
+    return JSON.stringify((await readStoredState())?.held);
+  }
+
+  async function openAlertAt(at: number): Promise<void> {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    await run({ at, routes: withHeld(at, heldBlock()) });
+  }
+
+  function allContent(stub: { discordPosts: () => Array<{ content: string }> }): string {
+    return stub.discordPosts().map((post) => post.content).join('\n');
+  }
+
+  it('ignores an older /readyz without a held block: no line, no key, no extra write', async () => {
+    await run({ at: MORNING, routes: healthyRoutes(MORNING) });
+    const second = await run({ at: MORNING + 5 * MINUTE, routes: healthyRoutes(MORNING + 5 * MINUTE) });
+    expect(second.stub.discordPosts()).toHaveLength(0);
+    expect(second.kv.put).not.toHaveBeenCalled();
+    expect((await readStoredState())?.held).toBeUndefined();
+    expect(await storedRaw()).not.toContain('held');
+  });
+
+  it('posts the first alert once and stays quiet on later runs with the same stored document', async () => {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    const first = await run({ at: day(10), routes: withHeld(day(10), heldBlock()) });
+    expect(first.stub.discordPosts().map((post) => post.content)).toEqual([ALERT_LINES]);
+    expect(first.kv.put).toHaveBeenCalledTimes(1);
+    expect((await readStoredState())?.held).toEqual({
+      alert_since: '2026-10-19T10:00:00.000Z',
+      last_reminder_date: '2026-10-18',
+      zero_seen_at: null,
+    });
+
+    const rawBefore = await storedRaw();
+    for (const step of [1, 2, 3]) {
+      const at = day(10) + step * 5 * MINUTE;
+      const quiet = await run({ at, routes: withHeld(at, heldBlock()) });
+      expect(quiet.stub.discordPosts()).toHaveLength(0);
+      expect(quiet.kv.put).not.toHaveBeenCalled();
+    }
+    expect(await storedRaw()).toBe(rawBefore);
+  });
+
+  it('puts held lines and a DOWN line in one message: change lines, then the held section', async () => {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    const routes = withHeld(day(10), heldBlock(), { ntfy: () => new Response('x', { status: 500 }) });
+    const result = await run({ at: day(10), routes });
+    expect(result.stub.discordPosts().map((post) => post.content)).toEqual([
+      '🔴 **DOWN** `ntfy`: HTTP 500\n\n' + ALERT_LINES,
+    ]);
+  });
+
+  it('puts the held alert before the daily summary in the same message', async () => {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    const result = await run({ at: day(16), routes: withHeld(day(16), heldBlock()) });
+    expect(result.stub.discordPosts().map((post) => post.content)).toEqual([ALERT_LINES + '\n\n' + SUMMARY_9AM]);
+  });
+
+  it('posts the daily reminder once on the next date at 16:00', async () => {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    await run({ at: day(12), routes: withHeld(day(12), heldBlock()) });
+    expect((await readStoredState())?.held?.last_reminder_date).toBe('2026-10-19');
+
+    const sameDay = await run({ at: day(16, 5), routes: withHeld(day(16, 5), heldBlock()) });
+    expect(allContent(sameDay.stub)).not.toContain('STILL HELD');
+
+    const reminder = await run({ at: nextDay16, routes: withHeld(nextDay16, heldBlock()) });
+    const content = reminder.stub.discordPosts()[0]?.content ?? '';
+    expect(reminder.stub.discordPosts()).toHaveLength(1);
+    expect(content).toContain(
+      '⏰ **STILL HELD** (since 10-19 12:00) 3 app messages waiting, oldest 1 h: add a route or destination\n' +
+        '↳ `urls4irl` 3\n' +
+        'ℹ️ Held messages are deleted after 7 days (default).',
+    );
+    expect((await readStoredState())?.held?.last_reminder_date).toBe('2026-10-20');
+
+    const again = await run({ at: nextDay16 + 5 * MINUTE, routes: withHeld(nextDay16 + 5 * MINUTE, heldBlock()) });
+    expect(allContent(again.stub)).not.toContain('STILL HELD');
+    expect(again.kv.put).not.toHaveBeenCalled();
+  });
+
+  it('posts the recovery once after two consecutive fresh zero runs and removes held from KV', async () => {
+    await openAlertAt(day(12));
+    const firstZero = await run({ at: day(12, 5), routes: withHeld(day(12, 5), zeroBlock()) });
+    expect(firstZero.stub.discordPosts()).toHaveLength(0);
+    // A zero-streak write (nothing posted) goes through the normal write path.
+    expect(firstZero.kv.put).toHaveBeenCalledTimes(1);
+    expect((await readStoredState())?.held?.zero_seen_at).toBe('2026-10-19T12:05:00.000Z');
+
+    const secondZero = await run({ at: day(12, 10), routes: withHeld(day(12, 10), zeroBlock()) });
+    expect(secondZero.stub.discordPosts().map((post) => post.content)).toEqual(['🟢 **HELD CLEARED** after 10 min']);
+    expect((await readStoredState())?.held).toBeUndefined();
+    expect(await storedRaw()).not.toContain('held');
+
+    const third = await run({ at: day(12, 15), routes: withHeld(day(12, 15), zeroBlock()) });
+    expect(third.stub.discordPosts()).toHaveLength(0);
+    expect(third.kv.put).not.toHaveBeenCalled();
+  });
+
+  it('leaves held byte-identical and posts no held line for a non-200, a timeout, available:false and malformed blocks', async () => {
+    await openAlertAt(day(12));
+    const heldBefore = await storedHeldJson();
+    const cases: Array<{ name: string; routes: (at: number) => Routes }> = [
+      { name: 'non-200', routes: (at) => ({ ...healthyRoutes(at), delivery: downDelivery(500) }) },
+      { name: 'unavailable', routes: (at) => withHeld(at, { available: false }) },
+      { name: 'malformed', routes: (at) => withHeld(at, heldBlock({ messages: { count: 'many' } })) },
+      { name: 'schema_mismatch', routes: (at) => withHeld(at, zeroBlock(), {}, 503, 'schema_mismatch') },
+    ];
+    for (const [index, { name, routes }] of cases.entries()) {
+      const at = day(12, 5 + index * 5);
+      const result = await run({ at, routes: routes(at) });
+      expect(allContent(result.stub), name).not.toContain('HELD');
+      expect(await storedHeldJson(), name).toBe(heldBefore);
+    }
+  });
+
+  it('leaves held byte-identical when the delivery probe times out', async () => {
+    await openAlertAt(day(12));
+    const heldBefore = await storedHeldJson();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const hang: Routes['delivery'] = ({ init }) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    const at = day(12, 5);
+    const stub = stubFetch({ ...healthyRoutes(at), delivery: hang });
+    const kv = spyKv();
+    const pending = runScheduled({ at, workerEnv: buildEnv({ kv: kv.kv }) });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(RETRY_TIMEOUT_ADVANCE_MS);
+    await pending;
+    expect(allContent(stub)).not.toContain('HELD');
+    expect(await storedHeldJson()).toBe(heldBefore);
+  });
+
+  it('decides a stale block on its counts and adds the stale line', async () => {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    const result = await run({ at: day(10), routes: withHeld(day(10), heldBlock({ stale: true })) });
+    expect(result.stub.discordPosts().map((post) => post.content)).toEqual([
+      ALERT_LINES + '\n⚠️ Held counts are stale (delivery-api could not refresh them).',
+    ]);
+  });
+
+  it('writes no state when the first alert post fails, and posts the same alert next run', async () => {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    const failed = await run({
+      at: day(10),
+      routes: withHeld(day(10), heldBlock(), { discord: () => new Response('no', { status: 500 }) }),
+    });
+    expect(failed.kv.put).not.toHaveBeenCalled();
+    expect((await readStoredState())?.held).toBeUndefined();
+
+    const retried = await run({ at: day(10, 5), routes: withHeld(day(10, 5), heldBlock()) });
+    expect(retried.stub.discordPosts().map((post) => post.content)).toEqual([ALERT_LINES]);
+    expect((await readStoredState())?.held?.alert_since).toBe('2026-10-19T10:05:00.000Z');
+  });
+
+  it('keeps the alert open when the recovery post fails', async () => {
+    await openAlertAt(day(12));
+    await run({ at: day(12, 5), routes: withHeld(day(12, 5), zeroBlock()) });
+    const failed = await run({
+      at: day(12, 10),
+      routes: withHeld(day(12, 10), zeroBlock(), { discord: () => new Response('no', { status: 500 }) }),
+    });
+    expect(failed.kv.put).not.toHaveBeenCalled();
+    expect((await readStoredState())?.held).toBeDefined();
+  });
+
+  it('posts no held line when the state read throws', async () => {
+    const result = await run({
+      at: day(10),
+      routes: withHeld(day(10), heldBlock()),
+      kvOptions: { getThrows: true },
+    });
+    expect(allContent(result.stub)).not.toContain('HELD');
+    expect(result.kv.put).not.toHaveBeenCalled();
+  });
+
+  it('posts no held line and writes no held for a stored invalid state', async () => {
+    await env.WATCHDOG_STATE.put('state', 'not json at all');
+    const result = await run({ at: day(10), routes: withHeld(day(10), heldBlock()) });
+    expect(allContent(result.stub)).not.toContain('HELD');
+    expect((await readStoredState())?.held).toBeUndefined();
+  });
+
+  it('repairs an invalid state on a DOWN post without held (accepted one-time reset)', async () => {
+    await env.WATCHDOG_STATE.put('state', 'not json at all');
+    const routes = withHeld(day(10), heldBlock(), { ntfy: () => new Response('x', { status: 500 }) });
+    const result = await run({ at: day(10), routes });
+    expect(allContent(result.stub)).toContain('DOWN');
+    expect(allContent(result.stub)).not.toContain('HELD');
+    expect((await readStoredState())?.held).toBeUndefined();
+  });
+
+  it('does not close the alert on stale all-zero blocks, and a fresh zero afterwards starts the streak', async () => {
+    await openAlertAt(day(12));
+    const heldBefore = await storedHeldJson();
+    for (const step of [1, 2]) {
+      const at = day(12) + step * 5 * MINUTE;
+      const result = await run({ at, routes: withHeld(at, zeroBlock({ stale: true })) });
+      expect(result.stub.discordPosts()).toHaveLength(0);
+      expect(result.kv.put).not.toHaveBeenCalled();
+      expect(await storedHeldJson()).toBe(heldBefore);
+    }
+    const at = day(12, 15);
+    const fresh = await run({ at, routes: withHeld(at, zeroBlock()) });
+    expect(fresh.stub.discordPosts()).toHaveLength(0);
+    expect((await readStoredState())?.held?.zero_seen_at).toBe('2026-10-19T12:15:00.000Z');
+  });
+
+  it('keeps the worst-case combined message within 2000 characters and keeps the STILL HELD headline', async () => {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    const apps = Array.from({ length: 20 }, (_unused, index) => ({
+      app_id: `${String.fromCharCode(97 + index)}`.repeat(40),
+      count: 100 - index,
+    }));
+    const block = heldBlock({
+      stale: true,
+      total: 400,
+      messages: { count: 300, oldest_held_at: '2026-10-19T09:00:00Z', oldest_age_seconds: 200_000 },
+      unassigned_alerts: { count: 40 },
+      apps,
+      apps_more: 15,
+    });
+    await run({ at: day(12), routes: withHeld(day(12), block) });
+    const routes = withHeld(nextDay16, block, {
+      provisioning: () => new Response('x', { status: 500 }),
+      ntfy: () => new Response('x', { status: 500 }),
+    });
+    const result = await run({ at: nextDay16, routes });
+    const content = result.stub.discordPosts()[0]?.content ?? '';
+    expect(content.length).toBeLessThanOrEqual(DISCORD_CONTENT_LIMIT);
+    expect(content).toContain('STILL HELD');
+    expect(content).toContain('DOWN');
+    expect(content).toContain('Daily watchdog summary');
+  });
+
+  it('keeps one get and at most one put per run across alert, reminder and recovery', async () => {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    const sequence: Array<{ at: number; held: unknown }> = [
+      { at: day(12), held: heldBlock() },
+      { at: day(12, 5), held: heldBlock() },
+      { at: nextDay16, held: heldBlock() },
+      { at: nextDay16 + 5 * MINUTE, held: zeroBlock() },
+      { at: nextDay16 + 10 * MINUTE, held: zeroBlock() },
+    ];
+    for (const { at, held } of sequence) {
+      const { kv } = await run({ at, routes: withHeld(at, held) });
+      expect(kv.get).toHaveBeenCalledTimes(1);
+      expect(kv.put.mock.calls.length).toBeLessThanOrEqual(1);
+    }
+    expect((await readStoredState())?.held).toBeUndefined();
+  });
+
+  it('logs held=ok/stale/none and held_alert=open/closed on the run line', async () => {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    logSpy.mockClear();
+    await run({ at: day(10), routes: withHeld(day(10), heldBlock()) });
+    expect(logLines()).toContainEqual(expect.stringMatching(/^watchdog: run .* held=ok held_alert=open$/));
+    logSpy.mockClear();
+    await run({ at: day(10, 5), routes: withHeld(day(10, 5), heldBlock({ stale: true })) });
+    expect(logLines()).toContainEqual(expect.stringMatching(/^watchdog: run .* held=stale held_alert=open$/));
+    logSpy.mockClear();
+    await run({ at: day(10, 10), routes: withHeld(day(10, 10), heldBlock()), kvOptions: { getThrows: true } });
+    expect(logLines()).toContainEqual(expect.stringMatching(/^watchdog: run .* held=none held_alert=closed$/));
+  });
+
+  it('never puts the webhook URL or Access secrets in held lines', async () => {
+    await run({ at: day(9), routes: healthyRoutes(day(9)) });
+    const result = await run({ at: day(10), routes: withHeld(day(10), heldBlock()) });
+    const content = allContent(result.stub);
+    expect(content).toContain('HELD');
+    expect(content).not.toContain(WEBHOOK_URL);
+    expect(content).not.toContain('webhook-token-abc');
+    expect(content).not.toContain(ACCESS_SECRET);
+    expect(content).not.toContain(ACCESS_ID);
+  });
+});
+
 describe('write budget', () => {
   it('never performs more than one put per run, so 288 runs cannot exceed 288 writes', async () => {
     let totalPuts = 0;
@@ -844,7 +1161,7 @@ describe('format helpers', () => {
     // Index 1998 is the high surrogate of the first emoji, so a naive slice(0, 1999) would split it.
     const long = 'a'.repeat(1998) + '😀😀';
     const cut = truncateContent(long);
-    expect(cut.length).toBeLessThanOrEqual(2000);
+    expect(cut.length).toBeLessThanOrEqual(DISCORD_CONTENT_LIMIT);
     expect(cut).toBe('a'.repeat(1998) + '…');
   });
 });

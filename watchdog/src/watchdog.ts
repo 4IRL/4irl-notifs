@@ -1,4 +1,5 @@
 import { formatDuration, formatSince, truncateContent } from './format';
+import { decideHeld } from './held';
 import { PROBE_TIMEOUT_MS, discardBody, probeWithRetry } from './probe';
 import { readState, writeState } from './state';
 import type { StateRead } from './state';
@@ -103,16 +104,21 @@ async function postToDiscord({ webhookUrl, content }: { webhookUrl: string; cont
 function buildMessage({
   stateRead,
   changeLines,
+  heldLines,
   summary,
 }: {
   stateRead: StateRead;
   changeLines: readonly string[];
+  heldLines: readonly string[];
   summary: string | null;
 }): string | null {
   const sections: string[] = [];
   if (changeLines.length > 0) {
     const header = stateRead.kind === 'unavailable' ? [UNKNOWN_STATE_WARNING] : [];
     sections.push([...header, ...changeLines].join('\n'));
+  }
+  if (heldLines.length > 0) {
+    sections.push(heldLines.join('\n'));
   }
   if (summary !== null) {
     sections.push(summary);
@@ -147,6 +153,7 @@ export async function runWatchdog({ env, now }: { env: Env; now: number }): Prom
   const { next, changeLines } = reconcile({ previous, results, nowIso, nowMs: now });
 
   let discord: 'none' | 'posted' | 'failed' = 'none';
+  let heldStatus: 'none' | 'absent' | 'ok' | 'stale' = 'none';
   let kvWrite: 'skipped' | 'unchanged' | 'written' | 'failed' = 'skipped';
   try {
     const today = nowIso.slice(0, 10);
@@ -160,9 +167,37 @@ export async function runWatchdog({ env, now }: { env: Env; now: number }): Prom
       next.last_summary_date = today;
     }
 
+    // Held alerts are only decided on a loaded state, for the same reason as the summary: an
+    // unreadable state would otherwise re-alert on every run.
+    let heldLines: string[] = [];
+    if (stateRead.kind === 'loaded') {
+      const snapshot = results.find((result) => result.id === 'delivery-api')?.held;
+      if (snapshot === undefined) {
+        heldStatus = 'absent';
+      } else if (snapshot.stale) {
+        heldStatus = 'stale';
+      } else {
+        heldStatus = 'ok';
+      }
+      const decision = decideHeld({
+        previous: stateRead.state?.held,
+        snapshot,
+        nowIso,
+        nowMs: now,
+        today,
+        hourUtc: new Date(now).getUTCHours(),
+        reminderHourUtc: SUMMARY_HOUR_UTC,
+      });
+      heldLines = decision.lines;
+      if (decision.next !== undefined) {
+        next.held = decision.next;
+      }
+    }
+
     const content = buildMessage({
       stateRead,
       changeLines,
+      heldLines,
       summary: summaryDue ? summaryBlock(next.targets) : null,
     });
     if (content !== null) {
@@ -189,7 +224,8 @@ export async function runWatchdog({ env, now }: { env: Env; now: number }): Prom
     console.log(
       `watchdog: run state=${stateRead.kind === 'loaded' ? 'loaded' : stateRead.reason} ` +
         `up=${states.length - downCount} down=${downCount} transitions=${changeLines.length} ` +
-        `discord=${discord} kv_write=${kvWrite} duration_ms=${Date.now() - startedAt}`,
+        `discord=${discord} kv_write=${kvWrite} duration_ms=${Date.now() - startedAt} ` +
+        `held=${heldStatus} held_alert=${next.held === undefined ? 'closed' : 'open'}`,
     );
   }
 }

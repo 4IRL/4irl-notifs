@@ -87,7 +87,11 @@ export async function probeTarget({
     const verdict = await target.evaluate({ response, now });
     // A body read that was cut off by the timeout is swallowed by the evaluators' JSON parsing, so
     // the abort flag, not the verdict text, decides whether this was a timeout.
-    return finish(abort.signal.aborted ? timeoutVerdict() : verdict);
+    if (abort.signal.aborted) {
+      return finish(timeoutVerdict());
+    }
+    const result = finish(verdict);
+    return verdict.held === undefined ? result : { ...result, held: verdict.held };
   } catch (error) {
     if (abort.signal.aborted) {
       return finish(timeoutVerdict());

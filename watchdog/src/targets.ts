@@ -1,4 +1,5 @@
 import { formatDuration } from './format';
+import { parseHeldBlock } from './held';
 import type { ProbeVerdict, Target } from './types';
 
 const STATUS_OK = 200;
@@ -95,7 +96,10 @@ async function evaluateDeliveryApi({
       problems.push('heartbeat prober state unknown');
     }
   }
-  return problems.length === 0 ? OK : down(problems.join('; '));
+  const verdict = problems.length === 0 ? OK : down(problems.join('; '));
+  const held = response.status === STATUS_OK && Object.hasOwn(body, 'held') ? parseHeldBlock(body.held) : null;
+  // Return a new object: the shared OK constant must never carry a snapshot.
+  return held === null ? verdict : { ...verdict, held };
 }
 
 /**
