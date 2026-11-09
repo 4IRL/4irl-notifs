@@ -23,7 +23,9 @@ jobs:
     needs: [build-prod, deploy-person-service]
     name: 'CD Prod - Deploy'
     uses: ./.github/workflows/prod-deploy.yml
-    permissions: read-all
+    permissions:
+      contents: read
+      packages: read
     secrets:
       PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
       PROD_SSH_USERNAME: ${{ secrets.PROD_SSH_USERNAME }}

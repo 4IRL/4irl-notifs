@@ -1,0 +1,151 @@
+name: Mint and deliver the notifs_ops key
+
+# Mints a delivery key for the notifs_ops app (GitHub OIDC exchange), applies its onboarding
+# manifest, and writes the key on the VPS where the nightly backup reads it for its heartbeat.
+# Deliberately a separate top-level workflow: it never blocks or is blocked by the stack deploy,
+# and a push to main always carries the OIDC ref refs/heads/main. A red run (for example a deploy
+# recreating the hub mid-run, or the first run's pending identity approval) is cured by re-running
+# via workflow_dispatch on main; there is no automatic retry.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: notifs-ops-key
+  cancel-in-progress: false
+
+jobs:
+  NotifsOpsKey:
+    name: Mint the notifs_ops key and write it on the VPS
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Validate NOTIFS_OPS secrets
+        env:
+          NOTIFS_OPS_ACCESS_CLIENT_ID: ${{ secrets.NOTIFS_OPS_ACCESS_CLIENT_ID }}
+          NOTIFS_OPS_ACCESS_CLIENT_SECRET: ${{ secrets.NOTIFS_OPS_ACCESS_CLIENT_SECRET }}
+          NOTIFS_OPS_DISCORD_WEBHOOK: ${{ secrets.NOTIFS_OPS_DISCORD_WEBHOOK }}
+          PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: |
+          if [[ -z "${PROD_SSH_KNOWN_HOSTS}" ]]; then
+            echo "PROD_SSH_KNOWN_HOSTS secret is missing (the pinned VPS host key); nothing was exchanged or changed on the VPS"
+            exit 1
+          fi
+          if [[ -z "${NOTIFS_OPS_ACCESS_CLIENT_ID}" ]]; then
+            echo "NOTIFS_OPS_ACCESS_CLIENT_ID secret is missing; nothing was exchanged or changed on the VPS"
+            exit 1
+          fi
+          if [[ -z "${NOTIFS_OPS_ACCESS_CLIENT_SECRET}" ]]; then
+            echo "NOTIFS_OPS_ACCESS_CLIENT_SECRET secret is missing; nothing was exchanged or changed on the VPS"
+            exit 1
+          fi
+          if [[ "${NOTIFS_OPS_DISCORD_WEBHOOK}" != https://discord.com/api/webhooks/* ]]; then
+            echo "NOTIFS_OPS_DISCORD_WEBHOOK secret must start with https://discord.com/api/webhooks/; nothing was exchanged or changed on the VPS"
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Install SSH key
+        env:
+          SSH_KEY_VALUE: ${{ secrets.PROD_SSH_PRIVATE_KEY_VALUE }}
+          SSH_KEY_FILENAME: ${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${SSH_KEY_VALUE}" > ~/.ssh/"${SSH_KEY_FILENAME}"
+          chmod 600 ~/.ssh/"${SSH_KEY_FILENAME}"
+
+      # The exact release and sha256 live in ops/backup/pins.env (CLOUDFLARED_*); fetch-pinned.sh checks the hash before
+      # anything is placed and downloads with --fail and a time bound. Bump both pin lines together.
+      - name: Install Cloudflared
+        run: bash ops/backup/fetch-pinned.sh cloudflared --dest "${RUNNER_TEMP}/bin"
+
+      # The VPS host key is pinned: PROD_SSH_KNOWN_HOSTS holds the known_hosts line(s) for PROD_SSH_HOST (see
+      # ops/backup/RUNBOOK.md, "Rotating the pinned VPS host key"). Every ssh/scp below uses StrictHostKeyChecking=yes.
+      - name: Prepare SSH Config file
+        env:
+          SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          SSH_USER: ${{ secrets.PROD_SSH_USERNAME }}
+          SSH_KEY_FILENAME: ${{ secrets.PROD_SSH_PRIVATE_KEY_FILENAME }}
+          ACCESS_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          ACCESS_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: |
+          cat <<EOF > ~/.ssh/config
+          Host ${SSH_HOST}
+            HostName ${SSH_HOST}
+            User ${SSH_USER}
+            IdentityFile ~/.ssh/${SSH_KEY_FILENAME}
+            IdentitiesOnly yes
+            AddKeysToAgent yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+            ProxyCommand ${RUNNER_TEMP}/bin/cloudflared access ssh --hostname %h --id ${ACCESS_ID} --secret ${ACCESS_SECRET}
+          EOF
+
+          chmod 600 ~/.ssh/config
+          printf '%s\n' "${KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Wait for delivery-api readiness
+        env:
+          NOTIFS_OPS_ACCESS_CLIENT_ID: ${{ secrets.NOTIFS_OPS_ACCESS_CLIENT_ID }}
+          NOTIFS_OPS_ACCESS_CLIENT_SECRET: ${{ secrets.NOTIFS_OPS_ACCESS_CLIENT_SECRET }}
+        run: bash ops/notifs-ops/wait-ready.sh https://notifs-delivery.4irl.app/readyz 600
+
+      - name: Exchange the OIDC token for a delivery key
+        id: notifs-ops-exchange
+        uses: ./.github/actions/notifs-app
+        with:
+          app_id: notifs_ops
+          delivery_url: https://notifs-delivery.4irl.app
+          access_client_id: ${{ secrets.NOTIFS_OPS_ACCESS_CLIENT_ID }}
+          access_client_secret: ${{ secrets.NOTIFS_OPS_ACCESS_CLIENT_SECRET }}
+
+      - name: Set up Node
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+
+      - name: Lint the notifs_ops manifest
+        run: node scripts/onboard.mjs lint --manifest ops/notifs-ops/manifest.json --target app
+
+      - name: Apply the notifs_ops manifest
+        env:
+          ONBOARD_URL: https://notifs-delivery.4irl.app
+          ONBOARD_APP_ACCESS_ID: ${{ secrets.NOTIFS_OPS_ACCESS_CLIENT_ID }}
+          ONBOARD_APP_ACCESS_SECRET: ${{ secrets.NOTIFS_OPS_ACCESS_CLIENT_SECRET }}
+          ONBOARD_APP_KEY: ${{ steps.notifs-ops-exchange.outputs.key }}
+          NOTIFS_OPS_DISCORD_WEBHOOK: ${{ secrets.NOTIFS_OPS_DISCORD_WEBHOOK }}
+        run: node scripts/onboard.mjs apply --manifest ops/notifs-ops/manifest.json --target app
+
+      # A successful exchange supersedes the previous key, so the new one is written even when lint
+      # or apply failed; a failed or pending exchange has an empty output and skips this step.
+      # Two channels: the script travels over scp (no key), the key travels only as ssh stdin.
+      - name: Write the key on the VPS
+        if: always() && steps.notifs-ops-exchange.outputs.key != ''
+        env:
+          SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          NOTIFS_OPS_KEY: ${{ steps.notifs-ops-exchange.outputs.key }}
+        run: |
+          remote_script="$(ssh -T -q -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 "${SSH_HOST}" mktemp)"
+          if ! scp -T -q -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 ops/notifs-ops/write-key.sh "${SSH_HOST}:${remote_script}"; then
+            ssh -T -q -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 "${SSH_HOST}" "rm -f ${remote_script}" || true
+            echo "could not copy write-key.sh to the VPS"
+            exit 1
+          fi
+          printf '%s' "${NOTIFS_OPS_KEY}" | ssh -T -q -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 "${SSH_HOST}" "trap 'rm -f ${remote_script}' EXIT; bash ${remote_script} /home/4irl-notifs/secrets-persistent/NOTIFS_OPS_DELIVERY_KEY"
