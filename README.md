@@ -133,4 +133,7 @@ Cloudflare Pages. Public ingress, Cloudflare Access gating, and all required sec
 provisioned by hand — see [`ARCHITECTURE.md`](ARCHITECTURE.md) ("Deploy pipeline",
 "Hosts & DNS", "Authentication") for the complete human-in-the-loop checklist.
 
+Operations: nightly offsite backups, restores and the rebuild order are in
+[`ops/backup/RUNBOOK.md`](ops/backup/RUNBOOK.md).
+
 See `plans/` for design docs and implementation plans (not tracked in git).
