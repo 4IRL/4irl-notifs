@@ -186,15 +186,17 @@ describe('held block probe', () => {
     expect(result.held).toBeUndefined();
   });
 
-  it('is inert end to end: a held block on a healthy run posts nothing and writes the same state', async () => {
+  it('does not change the delivery verdict end to end: a held block posts only the held alert and stores held once', async () => {
     const withHeld = stubFetch({ ...healthyRoutes(MORNING), delivery: heldDelivery({ now: MORNING, held: heldBlock() }) });
     const kv = spyKv();
     await runScheduled({ at: MORNING, workerEnv: buildEnv({ kv: kv.kv }) });
-    expect(withHeld.discordPosts()).toHaveLength(0);
+    expect(withHeld.discordPosts()).toHaveLength(1);
+    expect(withHeld.discordPosts()[0]?.content).toContain('HELD');
+    expect(withHeld.discordPosts()[0]?.content).not.toContain('DOWN');
     expect(withHeld.callsTo(DELIVERY_URL)).toHaveLength(1);
     expect(kv.put).toHaveBeenCalledTimes(1);
     const stored = await readStoredState();
-    expect(Object.keys(stored ?? {})).toEqual(['version', 'targets', 'last_summary_date']);
+    expect(Object.keys(stored ?? {})).toEqual(['version', 'targets', 'last_summary_date', 'held']);
 
     const later = MORNING + 5 * MINUTE;
     const second = stubFetch({ ...healthyRoutes(later), delivery: heldDelivery({ now: later, held: heldBlock() }) });

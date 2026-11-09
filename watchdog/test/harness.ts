@@ -50,11 +50,21 @@ export function heldBlock(overrides: Record<string, unknown> = {}): Record<strin
 }
 
 /** `healthyDelivery(now)` plus a `held` key (any value, so malformed blocks can be tested). */
-export function heldDelivery({ now, held, status = 200 }: { now: number; held: unknown; status?: number }): Route {
+export function heldDelivery({
+  now,
+  held,
+  status = 200,
+  bodyStatus = 'ok',
+}: {
+  now: number;
+  held: unknown;
+  status?: number;
+  bodyStatus?: string;
+}): Route {
   return () =>
     Response.json(
       {
-        status: 'ok',
+        status: bodyStatus,
         heartbeat_checker: { last_tick_at: new Date(now - 10_000).toISOString(), stale: false },
         held,
       },
@@ -150,6 +160,7 @@ export async function runScheduled({
 export async function readStoredState(): Promise<{
   targets: Record<string, { status: string; since: string; detail: string | null }>;
   last_summary_date: string | null;
+  held?: { alert_since: string; last_reminder_date: string; zero_seen_at: string | null };
 } | null> {
   const raw = await env.WATCHDOG_STATE.get('state');
   return raw === null ? null : JSON.parse(raw);
