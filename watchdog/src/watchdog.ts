@@ -172,7 +172,13 @@ export async function runWatchdog({ env, now }: { env: Env; now: number }): Prom
     let heldLines: string[] = [];
     if (stateRead.kind === 'loaded') {
       const snapshot = results.find((result) => result.id === 'delivery-api')?.held;
-      heldStatus = snapshot === undefined ? 'absent' : snapshot.stale ? 'stale' : 'ok';
+      if (snapshot === undefined) {
+        heldStatus = 'absent';
+      } else if (snapshot.stale) {
+        heldStatus = 'stale';
+      } else {
+        heldStatus = 'ok';
+      }
       const decision = decideHeld({
         previous: stateRead.state?.held,
         snapshot,

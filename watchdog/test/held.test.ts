@@ -119,6 +119,16 @@ describe('held block probe', () => {
 
   const deliveryTarget = TARGETS[0]!;
 
+  const mismatch = () =>
+    Response.json(
+      {
+        status: 'schema_mismatch',
+        heartbeat_checker: { last_tick_at: new Date(MORNING).toISOString(), stale: false },
+        held: heldBlock(),
+      },
+      { status: 503 },
+    );
+
   async function probe(delivery: ReturnType<typeof heldDelivery>) {
     stubFetch({ ...healthyRoutes(MORNING), delivery });
     return probeTarget({ target: deliveryTarget, env: buildEnv({ kv: spyKv().kv }), now: MORNING });
@@ -149,15 +159,6 @@ describe('held block probe', () => {
   });
 
   it('yields no held on a 503 schema_mismatch body and keeps the DOWN verdict', async () => {
-    const mismatch = () =>
-      Response.json(
-        {
-          status: 'schema_mismatch',
-          heartbeat_checker: { last_tick_at: new Date(MORNING).toISOString(), stale: false },
-          held: heldBlock(),
-        },
-        { status: 503 },
-      );
     const result = await probe(mismatch);
     expect(result.verdict.ok).toBe(false);
     expect(result.verdict.detail).toBe('HTTP 503; readiness status schema_mismatch');
@@ -207,15 +208,6 @@ describe('held block probe', () => {
   });
 
   it('keeps the DOWN line unchanged for a 503 schema_mismatch body carrying a held block', async () => {
-    const mismatch = () =>
-      Response.json(
-        {
-          status: 'schema_mismatch',
-          heartbeat_checker: { last_tick_at: new Date(MORNING).toISOString(), stale: false },
-          held: heldBlock(),
-        },
-        { status: 503 },
-      );
     const stub = stubFetch({ ...healthyRoutes(MORNING), delivery: mismatch });
     await runScheduled({ at: MORNING, workerEnv: buildEnv({ kv: spyKv().kv }) });
     expect(stub.discordPosts().map((post) => post.content)).toEqual([

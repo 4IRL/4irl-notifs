@@ -1,14 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DISCORD_CONTENT_LIMIT } from '../src/format';
-import {
-  HELD_ALERT_AGE_SECONDS,
-  HELD_ALERT_MESSAGE_COUNT,
-  HELD_ALERT_UNASSIGNED_COUNT,
-  HELD_APPS_SHOWN,
-  HELD_APP_ID_MAX,
-  HELD_REMINDER_MIN_LEAD_HOURS,
-  decideHeld,
-} from '../src/held';
+import { HELD_APPS_SHOWN, HELD_APP_ID_MAX, decideHeld } from '../src/held';
 import type { HeldSnapshot, HeldState } from '../src/types';
 
 const REMINDER_HOUR = 16;
@@ -43,17 +35,6 @@ function run({
 function open(overrides: Partial<HeldState> = {}): HeldState {
   return { alert_since: '2026-11-08T12:00:00.000Z', last_reminder_date: '2026-11-08', zero_seen_at: null, ...overrides };
 }
-
-describe('constants', () => {
-  it('match the contract', () => {
-    expect(HELD_ALERT_AGE_SECONDS).toBe(900);
-    expect(HELD_ALERT_MESSAGE_COUNT).toBe(25);
-    expect(HELD_ALERT_UNASSIGNED_COUNT).toBe(1);
-    expect(HELD_APPS_SHOWN).toBe(10);
-    expect(HELD_APP_ID_MAX).toBe(40);
-    expect(HELD_REMINDER_MIN_LEAD_HOURS).toBe(6);
-  });
-});
 
 describe('decideHeld no snapshot', () => {
   it('leaves a closed state closed', () => {

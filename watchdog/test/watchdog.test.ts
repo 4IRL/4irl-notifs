@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { formatDuration, truncateContent } from '../src/format';
+import { DISCORD_CONTENT_LIMIT, formatDuration, truncateContent } from '../src/format';
 import {
   ACCESS_ID,
   ACCESS_SECRET,
@@ -1083,7 +1083,7 @@ describe('held messages', () => {
     });
     const result = await run({ at: nextDay16, routes });
     const content = result.stub.discordPosts()[0]?.content ?? '';
-    expect(content.length).toBeLessThanOrEqual(2000);
+    expect(content.length).toBeLessThanOrEqual(DISCORD_CONTENT_LIMIT);
     expect(content).toContain('STILL HELD');
     expect(content).toContain('DOWN');
     expect(content).toContain('Daily watchdog summary');
@@ -1161,7 +1161,7 @@ describe('format helpers', () => {
     // Index 1998 is the high surrogate of the first emoji, so a naive slice(0, 1999) would split it.
     const long = 'a'.repeat(1998) + '😀😀';
     const cut = truncateContent(long);
-    expect(cut.length).toBeLessThanOrEqual(2000);
+    expect(cut.length).toBeLessThanOrEqual(DISCORD_CONTENT_LIMIT);
     expect(cut).toBe('a'.repeat(1998) + '…');
   });
 });
