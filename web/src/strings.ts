@@ -493,10 +493,23 @@ export const strings = {
 
   // Delivery Log section.
   deliveryLogHeading: 'Delivery log',
-  deliveryLogFilterLabel: 'Filter by state',
+  deliveryLogFilterLabel: 'Filter deliveries',
   deliveryLogFilterDead: 'Dead',
   deliveryLogFilterPending: 'Pending',
   deliveryLogFilterDelivered: 'Delivered',
+  deliveryLogFilterReleaseFailed: 'Release failed',
+  releaseFailuresHint:
+    "Held messages that could not be sent when their route appeared. Check the app's Routes and Destinations.",
+  releaseFailuresLoading: 'Loading release failures…',
+  releaseFailuresUnavailable: 'Release failures are unavailable on this backend.',
+  releaseFailuresEmpty:
+    'No release failures. Held messages wait until a matching route and destination exist; see Routes and Destinations.',
+  releaseFailuresTruncated: ({ shown, total }: { shown: number; total: number }): string =>
+    `Showing the newest ${shown} of ${total} release failures.`,
+  releaseFailuresTableLabel: 'Release failures',
+  releaseReasonInvalid: "Invalid when released — fix the app's Routes or Destinations",
+  columnReleaseReason: 'Reason',
+  columnReleaseFailed: 'Failed',
   deliveryLogFiltersMenu: 'Filter deliveries',
   deliveryLogRefresh: 'Refresh log',
   deliveryLogHint: ({ state }: { state: string }): string =>
