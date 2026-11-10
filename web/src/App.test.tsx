@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { ApiError } from './api/client';
 import type { ApiClient } from './api/client';
-import type { DeliveryApiClient, DestinationSummary } from './api/deliveryClient';
+import type { DeliveryApiClient, DestinationSummary, HeldMessages } from './api/deliveryClient';
 import type { PersonApiClient } from './api/personClient';
 import { strings } from './strings';
 
@@ -112,6 +112,10 @@ function buildFakeDeliveryClient(overrides: Partial<DeliveryApiClient> = {}): De
     listPersonalDestinations: vi.fn().mockResolvedValue({ personalDestinations: [], total: 0 }),
     setPersonalDestinationEnabled: vi.fn(),
     deletePersonalDestination: vi.fn(),
+    getHeldMessages: vi
+      .fn()
+      .mockResolvedValue({ apps: [], unassignedChecks: [], unassignedTotal: 0 }),
+    listHeldFailures: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     ...overrides,
   };
 }
@@ -1996,6 +2000,547 @@ describe('App delivery refresh after Remove App and binding approval', () => {
 
     await waitFor(() =>
       expect(vi.mocked(personClient.listApps).mock.calls.length).toBe(before + 1),
+    );
+  });
+});
+
+describe('App held snapshot', () => {
+  const urls4irlApp = {
+    appId: 'urls4irl',
+    displayName: 'URLs4IRL',
+    description: null,
+    createdAt: '2026-07-25T10:00:00Z',
+  };
+
+  beforeEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  function heldPayload({
+    counts,
+    unassignedTotal = 0,
+  }: {
+    counts: Record<string, number>;
+    unassignedTotal?: number;
+  }): HeldMessages {
+    return {
+      apps: Object.entries(counts).map(([appId, count]) => ({
+        appId,
+        count,
+        oldestAt: '2026-11-01T00:00:00Z',
+      })),
+      unassignedChecks: [],
+      unassignedTotal,
+    };
+  }
+
+  // Hidden headings are included: the Provisioning panel is hidden while the Delivery tab is open.
+  function unprovisioned(): HTMLElement {
+    const section = screen
+      .getByRole('heading', { name: strings.unregisteredAppsHeading, hidden: true })
+      .closest('section');
+    if (section === null) {
+      throw new Error('unprovisioned section not found');
+    }
+    return section;
+  }
+
+  function appsPersonClient(apps: unknown[] = [urls4irlApp]) {
+    return buildFakePersonClient({
+      listApps: vi
+        .fn()
+        .mockImplementation(() => Promise.resolve(apps.map((app) => ({ ...(app as object) })))),
+    } as Partial<PersonApiClient>);
+  }
+
+  function renderApps({
+    deliveryClient,
+    personClient = appsPersonClient(),
+    client = buildFakeClient(),
+    destinationsEnabled = false,
+  }: {
+    deliveryClient?: DeliveryApiClient;
+    personClient?: PersonApiClient;
+    client?: ApiClient;
+    destinationsEnabled?: boolean;
+  }) {
+    render(
+      <App
+        client={client}
+        personClient={personClient}
+        deliveryClient={deliveryClient}
+        appsEnabled
+        destinationsEnabled={destinationsEnabled}
+      />,
+    );
+  }
+
+  async function settle() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+  }
+
+  async function clickCardRefresh(user: ReturnType<typeof userEvent.setup>) {
+    const button = screen.getByRole('button', { name: strings.deliveryStatusRefresh });
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled', 'true'));
+    await user.click(button);
+  }
+
+  function cardRow(label: string): HTMLElement {
+    const row = screen.getByText(label, { selector: 'dt' }).parentElement;
+    if (row === null) {
+      throw new Error(`card row ${label} not found`);
+    }
+    return row;
+  }
+
+  it('shows loading, then the count in the Apps column', async () => {
+    const held = deferred<HeldMessages>();
+    const deliveryClient = buildFakeDeliveryClient({
+      getHeldMessages: vi.fn().mockReturnValue(held.promise),
+    });
+    renderApps({ deliveryClient });
+
+    await screen.findByText('URLs4IRL');
+    expect(
+      within(sectionByHeading(strings.appsHeading)).getAllByText(strings.heldLoading).length,
+    ).toBeGreaterThan(0);
+
+    await act(async () => {
+      held.resolve(heldPayload({ counts: { urls4irl: 3 } }));
+    });
+
+    expect((await screen.findAllByText(strings.heldPill({ count: 3 }))).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    { name: '404', rejection: new ApiError({ status: 404, message: 'not found' }) },
+    { name: '503', rejection: new ApiError({ status: 503, message: 'down' }) },
+    { name: 'network failure', rejection: new TypeError('network down') },
+  ])('degrades a $name to unavailable with no banner', async ({ rejection }) => {
+    const deliveryClient = buildFakeDeliveryClient({
+      getHeldMessages: vi.fn().mockRejectedValue(rejection),
+    });
+    renderApps({ deliveryClient });
+
+    expect(
+      (await screen.findAllByText(strings.heldUnavailableHidden.trim())).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(strings.heldZeroSub)).not.toBeInTheDocument();
+  });
+
+  it('fetches held counts on load when the Apps section is enabled', async () => {
+    const deliveryClient = buildFakeDeliveryClient();
+    renderApps({ deliveryClient });
+
+    await waitFor(() => expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(1));
+  });
+
+  it('with only the Delivery tab enabled, fetches only after the tab is clicked', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient();
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />);
+
+    await screen.findByText(strings.usersEmpty);
+    expect(deliveryClient.getHeldMessages).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+    await waitFor(() => expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(1));
+  });
+
+  it('makes no held fetch and shows no Held column without a delivery client', async () => {
+    renderApps({});
+
+    await screen.findByText('URLs4IRL');
+    expect(screen.queryByText(strings.columnHeld)).not.toBeInTheDocument();
+  });
+
+  it('re-fetches once after removing an app', async () => {
+    const deliveryClient = buildFakeDeliveryClient();
+    renderApps({ deliveryClient });
+    await screen.findByText('URLs4IRL');
+    await waitFor(() => expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(screen.getByRole('button', { name: `${strings.removeAction} URLs4IRL` }));
+    await userEvent.click(
+      screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+    );
+
+    await waitFor(() => expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(2));
+    await settle();
+    expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-fetches once after adding an app', async () => {
+    const deliveryClient = buildFakeDeliveryClient();
+    renderApps({ deliveryClient });
+    await waitFor(() => expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(1));
+
+    const form = within(sectionByHeading(strings.addAppHeading));
+    await userEvent.type(form.getByLabelText(strings.appIdLabel), 'tasktracker');
+    await userEvent.type(form.getByLabelText(strings.appDisplayNameLabel), 'Task Tracker');
+    await userEvent.click(form.getByRole('button', { name: strings.addAppAction }));
+
+    await waitFor(() => expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(2));
+    await settle();
+    expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-fetches once on the status card Refresh', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient();
+    renderApps({ deliveryClient, destinationsEnabled: true });
+    await waitFor(() => expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+    await screen.findByText(strings.deliveryStatusReady);
+
+    await clickCardRefresh(user);
+
+    await waitFor(() => expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(2));
+    await settle();
+    expect(deliveryClient.getHeldMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it('never lets a stale slow response overwrite a newer one', async () => {
+    const user = userEvent.setup();
+    const slow = deferred<HeldMessages>();
+    const getHeldMessages = vi
+      .fn()
+      .mockReturnValueOnce(slow.promise)
+      .mockResolvedValue(heldPayload({ counts: { urls4irl: 5 } }));
+    renderApps({
+      deliveryClient: buildFakeDeliveryClient({ getHeldMessages }),
+      destinationsEnabled: true,
+    });
+    await user.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+    await screen.findByText(strings.deliveryStatusReady);
+
+    await clickCardRefresh(user);
+    expect((await screen.findAllByText(strings.heldPill({ count: 5 }))).length).toBeGreaterThan(0);
+
+    await act(async () => {
+      slow.resolve(heldPayload({ counts: { urls4irl: 1 } }));
+    });
+    await settle();
+
+    expect(screen.getAllByText(strings.heldPill({ count: 5 })).length).toBeGreaterThan(0);
+    expect(screen.queryByText(strings.heldPill({ count: 1 }))).not.toBeInTheDocument();
+  });
+
+  it('feeds the Apps column and the status card from the same snapshot', async () => {
+    const user = userEvent.setup();
+    const deliveryClient = buildFakeDeliveryClient({
+      getHeldMessages: vi
+        .fn()
+        .mockResolvedValue(heldPayload({ counts: { urls4irl: 3 }, unassignedTotal: 4 })),
+    });
+    renderApps({ deliveryClient, destinationsEnabled: true });
+    expect((await screen.findAllByText(strings.heldPill({ count: 3 }))).length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+
+    await waitFor(() => expect(cardRow(strings.heldMessagesLabel)).toHaveTextContent('3'));
+    expect(cardRow(strings.unassignedAlertsLabel)).toHaveTextContent('4');
+  });
+
+  it('shows held-only apps under Unprovisioned with 0 subscribers, never None while held loads', async () => {
+    const held = deferred<HeldMessages>();
+    const deliveryClient = buildFakeDeliveryClient({
+      getHeldMessages: vi.fn().mockReturnValue(held.promise),
+    });
+    renderApps({ deliveryClient, personClient: appsPersonClient([urls4irlApp]) });
+    await screen.findByText('URLs4IRL');
+
+    expect(within(unprovisioned()).getByText(strings.unregisteredAppsLoading)).toBeInTheDocument();
+    expect(
+      within(unprovisioned()).queryByText(strings.unregisteredAppsEmpty),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      held.resolve(heldPayload({ counts: { ghost: 2, urls4irl: 1 } }));
+    });
+
+    const row = (await within(unprovisioned()).findByText('ghost')).closest('tr');
+    if (row === null) {
+      throw new Error('ghost row not found');
+    }
+    expect(within(row).getByText('0')).toBeInTheDocument();
+    expect(within(row).getByText(strings.heldPill({ count: 2 }))).toBeInTheDocument();
+    // A held id that IS registered never appears there.
+    expect(within(unprovisioned()).queryByText('urls4irl')).not.toBeInTheDocument();
+  });
+
+  it('adds no held-only rows while listApps rejects, and uses the claim-free empty copy', async () => {
+    const personClient = buildFakePersonClient({
+      listApps: vi.fn().mockRejectedValue(new Error('apps down')),
+    });
+    const deliveryClient = buildFakeDeliveryClient({
+      getHeldMessages: vi.fn().mockResolvedValue(heldPayload({ counts: { ghost: 2 } })),
+    });
+    renderApps({ deliveryClient, personClient });
+
+    expect(
+      await within(unprovisioned()).findByText(strings.unregisteredAppsEmpty),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(deliveryClient.getHeldMessages).toHaveBeenCalled());
+    await settle();
+    expect(within(unprovisioned()).queryByText('ghost')).not.toBeInTheDocument();
+    expect(
+      within(unprovisioned()).queryByText(strings.unregisteredAppsEmptyHeldReady),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the extended empty copy when held is ready, nothing is held and the apps list loaded', async () => {
+    renderApps({
+      deliveryClient: buildFakeDeliveryClient(),
+      personClient: appsPersonClient([]),
+    });
+
+    expect(
+      await within(unprovisioned()).findByText(strings.unregisteredAppsEmptyHeldReady),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no held-only row until listApps settles', async () => {
+    const apps = deferred<unknown[]>();
+    const personClient = buildFakePersonClient({
+      listApps: vi.fn().mockReturnValue(apps.promise),
+    } as Partial<PersonApiClient>);
+    const deliveryClient = buildFakeDeliveryClient({
+      getHeldMessages: vi.fn().mockResolvedValue(heldPayload({ counts: { ghost: 2 } })),
+    });
+    renderApps({ deliveryClient, personClient });
+    await waitFor(() => expect(deliveryClient.getHeldMessages).toHaveBeenCalled());
+    await settle();
+    expect(within(unprovisioned()).queryByText('ghost')).not.toBeInTheDocument();
+
+    await act(async () => {
+      apps.resolve([]);
+    });
+
+    expect(await within(unprovisioned()).findByText('ghost')).toBeInTheDocument();
+  });
+
+  it('hides a just-removed app from Unprovisioned while the held re-fetch is pending', async () => {
+    const refetch = deferred<HeldMessages>();
+    const getHeldMessages = vi
+      .fn()
+      .mockResolvedValueOnce(heldPayload({ counts: { urls4irl: 2, other: 3 } }))
+      .mockReturnValueOnce(refetch.promise);
+    const appsRefetch = deferred<unknown[]>();
+    const otherApp = { ...urls4irlApp, appId: 'other', displayName: 'Other' };
+    const listApps = vi
+      .fn()
+      .mockResolvedValueOnce([{ ...urls4irlApp }, { ...otherApp }])
+      .mockReturnValueOnce(appsRefetch.promise);
+    const personClient = buildFakePersonClient({ listApps });
+    renderApps({ deliveryClient: buildFakeDeliveryClient({ getHeldMessages }), personClient });
+    expect((await screen.findAllByText(strings.heldPill({ count: 3 }))).length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByRole('button', { name: `${strings.removeAction} URLs4IRL` }));
+    await userEvent.click(
+      screen.getByRole('button', { name: `${strings.confirmRemoveAction} URLs4IRL` }),
+    );
+    await waitFor(() => expect(listApps).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getHeldMessages).toHaveBeenCalledTimes(2));
+
+    // Record every committed state of the Unprovisioned section from here on.
+    const sawRemovedApp: boolean[] = [];
+    const observer = new MutationObserver(() => {
+      const text = screen
+        .queryByRole('heading', { name: strings.unregisteredAppsHeading, hidden: true })
+        ?.closest('section')?.textContent;
+      sawRemovedApp.push(text?.includes('urls4irl') ?? false);
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    // listApps settles first (explicitly), while the held re-fetch is still pending.
+    await act(async () => {
+      appsRefetch.resolve([{ ...otherApp }]);
+    });
+    await settle();
+
+    expect(within(unprovisioned()).queryByText('urls4irl')).not.toBeInTheDocument();
+    expect(within(unprovisioned()).getByText(strings.unregisteredAppsEmpty)).toBeInTheDocument();
+    expect(screen.queryByText(strings.unregisteredAppsLoading)).not.toBeInTheDocument();
+    // The Apps column keeps the previous snapshot: no "Checking…", the old count stays.
+    const appsSection = within(sectionByHeading(strings.appsHeading));
+    expect(appsSection.queryByText(strings.heldLoading)).not.toBeInTheDocument();
+    expect(appsSection.getAllByText(strings.heldPill({ count: 3 })).length).toBeGreaterThan(0);
+
+    // Every committed state while the re-fetch was pending omitted the removed app.
+    observer.disconnect();
+    expect(sawRemovedApp.length).toBeGreaterThan(0);
+    expect(sawRemovedApp).not.toContain(true);
+
+    await act(async () => {
+      refetch.resolve(heldPayload({ counts: { urls4irl: 2, other: 3 } }));
+    });
+
+    expect(await within(unprovisioned()).findByText('urls4irl')).toBeInTheDocument();
+  });
+
+  it('card Refresh hides held-only rows while pending and keeps the old counts', async () => {
+    const user = userEvent.setup();
+    const refetch = deferred<HeldMessages>();
+    const getHeldMessages = vi
+      .fn()
+      .mockResolvedValueOnce(heldPayload({ counts: { ghost: 2, urls4irl: 1 } }))
+      .mockReturnValueOnce(refetch.promise);
+    renderApps({
+      deliveryClient: buildFakeDeliveryClient({ getHeldMessages }),
+      destinationsEnabled: true,
+    });
+    expect(await within(unprovisioned()).findByText('ghost')).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+    await screen.findByText(strings.deliveryStatusReady);
+    expect(cardRow(strings.heldMessagesLabel)).toHaveTextContent('3');
+
+    await clickCardRefresh(user);
+    await waitFor(() => expect(getHeldMessages).toHaveBeenCalledTimes(2));
+    await settle();
+
+    expect(within(unprovisioned()).queryByText('ghost')).not.toBeInTheDocument();
+    // The Provisioning panel is hidden while the Delivery tab is open.
+    const appsHeading = screen.getByRole('heading', { name: strings.appsHeading, hidden: true });
+    const appsSection = within(appsHeading.closest('section') as HTMLElement);
+    expect(appsSection.queryByText(strings.heldLoading)).not.toBeInTheDocument();
+    expect(appsSection.getAllByText(strings.heldPill({ count: 1 })).length).toBeGreaterThan(0);
+    expect(cardRow(strings.heldMessagesLabel)).toHaveTextContent('3');
+    expect(cardRow(strings.heldMessagesLabel)).not.toHaveTextContent(
+      strings.deliveryStatusChecking,
+    );
+
+    await act(async () => {
+      refetch.resolve(heldPayload({ counts: { ghost: 2, urls4irl: 1 } }));
+    });
+
+    expect(await within(unprovisioned()).findByText('ghost')).toBeInTheDocument();
+  });
+
+  it('returns the extended empty copy once a re-fetch settles with nothing held', async () => {
+    const user = userEvent.setup();
+    const refetch = deferred<HeldMessages>();
+    const getHeldMessages = vi
+      .fn()
+      .mockResolvedValueOnce(heldPayload({ counts: {} }))
+      .mockReturnValueOnce(refetch.promise);
+    renderApps({
+      deliveryClient: buildFakeDeliveryClient({ getHeldMessages }),
+      personClient: appsPersonClient([]),
+      destinationsEnabled: true,
+    });
+    expect(
+      await within(unprovisioned()).findByText(strings.unregisteredAppsEmptyHeldReady),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+    await screen.findByText(strings.deliveryStatusReady);
+
+    await clickCardRefresh(user);
+    await waitFor(() => expect(getHeldMessages).toHaveBeenCalledTimes(2));
+    expect(within(unprovisioned()).getByText(strings.unregisteredAppsEmpty)).toBeInTheDocument();
+    expect(
+      within(unprovisioned()).queryByText(strings.unregisteredAppsEmptyHeldReady),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      refetch.resolve(heldPayload({ counts: {} }));
+    });
+
+    expect(
+      await within(unprovisioned()).findByText(strings.unregisteredAppsEmptyHeldReady),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps held-only rows hidden until the NEWEST of two overlapping re-fetches settles', async () => {
+    const user = userEvent.setup();
+    const first = deferred<HeldMessages>();
+    const second = deferred<HeldMessages>();
+    const getHeldMessages = vi
+      .fn()
+      .mockResolvedValueOnce(heldPayload({ counts: {} }))
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    renderApps({
+      deliveryClient: buildFakeDeliveryClient({ getHeldMessages }),
+      personClient: appsPersonClient([]),
+      destinationsEnabled: true,
+    });
+    expect(
+      await within(unprovisioned()).findByText(strings.unregisteredAppsEmptyHeldReady),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+    await screen.findByText(strings.deliveryStatusReady);
+
+    await clickCardRefresh(user);
+    // A pending re-fetch suppresses the "nothing is waiting" claim.
+    expect(within(unprovisioned()).getByText(strings.unregisteredAppsEmpty)).toBeInTheDocument();
+    await clickCardRefresh(user);
+    await waitFor(() => expect(getHeldMessages).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      first.resolve(heldPayload({ counts: { ghost: 2 } }));
+    });
+    await settle();
+    expect(within(unprovisioned()).queryByText('ghost')).not.toBeInTheDocument();
+    // heldRefreshing stays true until the newest settles: still the claim-free copy.
+    expect(within(unprovisioned()).getByText(strings.unregisteredAppsEmpty)).toBeInTheDocument();
+    expect(
+      within(unprovisioned()).queryByText(strings.unregisteredAppsEmptyHeldReady),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      second.resolve(heldPayload({ counts: { ghost: 2 } }));
+    });
+    expect(await within(unprovisioned()).findByText('ghost')).toBeInTheDocument();
+  });
+
+  it('renders the card held loading text in the first render after the tab is clicked', async () => {
+    const user = userEvent.setup();
+    const held = deferred<HeldMessages>();
+    const deliveryClient = buildFakeDeliveryClient({
+      getHeldMessages: vi.fn().mockReturnValue(held.promise),
+    });
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />);
+    await screen.findByText(strings.usersEmpty);
+
+    await user.click(screen.getByRole('tab', { name: strings.tabDelivery }));
+
+    expect(await screen.findByText(strings.heldMessagesLabel)).toBeInTheDocument();
+    expect(cardRow(strings.heldMessagesLabel)).toHaveTextContent(strings.deliveryStatusChecking);
+    expect(cardRow(strings.unassignedAlertsLabel)).toHaveTextContent(
+      strings.deliveryStatusChecking,
+    );
+  });
+
+  it('renders the card held loading text, not a crash, on a direct #delivery load', async () => {
+    window.history.replaceState(null, '', '/#delivery');
+    const held = deferred<HeldMessages>();
+    const deliveryClient = buildFakeDeliveryClient({
+      getHeldMessages: vi.fn().mockReturnValue(held.promise),
+    });
+    render(<App client={buildFakeClient()} deliveryClient={deliveryClient} destinationsEnabled />);
+
+    expect(await screen.findByText(strings.heldMessagesLabel)).toBeInTheDocument();
+    expect(cardRow(strings.heldMessagesLabel)).toHaveTextContent(strings.deliveryStatusChecking);
+    expect(cardRow(strings.unassignedAlertsLabel)).toHaveTextContent(
+      strings.deliveryStatusChecking,
     );
   });
 });

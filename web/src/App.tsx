@@ -19,6 +19,8 @@ import type {
   UpdateAppParams,
 } from './api/personClient';
 import type { DeliveryApiClient } from './api/deliveryClient';
+import type { HeldCounts } from './heldCounts';
+import { useLatestRequest } from './hooks/useLatestRequest';
 import { AppTabs } from './components/AppTabs';
 import { DeliveryStatusCard } from './components/DeliveryStatusCard';
 import { DeliveryLog } from './components/DeliveryLog';
@@ -197,6 +199,66 @@ function App({
     void refreshApps();
   }, [refreshApps]);
 
+  // Held-message snapshot, fetched once here and shared by the Apps tables and the status card.
+  // Gate: a delivery client AND (the Apps section, or the Destinations section once the Delivery
+  // tab has been visited), so a Delivery-only build stays lazy until the tab opens.
+  const [deliveryVisited, setDeliveryVisited] = useState(false);
+  const gateOpen =
+    deliveryClient !== undefined &&
+    (appsSectionEnabled || (destinationsEnabled && deliveryVisited));
+  // undefined until the first fetch settles; a re-fetch keeps the previous value until it settles.
+  const [held, setHeld] = useState<HeldCounts | undefined>(undefined);
+  // True from a mutation/Refresh until the newest held re-fetch settles (Unprovisioned union only).
+  const [heldRefreshing, setHeldRefreshing] = useState(false);
+  const trackHeld = useLatestRequest();
+
+  // Promise-chain style (see refreshUsers): setState only inside promise callbacks. Any
+  // rejection (404 from an older backend, 5xx, network, malformed body) is just "unavailable".
+  const refreshHeld = useCallback((): Promise<void> => {
+    if (!gateOpen || deliveryClient === undefined) {
+      return Promise.resolve();
+    }
+    return trackHeld(deliveryClient.getHeldMessages()).then((outcome) => {
+      if (outcome.stale) {
+        return;
+      }
+      setHeld(
+        outcome.ok
+          ? {
+              status: 'ready',
+              byApp: new Map(outcome.value.apps.map((entry) => [entry.appId, entry.count])),
+              unassignedTotal: outcome.value.unassignedTotal,
+            }
+          : { status: 'unavailable' },
+      );
+      setHeldRefreshing(false);
+    });
+  }, [gateOpen, deliveryClient, trackHeld]);
+
+  useEffect(() => {
+    void refreshHeld();
+  }, [refreshHeld]);
+
+  // Event-handler entry point: marks a re-fetch in flight synchronously, then fetches.
+  const startHeldRefresh = useCallback(() => {
+    if (!gateOpen) {
+      return;
+    }
+    setHeldRefreshing(true);
+    void refreshHeld();
+  }, [gateOpen, refreshHeld]);
+
+  // Every registry mutation refreshes apps and held counts together (held messages are deleted
+  // with their app). The held re-fetch starts first so heldRefreshing is true before listApps settles.
+  const refreshAppsAndHeld = useCallback((): Promise<void> => {
+    startHeldRefresh();
+    return refreshApps();
+  }, [startHeldRefresh, refreshApps]);
+
+  const handleDeliveryVisit = useCallback(() => {
+    setDeliveryVisited(true);
+  }, []);
+
   // Join key: a ntfy userId is "u_" + personHash. Built fresh each render from
   // `people`; empty when there is no personClient, so UsersTable always falls
   // back to displaying the raw userId in that case.
@@ -222,7 +284,23 @@ function App({
 
   // "Unprovisioned" apps: an app_id that is in use (a user/topic references it)
   // but has no registry row — the ghost-app case. Sorted for stable display.
-  const unregisteredAppIds = [...inUseAppIds]
+  // Card: never undefined whenever a delivery client exists (independent of the fetch gate).
+  const cardHeld: HeldCounts = held ?? { status: 'loading' };
+  // Tables: undefined (no Held column) only while the gate is closed.
+  const heldForView: HeldCounts | undefined = gateOpen ? cardHeld : undefined;
+  // Held-only ids join the list only once the registry is known and no held re-fetch is pending
+  // (a kept snapshot may still list an app that was just removed).
+  const unionEvaluated =
+    heldForView?.status === 'ready' && appsError === null && !appsLoading && !heldRefreshing;
+  const heldOnlyAppIds: string[] = [];
+  if (heldForView?.status === 'ready' && unionEvaluated) {
+    for (const [appId, count] of heldForView.byApp) {
+      if (count > 0) {
+        heldOnlyAppIds.push(appId);
+      }
+    }
+  }
+  const unregisteredAppIds = [...new Set([...inUseAppIds, ...heldOnlyAppIds])]
     .filter((appId) => !registeredAppIds.has(appId))
     .sort();
 
@@ -338,17 +416,17 @@ function App({
         }
       } catch (rejection: unknown) {
         const detail = rejection instanceof Error ? rejection.message : String(rejection);
-        await refreshApps();
+        await refreshAppsAndHeld();
         throw new ApiError({
           status: rejection instanceof ApiError ? rejection.status : 0,
           message: `${strings.publisherMintedButRegisterFailed}${detail}`,
         });
       }
       await refreshUsers();
-      await refreshApps();
+      await refreshAppsAndHeld();
       return alreadyRegistered ? { ...result, alreadyRegistered: true } : result;
     },
-    [personClient, client, refreshApps, refreshUsers],
+    [personClient, client, refreshAppsAndHeld, refreshUsers],
   );
 
   const handleUpdateApp = useCallback(
@@ -357,9 +435,9 @@ function App({
         return;
       }
       await personClient.updateApp(params);
-      await refreshApps();
+      await refreshAppsAndHeld();
     },
-    [personClient, refreshApps],
+    [personClient, refreshAppsAndHeld],
   );
 
   // Thin pass-through to the API client. SendTestNotification owns its own
@@ -410,7 +488,7 @@ function App({
             (rejection.status === 409 || rejection.status === 503)
           ) {
             setAppRemovedSignal((value) => value + 1);
-            await Promise.all([refreshApps(), refreshUsers()]);
+            await Promise.all([refreshAppsAndHeld(), refreshUsers()]);
           }
           // After the refresh, so a refresh failure cannot overwrite the server's reason.
           setError(rejection instanceof ApiError ? rejection.message : strings.genericError);
@@ -418,14 +496,14 @@ function App({
         }
         setError(null);
         setAppRemovedSignal((value) => value + 1);
-        await Promise.all([refreshApps(), refreshUsers()]);
+        await Promise.all([refreshAppsAndHeld(), refreshUsers()]);
         return true;
       } finally {
         inFlightRemovalsRef.current.delete(appId);
         setRemovingAppIds(new Set(inFlightRemovalsRef.current));
       }
     },
-    [client, refreshApps, refreshUsers],
+    [client, refreshAppsAndHeld, refreshUsers],
   );
 
   // The Provisioning content. With tabs it is the Provisioning panel's body
@@ -467,13 +545,16 @@ function App({
           onRemintToken={handleRemintToken}
           onRemoveApp={handleRemoveApp}
           removingAppIds={removingAppIds}
+          held={heldForView}
         />
       )}
       {appsSectionEnabled && (
         <UnregisteredApps
           appIds={unregisteredAppIds}
           subscriberCountByApp={subscriberCountByApp}
-          loading={loading || appsLoading}
+          loading={loading || appsLoading || heldForView?.status === 'loading'}
+          held={heldForView}
+          unionEvaluated={unionEvaluated}
         />
       )}
       {personClient !== undefined && (
@@ -508,15 +589,22 @@ function App({
       {tabsEnabled ? (
         <AppTabs
           provisioning={provisioningContent}
+          onDeliveryVisit={handleDeliveryVisit}
           delivery={
             <>
-              {destinationsEnabled && <DeliveryStatusCard client={deliveryClient} />}
+              {destinationsEnabled && (
+                <DeliveryStatusCard
+                  client={deliveryClient}
+                  held={cardHeld}
+                  onRefreshHeld={startHeldRefresh}
+                />
+              )}
               {appIdentitiesEnabled && (
                 <AppIdentities
                   client={deliveryClient}
                   refreshSignal={appRemovedSignal}
                   onBindingApproved={() => {
-                    void refreshApps();
+                    void refreshAppsAndHeld();
                   }}
                 />
               )}

@@ -96,6 +96,10 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     listPersonalDestinations: vi.fn().mockResolvedValue({ personalDestinations: [], total: 0 }),
     setPersonalDestinationEnabled: vi.fn(),
     deletePersonalDestination: vi.fn(),
+    getHeldMessages: vi
+      .fn()
+      .mockResolvedValue({ apps: [], unassignedChecks: [], unassignedTotal: 0 }),
+    listHeldFailures: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     ...overrides,
   };
 }

@@ -511,6 +511,143 @@ describe('delivery api client', () => {
     expect(list).toEqual({ items: [], total: 0 });
   });
 
+  describe('held counts', () => {
+    const heldWire = {
+      apps: [{ app_id: 'u4i', count: 3, oldest_at: '2026-11-01T10:00:00Z' }],
+      unassigned_checks: [
+        { check_id: 7, app_id: 'u4i', name: 'site', pending_alert: '2026-11-02T10:00:00Z' },
+      ],
+      unassigned_total: 1,
+    };
+    const failuresWire = {
+      failures: [
+        {
+          message_id: 'msg-1',
+          app_id: 'u4i',
+          channel: 'alerts',
+          reason: 'no destination',
+          failed_at: '2026-11-03T10:00:00Z',
+        },
+      ],
+      total: 1,
+    };
+
+    it('getHeldMessages GETs the endpoint and maps snake_case to camelCase', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: heldWire }));
+
+      const held = await makeClient().getHeldMessages();
+
+      const { url, init } = lastCall();
+      expect(url).toBe('https://admin.test/delivery/v1/admin/held-messages');
+      expect(init.method).toBe('GET');
+      expect(held).toEqual({
+        apps: [{ appId: 'u4i', count: 3, oldestAt: '2026-11-01T10:00:00Z' }],
+        unassignedChecks: [
+          { checkId: 7, appId: 'u4i', name: 'site', pendingAlert: '2026-11-02T10:00:00Z' },
+        ],
+        unassignedTotal: 1,
+      });
+    });
+
+    it('getHeldMessages maps null or absent arrays to []', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ body: { apps: null, unassigned_checks: null, unassigned_total: 0 } }),
+      );
+      expect(await makeClient().getHeldMessages()).toEqual({
+        apps: [],
+        unassignedChecks: [],
+        unassignedTotal: 0,
+      });
+
+      fetchMock.mockResolvedValue(jsonResponse({ body: { unassigned_total: 0 } }));
+      expect(await makeClient().getHeldMessages()).toEqual({
+        apps: [],
+        unassignedChecks: [],
+        unassignedTotal: 0,
+      });
+    });
+
+    it.each([404, 503])('getHeldMessages rejects with ApiError on %i', async (status) => {
+      fetchMock.mockResolvedValue(jsonResponse({ status, body: { error: 'nope' } }));
+
+      await expect(makeClient().getHeldMessages()).rejects.toMatchObject({
+        constructor: ApiError,
+        status,
+      });
+    });
+
+    it('getHeldMessages rejects on a network failure', async () => {
+      fetchMock.mockRejectedValue(new TypeError('network'));
+
+      await expect(makeClient().getHeldMessages()).rejects.toThrow('network');
+    });
+
+    it.each([
+      ['an HTML 200', new Response('<html>', { status: 200 })],
+      ['a null body', jsonResponse({ body: null })],
+      ['a string apps', jsonResponse({ body: { ...heldWire, apps: 'x' } })],
+      [
+        'a string unassigned_checks',
+        jsonResponse({ body: { ...heldWire, unassigned_checks: 'x' } }),
+      ],
+      ['a string unassigned_total', jsonResponse({ body: { ...heldWire, unassigned_total: '3' } })],
+      ['a missing unassigned_total', jsonResponse({ body: { apps: [], unassigned_checks: [] } })],
+    ])('getHeldMessages rejects a malformed payload (%s)', async (_label, response) => {
+      fetchMock.mockResolvedValue(response);
+
+      await expect(makeClient().getHeldMessages()).rejects.toThrow();
+    });
+
+    it('listHeldFailures GETs the endpoint without a limit and maps the wire shape', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: failuresWire }));
+
+      const list = await makeClient().listHeldFailures();
+
+      const { url, init } = lastCall();
+      expect(url).toBe('https://admin.test/delivery/v1/admin/held-failures');
+      expect(init.method).toBe('GET');
+      expect(list).toEqual({
+        items: [
+          {
+            messageId: 'msg-1',
+            appId: 'u4i',
+            channel: 'alerts',
+            reason: 'no destination',
+            failedAt: '2026-11-03T10:00:00Z',
+          },
+        ],
+        total: 1,
+      });
+    });
+
+    it('listHeldFailures maps a null list to []', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ body: { failures: null, total: 0 } }));
+
+      expect(await makeClient().listHeldFailures()).toEqual({ items: [], total: 0 });
+    });
+
+    it.each([404, 503])('listHeldFailures rejects with ApiError on %i', async (status) => {
+      fetchMock.mockResolvedValue(jsonResponse({ status, body: { error: 'nope' } }));
+
+      await expect(makeClient().listHeldFailures()).rejects.toMatchObject({
+        constructor: ApiError,
+        status,
+      });
+    });
+
+    it.each([
+      ['an HTML 200', new Response('<html>', { status: 200 })],
+      ['a null body', jsonResponse({ body: null })],
+      ['a string failures', jsonResponse({ body: { failures: 'x', total: 0 } })],
+      ['a string total', jsonResponse({ body: { failures: [], total: '3' } })],
+      ['a missing total', jsonResponse({ body: { failures: [] } })],
+    ])('listHeldFailures rejects a malformed payload (%s)', async (_label, response) => {
+      fetchMock.mockResolvedValue(response);
+
+      await expect(makeClient().listHeldFailures()).rejects.toThrow();
+    });
+  });
+
   it('cancelScheduledMessage sends DELETE and maps the outcome', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({ body: { message_id: 'msg-9', cancelled: true, status: 'cancelled' } }),

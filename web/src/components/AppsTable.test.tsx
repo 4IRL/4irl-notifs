@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppSummary } from '../api/personClient';
+import type { HeldCounts } from '../heldCounts';
 import { strings } from '../strings';
 import { useTimeZone } from '../test-timezone';
 import { setCompactViewport } from '../test-viewport';
@@ -655,5 +656,57 @@ describe('AppsTable', () => {
       expect(within(dialog).getByLabelText(strings.appDisplayNameLabel)).toHaveFocus();
       expect(screen.getByRole('heading', { name: strings.appsHeading })).not.toHaveFocus();
     });
+  });
+});
+
+describe('AppsTable held counts', () => {
+  const readyHeld: HeldCounts = {
+    status: 'ready',
+    byApp: new Map([['urls4irl', 3]]),
+    unassignedTotal: 0,
+  };
+
+  it('adds a Held column after Subscribers with the pill in the roomy layout', () => {
+    setCompactViewport(false);
+    renderTable({ held: readyHeld });
+
+    const headers = screen.getAllByRole('columnheader').map((header) => header.textContent);
+    expect(headers.indexOf(strings.columnHeld)).toBe(
+      headers.indexOf(strings.columnSubscribers) + 1,
+    );
+    const cell = screen.getByText('3 held').closest('td')!;
+    expect(cell.previousElementSibling).toHaveTextContent('3');
+    expect(cell.cellIndex).toBe(headers.indexOf(strings.columnHeld));
+  });
+
+  it('shows the held count as a lead-cell sub-line in the compact layout', () => {
+    setCompactViewport(true);
+    renderTable({ held: { status: 'ready', byApp: new Map(), unassignedTotal: 0 } });
+
+    expect(
+      screen.queryByRole('columnheader', { name: strings.columnHeld }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(strings.heldZeroSub).closest('td')).toHaveClass('admin-table__lead');
+    expect(screen.getByText(strings.heldZeroSub).closest('.admin-table__sub')).not.toBeNull();
+  });
+
+  it('shows the pill in the compact sub-line for a positive count', () => {
+    setCompactViewport(true);
+    renderTable({ held: readyHeld });
+    expect(screen.getByText('3 held').closest('.admin-table__sub')).not.toBeNull();
+  });
+
+  it('renders no Held column when held is undefined (roomy)', () => {
+    setCompactViewport(false);
+    renderTable();
+    expect(
+      screen.queryByRole('columnheader', { name: strings.columnHeld }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders no held sub-line when held is undefined (compact)', () => {
+    setCompactViewport(true);
+    renderTable();
+    expect(screen.queryByText(strings.heldZeroSub)).not.toBeInTheDocument();
   });
 });

@@ -1,7 +1,9 @@
 import type { JSX } from 'react';
 
+import type { HeldCounts } from '../heldCounts';
 import { strings } from '../strings';
 import { revealFocusedControl } from './adminTableFocus';
+import { HeldCount } from './HeldCount';
 import './adminTable.css';
 import './UnregisteredApps.css';
 
@@ -14,6 +16,10 @@ interface UnregisteredAppsProps {
   /** True while the underlying users/apps are still loading — the empty state
    *  ("None…") is only meaningful once both have resolved. */
   loading: boolean;
+  /** Held-message snapshot; when undefined the Held column is omitted. */
+  held?: HeldCounts;
+  /** True only when the held-only union was evaluated, so "no messages waiting" can be claimed. */
+  unionEvaluated?: boolean;
 }
 
 /**
@@ -26,7 +32,13 @@ export function UnregisteredApps({
   appIds,
   subscriberCountByApp,
   loading,
+  held,
+  unionEvaluated = false,
 }: UnregisteredAppsProps): JSX.Element {
+  const emptyCopy =
+    held?.status === 'ready' && unionEvaluated
+      ? strings.unregisteredAppsEmptyHeldReady
+      : strings.unregisteredAppsEmpty;
   return (
     <section className="unregistered-apps">
       <h2>{strings.unregisteredAppsHeading}</h2>
@@ -34,7 +46,7 @@ export function UnregisteredApps({
       {loading ? (
         <p className="unregistered-apps__status">{strings.unregisteredAppsLoading}</p>
       ) : appIds.length === 0 ? (
-        <p className="unregistered-apps__status">{strings.unregisteredAppsEmpty}</p>
+        <p className="unregistered-apps__status">{emptyCopy}</p>
       ) : (
         <div
           className="admin-table__scroll unregistered-apps__scroll"
@@ -49,16 +61,28 @@ export function UnregisteredApps({
                 <th scope="col" className="admin-table__lead">
                   {strings.columnAppId}
                 </th>
-                <th scope="col" className="admin-table__fill">
+                <th scope="col" className={held === undefined ? 'admin-table__fill' : undefined}>
                   {strings.columnSubscribers}
                 </th>
+                {held !== undefined && (
+                  <th scope="col" className="admin-table__fill">
+                    {strings.columnHeld}
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
               {appIds.map((appId) => (
                 <tr key={appId}>
                   <td className="admin-table__lead unregistered-apps__id">{appId}</td>
-                  <td className="admin-table__fill">{subscriberCountByApp.get(appId) ?? 0}</td>
+                  <td className={held === undefined ? 'admin-table__fill' : undefined}>
+                    {subscriberCountByApp.get(appId) ?? 0}
+                  </td>
+                  {held !== undefined && (
+                    <td className="admin-table__fill">
+                      <HeldCount held={held} appId={appId} variant="cell" />
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
