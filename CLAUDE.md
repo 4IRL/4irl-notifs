@@ -103,7 +103,7 @@ Components:
   app message envelope API (`/v1/messages`, including `DELETE /v1/messages` cancel of scheduled
   messages), the operator delivery log and replay endpoints (`/v1/admin/deliveries`) and the operator
   scheduled-message list and cancel (`/v1/admin/scheduled-messages`), the operator held-message failure
-  list (`GET /v1/admin/held-failures`), heartbeat pings
+  list (`GET /v1/admin/held-failures`) and held counts (`GET /v1/admin/held-messages`), heartbeat pings
   (`/v1/heartbeats`) and the operator heartbeat CRUD (`/v1/admin/heartbeats`), alongside `/healthz` and
   `/readyz`. Every app-facing endpoint needs the calling app's own delivery key (`dak_...`, from the
   GitHub OIDC exchange at `/v1/app-identity/exchange`, approved by the operator under

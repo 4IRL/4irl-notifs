@@ -169,6 +169,10 @@ type ServerConfig struct {
 	// unavailable (fail closed). Callers must leave this an untyped nil when no provisioning client
 	// exists: a typed-nil pointer stored here is a non-nil interface and would bypass that guard.
 	ProvisioningHealth ProvisioningHealth
+	// HeldSummary and UnassignedAlerts back GET /v1/admin/held-messages. Leave each an
+	// untyped nil when absent (a typed-nil would bypass the guard); nil answers 503.
+	HeldSummary      HeldMessageSummarizer
+	UnassignedAlerts UnassignedAlertLister
 	// Now supplies the time the heartbeat views derive their state at; defaults to
 	// time.Now. Tests set it to run on a fixed clock.
 	Now func() time.Time
@@ -202,7 +206,10 @@ type Server struct {
 	appIdentity AppIdentity
 	// provisioningHealth backs GET /healthz/provisioning.
 	provisioningHealth ProvisioningHealth
-	now                func() time.Time
+	// heldSummary and unassignedAlerts back GET /v1/admin/held-messages.
+	heldSummary      HeldMessageSummarizer
+	unassignedAlerts UnassignedAlertLister
+	now              func() time.Time
 	// held backs the held block of GET /readyz; nil omits the block.
 	held HeldReporter
 	mux  *http.ServeMux
@@ -269,6 +276,8 @@ func NewServer(config ServerConfig) *Server {
 		heartbeats:           config.Heartbeats,
 		appIdentity:          config.AppIdentity,
 		provisioningHealth:   config.ProvisioningHealth,
+		heldSummary:          config.HeldSummary,
+		unassignedAlerts:     config.UnassignedAlerts,
 		now:                  config.Now,
 		held:                 config.Held,
 		mux:                  http.NewServeMux(),
@@ -406,6 +415,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /v1/admin/scheduled-messages", server.requireMessages(server.handleListScheduledMessages))
 	server.mux.HandleFunc("DELETE /v1/admin/scheduled-messages/{id}", server.requireMessages(server.handleAdminCancelMessage))
 	server.mux.HandleFunc("GET /v1/admin/held-failures", server.requireMessages(server.handleListHeldFailures))
+	server.mux.HandleFunc("GET /v1/admin/held-messages", server.requireMessages(server.handleHeldMessages))
 	server.mux.HandleFunc("GET /v1/admin/deliveries", server.requireMessages(server.handleListDeliveries))
 	server.mux.HandleFunc("GET /v1/admin/deliveries/{id}/attempts", server.requireMessages(server.handleListAttempts))
 	server.mux.HandleFunc("POST /v1/admin/deliveries/{id}/replay", server.requireMessages(server.handleReplayDelivery))

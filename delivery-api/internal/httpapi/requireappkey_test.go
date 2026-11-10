@@ -649,6 +649,8 @@ func TestAdminMessagesAndOtherRoutesNeedNoKey(testInstance *testing.T) {
 		{name: "admin deliveries", method: http.MethodGet, path: "/v1/admin/deliveries"},
 		{name: "admin scheduled", method: http.MethodGet, path: "/v1/admin/scheduled-messages"},
 		{name: "admin held failures", method: http.MethodGet, path: "/v1/admin/held-failures"},
+		// The rig leaves both held-messages dependencies unwired, so the route answers its own 503 (never a 401).
+		{name: "admin held messages", method: http.MethodGet, path: "/v1/admin/held-messages", wantStatus: http.StatusServiceUnavailable},
 		{name: "admin heartbeats", method: http.MethodGet, path: "/v1/admin/heartbeats"},
 		{name: "healthz", method: http.MethodGet, path: "/healthz"},
 		// No ProvisioningHealth is configured in this rig, so the route answers its own 503 (never a 401).
