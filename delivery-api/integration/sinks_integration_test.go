@@ -234,15 +234,78 @@ func TestRecipientDeliveryThroughNtfy(testInstance *testing.T) {
 	requireErrorMessage(testInstance, "POST recipient message after DELETE", body, "app has no ntfy publisher")
 }
 
+// routedRecipientBody is recipientSubmitBody with an explicit to.via and optional destination ids.
+func routedRecipientBody(appID, recipient, idempotencyKey, via string, ids []int64) map[string]any {
+	body := recipientSubmitBody(appID, recipient, idempotencyKey)
+	routing := map[string]any{"recipient": recipient, "via": via}
+	if ids != nil {
+		routing["personal_destination_ids"] = ids
+	}
+	body["to"] = routing
+	return body
+}
+
 func TestRecipientWithoutPublisherIsRejected(testInstance *testing.T) {
 	waitForReady(testInstance)
 
 	suffix := randomSuffix(testInstance)
 	appID := "it" + suffix[:12]
+	email := "it-nopub-" + suffix + "@example.com"
 	registerSinkAppCleanup(testInstance, appID)
 
+	// Default, explicit ntfy and both (with an id: resolution reaches the publisher check first) all need a publisher.
+	cases := map[string]map[string]any{
+		"default": recipientSubmitBody(appID, email, "it-default-"+suffix),
+		"ntfy":    routedRecipientBody(appID, email, "it-ntfy-"+suffix, "ntfy", nil),
+		"both":    routedRecipientBody(appID, email, "it-both-"+suffix, "both", []int64{1}),
+	}
+	for name, requestBody := range cases {
+		status, body := apiRequest(testInstance, http.MethodPost, messagesPath, requestBody)
+		requireStatus(testInstance, "POST recipient message without publisher ("+name+")",
+			status, http.StatusUnprocessableEntity, body)
+		requireErrorMessage(testInstance, "POST recipient message without publisher ("+name+")",
+			body, "app has no ntfy publisher")
+	}
+}
+
+func TestRecipientViaPersonalWorksWithoutPublisher(testInstance *testing.T) {
+	waitForReady(testInstance)
+
+	suffix := randomSuffix(testInstance)
+	appID := "it" + suffix[:12]
+	email := "it-viapers-" + suffix + "@example.com"
+	hash := personhash.Hash(email)
+	registerSinkAppCleanup(testInstance, appID)
+	testInstance.Cleanup(func() {
+		psql(testInstance, fmt.Sprintf("delete from personal_destinations where person_hash = '%s'", hash))
+	})
+
+	// An unknown id is refused with the generic 422 (the app has no publisher: via=personal never needs one).
 	status, body := apiRequest(testInstance, http.MethodPost, messagesPath,
-		recipientSubmitBody(appID, "it-nopub-"+suffix+"@example.com", "it-"+suffix))
-	requireStatus(testInstance, "POST recipient message without publisher", status, http.StatusUnprocessableEntity, body)
-	requireErrorMessage(testInstance, "POST recipient message without publisher", body, "app has no ntfy publisher")
+		routedRecipientBody(appID, email, "it-unknown-"+suffix, "personal", []int64{999999999}))
+	requireStatus(testInstance, "POST via=personal with an unknown id", status, http.StatusUnprocessableEntity, body)
+	requireErrorMessage(testInstance, "POST via=personal with an unknown id", body,
+		"personal destination not available for recipient")
+
+	// Register an opted-in destination as the app.
+	status, body = personalRequest(testInstance, appID, http.MethodPost, "", map[string]any{
+		"email": email, "label": "Phone", "type": "webhook",
+		"secrets": map[string]string{
+			"url":            publicWebhookURL,
+			"signing_secret": ("sign" + strings.Repeat("q", signingSecretLength))[:signingSecretLength],
+		},
+	})
+	requireStatus(testInstance, "register personal destination", status, http.StatusCreated, body)
+	var created personalEnvelopeJSON
+	decodeBody(testInstance, "created personal destination", body, &created)
+
+	status, body = apiRequest(testInstance, http.MethodPost, messagesPath,
+		routedRecipientBody(appID, email, "it-named-"+suffix, "personal", []int64{created.PersonalDestination.ID}))
+	requireStatus(testInstance, "POST via=personal with a named destination", status, http.StatusAccepted, body)
+	var submitted submitResponse
+	decodeBody(testInstance, "POST via=personal", body, &submitted)
+	wantName := fmt.Sprintf("@personal_%d", created.PersonalDestination.ID)
+	if len(submitted.Message.Deliveries) != 1 || submitted.Message.Deliveries[0].Destination != wantName {
+		testInstance.Fatalf("deliveries = %+v, want only %s (body: %s)", submitted.Message.Deliveries, wantName, body)
+	}
 }

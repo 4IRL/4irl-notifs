@@ -10,6 +10,7 @@ package dispatch_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -57,6 +58,12 @@ type fanoutPipeline struct {
 
 func startFanoutPipeline(testInstance *testing.T) *fanoutPipeline {
 	testInstance.Helper()
+	return startFanoutPipelineWith(testInstance, true)
+}
+
+// startFanoutPipelineWith optionally skips minting the app's ntfy publisher.
+func startFanoutPipelineWith(testInstance *testing.T, mintPublisher bool) *fanoutPipeline {
+	testInstance.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), pipelineTestTimeout)
 	testInstance.Cleanup(cancel)
 	pool := pgtest.IsolatedPool(ctx, testInstance)
@@ -90,8 +97,10 @@ func startFanoutPipeline(testInstance *testing.T) *fanoutPipeline {
 	live.pool = pool
 	live.personalService = personalService
 	publishers := publisher.NewService(publisher.NewPGStore(pool), pipelineMinter{}, sealer, pipelineBound{}, nil)
-	if _, mintErr := publishers.Mint(ctx, fanoutApp, false); mintErr != nil {
-		testInstance.Fatalf("Mint: %v", mintErr)
+	if mintPublisher {
+		if _, mintErr := publishers.Mint(ctx, fanoutApp, false); mintErr != nil {
+			testInstance.Fatalf("Mint: %v", mintErr)
+		}
 	}
 
 	live.worker = dispatch.NewWorker(dispatch.WorkerConfig{
@@ -286,6 +295,148 @@ func TestPipelineScheduledRecipientFanOutIsFrozenAtSubmit(testInstance *testing.
 		registry.RecipientDestinationName, personal.PersonalDeliveryName(first.ID))
 	if got := len(live.ntfySeen()); got != 1 {
 		testInstance.Fatalf("ntfy saw %d requests, want 1", got)
+	}
+	requireStrings(testInstance, "webhook paths", live.webhookPaths(), []string{"/alice-first"})
+}
+
+// routedEnvelope builds a recipient envelope with an explicit via and destination ids.
+func (live *fanoutPipeline) routedEnvelope(
+	key, email string, via message.RecipientVia, ids ...int64,
+) message.Envelope {
+	envelope := live.envelope(key, email, ids...)
+	envelope.ToRecipientVia = via
+	return envelope
+}
+
+func TestPipelineViaNtfyReachesOnlyNtfy(testInstance *testing.T) {
+	live := startFanoutPipelineWith(testInstance, true)
+	live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
+	live.register(testInstance, fanoutAlice, fanoutApp, "/hook-b", true)
+
+	stored, _, submitErr := live.messages.Submit(live.ctx, live.routedEnvelope("via-ntfy", fanoutAlice, message.RecipientViaNtfy))
+	if submitErr != nil {
+		testInstance.Fatalf("Submit = %v", submitErr)
+	}
+	requireDeliveryNames(testInstance, stored.Deliveries, registry.RecipientDestinationName)
+	live.waitAllDelivered(testInstance, stored.ID, 1)
+	time.Sleep(pipelineQuietPeriod)
+
+	if got := len(live.ntfySeen()); got != 1 {
+		testInstance.Fatalf("ntfy saw %d requests, want 1", got)
+	}
+	requireStrings(testInstance, "webhook paths", live.webhookPaths(), nil)
+}
+
+func TestPipelineViaPersonalSkipsNtfyAndWorksWithoutPublisher(testInstance *testing.T) {
+	live := startFanoutPipelineWith(testInstance, false)
+	hookA := live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
+	live.register(testInstance, fanoutAlice, fanoutApp, "/hook-b", true)
+
+	stored, _, submitErr := live.messages.Submit(
+		live.ctx, live.routedEnvelope("via-personal", fanoutAlice, message.RecipientViaPersonal, hookA.ID))
+	if submitErr != nil {
+		testInstance.Fatalf("Submit = %v", submitErr)
+	}
+	requireDeliveryNames(testInstance, stored.Deliveries, personal.PersonalDeliveryName(hookA.ID))
+	live.waitAllDelivered(testInstance, stored.ID, 1)
+	time.Sleep(pipelineQuietPeriod)
+
+	if got := len(live.ntfySeen()); got != 0 {
+		testInstance.Fatalf("ntfy saw %d requests, want 0", got)
+	}
+	requireStrings(testInstance, "webhook paths", live.webhookPaths(), []string{"/hook-a"})
+}
+
+// With a publisher minted, via=personal must still never reach ntfy.
+func TestPipelineViaPersonalSkipsNtfyEvenWithPublisher(testInstance *testing.T) {
+	live := startFanoutPipelineWith(testInstance, true)
+	hookA := live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
+
+	stored, _, submitErr := live.messages.Submit(
+		live.ctx, live.routedEnvelope("via-personal-pub", fanoutAlice, message.RecipientViaPersonal, hookA.ID))
+	if submitErr != nil {
+		testInstance.Fatalf("Submit = %v", submitErr)
+	}
+	requireDeliveryNames(testInstance, stored.Deliveries, personal.PersonalDeliveryName(hookA.ID))
+	live.waitAllDelivered(testInstance, stored.ID, 1)
+	time.Sleep(pipelineQuietPeriod)
+
+	if got := len(live.ntfySeen()); got != 0 {
+		testInstance.Fatalf("ntfy saw %d requests, want 0", got)
+	}
+	requireStrings(testInstance, "webhook paths", live.webhookPaths(), []string{"/hook-a"})
+}
+
+func TestPipelineViaBothReachesNtfyAndOnlyNamedDestinations(testInstance *testing.T) {
+	live := startFanoutPipelineWith(testInstance, true)
+	live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
+	hookB := live.register(testInstance, fanoutAlice, fanoutApp, "/hook-b", true)
+
+	stored, _, submitErr := live.messages.Submit(
+		live.ctx, live.routedEnvelope("via-both", fanoutAlice, message.RecipientViaBoth, hookB.ID))
+	if submitErr != nil {
+		testInstance.Fatalf("Submit = %v", submitErr)
+	}
+	requireDeliveryNames(testInstance, stored.Deliveries,
+		registry.RecipientDestinationName, personal.PersonalDeliveryName(hookB.ID))
+	live.waitAllDelivered(testInstance, stored.ID, 2)
+	time.Sleep(pipelineQuietPeriod)
+
+	if got := len(live.ntfySeen()); got != 1 {
+		testInstance.Fatalf("ntfy saw %d requests, want 1", got)
+	}
+	requireStrings(testInstance, "webhook paths", live.webhookPaths(), []string{"/hook-b"})
+}
+
+func TestPipelineForeignDestinationIDRefusesTheWholeSendWithoutRows(testInstance *testing.T) {
+	live := startFanoutPipelineWith(testInstance, true)
+	hookA := live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
+	foreign := live.register(testInstance, fanoutBob, fanoutApp, "/bob-hook", true)
+
+	_, _, submitErr := live.messages.Submit(
+		live.ctx, live.routedEnvelope("via-foreign", fanoutAlice, message.RecipientViaBoth, hookA.ID, foreign.ID))
+	if !errors.Is(submitErr, message.ErrPersonalDestinationUnavailable) {
+		testInstance.Fatalf("Submit error = %v, want ErrPersonalDestinationUnavailable", submitErr)
+	}
+	var rows int
+	if scanErr := live.pool.QueryRow(live.ctx, `SELECT count(*) FROM messages`).Scan(&rows); scanErr != nil {
+		testInstance.Fatalf("count messages: %v", scanErr)
+	}
+	if rows != 0 {
+		testInstance.Fatalf("messages rows = %d, want 0", rows)
+	}
+	var deliveryRows int
+	if scanErr := live.pool.QueryRow(live.ctx, `SELECT count(*) FROM message_deliveries`).Scan(&deliveryRows); scanErr != nil {
+		testInstance.Fatalf("count deliveries: %v", scanErr)
+	}
+	if deliveryRows != 0 {
+		testInstance.Fatalf("deliveries rows = %d, want 0", deliveryRows)
+	}
+}
+
+func TestPipelineScheduledViaPersonalIsFrozenAtSubmit(testInstance *testing.T) {
+	live := startFanoutPipelineWith(testInstance, false)
+	first := live.register(testInstance, fanoutAlice, fanoutApp, "/alice-first", true)
+
+	deliverAt := time.Now().Add(time.Hour)
+	envelope := live.routedEnvelope("via-personal-scheduled", fanoutAlice, message.RecipientViaPersonal, first.ID)
+	envelope.DeliverAt = &deliverAt
+	stored, outcome, submitErr := live.messages.Submit(live.ctx, envelope)
+	if submitErr != nil || !outcome.Scheduled {
+		testInstance.Fatalf("Submit = (outcome %+v, %v), want a new scheduled message", outcome, submitErr)
+	}
+	requireDeliveryNames(testInstance, stored.Deliveries, personal.PersonalDeliveryName(first.ID))
+
+	live.register(testInstance, fanoutAlice, fanoutApp, "/alice-late", true)
+
+	live.clock.Advance(2 * time.Hour)
+	live.runReleaserOnce(testInstance)
+	deliveries := live.waitAllDelivered(testInstance, stored.ID, 1)
+	time.Sleep(pipelineQuietPeriod)
+
+	requireDeliveryNames(testInstance, deliveries, personal.PersonalDeliveryName(first.ID))
+	if got := len(live.ntfySeen()); got != 0 {
+		testInstance.Fatalf("ntfy saw %d requests, want 0", got)
 	}
 	requireStrings(testInstance, "webhook paths", live.webhookPaths(), []string{"/alice-first"})
 }
