@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"math/big"
+	"slices"
 	"time"
 )
 
 // sameContent reports whether a submitted envelope carries the same content as
 // the stored message, so an identical retry of a scheduled submit is a no-op
 // rather than a replace. Both envelopes must already have their recipient
-// hashed. It compares channel, to.destination, to.recipient, critical,
+// hashed. It compares channel, to.destination, to.recipient, its routing (via and
+// the id set), critical,
 // deliver_at (as an instant, to the microsecond Postgres stores, any offset),
 // payload and display. The resolved destination set is deliberately not part of
 // it. When in doubt it answers false, which only costs an extra replace.
@@ -18,10 +20,42 @@ func sameContent(stored Envelope, submitted Envelope) bool {
 	return stored.Channel == submitted.Channel &&
 		stored.ToDestination == submitted.ToDestination &&
 		stored.ToRecipient == submitted.ToRecipient &&
+		sameRouting(stored, submitted) &&
 		stored.Critical == submitted.Critical &&
 		sameDeliverAt(stored.DeliverAt, submitted.DeliverAt) &&
 		samePayload(stored.Payload, submitted.Payload) &&
 		sameDisplay(stored.Display, submitted.Display)
+}
+
+// normaliseRouting puts the recipient routing in canonical form so sameContent
+// and the store always see a concrete value: a recipient message gets an
+// explicit via (unset becomes ntfy) and ascending ids; a non-recipient message
+// has no via and no ids; an empty id slice always becomes nil. The caller's id
+// slice is never mutated.
+func normaliseRouting(envelope Envelope) Envelope {
+	if envelope.ToRecipient == "" {
+		envelope.ToRecipientVia = ""
+		envelope.ToPersonalDestinationIDs = nil
+		return envelope
+	}
+	envelope.ToRecipientVia = envelope.ToRecipientVia.OrDefault()
+	if len(envelope.ToPersonalDestinationIDs) == 0 {
+		envelope.ToPersonalDestinationIDs = nil
+		return envelope
+	}
+	sorted := slices.Clone(envelope.ToPersonalDestinationIDs)
+	slices.Sort(sorted)
+	envelope.ToPersonalDestinationIDs = sorted
+	return envelope
+}
+
+// sameRouting compares the recipient routing of two envelopes: via (a legacy
+// NULL on a recipient message reads as ntfy) and the ids as sorted sets.
+func sameRouting(stored Envelope, submitted Envelope) bool {
+	storedNormal := normaliseRouting(stored)
+	submittedNormal := normaliseRouting(submitted)
+	return storedNormal.ToRecipientVia == submittedNormal.ToRecipientVia &&
+		slices.Equal(storedNormal.ToPersonalDestinationIDs, submittedNormal.ToPersonalDestinationIDs)
 }
 
 // sameDeliverAt compares two optional instants, truncating to microseconds

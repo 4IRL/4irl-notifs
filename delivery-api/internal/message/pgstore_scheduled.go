@@ -147,10 +147,11 @@ func (store *PGStore) ReplaceScheduledMessage(
 
 		if _, updateErr := tx.Exec(ctx,
 			`UPDATE messages SET channel = $2, to_destination = $3, to_recipient = $4, deliver_at = $5,
-  critical = $6, payload = $7, display = $8
+  critical = $6, payload = $7, display = $8, to_recipient_via = $9, to_personal_destination_ids = $10
 WHERE id = $1::text::uuid`,
 			messageID, envelope.Channel, nullIfEmpty(envelope.ToDestination), nullIfEmpty(envelope.ToRecipient),
-			deliverAt, envelope.Critical, payload, displayJSON); updateErr != nil {
+			deliverAt, envelope.Critical, payload, displayJSON,
+			nullIfEmpty(string(envelope.ToRecipientVia)), nullIfNoIDs(envelope.ToPersonalDestinationIDs)); updateErr != nil {
 			return pgutil.WrapDBError("replace message", updateErr)
 		}
 		if _, deleteErr := tx.Exec(ctx,

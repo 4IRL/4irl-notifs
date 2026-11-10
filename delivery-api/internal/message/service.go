@@ -313,6 +313,7 @@ func (service *Service) Submit(ctx context.Context, envelope Envelope) (StoredMe
 	if envelope.ToRecipient != "" && !personhash.IsHash(envelope.ToRecipient) {
 		envelope.ToRecipient = personhash.Hash(envelope.ToRecipient)
 	}
+	envelope = normaliseRouting(envelope)
 	now := service.now()
 
 	existing, findErr := service.store.GetMessageByKey(ctx, envelope.AppID, envelope.IdempotencyKey)

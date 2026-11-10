@@ -988,6 +988,104 @@ func TestReplaceScheduledSwitchesBetweenDestinationAndRecipient(testInstance *te
 	}
 }
 
+// TestRecipientRoutingRoundTripsThroughInsertAndReplace covers every routing
+// shape the service can hand the store (it normalises first): none, ntfy, ids
+// with both, and the empty/unset spellings that must land as NULL, never ” or {}.
+func TestRecipientRoutingRoundTripsThroughInsertAndReplace(testInstance *testing.T) {
+	ctx, store, registryStore, pool := newMessageStore(testInstance)
+	pager := seedTarget(ctx, testInstance, registryStore, "pager")
+	recipientTarget := message.DeliveryTarget{
+		DestinationID: nil, DestinationName: registry.RecipientDestinationName, DestinationType: registry.TypeNtfy,
+	}
+	hash := personhash.Hash("alice@example.com")
+	deliverAt := scheduleBase.Add(time.Hour)
+
+	type routing struct {
+		recipient string
+		via       message.RecipientVia
+		ids       []int64
+	}
+	readRouting := func(id string) (via *string, ids []int64) {
+		testInstance.Helper()
+		if err := pool.QueryRow(ctx,
+			`SELECT to_recipient_via, to_personal_destination_ids FROM messages WHERE id = $1::text::uuid`, id).Scan(&via, &ids); err != nil {
+			testInstance.Fatalf("read routing columns: %v", err)
+		}
+		return via, ids
+	}
+	apply := func(key string, shape routing) message.Envelope {
+		envelope := scheduledEnvelope(key, deliverAt)
+		envelope.ToDestination = ""
+		envelope.ToRecipient = shape.recipient
+		envelope.ToRecipientVia = shape.via
+		envelope.ToPersonalDestinationIDs = shape.ids
+		return envelope
+	}
+	targetsFor := func(shape routing) []message.DeliveryTarget {
+		if shape.recipient == "" {
+			return []message.DeliveryTarget{pager}
+		}
+		return []message.DeliveryTarget{recipientTarget}
+	}
+
+	shapes := []struct {
+		name     string
+		shape    routing
+		wantVia  string
+		wantNull bool
+		wantIDs  []int64
+	}{
+		{name: "non-recipient", shape: routing{}, wantNull: true},
+		{name: "recipient unset via", shape: routing{recipient: hash}, wantNull: true},
+		{name: "recipient ntfy with empty ids", shape: routing{recipient: hash, via: message.RecipientViaNtfy, ids: []int64{}}, wantVia: "ntfy"},
+		{name: "recipient both with ids", shape: routing{recipient: hash, via: message.RecipientViaBoth, ids: []int64{12, 15}}, wantVia: "both", wantIDs: []int64{12, 15}},
+		{name: "recipient personal with one id", shape: routing{recipient: hash, via: message.RecipientViaPersonal, ids: []int64{7}}, wantVia: "personal", wantIDs: []int64{7}},
+	}
+	for index, testCase := range shapes {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			key := fmt.Sprintf("routing-%d", index)
+			inserted := mustInsertScheduled(ctx, testInstance, store, apply(key, testCase.shape), targetsFor(testCase.shape)...)
+			assertRouting := func(step string, id string, wantNull bool, wantVia string, wantIDs []int64) {
+				subTest.Helper()
+				via, ids := readRouting(id)
+				if wantNull && via != nil || !wantNull && (via == nil || *via != wantVia) {
+					subTest.Errorf("%s via = %v, want null %v / %q", step, via, wantNull, wantVia)
+				}
+				if !slices.Equal(ids, wantIDs) {
+					subTest.Errorf("%s ids = %v, want %v", step, ids, wantIDs)
+				}
+			}
+			assertRouting("insert", inserted.ID, testCase.wantNull, testCase.wantVia, testCase.wantIDs)
+			got := mustGet(ctx, subTest, store, inserted.ID)
+			if string(got.Envelope.ToRecipientVia) != testCase.wantVia ||
+				!slices.Equal(got.Envelope.ToPersonalDestinationIDs, testCase.wantIDs) {
+				subTest.Errorf("read back via/ids = %q/%v, want %q/%v", got.Envelope.ToRecipientVia,
+					got.Envelope.ToPersonalDestinationIDs, testCase.wantVia, testCase.wantIDs)
+			}
+
+			// Replace with the same shape (no CHECK violation), then with a different one.
+			if _, replaced, err := store.ReplaceScheduledMessage(
+				ctx, apply(key, testCase.shape), targetsFor(testCase.shape), scheduleBase); err != nil || !replaced {
+				subTest.Fatalf("replace with the same routing = replaced %v, err %v", replaced, err)
+			}
+			assertRouting("same replace", inserted.ID, testCase.wantNull, testCase.wantVia, testCase.wantIDs)
+
+			changed := routing{recipient: hash, via: message.RecipientViaPersonal, ids: []int64{99}}
+			if _, replaced, err := store.ReplaceScheduledMessage(
+				ctx, apply(key, changed), targetsFor(changed), scheduleBase); err != nil || !replaced {
+				subTest.Fatalf("replace with changed routing = replaced %v, err %v", replaced, err)
+			}
+			assertRouting("changed replace", inserted.ID, false, "personal", []int64{99})
+
+			if _, replaced, err := store.ReplaceScheduledMessage(
+				ctx, apply(key, routing{}), targetsFor(routing{}), scheduleBase); err != nil || !replaced {
+				subTest.Fatalf("replace back to non-recipient = replaced %v, err %v", replaced, err)
+			}
+			assertRouting("cleared replace", inserted.ID, true, "", nil)
+		})
+	}
+}
+
 func TestReplaceScheduledToAnImmediateTimeReleasesTheMessage(testInstance *testing.T) {
 	ctx, store, registryStore, _ := newMessageStore(testInstance)
 	pager := seedTarget(ctx, testInstance, registryStore, "pager")

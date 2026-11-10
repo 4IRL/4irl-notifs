@@ -68,7 +68,8 @@ var readSnapshotOptions = pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode
 const (
 	messageColumns = `id::text, app_id, channel, idempotency_key,
 	COALESCE(to_destination, ''), COALESCE(to_recipient, ''), deliver_at, critical, payload, display, created_at, cancelled_at,
-	held_at, held_cancelled_at, released_at, release_failed_at, COALESCE(release_failed_reason, '')`
+	held_at, held_cancelled_at, released_at, release_failed_at, COALESCE(release_failed_reason, ''),
+	COALESCE(to_recipient_via, ''), to_personal_destination_ids`
 
 	deliveryColumns = `id, message_id::text, destination_id, destination_name, destination_type, state, dead_reason,
 	attempt_count, budget_attempts, budget_started_at, next_attempt_at, last_status_code, delivered_at,
@@ -204,13 +205,15 @@ func (store *PGStore) insertOnce(
 		}
 		var messageID string
 		insertErr := tx.QueryRow(ctx,
-			`INSERT INTO messages (app_id, channel, idempotency_key, to_destination, to_recipient, deliver_at, critical, payload, display)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			`INSERT INTO messages (app_id, channel, idempotency_key, to_destination, to_recipient, deliver_at, critical, payload, display,
+  to_recipient_via, to_personal_destination_ids)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (app_id, idempotency_key) DO NOTHING
 RETURNING id::text`,
 			envelope.AppID, envelope.Channel, envelope.IdempotencyKey,
 			nullIfEmpty(envelope.ToDestination), nullIfEmpty(envelope.ToRecipient),
 			envelope.DeliverAt, envelope.Critical, payload, displayJSON,
+			nullIfEmpty(string(envelope.ToRecipientVia)), nullIfNoIDs(envelope.ToPersonalDestinationIDs),
 		).Scan(&messageID)
 		if errors.Is(insertErr, pgx.ErrNoRows) {
 			existing, loadErr := queryMessage(ctx, tx, `app_id = $1 AND idempotency_key = $2`,
@@ -757,6 +760,7 @@ func scanMessage(row pgutil.RowScanner) (StoredMessage, error) {
 		&stored.Envelope.ToDestination, &stored.Envelope.ToRecipient, &stored.Envelope.DeliverAt,
 		&stored.Envelope.Critical, &payload, &displayJSON, &stored.CreatedAt, &stored.CancelledAt,
 		&stored.HeldAt, &stored.HeldCancelledAt, &stored.ReleasedAt, &stored.ReleaseFailedAt, &stored.ReleaseFailedReason,
+		&stored.Envelope.ToRecipientVia, &stored.Envelope.ToPersonalDestinationIDs,
 	); scanErr != nil {
 		return StoredMessage{}, scanErr
 	}
@@ -844,6 +848,15 @@ func encodeDisplay(display *Display) ([]byte, error) {
 		return nil, fmt.Errorf("encode display: %w", marshalErr)
 	}
 	return encoded, nil
+}
+
+// nullIfNoIDs maps an empty id list to nil (SQL NULL), never an empty array, so
+// the to_personal_destination_ids CHECKs see NULL.
+func nullIfNoIDs(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
 }
 
 // nullIfEmpty maps an omitted (empty) string to SQL NULL, so the
