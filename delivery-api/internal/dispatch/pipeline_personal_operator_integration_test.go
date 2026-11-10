@@ -18,10 +18,10 @@ import (
 )
 
 // submitScheduled submits a recipient message scheduled an hour out and returns it.
-func (live *fanoutPipeline) submitScheduled(testInstance *testing.T, key string) message.StoredMessage {
+func (live *fanoutPipeline) submitScheduled(testInstance *testing.T, key string, destinationID int64) message.StoredMessage {
 	testInstance.Helper()
 	deliverAt := time.Now().Add(time.Hour)
-	envelope := live.envelope(key, fanoutAlice)
+	envelope := live.envelope(key, fanoutAlice, destinationID)
 	envelope.DeliverAt = &deliverAt
 	stored, outcome, submitErr := live.messages.Submit(live.ctx, envelope)
 	if submitErr != nil || outcome.Duplicate || !outcome.Scheduled {
@@ -105,8 +105,8 @@ func TestPipelineOperatorModerationDeadLettersPendingAndScheduledPersonalDeliver
 			personalName := personal.PersonalDeliveryName(destination.ID)
 
 			// One delivery stays scheduled; the other is a pending one waiting out a retry delay.
-			scheduled := live.submitScheduled(subTest, "operator-scheduled")
-			pending := live.submitScheduled(subTest, "operator-pending")
+			scheduled := live.submitScheduled(subTest, "operator-scheduled", destination.ID)
+			pending := live.submitScheduled(subTest, "operator-pending", destination.ID)
 			// The worker's claim compares next_attempt_at with its own (shifted) clock, so the row waits
 			// until the clock is advanced below.
 			tag, execErr := live.pool.Exec(live.ctx,
@@ -146,7 +146,7 @@ func TestAdminDeliveryListCarriesTheMessageRecipient(testInstance *testing.T) {
 	}
 	// The destination is disabled before submit, so build the personal delivery by hand: a disabled
 	// destination is not a fan-out target.
-	hashedEnvelope := live.envelope("operator-list-1", personhash.Hash(fanoutAlice))
+	hashedEnvelope := live.envelope("operator-list-1", personhash.Hash(fanoutAlice), destination.ID)
 	stored, duplicate, insertErr := live.store.InsertMessage(live.ctx, hashedEnvelope,
 		[]message.DeliveryTarget{
 			{DestinationName: registry.RecipientDestinationName, DestinationType: registry.TypeNtfy},

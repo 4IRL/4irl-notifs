@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
@@ -412,7 +413,9 @@ func TestSubmitAChangeInRoutingIsAReplace(testInstance *testing.T) {
 	}
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
-			fixture := newRecipientFixture()
+			fixture := newPersonalFixture(allSinks, &fakePersonalTargets{targets: []personal.Target{
+				{ID: 12, Type: registry.TypeWebhook}, {ID: 15, Type: registry.TypeWebhook}, {ID: 16, Type: registry.TypeWebhook},
+			}})
 			storedEnvelope := testCase.stored()
 			fixture.store.getByKeyPresent = true
 			fixture.store.getByKeyResult = storedAs(storedEnvelope, StateScheduled)
@@ -488,7 +491,9 @@ func TestSubmitNormalisesRoutingBeforeTheStore(testInstance *testing.T) {
 	}
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
-			fixture := newRecipientFixture()
+			fixture := newPersonalFixture(allSinks, &fakePersonalTargets{targets: []personal.Target{
+				{ID: 12, Type: registry.TypeWebhook}, {ID: 15, Type: registry.TypeWebhook},
+			}})
 			envelope := validEnvelope()
 			if testCase.recipient != "" {
 				envelope = recipientEnvelope(testCase.recipient)

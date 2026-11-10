@@ -440,21 +440,6 @@ func (store *PGStore) IsOptedIn(ctx context.Context, appID string, id int64) (bo
 	return optedIn, nil
 }
 
-// ListEnabledOptedIn returns the person's enabled destinations that appID is
-// opted in for, ordered by id.
-func (store *PGStore) ListEnabledOptedIn(ctx context.Context, appID, personHash string) ([]Destination, error) {
-	rows, queryErr := store.pool.Query(ctx,
-		`SELECT `+destinationColumns+` FROM personal_destinations pd
-WHERE pd.person_hash = $2 AND pd.enabled
-  AND EXISTS (SELECT 1 FROM personal_destination_opt_ins oi
-              WHERE oi.personal_destination_id = pd.id AND oi.app_id = $1)
-ORDER BY pd.id`, appID, personHash)
-	if queryErr != nil {
-		return nil, pgutil.WrapDBError("list opted-in personal destinations", queryErr)
-	}
-	return collectDestinations(rows, "list opted-in personal destinations")
-}
-
 // ListEnabledOptedInByIDs returns the destinations among ids that are the
 // person's, enabled and opted in for appID, ordered by id. Any other id is
 // absent from the result.

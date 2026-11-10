@@ -52,24 +52,11 @@ type Target struct {
 	Type string
 }
 
-// OptedInTargets returns the person's enabled destinations that appID is opted
-// in for, ordered by id. The caller snapshots the result at submit time; the
-// worker rechecks enabled and opt-in at send time.
-func (service *Service) OptedInTargets(ctx context.Context, appID, personHash string) ([]Target, error) {
-	rows, listErr := service.store.ListEnabledOptedIn(ctx, appID, personHash)
-	if listErr != nil {
-		return nil, listErr
-	}
-	targets := make([]Target, 0, len(rows))
-	for _, row := range rows {
-		targets = append(targets, Target{ID: row.ID, Type: row.Type})
-	}
-	return targets, nil
-}
-
 // SelectedTargets returns only the named destinations that are the person's,
-// enabled and opted in for appID, ordered by id. Ineligible ids are absent, so
-// the caller compares len(result) with its distinct id count.
+// enabled and opted in for appID, ordered by id. The caller snapshots the result
+// at submit time; the worker rechecks enabled and opt-in at send time.
+// Ineligible ids are absent, so the caller compares len(result) with its
+// distinct id count.
 func (service *Service) SelectedTargets(ctx context.Context, appID, personHash string, ids []int64) ([]Target, error) {
 	if len(ids) == 0 {
 		return []Target{}, nil

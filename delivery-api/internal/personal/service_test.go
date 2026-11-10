@@ -188,28 +188,14 @@ func (store *fakeStore) IsOptedIn(_ context.Context, appID string, id int64) (bo
 	return store.optIns[id][appID], nil
 }
 
-func (store *fakeStore) ListEnabledOptedIn(_ context.Context, appID, personHash string) ([]Destination, error) {
+func (store *fakeStore) ListEnabledOptedInByIDs(_ context.Context, appID, personHash string, ids []int64) ([]Destination, error) {
 	var out []Destination
 	for id, row := range store.rows {
-		if row.PersonHash == personHash && row.Enabled && store.optIns[id][appID] {
+		if row.PersonHash == personHash && row.Enabled && store.optIns[id][appID] && slices.Contains(ids, id) {
 			out = append(out, *row)
 		}
 	}
 	slices.SortFunc(out, func(left, right Destination) int { return int(left.ID - right.ID) })
-	return out, nil
-}
-
-func (store *fakeStore) ListEnabledOptedInByIDs(ctx context.Context, appID, personHash string, ids []int64) ([]Destination, error) {
-	all, listErr := store.ListEnabledOptedIn(ctx, appID, personHash)
-	if listErr != nil {
-		return nil, listErr
-	}
-	var out []Destination
-	for _, row := range all {
-		if slices.Contains(ids, row.ID) {
-			out = append(out, row)
-		}
-	}
 	return out, nil
 }
 

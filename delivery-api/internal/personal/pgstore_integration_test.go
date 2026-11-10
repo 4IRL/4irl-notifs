@@ -107,42 +107,6 @@ func TestInsertRefusesNtfyType(testInstance *testing.T) {
 	}
 }
 
-func TestListEnabledOptedInFiltersByAppPersonAndEnabled(testInstance *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), storeTestBudget)
-	defer cancel()
-	store, _, _ := newTestStore(ctx, testInstance)
-
-	wanted := mustInsert(ctx, testInstance, store, newDestination(personOne, "urls4irl", "wanted", true))
-	disabled := mustInsert(ctx, testInstance, store, newDestination(personOne, "urls4irl", "disabled", true))
-	mustInsert(ctx, testInstance, store, newDestination(personOne, "urls4irl", "no-optin", false))
-	otherApp := mustInsert(ctx, testInstance, store, newDestination(personOne, "chores4irl", "other-app", true))
-	mustInsert(ctx, testInstance, store, newDestination(personTwo, "urls4irl", "other-person", true))
-	if _, disableErr := store.DisableBySystem(ctx, disabled.ID, "Endpoint returned 410 Gone."); disableErr != nil {
-		testInstance.Fatalf("DisableBySystem: %v", disableErr)
-	}
-	// A second opt-in from urls4irl on a chores4irl-registered row makes it listed too.
-	if optErr := store.OptIn(ctx, "urls4irl", otherApp.ID); optErr != nil {
-		testInstance.Fatalf("OptIn: %v", optErr)
-	}
-
-	listed, listErr := store.ListEnabledOptedIn(ctx, "urls4irl", personOne)
-	if listErr != nil {
-		testInstance.Fatalf("ListEnabledOptedIn: %v", listErr)
-	}
-	gotIDs := make([]int64, 0, len(listed))
-	for _, destination := range listed {
-		gotIDs = append(gotIDs, destination.ID)
-	}
-	if want := []int64{wanted.ID, otherApp.ID}; !slices.Equal(gotIDs, want) {
-		testInstance.Fatalf("ListEnabledOptedIn ids = %v, want %v", gotIDs, want)
-	}
-
-	chores, choresErr := store.ListEnabledOptedIn(ctx, "chores4irl", personOne)
-	if choresErr != nil || len(chores) != 1 || chores[0].ID != otherApp.ID {
-		testInstance.Fatalf("ListEnabledOptedIn(chores4irl) = (%v, %v), want only the chores4irl row", chores, choresErr)
-	}
-}
-
 func TestListEnabledOptedInByIDs(testInstance *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), storeTestBudget)
 	defer cancel()

@@ -152,9 +152,11 @@ func (live *fanoutPipeline) register(
 	return created
 }
 
-func (live *fanoutPipeline) envelope(key, email string) message.Envelope {
+// envelope builds a via=both recipient envelope naming the given personal destination ids.
+func (live *fanoutPipeline) envelope(key, email string, ids ...int64) message.Envelope {
 	return message.Envelope{
 		AppID: fanoutApp, Channel: pipelineChannel, IdempotencyKey: key, ToRecipient: email,
+		ToRecipientVia: message.RecipientViaBoth, ToPersonalDestinationIDs: ids,
 		Payload: json.RawMessage(`{"order":42}`), Display: &message.Display{Title: "Hello", Body: "Body"},
 	}
 }
@@ -225,9 +227,9 @@ func TestPipelineFansARecipientMessageOutToOptedInPersonalDestinations(testInsta
 	live := startFanoutPipeline(testInstance)
 	mine := live.register(testInstance, fanoutAlice, fanoutApp, "/alice-mine", true)
 	live.register(testInstance, fanoutAlice, fanoutOtherApp, "/alice-other-app", true)
-	live.register(testInstance, fanoutBob, fanoutApp, "/bob-mine", true)
+	bobMine := live.register(testInstance, fanoutBob, fanoutApp, "/bob-mine", true)
 
-	stored, outcome, submitErr := live.messages.Submit(live.ctx, live.envelope("fanout-1", fanoutAlice))
+	stored, outcome, submitErr := live.messages.Submit(live.ctx, live.envelope("fanout-1", fanoutAlice, mine.ID))
 	if submitErr != nil || outcome.Duplicate {
 		testInstance.Fatalf("Submit = (outcome %+v, %v), want a new message", outcome, submitErr)
 	}
@@ -243,7 +245,7 @@ func TestPipelineFansARecipientMessageOutToOptedInPersonalDestinations(testInsta
 	requireStrings(testInstance, "webhook paths", live.webhookPaths(), []string{"/alice-mine"})
 
 	// Bob's own message reaches Bob's endpoint, so "nothing for Bob" above was not an empty lookup.
-	bobStored, _, bobErr := live.messages.Submit(live.ctx, live.envelope("fanout-2", fanoutBob))
+	bobStored, _, bobErr := live.messages.Submit(live.ctx, live.envelope("fanout-2", fanoutBob, bobMine.ID))
 	if bobErr != nil {
 		testInstance.Fatalf("Submit(bob) = %v", bobErr)
 	}
@@ -257,7 +259,7 @@ func TestPipelineScheduledRecipientFanOutIsFrozenAtSubmit(testInstance *testing.
 	first := live.register(testInstance, fanoutAlice, fanoutApp, "/alice-first", true)
 
 	deliverAt := time.Now().Add(time.Hour)
-	envelope := live.envelope("fanout-scheduled-1", fanoutAlice)
+	envelope := live.envelope("fanout-scheduled-1", fanoutAlice, first.ID)
 	envelope.DeliverAt = &deliverAt
 	stored, outcome, submitErr := live.messages.Submit(live.ctx, envelope)
 	if submitErr != nil || outcome.Duplicate || !outcome.Scheduled {
