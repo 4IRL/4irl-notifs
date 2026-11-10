@@ -170,4 +170,80 @@ describe('AppTabs', () => {
     expect(provisioningTab()).toHaveAttribute('aria-selected', 'true');
     expect(provisioningTab()).toHaveFocus();
   });
+
+  describe('onDeliveryVisit', () => {
+    function renderWithVisit(onDeliveryVisit: () => void) {
+      return render(
+        <AppTabs
+          provisioning={<p>prov</p>}
+          delivery={<p>delivery body</p>}
+          onDeliveryVisit={onDeliveryVisit}
+        />,
+      );
+    }
+
+    it('fires once on the first Delivery activation and not on revisit', async () => {
+      const user = userEvent.setup();
+      const onDeliveryVisit = vi.fn();
+      renderWithVisit(onDeliveryVisit);
+      expect(onDeliveryVisit).not.toHaveBeenCalled();
+
+      await user.click(deliveryTab());
+      expect(onDeliveryVisit).toHaveBeenCalledTimes(1);
+
+      await user.click(provisioningTab());
+      await user.click(deliveryTab());
+      expect(onDeliveryVisit).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires once when the page loads on #delivery', () => {
+      window.history.replaceState(null, '', '/#delivery');
+      const onDeliveryVisit = vi.fn();
+      renderWithVisit(onDeliveryVisit);
+
+      expect(onDeliveryVisit).toHaveBeenCalledTimes(1);
+    });
+
+    it('never fires while a non-delivery hash is active', () => {
+      window.history.replaceState(null, '', '/#provisioning');
+      const onDeliveryVisit = vi.fn();
+      renderWithVisit(onDeliveryVisit);
+
+      expect(onDeliveryVisit).not.toHaveBeenCalled();
+    });
+
+    it('fires exactly once when a hashchange moves to #delivery', () => {
+      const onDeliveryVisit = vi.fn();
+      renderWithVisit(onDeliveryVisit);
+
+      act(() => {
+        window.history.replaceState(null, '', '/#delivery');
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+      act(() => {
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+
+      expect(onDeliveryVisit).toHaveBeenCalledTimes(1);
+    });
+
+    it('still fires once when the callback is supplied after Delivery was visited', () => {
+      window.history.replaceState(null, '', '/#delivery');
+      const onDeliveryVisit = vi.fn();
+      const { rerender } = render(
+        <AppTabs provisioning={<p>prov</p>} delivery={<p>delivery body</p>} />,
+      );
+      expect(onDeliveryVisit).not.toHaveBeenCalled();
+
+      rerender(
+        <AppTabs
+          provisioning={<p>prov</p>}
+          delivery={<p>delivery body</p>}
+          onDeliveryVisit={onDeliveryVisit}
+        />,
+      );
+
+      expect(onDeliveryVisit).toHaveBeenCalledTimes(1);
+    });
+  });
 });

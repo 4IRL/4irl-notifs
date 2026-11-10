@@ -95,6 +95,10 @@ export interface SubmittedDelivery {
 /** The app-facing message response used by send-test. */
 export interface MessageSummary {
   messageId: string;
+  /**
+   * Message-level statuses also include `unrouted` (held, no destination yet) and
+   * `release_failed`. This stays a plain string and `DeliveryState` is not widened.
+   */
   status: string;
   deliveries: SubmittedDelivery[];
 }
@@ -211,6 +215,74 @@ export interface ListScheduledMessagesParams {
 export interface ScheduledMessagesList {
   items: ScheduledMessageSummary[];
   /** Every scheduled message, so the UI can say the list is truncated. */
+  total: number;
+}
+
+/** Held (unrouted) messages waiting for a destination, per app. */
+export interface HeldAppCount {
+  appId: string;
+  count: number;
+  oldestAt: string;
+}
+
+/** A heartbeat check whose pending alert has no deliverable destination. */
+export interface UnassignedCheck {
+  checkId: number;
+  appId: string;
+  name: string;
+  pendingAlert: string;
+}
+
+export interface HeldMessages {
+  apps: HeldAppCount[];
+  unassignedChecks: UnassignedCheck[];
+  unassignedTotal: number;
+}
+
+/** A held message whose release failed. */
+export interface HeldFailure {
+  messageId: string;
+  appId: string;
+  channel: string;
+  reason: string;
+  failedAt: string;
+}
+
+export interface HeldFailuresList {
+  items: HeldFailure[];
+  /** Every release failure, so the UI can say the list is truncated. */
+  total: number;
+}
+
+interface HeldAppWire {
+  app_id: string;
+  count: number;
+  oldest_at: string;
+}
+
+interface UnassignedCheckWire {
+  check_id: number;
+  app_id: string;
+  name: string;
+  pending_alert: string;
+}
+
+interface HeldMessagesWire {
+  apps?: HeldAppWire[] | null;
+  unassigned_checks?: UnassignedCheckWire[] | null;
+  unassigned_total: number;
+}
+
+interface HeldFailureWire {
+  message_id: string;
+  app_id: string;
+  channel: string;
+  reason: string;
+  failed_at: string;
+}
+
+interface HeldFailuresWire {
+  failures?: HeldFailureWire[] | null;
   total: number;
 }
 
@@ -518,6 +590,8 @@ export interface DeliveryApiClient {
   cancelScheduledMessage(
     params: CancelScheduledMessageParams,
   ): Promise<CancelScheduledMessageResult>;
+  getHeldMessages(): Promise<HeldMessages>;
+  listHeldFailures(): Promise<HeldFailuresList>;
   listHeartbeats(): Promise<HeartbeatCheck[]>;
   createHeartbeat(params: CreateHeartbeatParams): Promise<HeartbeatCheck>;
   updateHeartbeat(params: UpdateHeartbeatParams): Promise<HeartbeatCheck>;
@@ -1001,6 +1075,71 @@ function mapScheduledMessage(wire: ScheduledMessageWire): ScheduledMessageSummar
   };
 }
 
+/** Fails closed: anything but an object (null, HTML fallback text) is not a valid payload. */
+function requireObject({ payload, what }: { payload: unknown; what: string }): object {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new Error(`${what}: malformed response`);
+  }
+  return payload;
+}
+
+/** `null`/absent maps to []; any other non-array value is malformed. */
+function requireList<T>({ value, what }: { value: unknown; what: string }): T[] {
+  if (value === null || value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${what}: malformed response`);
+  }
+  return value as T[];
+}
+
+function requireFiniteNumber({ value, what }: { value: unknown; what: string }): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${what}: malformed response`);
+  }
+  return value;
+}
+
+function mapHeldMessages(payload: unknown): HeldMessages {
+  const wire = requireObject({ payload, what: 'held messages' }) as Partial<HeldMessagesWire>;
+  const apps = requireList<HeldAppWire>({ value: wire.apps, what: 'held messages' });
+  const checks = requireList<UnassignedCheckWire>({
+    value: wire.unassigned_checks,
+    what: 'held messages',
+  });
+  const unassignedTotal = requireFiniteNumber({
+    value: wire.unassigned_total,
+    what: 'held messages',
+  });
+  return {
+    apps: apps.map((app) => ({ appId: app.app_id, count: app.count, oldestAt: app.oldest_at })),
+    unassignedChecks: checks.map((check) => ({
+      checkId: check.check_id,
+      appId: check.app_id,
+      name: check.name,
+      pendingAlert: check.pending_alert,
+    })),
+    unassignedTotal,
+  };
+}
+
+function mapHeldFailures(payload: unknown): HeldFailuresList {
+  const wire = requireObject({ payload, what: 'held failures' }) as Partial<HeldFailuresWire>;
+  const failures = requireList<HeldFailureWire>({ value: wire.failures, what: 'held failures' });
+  const total = requireFiniteNumber({ value: wire.total, what: 'held failures' });
+  return {
+    items: failures.map((failure) => ({
+      messageId: failure.message_id,
+      appId: failure.app_id,
+      channel: failure.channel,
+      reason: failure.reason,
+      failedAt: failure.failed_at,
+    })),
+    total,
+  };
+}
+
 function mapAttempt(wire: AttemptWire): AttemptSummary {
   return {
     attemptNumber: wire.attempt_number,
@@ -1377,6 +1516,14 @@ export function createDeliveryApiClient({
         items: (wire.scheduled_messages ?? []).map(mapScheduledMessage),
         total: wire.total,
       };
+    },
+
+    async getHeldMessages(): Promise<HeldMessages> {
+      return mapHeldMessages(await request({ path: '/v1/admin/held-messages', method: 'GET' }));
+    },
+
+    async listHeldFailures(): Promise<HeldFailuresList> {
+      return mapHeldFailures(await request({ path: '/v1/admin/held-failures', method: 'GET' }));
     },
 
     async cancelScheduledMessage({

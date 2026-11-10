@@ -6,7 +6,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DeliveryApiClient, ReadinessResult } from '../api/deliveryClient';
 import { strings } from '../strings';
 import { useTimeZone } from '../test-timezone';
-import { DeliveryStatusCard } from './DeliveryStatusCard';
+import type { HeldCounts } from '../heldCounts';
+import { DeliveryStatusCard as StatusCard } from './DeliveryStatusCard';
+
+const READY_EMPTY: HeldCounts = { status: 'ready', byApp: new Map(), unassignedTotal: 0 };
+
+// Existing readiness tests do not care about held rows: default to a ready, empty snapshot.
+function DeliveryStatusCard({
+  client,
+  held = READY_EMPTY,
+  onRefreshHeld = () => undefined,
+}: {
+  client: DeliveryApiClient;
+  held?: HeldCounts;
+  onRefreshHeld?: () => void;
+}) {
+  return <StatusCard client={client} held={held} onRefreshHeld={onRefreshHeld} />;
+}
 
 function clientReturning(getReadiness: DeliveryApiClient['getReadiness']): DeliveryApiClient {
   return { getReadiness } as DeliveryApiClient;
@@ -304,5 +320,166 @@ describe('DeliveryStatusCard', () => {
     expect(screen.getByText(strings.deliveryStatusReady)).toBeInTheDocument();
     expect(screen.queryByText(strings.deliveryStatusUnavailable)).not.toBeInTheDocument();
     expect(getReadiness).toHaveBeenCalledTimes(2);
+  });
+
+  describe('held rows', () => {
+    const OK: ReadinessResult = {
+      kind: 'ok',
+      schemaVersion: 4,
+      expectedSchemaVersion: 4,
+      heartbeatChecker: { lastTickAt: '2026-10-19T09:00:00Z', stale: false },
+      lastMigrationFailure: null,
+    };
+    const READINESS: Record<string, ReadinessResult | null> = {
+      checking: null,
+      ok: OK,
+      schema_mismatch: {
+        kind: 'schema_mismatch',
+        schemaVersion: 3,
+        expectedSchemaVersion: 4,
+        heartbeatChecker: { lastTickAt: null, stale: false },
+        lastMigrationFailure: null,
+      },
+      unavailable: { kind: 'unavailable' },
+      unreachable: { kind: 'unreachable', message: 'boom' },
+    };
+    const HELD: Record<string, { held: HeldCounts; value: string }> = {
+      loading: { held: { status: 'loading' }, value: strings.deliveryStatusChecking },
+      unavailable: {
+        held: { status: 'unavailable' },
+        value: `${strings.noValue}${strings.heldUnavailableHidden}`,
+      },
+      ready: {
+        held: {
+          status: 'ready',
+          byApp: new Map([
+            ['a', 2],
+            ['b', 3],
+          ]),
+          unassignedTotal: 4,
+        },
+        value: '',
+      },
+    };
+
+    function row(label: string): HTMLElement {
+      const term = screen.getByText(label, { selector: 'dt' });
+      const container = term.parentElement;
+      if (container === null) {
+        throw new Error(`row for ${label} not found`);
+      }
+      return container;
+    }
+
+    function clientFor(kind: string): DeliveryApiClient {
+      const result = READINESS[kind];
+      return clientReturning(
+        result === null
+          ? vi.fn(() => new Promise<ReadinessResult>(() => undefined))
+          : vi.fn().mockResolvedValue(result),
+      );
+    }
+
+    const cases = Object.keys(READINESS).flatMap((kind) =>
+      Object.keys(HELD).map((status) => ({ kind, status })),
+    );
+
+    it.each(cases)(
+      'shows both rows for readiness $kind and held $status',
+      async ({ kind, status }) => {
+        const { held, value } = HELD[status];
+        render(<DeliveryStatusCard client={clientFor(kind)} held={held} />);
+        if (READINESS[kind] !== null) {
+          await screen.findByRole('button', { name: strings.deliveryStatusRefresh });
+          await waitFor(() =>
+            expect(
+              screen.getByRole('button', { name: strings.deliveryStatusRefresh }),
+            ).toBeEnabled(),
+          );
+        }
+
+        const heldRow = row(strings.heldMessagesLabel);
+        const unassignedRow = row(strings.unassignedAlertsLabel);
+        expect(heldRow.querySelector('dd')).toHaveTextContent(
+          status === 'ready' ? /^5$/ : new RegExp(`^${value}$`),
+        );
+        expect(unassignedRow.querySelector('dd')).toHaveTextContent(
+          status === 'ready' ? /^4$/ : new RegExp(`^${value}$`),
+        );
+        expect(screen.getByRole('status')).not.toContainElement(heldRow);
+      },
+    );
+
+    it('shows unassignedTotal as the count', () => {
+      render(
+        <DeliveryStatusCard
+          client={clientFor('checking')}
+          held={{ status: 'ready', byApp: new Map(), unassignedTotal: 17 }}
+        />,
+      );
+
+      expect(row(strings.unassignedAlertsLabel)).toHaveTextContent('17');
+    });
+
+    it.each([
+      { name: 'both positive', held: 2, unassigned: 3, showHeld: true, showUnassigned: true },
+      { name: 'only held', held: 2, unassigned: 0, showHeld: true, showUnassigned: false },
+      { name: 'only unassigned', held: 0, unassigned: 3, showHeld: false, showUnassigned: true },
+      { name: 'both zero', held: 0, unassigned: 0, showHeld: false, showUnassigned: false },
+    ])('hints for $name', ({ held, unassigned, showHeld, showUnassigned }) => {
+      render(
+        <DeliveryStatusCard
+          client={clientFor('checking')}
+          held={{
+            status: 'ready',
+            byApp: held > 0 ? new Map([['a', held]]) : new Map(),
+            unassignedTotal: unassigned,
+          }}
+        />,
+      );
+
+      const heldValue = row(strings.heldMessagesLabel).querySelector('dd');
+      const unassignedValue = row(strings.unassignedAlertsLabel).querySelector('dd');
+      expect(screen.queryByText(strings.heldMessagesHint) !== null).toBe(showHeld);
+      expect(screen.queryByText(strings.unassignedAlertsHint) !== null).toBe(showUnassigned);
+      if (showHeld) {
+        expect(heldValue).toHaveAccessibleDescription(strings.heldMessagesHint);
+      } else {
+        expect(heldValue).not.toHaveAttribute('aria-describedby');
+      }
+      if (showUnassigned) {
+        expect(unassignedValue).toHaveAccessibleDescription(strings.unassignedAlertsHint);
+      } else {
+        expect(unassignedValue).not.toHaveAttribute('aria-describedby');
+      }
+    });
+
+    it.each(['loading', 'unavailable'])('shows no hints while held is %s', (status) => {
+      render(<DeliveryStatusCard client={clientFor('checking')} held={HELD[status].held} />);
+
+      expect(screen.queryByText(strings.heldMessagesHint)).not.toBeInTheDocument();
+      expect(screen.queryByText(strings.unassignedAlertsHint)).not.toBeInTheDocument();
+      expect(row(strings.heldMessagesLabel).querySelector('dd')).not.toHaveAttribute(
+        'aria-describedby',
+      );
+      expect(row(strings.unassignedAlertsLabel).querySelector('dd')).not.toHaveAttribute(
+        'aria-describedby',
+      );
+    });
+
+    it('calls onRefreshHeld as well as reloading readiness on Refresh', async () => {
+      const user = userEvent.setup();
+      const onRefreshHeld = vi.fn();
+      const getReadiness = vi.fn().mockResolvedValue(OK);
+      render(
+        <DeliveryStatusCard client={clientReturning(getReadiness)} onRefreshHeld={onRefreshHeld} />,
+      );
+      await screen.findByText(strings.deliveryStatusReady);
+
+      await user.click(screen.getByRole('button', { name: strings.deliveryStatusRefresh }));
+
+      expect(onRefreshHeld).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(getReadiness).toHaveBeenCalledTimes(2));
+    });
   });
 });

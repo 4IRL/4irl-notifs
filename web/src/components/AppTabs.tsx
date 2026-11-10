@@ -16,6 +16,8 @@ const TAB_LABELS: Record<TabId, string> = {
 interface AppTabsProps {
   provisioning: ReactNode;
   delivery: ReactNode;
+  /** Called once, the first time the Delivery tab is active (including a load on #delivery). */
+  onDeliveryVisit?: () => void;
 }
 
 function tabFromHash(hash: string): TabId {
@@ -30,13 +32,23 @@ function tabFromHash(hash: string): TabId {
  * lazy. The selected tab mirrors `location.hash`; a click replaces the history
  * entry (no Back/Forward per tab) and `hashchange` follows external changes.
  */
-export function AppTabs({ provisioning, delivery }: AppTabsProps) {
+export function AppTabs({ provisioning, delivery, onDeliveryVisit }: AppTabsProps) {
   const [selected, setSelected] = useState<TabId>(() => tabFromHash(window.location.hash));
   const [deliveryVisited, setDeliveryVisited] = useState(selected === 'delivery');
   const tabRefs = useRef<Record<TabId, HTMLButtonElement | null>>({
     provisioning: null,
     delivery: null,
   });
+
+  // Fires from deliveryVisited turning true (never from activate/hashchange directly); the ref
+  // guard keeps it to once per mount even if the callback identity changes.
+  const visitReportedRef = useRef(false);
+  useEffect(() => {
+    if (deliveryVisited && !visitReportedRef.current && onDeliveryVisit !== undefined) {
+      visitReportedRef.current = true;
+      onDeliveryVisit();
+    }
+  }, [deliveryVisited, onDeliveryVisit]);
 
   useEffect(() => {
     function handleHashChange() {

@@ -57,6 +57,14 @@ export interface DeliveryMockSeed {
   personalDestinations?: Json[];
   /** The `total` the list reports; defaults to the number of rows served. */
   personalDestinationsTotal?: number;
+  /** Body of GET /v1/admin/held-messages; defaults to an empty snapshot. */
+  heldMessages?: Json;
+  /** Body of GET /v1/admin/held-failures; defaults to an empty list. */
+  heldFailures?: Json;
+  /** When set, held-messages answers this status with an `{error}` body. */
+  heldMessagesStatus?: number;
+  /** When set, held-failures answers this status with an `{error}` body. */
+  heldFailuresStatus?: number;
 }
 
 export interface DeliveryMock {
@@ -194,6 +202,51 @@ export function scheduledWire({
     recipient: false,
     destinations: [{ name: 'hook1', type: 'webhook' }],
   };
+}
+
+/** One app's held-message count, as an entry of the held-messages `apps` list. */
+export function heldAppWire({
+  appId,
+  count,
+  oldestAt = TIMESTAMP,
+}: {
+  appId: string;
+  count: number;
+  oldestAt?: string;
+}): Json {
+  return { app_id: appId, count, oldest_at: oldestAt };
+}
+
+/** A heartbeat check whose pending alert has no deliverable destination. */
+export function unassignedCheckWire({
+  checkId,
+  appId = 'urls4irl',
+  name = 'nightly',
+  pendingAlert = TIMESTAMP,
+}: {
+  checkId: number;
+  appId?: string;
+  name?: string;
+  pendingAlert?: string;
+}): Json {
+  return { check_id: checkId, app_id: appId, name, pending_alert: pendingAlert };
+}
+
+/** A held message whose release failed, as an entry of the held-failures list. */
+export function heldFailureWire({
+  messageId,
+  appId = 'urls4irl',
+  channel = 'digest',
+  reason = 'no deliverable destination',
+  failedAt = TIMESTAMP,
+}: {
+  messageId: string;
+  appId?: string;
+  channel?: string;
+  reason?: string;
+  failedAt?: string;
+}): Json {
+  return { message_id: messageId, app_id: appId, channel, reason, failed_at: failedAt };
 }
 
 /** A probe check's settings and live status, as the `probe` object of the check view. */
@@ -1036,6 +1089,33 @@ export async function mockDelivery(page: Page, seed: DeliveryMockSeed = {}): Pro
     }
     if (method === 'GET' && pathname === '/delivery/v1/admin/scheduled-messages') {
       await reply({ route, body: { scheduled_messages: scheduled, total: scheduled.length } });
+      return;
+    }
+    if (method === 'GET' && pathname === '/delivery/v1/admin/held-messages') {
+      if (seed.heldMessagesStatus !== undefined) {
+        await reply({
+          route,
+          status: seed.heldMessagesStatus,
+          body: { error: 'held messages unavailable' },
+        });
+        return;
+      }
+      await reply({
+        route,
+        body: seed.heldMessages ?? { apps: [], unassigned_checks: [], unassigned_total: 0 },
+      });
+      return;
+    }
+    if (method === 'GET' && pathname === '/delivery/v1/admin/held-failures') {
+      if (seed.heldFailuresStatus !== undefined) {
+        await reply({
+          route,
+          status: seed.heldFailuresStatus,
+          body: { error: 'held failures unavailable' },
+        });
+        return;
+      }
+      await reply({ route, body: seed.heldFailures ?? { failures: [], total: 0 } });
       return;
     }
     const scheduledMatch = /^\/delivery\/v1\/admin\/scheduled-messages\/([^/]+)$/.exec(pathname);

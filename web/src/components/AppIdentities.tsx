@@ -27,6 +27,7 @@ import { messageOf, withoutKey } from './rowState';
 import { revealFocusedControl } from './adminTableFocus';
 import './adminTable.css';
 import './AppIdentities.css';
+import './visuallyHidden.css';
 
 interface AppIdentitiesProps {
   client: DeliveryApiClient;
