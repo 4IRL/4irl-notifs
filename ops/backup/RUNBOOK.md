@@ -40,7 +40,7 @@ backup runs.
 
    `AWS_DEFAULT_REGION=auto` is fixed by the deploy. Then run a prod deploy (merge to `main`, or re-run the deploy
    workflow) and check the file landed: `ssh <ssh-alias> 'stat -c "%U %a" secrets-persistent/backup.env'` should print
-   `4irl-notifs 600`. The `BACKUP_DISCORD_WEBHOOK` must be a `https://discord.com/api/webhooks/` url (the deploy checks).
+   `4irl-notifs 600`. The deploy checks that `BACKUP_DISCORD_WEBHOOK` is a Discord webhook url.
 
    **Existing host (migration).** Hosts set up before this change keep reading `/etc/notifs-backup/backup.env` until the
    scripts are reinstalled, and after the reinstall they read only the file above. So: set the five secrets, run a prod
