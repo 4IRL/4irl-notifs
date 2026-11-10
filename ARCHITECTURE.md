@@ -618,6 +618,20 @@ sequenceDiagram
     The Pending sends section lists scheduled messages (soonest first) and cancels one through
     `DELETE /delivery/v1/admin/scheduled-messages/{id}`, a non-GET that the existing `/delivery` Access
     Bypass and the Pages Function allowlist already cover.
+  - Held messages in the UI (counts only; the UI cannot list, inspect or cancel an individual held
+    message). `App` reads `GET /delivery/v1/admin/held-messages` once, when a delivery client exists and
+    either the Apps section is on or the Delivery tab (with destinations on) has been visited, and shares
+    the snapshot: the Apps table gets a Held column (a `N held` pill, a plain `0`; a `Held:` sub-line in
+    the compact layout), Unprovisioned apps lists an app that has held messages but no registry row (the
+    list is only extended once the registry has loaded and no re-fetch is pending), and the delivery-api
+    status card shows `Held messages` and `Unassigned heartbeat alerts` rows (the unassigned row is the
+    uncapped total, not the length of the capped list). The snapshot is re-read after each registry change and tri-state: first load shows
+    `Checking…`; a failed or older backend (any error, including 404 and 503) shows an em dash with a
+    visually hidden `unavailable`, never `0` and never an error banner; a re-fetch keeps the previous
+    snapshot on screen until the new result arrives, and the status card Refresh re-reads it. The Delivery
+    log has a fourth filter, "Release failed", fed by `GET /delivery/v1/admin/held-failures` (server default
+    limit 50; an unavailable backend shows "unavailable on this backend" text there instead of a dash; `Showing the newest N of M` when truncated), fetched by the log itself only while that filter is
+    selected, so each source degrades on its own.
 
 **Pages project `notifs-admin` — runtime bindings** (set in dashboard, not committed):
 
@@ -1212,6 +1226,7 @@ account IDs stay in the Cloudflare dashboard and are never committed.
 | Exchange `403 identity does not match the approved binding` | The app is bound, but the token's repository, workflow file, ref or environment differs from the approved binding (a renamed workflow, a deploy from another branch, a new `environment:`). Nothing is filed. Fix the workflow, or unbind the app and approve the new request. |
 | Exchange `401 invalid identity token`                 | The token failed a check: wrong audience (the action's `audience` input differs from `DELIVERY_OIDC_AUDIENCE`), expired, a replayed `jti` (the same token exchanged twice), a bad signature or issuer, or an unknown signing key inside the one-minute refetch window. The exact reason is in the delivery-api log, not the response. |
 | Held message stays `unrouted` | No enabled, app-usable destination is reachable by a route yet (the "no route yet" state logs at Debug only, so a quiet log is normal). Otherwise read `held messages released` (service: precise `released` / `failed` split), `held message release failed` (a message went terminal `release_invalid`) and `held release failed` (the loop's batch hit an error; the next 5 s tick retries). A message stuck on an unsupported type, missing publisher or unseal error shows only the throttled Warns `held pair cannot release` / `held message cannot release`. |
+| Operator wants to know which apps have waiting messages, or which held messages failed to release | Admin UI: the Held column in Apps (apps without a registry row appear under Unprovisioned apps), the held rows on the delivery-api status card, and the Delivery log "Release failed" filter. An em dash with no number means that source is unavailable (older backend or a failing read), not zero. Counts only: individual held messages are not listed. |
 | `/readyz` `held` block shows non-zero counts | `messages.count` > 0: held messages wait for a route or destination, add one that reaches the app (`apps` names the apps). `unassigned_alerts.count` > 0: assign the heartbeat check a deliverable (enabled, supported-type) destination. `available: false`: the count query is failing, read the Warn log in `docker compose logs delivery-api`; `stale: true` means the last refresh failed and the counts are from `as_of`. The block never changes the `/readyz` status. |
 | Exchange `429 too many pending identity requests`     | 20 requests are already pending (any GitHub repo that can mint a token for the audience can file one). Reject the stale ones in the admin UI (undecided ones also expire after `DELIVERY_PENDING_IDENTITY_REQUEST_DAYS`, 7 by default); the app's next deploy retries. |
 | Exchange `503 identity unavailable`                   | GitHub's signing keys could not be fetched (the log has `oidc jwks fetch failed`; retries are limited to one fetch a minute). A Postgres failure during an exchange is instead `500 internal error` (log `app identity service error`). |
