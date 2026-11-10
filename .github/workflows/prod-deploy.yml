@@ -106,6 +106,10 @@ jobs:
             echo "BACKUP_RESTIC_REPOSITORY secret must start with s3:https://; nothing was copied or changed on the VPS"
             exit 1
           fi
+          if [[ "${set}" -eq 5 && ! "${BACKUP_DISCORD_WEBHOOK}" =~ ^https://(discord|discordapp)\.com/api/webhooks/ ]]; then
+            echo "BACKUP_DISCORD_WEBHOOK secret must be a https://discord.com/api/webhooks/ URL; nothing was copied or changed on the VPS"
+            exit 1
+          fi
 
       - name: Validate DELIVERY_DB_PASSWORD secret
         env:
@@ -267,9 +271,8 @@ jobs:
           [ -s ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL ] || { echo "PROVISIONING_INTERNAL_CREDENTIAL file is empty after write; aborting"; exit 1; };
 
           if [ -n "${BACKUP_RESTIC_REPOSITORY_VALUE}" ]; then
-            ( umask 077; printf "%s\n" "RESTIC_REPOSITORY=${BACKUP_RESTIC_REPOSITORY_VALUE}" "RESTIC_PASSWORD=${BACKUP_RESTIC_PASSWORD_VALUE}" "AWS_ACCESS_KEY_ID=${BACKUP_R2_ACCESS_KEY_ID_VALUE}" "AWS_SECRET_ACCESS_KEY=${BACKUP_R2_SECRET_ACCESS_KEY_VALUE}" "AWS_DEFAULT_REGION=auto" "DISCORD_WEBHOOK=${BACKUP_DISCORD_WEBHOOK_VALUE}" > ./secrets-persistent/backup.env.new );
-            chmod 600 ./secrets-persistent/backup.env.new;
-            mv -f ./secrets-persistent/backup.env.new ./secrets-persistent/backup.env;
+            [ -n "${BACKUP_RESTIC_PASSWORD_VALUE}" ] && [ -n "${BACKUP_R2_ACCESS_KEY_ID_VALUE}" ] && [ -n "${BACKUP_R2_SECRET_ACCESS_KEY_VALUE}" ] && [ -n "${BACKUP_DISCORD_WEBHOOK_VALUE}" ] || { echo "BACKUP_* secrets are only partly set; aborting"; exit 1; };
+            ( umask 077; printf "%s\n" "RESTIC_REPOSITORY=${BACKUP_RESTIC_REPOSITORY_VALUE}" "RESTIC_PASSWORD=${BACKUP_RESTIC_PASSWORD_VALUE}" "AWS_ACCESS_KEY_ID=${BACKUP_R2_ACCESS_KEY_ID_VALUE}" "AWS_SECRET_ACCESS_KEY=${BACKUP_R2_SECRET_ACCESS_KEY_VALUE}" "AWS_DEFAULT_REGION=auto" "DISCORD_WEBHOOK=${BACKUP_DISCORD_WEBHOOK_VALUE}" > ./secrets-persistent/backup.env.new ) && chmod 600 ./secrets-persistent/backup.env.new && mv -f ./secrets-persistent/backup.env.new ./secrets-persistent/backup.env || { rm -f ./secrets-persistent/backup.env.new; echo "backup.env write failed; aborting"; exit 1; };
             echo "Wrote secrets-persistent/backup.env (0600) from the BACKUP_* secrets";
           else
             echo "BACKUP_* secrets unset; secrets-persistent/backup.env left as is";

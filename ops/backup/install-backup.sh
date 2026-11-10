@@ -93,7 +93,6 @@ set_paths() {
   OPT_DIR="$ROOT/opt/notifs-backup"
   BIN="$ROOT/usr/local/bin/restic"
   SHAFILE="$OPT_DIR/restic.sha256"
-  ETC_DIR="$ROOT/etc/notifs-backup"
   ENV_FILE="$ROOT/home/4irl-notifs/secrets-persistent/backup.env"
   LIB_DIR="$ROOT/var/lib/notifs-backup"
   WORK_DIR="$LIB_DIR/work"
@@ -300,7 +299,6 @@ cmd_install() {
   if ! restic_current; then fetch_restic; fi
 
   ensure_dir "$OPT_DIR" 0755
-  ensure_dir "$ETC_DIR" 0700
   ensure_dir "$LIB_DIR" 0755
   ensure_dir "$WORK_DIR" 0700
   ensure_dir "$STATUS_DIR" 0755

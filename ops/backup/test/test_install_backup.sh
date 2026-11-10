@@ -137,7 +137,6 @@ expect_eq "restore.sh mode" "$(stat -c '%a' "$(OPT)/restore.sh")" 755
 expect_eq "window.env mode" "$(stat -c '%a' "$(OPT)/window.env")" 644
 expect_eq "restic mode" "$(stat -c '%a' "$ROOT/usr/local/bin/restic")" 755
 expect_eq "unit mode" "$(stat -c '%a' "$ROOT/etc/systemd/system/notifs-backup.timer")" 644
-expect_eq "etc dir mode" "$(stat -c '%a' "$ROOT/etc/notifs-backup")" 700
 expect_eq "work dir mode" "$(stat -c '%a' "$ROOT/var/lib/notifs-backup/work")" 700
 expect_eq "log dir mode" "$(stat -c '%a' "$ROOT/var/log/notifs-backup")" 750
 expect_file "restic.sha256 recorded" "$(OPT)/restic.sha256"
@@ -228,6 +227,34 @@ expect_calls_has "changed pins.env changes the fetched URL" "v9.9.9/restic_9.9.9
 good_state
 inst verify --source "$SRC"
 expect_rc "verify passes on a good install" 0
+
+# backup.env is judged against ENV_OWNER (the 4irl-notifs user), not OWNER: an env owner that differs fails verify.
+EXTRA_ENV=(INSTALL_BACKUP_ENV_OWNER=12345:12345)
+inst verify --source "$SRC"
+expect_rc "verify fails when backup.env is not owned by the env owner" 1
+expect_out_has "env owner mismatch is named" "owner is not 12345:12345"
+EXTRA_ENV=(INSTALL_BACKUP_ENV_OWNER=abc)
+inst verify --source "$SRC"
+expect_rc "a malformed INSTALL_BACKUP_ENV_OWNER exits 2" 2
+expect_out_has "malformed env owner message" "cannot resolve the uid:gid of user 4irl-notifs"
+EXTRA_ENV=()
+
+# No override and an unresolvable 4irl-notifs user: fail closed (exit 2), never fall back to another owner.
+mkdir -p "$ROOT/shimbin"
+printf '#!/bin/sh\nexit 1\n' > "$ROOT/shimbin/id"
+chmod 755 "$ROOT/shimbin/id"
+run_cmd "${ENVU[@]}" env PATH="$ROOT/shimbin:$PATH" NOTIFS_BACKUP_TESTING=1 INSTALL_BACKUP_ROOT="$ROOT" INSTALL_BACKUP_OWNER="$OWNER" \
+  bash "$INSTALLER" verify --source "$SRC"
+expect_rc "unresolvable 4irl-notifs user exits 2" 2
+expect_out_has "unresolvable user is named" "cannot resolve the uid:gid of user 4irl-notifs"
+
+# A resolvable user supplies the default env owner.
+printf '#!/bin/sh\nif [ "$1" = "-u" ]; then echo 12345; else echo 12346; fi\n' > "$ROOT/shimbin/id"
+run_cmd "${ENVU[@]}" env PATH="$ROOT/shimbin:$PATH" NOTIFS_BACKUP_TESTING=1 INSTALL_BACKUP_ROOT="$ROOT" INSTALL_BACKUP_OWNER="$OWNER" \
+  bash "$INSTALLER" verify --source "$SRC"
+expect_rc "default env owner comes from the 4irl-notifs uid:gid" 1
+expect_out_has "default env owner is the resolved uid:gid" "owner is not 12345:12346"
+rm -rf "$ROOT/shimbin"
 
 good_state
 printf '# drift\n' >> "$(OPT)/backup.sh"

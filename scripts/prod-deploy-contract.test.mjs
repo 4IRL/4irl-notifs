@@ -847,6 +847,36 @@ function assertBackupEnvDeploy(deployText, buildText) {
     'backup.env is 0600 and moved into place atomically',
   );
   assert.ok(deploy.includes('"AWS_DEFAULT_REGION=auto"'), 'the region is fixed, not a secret');
+  assert.ok(
+    deploy.includes('*[\\"\\\'\\$\\`\\\\[:space:]]*)'),
+    'quotes, $, backticks, backslashes and whitespace are rejected on the runner',
+  );
+  assert.ok(
+    deploy.includes('^s3:https://') &&
+      deploy.includes('^https://(discord|discordapp)\\.com/api/webhooks/'),
+    'the repository and webhook formats are checked on the runner',
+  );
+  for (const [secret, key] of [
+    ['BACKUP_RESTIC_REPOSITORY', 'RESTIC_REPOSITORY'],
+    ['BACKUP_RESTIC_PASSWORD', 'RESTIC_PASSWORD'],
+    ['BACKUP_R2_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID'],
+    ['BACKUP_R2_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY'],
+    ['BACKUP_DISCORD_WEBHOOK', 'DISCORD_WEBHOOK'],
+  ]) {
+    assert.ok(
+      deploy.includes(`${secret}_VALUE="\${{ secrets.${secret} }}"`),
+      `${secret} is interpolated into the ssh script`,
+    );
+    assert.ok(deploy.includes(`"${key}=\${${secret}_VALUE}"`), `${key} is written from ${secret}`);
+  }
+  assert.ok(
+    deploy.includes('backup.env left as is'),
+    'with no BACKUP secrets set the existing backup.env is left as is',
+  );
+  assert.ok(
+    deploy.includes('backup.env write failed; aborting'),
+    'a failed backup.env write aborts the deploy',
+  );
 }
 
 describe('backup.env is written by the stack deploy', () => {
@@ -870,5 +900,18 @@ describe('backup.env is written by the stack deploy', () => {
       DEPLOY,
       BUILD_AND_DEPLOY.replace('BACKUP_DISCORD_WEBHOOK: ${{ secrets.BACKUP_DISCORD_WEBHOOK }}', ''),
     );
+    for (const [from, to] of [
+      ['( umask 077; printf', '( printf'],
+      ['mv -f ./secrets-persistent/backup.env.new', 'cp ./secrets-persistent/backup.env.new'],
+      ['^s3:https://', '^s3:'],
+      [
+        '"RESTIC_PASSWORD=${BACKUP_RESTIC_PASSWORD_VALUE}"',
+        '"RESTIC_PASSWORD=${BACKUP_RESTIC_REPOSITORY_VALUE}"',
+      ],
+      ['backup.env write failed; aborting', 'ignored'],
+      ['- name: Validate BACKUP secrets', '- name: Check BACKUP secrets'],
+    ]) {
+      assertFails(assertBackupEnvDeploy, mutate(DEPLOY, from, to), BUILD_AND_DEPLOY);
+    }
   });
 });

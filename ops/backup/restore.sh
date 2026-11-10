@@ -41,6 +41,8 @@ SCRUB_ENV=(RESTIC_PASSWORD_FILE RESTIC_PASSWORD_COMMAND RESTIC_REPOSITORY_FILE R
   DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG)
 
 PROD_ROOT=/var/lib/notifs-backup/work
+ENV_USER=4irl-notifs
+PROD_ENV_FILE=/home/4irl-notifs/secrets-persistent/backup.env
 LIVE_DB=delivery
 ENV_READ_ERROR=""
 SCRATCH=""
@@ -145,7 +147,7 @@ ov_path() {
 
 load_overrides() {
   gate_test_overrides
-  ov_path ENV_FILE NOTIFS_BACKUP_ENV_FILE /home/4irl-notifs/secrets-persistent/backup.env
+  ov_path ENV_FILE NOTIFS_BACKUP_ENV_FILE "$PROD_ENV_FILE"
   ov_path BACKUP_ROOT NOTIFS_BACKUP_ROOT "$PROD_ROOT"
   ov_path LOCK_FILE NOTIFS_BACKUP_LOCK /run/notifs-backup.lock
   # The prod deploy writes backup.env as the 4irl-notifs user; default owner is that user's uid:gid. Fail closed: an
@@ -158,8 +160,8 @@ load_overrides() {
     ENV_OWNER="$NOTIFS_BACKUP_ENV_OWNER"
   else
     local u g
-    if ! u="$(id -u -- 4irl-notifs 2> /dev/null)" || ! g="$(id -g -- 4irl-notifs 2> /dev/null)"; then
-      echo "FATAL: cannot resolve the uid:gid of user 4irl-notifs (the owner backup.env must have)" >&2
+    if ! u="$(id -u -- "$ENV_USER" 2> /dev/null)" || ! g="$(id -g -- "$ENV_USER" 2> /dev/null)"; then
+      echo "FATAL: cannot resolve the uid:gid of user $ENV_USER (the owner backup.env must have)" >&2
       exit 2
     fi
     ENV_OWNER="$u:$g"

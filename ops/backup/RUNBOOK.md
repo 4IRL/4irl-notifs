@@ -40,7 +40,15 @@ backup runs.
 
    `AWS_DEFAULT_REGION=auto` is fixed by the deploy. Then run a prod deploy (merge to `main`, or re-run the deploy
    workflow) and check the file landed: `ssh <ssh-alias> 'stat -c "%U %a" secrets-persistent/backup.env'` should print
-   `4irl-notifs 600`.
+   `4irl-notifs 600`. The `BACKUP_DISCORD_WEBHOOK` must be a `https://discord.com/api/webhooks/` url (the deploy checks).
+
+   **Existing host (migration).** Hosts set up before this change keep reading `/etc/notifs-backup/backup.env` until the
+   scripts are reinstalled, and after the reinstall they read only the file above. So: set the five secrets, run a prod
+   deploy, confirm `4irl-notifs 600`, then reinstall (step 5) and run `verify`, and only then delete the old
+   `/etc/notifs-backup/backup.env` (it still holds live credentials and no longer follows a rotation). If the deploy
+   path is down during a restore, recreate the file by hand from the Infisical copies with
+   `sudo install -m 0600 -o 4irl-notifs -g 4irl-notifs /dev/stdin /home/4irl-notifs/secrets-persistent/backup.env`.
+   The deploy user can already run containers on this host, so the owner check is defence in depth, not a boundary.
 
 5. Install the units, scripts and restic (prompts for the sudo password, so run it yourself):
    `make host-backup HOST=<ssh-alias> ARGS="install"`.
@@ -140,8 +148,8 @@ The restore writes into a new directory outside every docker volume; you swap th
 2. **Deploy the stack.** The deploy rewrites `secrets-persistent/` from GitHub secrets, so `DELIVERY_MASTER_KEY` must be
    present as the GitHub secret. If GitHub lost it, restore it from Infisical first. A different key here would orphan
    every sealed row.
-3. Make sure the `BACKUP_*` GitHub secrets are set (section 1, step 4; the step 2 deploy renders `backup.env`), and run `make host-backup HOST=<ssh-alias> ARGS="install"`. Do **not** run
-   `init-repo`: the repository already exists and `init-repo` refuses.
+3. Make sure the `BACKUP_*` GitHub secrets are set (section 1, step 4; the step 2 deploy renders `backup.env`), and
+   run `make host-backup HOST=<ssh-alias> ARGS="install"`. Do **not** run `init-repo`: the repository already exists and `init-repo` refuses.
 4. Stop delivery-api: `sudo docker stop 4irl-notifs-delivery-api`.
 5. Restore the dump (section 4, steps 1 to 3), then `auth.db` (section 5).
 6. Start delivery-api, ntfy and provisioning-api, then run `verify-keys` from the stack directory:
