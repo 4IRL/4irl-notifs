@@ -126,7 +126,38 @@ var (
 	// already have the maximum number of held messages. It is distinct from
 	// ErrTooManyHeld so an app can tell its own cap from the shared one.
 	ErrHeldCapacityReached = errors.New("held message capacity reached")
+	// ErrPersonalDestinationUnavailable reports a to.personal_destination_ids
+	// selection that cannot be delivered in full. It is one generic refusal for
+	// every cause (unknown, disabled, not opted in, no sink) so it never
+	// confirms which id exists.
+	ErrPersonalDestinationUnavailable = errors.New("personal destination not available for recipient")
 )
+
+// RecipientVia selects which legs a to.recipient message takes. The zero value
+// means unset, which behaves as RecipientViaNtfy.
+type RecipientVia string
+
+const (
+	// RecipientViaNtfy sends to the recipient's ntfy topic only.
+	RecipientViaNtfy RecipientVia = "ntfy"
+	// RecipientViaPersonal sends to the named personal destinations only.
+	RecipientViaPersonal RecipientVia = "personal"
+	// RecipientViaBoth sends to the ntfy topic and the named personal destinations.
+	RecipientViaBoth RecipientVia = "both"
+)
+
+// OrDefault returns the effective choice: ntfy when unset, else the value itself.
+func (via RecipientVia) OrDefault() RecipientVia {
+	if via == "" {
+		return RecipientViaNtfy
+	}
+	return via
+}
+
+// MaxPersonalDestinationsPerMessage bounds to.personal_destination_ids on one
+// send, because each id becomes its own delivery and outbound request. It is
+// independent of the stored per-person cap in package personal.
+const MaxPersonalDestinationsPerMessage = 50
 
 // ValidationError reports an envelope field that failed validation. Message is
 // safe to return to the client: it names the field, never its value. It mirrors
@@ -165,10 +196,15 @@ type Envelope struct {
 	IdempotencyKey string
 	ToDestination  string
 	ToRecipient    string
-	DeliverAt      *time.Time
-	Critical       bool
-	Payload        json.RawMessage
-	Display        *Display
+	// ToRecipientVia selects the recipient legs; "" means unset (ntfy).
+	ToRecipientVia RecipientVia
+	// ToPersonalDestinationIDs names the personal destinations for via personal
+	// or both. Empty means none; it is never an "all" fallback.
+	ToPersonalDestinationIDs []int64
+	DeliverAt                *time.Time
+	Critical                 bool
+	Payload                  json.RawMessage
+	Display                  *Display
 	// Hold opts this one submit into being held when no route matches. It is set
 	// by route registration only (the app-key route), never decoded from a
 	// request body. The zero value is false, the fail-closed value: no hold.

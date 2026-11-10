@@ -485,6 +485,22 @@ func TestValidateEnvelopeEarlierRuleWins(testInstance *testing.T) {
 			wantMessage: invalidRecipientMessage,
 		},
 		{
+			name: "to before routing",
+			envelope: Envelope{
+				AppID: "urls4irl", Channel: "alerts", IdempotencyKey: "key-1", ToRecipient: "someone",
+				ToRecipientVia: "bogus", Payload: json.RawMessage(`[]`),
+			},
+			wantMessage: invalidRecipientMessage,
+		},
+		{
+			name: "routing before deliver_at",
+			envelope: Envelope{
+				AppID: "urls4irl", Channel: "alerts", IdempotencyKey: "key-1",
+				ToRecipientVia: RecipientViaNtfy, DeliverAt: &zeroTime, Payload: json.RawMessage(`[]`),
+			},
+			wantMessage: "to.via requires to.recipient",
+		},
+		{
 			name: "deliver_at before payload",
 			envelope: Envelope{
 				AppID: "urls4irl", Channel: "alerts", IdempotencyKey: "key-1",
