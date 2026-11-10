@@ -52,9 +52,9 @@ func TestRecipientViaColumnsAndConstraints(testInstance *testing.T) {
 	for index, testCase := range testCases {
 		testInstance.Run(testCase.label, func(subTest *testing.T) {
 			var messageID string
-			err := pool.QueryRow(ctx, insertRoutedMessageSQL,
+			insertErr := pool.QueryRow(ctx, insertRoutedMessageSQL,
 				"routed-"+string(rune('a'+index)), testCase.recipient, testCase.via, testCase.ids).Scan(&messageID)
-			expectSQLState(subTest, "insert routed message", err, testCase.wantState)
+			expectSQLState(subTest, "insert routed message", insertErr, testCase.wantState)
 		})
 	}
 }
@@ -80,9 +80,9 @@ func TestRecipientViaKeepsExistingRowsNull(testInstance *testing.T) {
 
 	var via *string
 	var ids []int64
-	if err := pool.QueryRow(ctx,
-		"SELECT to_recipient_via, to_personal_destination_ids FROM messages WHERE id = $1", messageID).Scan(&via, &ids); err != nil {
-		testInstance.Fatalf("read existing message: %v", err)
+	if readErr := pool.QueryRow(ctx,
+		"SELECT to_recipient_via, to_personal_destination_ids FROM messages WHERE id = $1", messageID).Scan(&via, &ids); readErr != nil {
+		testInstance.Fatalf("read existing message: %v", readErr)
 	}
 	if via != nil || !slices.Equal(ids, []int64(nil)) {
 		testInstance.Fatalf("existing row via/ids = %v/%v, want NULL/NULL", via, ids)

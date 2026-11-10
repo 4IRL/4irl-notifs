@@ -1007,9 +1007,9 @@ func TestRecipientRoutingRoundTripsThroughInsertAndReplace(testInstance *testing
 	}
 	readRouting := func(id string) (via *string, ids []int64) {
 		testInstance.Helper()
-		if err := pool.QueryRow(ctx,
-			`SELECT to_recipient_via, to_personal_destination_ids FROM messages WHERE id = $1::text::uuid`, id).Scan(&via, &ids); err != nil {
-			testInstance.Fatalf("read routing columns: %v", err)
+		if readErr := pool.QueryRow(ctx,
+			`SELECT to_recipient_via, to_personal_destination_ids FROM messages WHERE id = $1::text::uuid`, id).Scan(&via, &ids); readErr != nil {
+			testInstance.Fatalf("read routing columns: %v", readErr)
 		}
 		return via, ids
 	}
@@ -1064,22 +1064,22 @@ func TestRecipientRoutingRoundTripsThroughInsertAndReplace(testInstance *testing
 			}
 
 			// Replace with the same shape (no CHECK violation), then with a different one.
-			if _, replaced, err := store.ReplaceScheduledMessage(
-				ctx, apply(key, testCase.shape), targetsFor(testCase.shape), scheduleBase); err != nil || !replaced {
-				subTest.Fatalf("replace with the same routing = replaced %v, err %v", replaced, err)
+			if _, replaced, sameErr := store.ReplaceScheduledMessage(
+				ctx, apply(key, testCase.shape), targetsFor(testCase.shape), scheduleBase); sameErr != nil || !replaced {
+				subTest.Fatalf("replace with the same routing = replaced %v, err %v", replaced, sameErr)
 			}
 			assertRouting("same replace", inserted.ID, testCase.wantNull, testCase.wantVia, testCase.wantIDs)
 
 			changed := routing{recipient: hash, via: message.RecipientViaPersonal, ids: []int64{99}}
-			if _, replaced, err := store.ReplaceScheduledMessage(
-				ctx, apply(key, changed), targetsFor(changed), scheduleBase); err != nil || !replaced {
-				subTest.Fatalf("replace with changed routing = replaced %v, err %v", replaced, err)
+			if _, replaced, changeErr := store.ReplaceScheduledMessage(
+				ctx, apply(key, changed), targetsFor(changed), scheduleBase); changeErr != nil || !replaced {
+				subTest.Fatalf("replace with changed routing = replaced %v, err %v", replaced, changeErr)
 			}
 			assertRouting("changed replace", inserted.ID, false, "personal", []int64{99})
 
-			if _, replaced, err := store.ReplaceScheduledMessage(
-				ctx, apply(key, routing{}), targetsFor(routing{}), scheduleBase); err != nil || !replaced {
-				subTest.Fatalf("replace back to non-recipient = replaced %v, err %v", replaced, err)
+			if _, replaced, clearErr := store.ReplaceScheduledMessage(
+				ctx, apply(key, routing{}), targetsFor(routing{}), scheduleBase); clearErr != nil || !replaced {
+				subTest.Fatalf("replace back to non-recipient = replaced %v, err %v", replaced, clearErr)
 			}
 			assertRouting("cleared replace", inserted.ID, true, "", nil)
 		})

@@ -232,7 +232,7 @@ func requireStrings(testInstance *testing.T, label string, got, want []string) {
 	}
 }
 
-func TestPipelineFansARecipientMessageOutToOptedInPersonalDestinations(testInstance *testing.T) {
+func TestPipelineRecipientMessageReachesNamedPersonalDestinations(testInstance *testing.T) {
 	live := startFanoutPipeline(testInstance)
 	mine := live.register(testInstance, fanoutAlice, fanoutApp, "/alice-mine", true)
 	live.register(testInstance, fanoutAlice, fanoutOtherApp, "/alice-other-app", true)
@@ -263,7 +263,7 @@ func TestPipelineFansARecipientMessageOutToOptedInPersonalDestinations(testInsta
 	requireStrings(testInstance, "webhook paths after bob", live.webhookPaths(), []string{"/alice-mine", "/bob-mine"})
 }
 
-func TestPipelineScheduledRecipientFanOutIsFrozenAtSubmit(testInstance *testing.T) {
+func TestPipelineScheduledRecipientNamedDestinationsAreFrozenAtSubmit(testInstance *testing.T) {
 	live := startFanoutPipeline(testInstance)
 	first := live.register(testInstance, fanoutAlice, fanoutApp, "/alice-first", true)
 
@@ -309,7 +309,7 @@ func (live *fanoutPipeline) routedEnvelope(
 }
 
 func TestPipelineViaNtfyReachesOnlyNtfy(testInstance *testing.T) {
-	live := startFanoutPipelineWith(testInstance, true)
+	live := startFanoutPipeline(testInstance)
 	live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
 	live.register(testInstance, fanoutAlice, fanoutApp, "/hook-b", true)
 
@@ -349,7 +349,7 @@ func TestPipelineViaPersonalSkipsNtfyAndWorksWithoutPublisher(testInstance *test
 
 // With a publisher minted, via=personal must still never reach ntfy.
 func TestPipelineViaPersonalSkipsNtfyEvenWithPublisher(testInstance *testing.T) {
-	live := startFanoutPipelineWith(testInstance, true)
+	live := startFanoutPipeline(testInstance)
 	hookA := live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
 
 	stored, _, submitErr := live.messages.Submit(
@@ -368,7 +368,7 @@ func TestPipelineViaPersonalSkipsNtfyEvenWithPublisher(testInstance *testing.T) 
 }
 
 func TestPipelineViaBothReachesNtfyAndOnlyNamedDestinations(testInstance *testing.T) {
-	live := startFanoutPipelineWith(testInstance, true)
+	live := startFanoutPipeline(testInstance)
 	live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
 	hookB := live.register(testInstance, fanoutAlice, fanoutApp, "/hook-b", true)
 
@@ -389,7 +389,7 @@ func TestPipelineViaBothReachesNtfyAndOnlyNamedDestinations(testInstance *testin
 }
 
 func TestPipelineForeignDestinationIDRefusesTheWholeSendWithoutRows(testInstance *testing.T) {
-	live := startFanoutPipelineWith(testInstance, true)
+	live := startFanoutPipeline(testInstance)
 	hookA := live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
 	foreign := live.register(testInstance, fanoutBob, fanoutApp, "/bob-hook", true)
 

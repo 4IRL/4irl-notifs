@@ -71,8 +71,8 @@ func TestSubmitRecipientViaBothTargetsRecipientPlusNamedIDsOnly(testInstance *te
 	fake := threeDestinations()
 	fixture := newPersonalFixture(allSinks, fake)
 
-	if _, _, err := fixture.service.Submit(context.Background(), routedRecipientEnvelope(RecipientViaBoth, 4, 9)); err != nil {
-		testInstance.Fatalf("Submit error = %v", err)
+	if _, _, submitErr := fixture.service.Submit(context.Background(), routedRecipientEnvelope(RecipientViaBoth, 4, 9)); submitErr != nil {
+		testInstance.Fatalf("Submit error = %v", submitErr)
 	}
 	want := []DeliveryTarget{
 		ntfyRecipientTarget,
@@ -95,11 +95,11 @@ func TestResolveRecipientTargetsDeniesAnUnknownVia(testInstance *testing.T) {
 	fake := threeDestinations()
 	fixture := newPersonalFixture(allSinks, fake)
 
-	targets, err := fixture.service.resolveRecipientTargets(context.Background(), routedRecipientEnvelope(RecipientVia("future"), 4))
+	targets, resolveErr := fixture.service.resolveRecipientTargets(context.Background(), routedRecipientEnvelope(RecipientVia("future"), 4))
 
 	var validationErr *ValidationError
-	if !errors.As(err, &validationErr) || validationErr.Message != "invalid to.via" {
-		testInstance.Fatalf("error = %v, want ValidationError invalid to.via", err)
+	if !errors.As(resolveErr, &validationErr) || validationErr.Message != errMsgInvalidVia {
+		testInstance.Fatalf("error = %v, want ValidationError invalid to.via", resolveErr)
 	}
 	if len(targets) != 0 || len(fake.calls) != 0 {
 		testInstance.Fatalf("targets = %+v, lookups = %v, want none", targets, fake.calls)
@@ -112,8 +112,8 @@ func TestSubmitRecipientViaNtfyOrUnsetIsNtfyOnlyAndNeverQueriesPersonal(testInst
 			fake := threeDestinations()
 			fixture := newPersonalFixture(allSinks, fake)
 
-			if _, _, err := fixture.service.Submit(context.Background(), routedRecipientEnvelope(via)); err != nil {
-				subTest.Fatalf("Submit error = %v", err)
+			if _, _, submitErr := fixture.service.Submit(context.Background(), routedRecipientEnvelope(via)); submitErr != nil {
+				subTest.Fatalf("Submit error = %v", submitErr)
 			}
 			if got := fixture.store.insertCalls[0].targets; !reflect.DeepEqual(got, []DeliveryTarget{ntfyRecipientTarget}) {
 				subTest.Fatalf("targets = %+v, want the ntfy target only", got)
@@ -130,8 +130,8 @@ func TestSubmitRecipientViaPersonalTargetsOnlyNamedIDsWithoutNtfyLeg(testInstanc
 	fixture := newPersonalFixture(allSinks, fake)
 	fixture.publishers.has = false
 
-	if _, _, err := fixture.service.Submit(context.Background(), routedRecipientEnvelope(RecipientViaPersonal, 12)); err != nil {
-		testInstance.Fatalf("Submit error = %v", err)
+	if _, _, submitErr := fixture.service.Submit(context.Background(), routedRecipientEnvelope(RecipientViaPersonal, 12)); submitErr != nil {
+		testInstance.Fatalf("Submit error = %v", submitErr)
 	}
 	want := []DeliveryTarget{{DestinationName: "@personal_12", DestinationType: registry.TypeWebhook}}
 	if got := fixture.store.insertCalls[0].targets; !reflect.DeepEqual(got, want) {
@@ -154,8 +154,8 @@ func TestSubmitRecipientViaPersonalWithNilPublishersAndNoNtfySinkSucceeds(testIn
 		PollInterval:    time.Millisecond,
 	})
 
-	if _, _, err := fixture.service.Submit(context.Background(), routedRecipientEnvelope(RecipientViaPersonal, 9)); err != nil {
-		testInstance.Fatalf("Submit error = %v, want success without publishers or an ntfy sink", err)
+	if _, _, submitErr := fixture.service.Submit(context.Background(), routedRecipientEnvelope(RecipientViaPersonal, 9)); submitErr != nil {
+		testInstance.Fatalf("Submit error = %v, want success without publishers or an ntfy sink", submitErr)
 	}
 	want := []DeliveryTarget{{DestinationName: "@personal_9", DestinationType: registry.TypeWebhook}}
 	if got := fixture.store.insertCalls[0].targets; !reflect.DeepEqual(got, want) {
@@ -169,11 +169,11 @@ func TestSubmitRecipientViaPersonalStillRequiresRenderableDisplay(testInstance *
 	envelope := routedRecipientEnvelope(RecipientViaPersonal, 4)
 	envelope.Display = nil
 
-	_, _, err := fixture.service.Submit(context.Background(), envelope)
+	_, _, submitErr := fixture.service.Submit(context.Background(), envelope)
 
 	var validationErr *ValidationError
-	if !errors.As(err, &validationErr) {
-		testInstance.Fatalf("error = %v, want a *ValidationError", err)
+	if !errors.As(submitErr, &validationErr) {
+		testInstance.Fatalf("error = %v, want a *ValidationError", submitErr)
 	}
 	if len(fake.calls) != 0 || len(fixture.store.insertCalls) != 0 {
 		testInstance.Fatalf("lookups/inserts = %d/%d, want none", len(fake.calls), len(fixture.store.insertCalls))
@@ -191,10 +191,10 @@ func TestSubmitRecipientNtfyLegStillRequiresAPublisher(testInstance *testing.T) 
 			if via == RecipientViaBoth {
 				ids = []int64{4}
 			}
-			_, _, err := fixture.service.Submit(context.Background(), routedRecipientEnvelope(via, ids...))
+			_, _, submitErr := fixture.service.Submit(context.Background(), routedRecipientEnvelope(via, ids...))
 
-			if !errors.Is(err, registry.ErrNoPublisher) {
-				subTest.Fatalf("error = %v, want ErrNoPublisher before any personal lookup", err)
+			if !errors.Is(submitErr, registry.ErrNoPublisher) {
+				subTest.Fatalf("error = %v, want ErrNoPublisher before any personal lookup", submitErr)
 			}
 			if len(fake.calls) != 0 {
 				subTest.Fatalf("personal lookups = %v, want none", fake.calls)
@@ -242,16 +242,16 @@ func TestSubmitRecipientPersonalFailuresStoreNothing(testInstance *testing.T) {
 					fixture = newPersonalFixture(testCase.supported, testCase.fake)
 				}
 
-				_, _, err := fixture.service.Submit(context.Background(), routedRecipientEnvelope(via, testCase.ids...))
+				_, _, submitErr := fixture.service.Submit(context.Background(), routedRecipientEnvelope(via, testCase.ids...))
 
-				if !errors.Is(err, testCase.wantErr) {
-					subTest.Fatalf("error = %v, want %v", err, testCase.wantErr)
+				if !errors.Is(submitErr, testCase.wantErr) {
+					subTest.Fatalf("error = %v, want %v", submitErr, testCase.wantErr)
 				}
-				if testCase.wantErr == lookupErr && errors.Is(err, ErrPersonalDestinationUnavailable) {
-					subTest.Fatalf("a store error must not be reported as the 422 sentinel: %v", err)
+				if testCase.wantErr == lookupErr && errors.Is(submitErr, ErrPersonalDestinationUnavailable) {
+					subTest.Fatalf("a store error must not be reported as the 422 sentinel: %v", submitErr)
 				}
-				if errors.Is(err, ErrUnsupportedDestinationType) {
-					subTest.Fatalf("error = %v, must not reveal an unsupported type", err)
+				if errors.Is(submitErr, ErrUnsupportedDestinationType) {
+					subTest.Fatalf("error = %v, must not reveal an unsupported type", submitErr)
 				}
 				if len(fixture.store.insertCalls) != 0 || fixture.wakes.calls() != 0 {
 					subTest.Fatalf("insert/wake = %d/%d, want none", len(fixture.store.insertCalls), fixture.wakes.calls())
@@ -268,9 +268,9 @@ func TestSubmitDuplicateRecipientShortCircuitsBeforePersonalLookup(testInstance 
 	fixture.store.getByKeyPresent = true
 	fixture.store.getByKeyResult = StoredMessage{ID: "22222222-2222-2222-2222-222222222222", Envelope: validEnvelope()}
 
-	_, outcome, err := fixture.service.Submit(context.Background(), routedRecipientEnvelope(RecipientViaBoth, 4))
-	if err != nil || !outcome.Duplicate {
-		testInstance.Fatalf("Submit = (%v, outcome %+v), want a duplicate", err, outcome)
+	_, outcome, submitErr := fixture.service.Submit(context.Background(), routedRecipientEnvelope(RecipientViaBoth, 4))
+	if submitErr != nil || !outcome.Duplicate {
+		testInstance.Fatalf("Submit = (%v, outcome %+v), want a duplicate", submitErr, outcome)
 	}
 	if len(fake.calls) != 0 || len(fixture.publishers.calls) != 0 {
 		testInstance.Fatalf("personal/publisher lookups = %d/%d, want none", len(fake.calls), len(fixture.publishers.calls))

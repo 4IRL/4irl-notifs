@@ -160,7 +160,7 @@ func ValidateRecipientRouting(
 		}
 		return nil
 	default:
-		return &ValidationError{Message: "invalid to.via"}
+		return &ValidationError{Message: errMsgInvalidVia}
 	}
 }
 

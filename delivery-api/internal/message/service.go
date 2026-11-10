@@ -23,6 +23,10 @@ const (
 	// renderable display text bound for an ntfy or discord destination.
 	errMsgDisplayRequired = "display.title or display.body is required for ntfy and discord destinations"
 
+	// errMsgInvalidVia is the validation message for an unknown or unusable
+	// to.via value; it is deliberately the same for every routing miss.
+	errMsgInvalidVia = "invalid to.via"
+
 	// DefaultListLimit is the page size of an operator delivery list that names
 	// no limit.
 	DefaultListLimit = 50
@@ -92,8 +96,8 @@ type Publishers interface {
 	HasPublisher(ctx context.Context, appID string) (bool, error)
 }
 
-// PersonalTargets lists the personal destinations a to.recipient message also
-// fans out to. *personal.Service satisfies it.
+// PersonalTargets resolves the personal destinations a to.recipient message
+// names (to.personal_destination_ids). *personal.Service satisfies it.
 type PersonalTargets interface {
 	// SelectedTargets returns only the named ids that are the person's, enabled and opted in for appID.
 	SelectedTargets(ctx context.Context, appID, personHash string, ids []int64) ([]personal.Target, error)
@@ -535,7 +539,7 @@ func (service *Service) resolveRecipientTargets(ctx context.Context, envelope En
 		}
 		return append([]DeliveryTarget{ntfyTarget}, personalTargets...), nil
 	default:
-		return nil, &ValidationError{Message: "invalid to.via"}
+		return nil, &ValidationError{Message: errMsgInvalidVia}
 	}
 }
 
