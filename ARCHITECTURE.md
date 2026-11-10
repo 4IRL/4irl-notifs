@@ -284,16 +284,25 @@ End users can receive an app's `to.recipient` messages at their own Discord or w
   `discord`/`webhook`, `config`, `sealed_secrets`, `enabled` with `disabled_by` in `app`/`operator`/`system`)
   and `personal_destination_opt_ins` (`app_id`, `personal_destination_id`, cascade on destination delete; no FK on
   `app_id`). Separate tables, not a third `destinations.owner_kind`, so the registry's owner CHECKs, routes and
-  operator lists are untouched. `message_deliveries.dead_reason` gains `opted_out`. Cap: 1000 per person per registering app.
+  operator lists are untouched. `message_deliveries.dead_reason` gains `opted_out`. Cap: 1000 per person per registering app (`personal.MaxPerPersonPerApp`; separate from the 50-id per-send bound).
 - **Routes:** `POST` (create), `POST …/lookup`, `PATCH`, `DELETE` and `PUT`/`DELETE …/opt-in` under
   `/v1/apps/{app_id}/personal-destinations` (key-gated, person always in the JSON body, `503` when the service
   is not wired); operator `GET /v1/admin/personal-destinations?person_hash=`, `PATCH`/`DELETE …/{id}`.
   Operator disable (`disabled_by = 'operator'`) cannot be undone by an app.
-- **Fan-out and naming:** `message.Service.resolveRecipientTargets` returns the `@recipient` ntfy target plus one
-  target per enabled personal destination of the person opted in for the sending app, snapshotted at submit or
+- **Explicit routing and naming (migration `0015_recipient_via.sql`):** there is no implicit fan-out. The
+  message carries an optional `to.via` (`ntfy` default, `personal`, `both`) and `to.personal_destination_ids`
+  (required for `personal`/`both`, at most `message.MaxPersonalDestinationsPerMessage` = 50), persisted as
+  `messages.to_recipient_via` (nullable text) and `messages.to_personal_destination_ids` (nullable `bigint[]`,
+  sorted ascending; NULL reads back as `ntfy` with no ids) and compared in `sameContent` (ids as sorted sets) so
+  a changed routing replaces a still-scheduled message. Shape errors are `400` (`message.ValidateRecipientRouting`).
+  `message.Service.resolveRecipientTargets` switches on `via` (default-deny): `ntfy` builds only `@recipient`;
+  `personal` skips the ntfy leg (no sink, topic-length or publisher check); `both` builds both. Named ids are
+  resolved by `personal.Service.SelectedTargets` (enabled, opted in for the app, owned by the person); any id
+  not returned, or a type with no sink, is `ErrPersonalDestinationUnavailable` (`422 personal destination not
+  available for recipient`, one generic answer so no id oracle). The target set is snapshotted at submit or
   scheduled replace (never recomputed at release). A personal delivery has `destination_id` NULL and name
   `@personal_<id>`, built and parsed only by `personal.PersonalDeliveryName` / `ParsePersonalDeliveryName`.
-  A type with no sink fails the submit `422`.
+  The worker, releaser and Delivery Log are routing-independent.
 - **Send-time rules (worker):** the row is resolved by id and the message's `app_id` + `to_recipient`: absent,
   other person or unparseable name is dead `destination_deleted`; disabled `destination_disabled`; no opt-in
   `opted_out`; no resolver `unsupported_type`; store/unseal errors leave the lease to expire (retry);
