@@ -284,7 +284,7 @@ End users can receive an app's `to.recipient` messages at their own Discord or w
   `discord`/`webhook`, `config`, `sealed_secrets`, `enabled` with `disabled_by` in `app`/`operator`/`system`)
   and `personal_destination_opt_ins` (`app_id`, `personal_destination_id`, cascade on destination delete; no FK on
   `app_id`). Separate tables, not a third `destinations.owner_kind`, so the registry's owner CHECKs, routes and
-  operator lists are untouched. `message_deliveries.dead_reason` gains `opted_out`. Cap: 50 per person per registering app.
+  operator lists are untouched. `message_deliveries.dead_reason` gains `opted_out`. Cap: 1000 per person per registering app.
 - **Routes:** `POST` (create), `POST …/lookup`, `PATCH`, `DELETE` and `PUT`/`DELETE …/opt-in` under
   `/v1/apps/{app_id}/personal-destinations` (key-gated, person always in the JSON body, `503` when the service
   is not wired); operator `GET /v1/admin/personal-destinations?person_hash=`, `PATCH`/`DELETE …/{id}`.

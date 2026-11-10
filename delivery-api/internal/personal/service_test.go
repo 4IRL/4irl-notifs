@@ -199,6 +199,20 @@ func (store *fakeStore) ListEnabledOptedIn(_ context.Context, appID, personHash 
 	return out, nil
 }
 
+func (store *fakeStore) ListEnabledOptedInByIDs(ctx context.Context, appID, personHash string, ids []int64) ([]Destination, error) {
+	all, listErr := store.ListEnabledOptedIn(ctx, appID, personHash)
+	if listErr != nil {
+		return nil, listErr
+	}
+	var out []Destination
+	for _, row := range all {
+		if slices.Contains(ids, row.ID) {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
 func (store *fakeStore) DisableBySystem(_ context.Context, id int64, reason string) (bool, error) {
 	row, found := store.rows[id]
 	if !found || !row.Enabled {

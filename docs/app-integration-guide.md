@@ -1546,7 +1546,7 @@ there), `opted_in` (for the **calling app only**; other apps' opt-ins are never 
   also when the registering app has since been removed). Every app toggles the opt-in for **itself** only.
 - **A different person or an unknown id is `404 personal destination does not exist`**, identical to an
   absent row (no oracle); a malformed id is the same `404`.
-- **Cap:** at most 50 personal destinations per person per registering app; each app has its own allowance
+- **Cap:** at most 1000 personal destinations per person per registering app; each app has its own allowance
   for the same person (`409 personal destination limit reached`).
 - **Operator disable sticks:** `PATCH {"enabled": true}` on a row the operator disabled is
   `409 personal destination disabled by the operator` and nothing in that body is written. A row the

@@ -67,6 +67,24 @@ func (service *Service) OptedInTargets(ctx context.Context, appID, personHash st
 	return targets, nil
 }
 
+// SelectedTargets returns only the named destinations that are the person's,
+// enabled and opted in for appID, ordered by id. Ineligible ids are absent, so
+// the caller compares len(result) with its distinct id count.
+func (service *Service) SelectedTargets(ctx context.Context, appID, personHash string, ids []int64) ([]Target, error) {
+	if len(ids) == 0 {
+		return []Target{}, nil
+	}
+	rows, listErr := service.store.ListEnabledOptedInByIDs(ctx, appID, personHash, ids)
+	if listErr != nil {
+		return nil, listErr
+	}
+	targets := make([]Target, 0, len(rows))
+	for _, row := range rows {
+		targets = append(targets, Target{ID: row.ID, Type: row.Type})
+	}
+	return targets, nil
+}
+
 // DisablePersonal disables an enabled personal destination as 'system' with
 // reason. Only an enabled row transitions, so an operator or app disable is
 // never overwritten. An absent row is not an error.

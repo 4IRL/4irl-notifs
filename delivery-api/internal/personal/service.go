@@ -86,6 +86,8 @@ type Store interface {
 	IsOptedIn(ctx context.Context, appID string, id int64) (bool, error)
 	// ListEnabledOptedIn returns the person's enabled rows appID is opted in for, ordered by id.
 	ListEnabledOptedIn(ctx context.Context, appID, personHash string) ([]Destination, error)
+	// ListEnabledOptedInByIDs is ListEnabledOptedIn restricted to ids; an ineligible id is simply absent.
+	ListEnabledOptedInByIDs(ctx context.Context, appID, personHash string, ids []int64) ([]Destination, error)
 	// DisableBySystem disables only an enabled row; it reports whether a transition happened.
 	DisableBySystem(ctx context.Context, id int64, reason string) (bool, error)
 	// ForgetPersonForApp drops appID's opt-ins for the person and reaps the rows that leave orphaned.

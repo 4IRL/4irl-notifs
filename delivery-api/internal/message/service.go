@@ -96,6 +96,8 @@ type Publishers interface {
 // fans out to. *personal.Service satisfies it.
 type PersonalTargets interface {
 	OptedInTargets(ctx context.Context, appID, personHash string) ([]personal.Target, error)
+	// SelectedTargets returns only the named ids that are the person's, enabled and opted in for appID.
+	SelectedTargets(ctx context.Context, appID, personHash string, ids []int64) ([]personal.Target, error)
 }
 
 // ServiceConfig configures a Service.

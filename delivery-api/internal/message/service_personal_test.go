@@ -3,7 +3,9 @@ package message
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -22,6 +24,17 @@ type fakePersonalTargets struct {
 func (fake *fakePersonalTargets) OptedInTargets(_ context.Context, appID, personHash string) ([]personal.Target, error) {
 	fake.calls = append(fake.calls, appID+"/"+personHash)
 	return fake.targets, fake.err
+}
+
+func (fake *fakePersonalTargets) SelectedTargets(_ context.Context, appID, personHash string, ids []int64) ([]personal.Target, error) {
+	fake.calls = append(fake.calls, fmt.Sprintf("selected:%s/%s/%v", appID, personHash, ids))
+	var selected []personal.Target
+	for _, target := range fake.targets {
+		if slices.Contains(ids, target.ID) {
+			selected = append(selected, target)
+		}
+	}
+	return selected, fake.err
 }
 
 // newPersonalFixture returns a recipientFixture whose service also fans out to personal destinations.
