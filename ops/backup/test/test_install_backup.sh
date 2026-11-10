@@ -98,13 +98,13 @@ EOF
 }
 
 inst() {
-  run_cmd "${ENVU[@]}" env NOTIFS_BACKUP_TESTING=1 INSTALL_BACKUP_ROOT="$ROOT" INSTALL_BACKUP_OWNER="$OWNER" \
+  run_cmd "${ENVU[@]}" env NOTIFS_BACKUP_TESTING=1 INSTALL_BACKUP_ROOT="$ROOT" INSTALL_BACKUP_OWNER="$OWNER" INSTALL_BACKUP_ENV_OWNER="$OWNER" \
     ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} bash "$INSTALLER" "$@"
 }
 
-ENV_FILE_PATH() { printf '%s' "$ROOT/etc/notifs-backup/backup.env"; }
+ENV_FILE_PATH() { printf '%s' "$ROOT/home/4irl-notifs/secrets-persistent/backup.env"; }
 write_env() {
-  mkdir -p "$ROOT/etc/notifs-backup"
+  mkdir -p "$ROOT/home/4irl-notifs/secrets-persistent"
   printf 'RESTIC_REPOSITORY=s3:https://acct.r2.cloudflarestorage.com/b\nRESTIC_PASSWORD=pw\nAWS_ACCESS_KEY_ID=ak\nAWS_SECRET_ACCESS_KEY=sk\nAWS_DEFAULT_REGION=auto\nDISCORD_WEBHOOK=https://discord.example/hook\n' \
     > "$(ENV_FILE_PATH)"
   chmod 600 "$(ENV_FILE_PATH)"

@@ -55,6 +55,20 @@ on:
       # rotating it also needs a manual `up -d --force-recreate provisioning-api delivery-api`.
       PROVISIONING_INTERNAL_CREDENTIAL:
         required: true
+      # Nightly backup credentials, optional as a group. All five set: the deploy renders
+      # ./secrets-persistent/backup.env (4irl-notifs user, 0600) that the root backup job reads. None set: the file
+      # is left as is. A partial set aborts the deploy on the runner first. Values must not contain quotes, `$`,
+      # backticks, backslashes or whitespace (the backup env reader refuses quotes and they are interpolated into the ssh script).
+      BACKUP_RESTIC_REPOSITORY:
+        required: false
+      BACKUP_RESTIC_PASSWORD:
+        required: false
+      BACKUP_R2_ACCESS_KEY_ID:
+        required: false
+      BACKUP_R2_SECRET_ACCESS_KEY:
+        required: false
+      BACKUP_DISCORD_WEBHOOK:
+        required: false
 
 jobs:
   ProdDeploy:
@@ -62,6 +76,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate BACKUP secrets
+        env:
+          BACKUP_RESTIC_REPOSITORY: ${{ secrets.BACKUP_RESTIC_REPOSITORY }}
+          BACKUP_RESTIC_PASSWORD: ${{ secrets.BACKUP_RESTIC_PASSWORD }}
+          BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
+          BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
+          BACKUP_DISCORD_WEBHOOK: ${{ secrets.BACKUP_DISCORD_WEBHOOK }}
+        run: |
+          set=0
+          for name in BACKUP_RESTIC_REPOSITORY BACKUP_RESTIC_PASSWORD BACKUP_R2_ACCESS_KEY_ID BACKUP_R2_SECRET_ACCESS_KEY BACKUP_DISCORD_WEBHOOK; do
+            value="${!name}"
+            if [[ -n "${value}" ]]; then
+              set=$((set + 1))
+              case "${value}" in
+                *[\"\'\$\`\\[:space:]]*)
+                  echo "${name} secret must not contain quotes, \$, backticks, backslashes or whitespace; nothing was copied or changed on the VPS"
+                  exit 1
+                  ;;
+                *) ;;
+              esac
+            fi
+          done
+          if [[ "${set}" -ne 0 && "${set}" -ne 5 ]]; then
+            echo "BACKUP_* secrets must be all set or all unset (${set} of 5 are set); nothing was copied or changed on the VPS"
+            exit 1
+          fi
+          if [[ "${set}" -eq 5 && ! "${BACKUP_RESTIC_REPOSITORY}" =~ ^s3:https:// ]]; then
+            echo "BACKUP_RESTIC_REPOSITORY secret must start with s3:https://; nothing was copied or changed on the VPS"
+            exit 1
+          fi
+
       - name: Validate DELIVERY_DB_PASSWORD secret
         env:
           DELIVERY_DB_PASSWORD: ${{ secrets.DELIVERY_DB_PASSWORD }}
@@ -192,6 +237,11 @@ jobs:
           PROVISIONING_INTERNAL_CREDENTIAL_VALUE="${{ secrets.PROVISIONING_INTERNAL_CREDENTIAL }}";
           PERSON_SERVICE_ACCESS_CLIENT_ID_VALUE="${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_ID }}";
           PERSON_SERVICE_ACCESS_CLIENT_SECRET_VALUE="${{ secrets.PERSON_SERVICE_ACCESS_CLIENT_SECRET }}";
+          BACKUP_RESTIC_REPOSITORY_VALUE="${{ secrets.BACKUP_RESTIC_REPOSITORY }}";
+          BACKUP_RESTIC_PASSWORD_VALUE="${{ secrets.BACKUP_RESTIC_PASSWORD }}";
+          BACKUP_R2_ACCESS_KEY_ID_VALUE="${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}";
+          BACKUP_R2_SECRET_ACCESS_KEY_VALUE="${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}";
+          BACKUP_DISCORD_WEBHOOK_VALUE="${{ secrets.BACKUP_DISCORD_WEBHOOK }}";
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin;
 
           mkdir -p ./secrets-persistent/;
@@ -215,6 +265,15 @@ jobs:
           printf "%s" "${PROVISIONING_INTERNAL_CREDENTIAL_VALUE}" > ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL;
           chmod 644 ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL;
           [ -s ./secrets-persistent/PROVISIONING_INTERNAL_CREDENTIAL ] || { echo "PROVISIONING_INTERNAL_CREDENTIAL file is empty after write; aborting"; exit 1; };
+
+          if [ -n "${BACKUP_RESTIC_REPOSITORY_VALUE}" ]; then
+            ( umask 077; printf "%s\n" "RESTIC_REPOSITORY=${BACKUP_RESTIC_REPOSITORY_VALUE}" "RESTIC_PASSWORD=${BACKUP_RESTIC_PASSWORD_VALUE}" "AWS_ACCESS_KEY_ID=${BACKUP_R2_ACCESS_KEY_ID_VALUE}" "AWS_SECRET_ACCESS_KEY=${BACKUP_R2_SECRET_ACCESS_KEY_VALUE}" "AWS_DEFAULT_REGION=auto" "DISCORD_WEBHOOK=${BACKUP_DISCORD_WEBHOOK_VALUE}" > ./secrets-persistent/backup.env.new );
+            chmod 600 ./secrets-persistent/backup.env.new;
+            mv -f ./secrets-persistent/backup.env.new ./secrets-persistent/backup.env;
+            echo "Wrote secrets-persistent/backup.env (0600) from the BACKUP_* secrets";
+          else
+            echo "BACKUP_* secrets unset; secrets-persistent/backup.env left as is";
+          fi;
 
           docker compose -f docker-compose.prod.yml pull;
           export NTFY_UPSTREAM_ACCESS_TOKEN="${{ secrets.NTFY_UPSTREAM_ACCESS_TOKEN }}";

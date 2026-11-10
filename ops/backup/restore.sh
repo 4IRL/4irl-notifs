@@ -145,16 +145,24 @@ ov_path() {
 
 load_overrides() {
   gate_test_overrides
-  ov_path ENV_FILE NOTIFS_BACKUP_ENV_FILE /etc/notifs-backup/backup.env
+  ov_path ENV_FILE NOTIFS_BACKUP_ENV_FILE /home/4irl-notifs/secrets-persistent/backup.env
   ov_path BACKUP_ROOT NOTIFS_BACKUP_ROOT "$PROD_ROOT"
   ov_path LOCK_FILE NOTIFS_BACKUP_LOCK /run/notifs-backup.lock
-  ENV_OWNER="0:0"
+  # The prod deploy writes backup.env as the 4irl-notifs user; default owner is that user's uid:gid. Fail closed: an
+  # unresolvable user exits 2 rather than accepting any other owner.
   if [ -n "${NOTIFS_BACKUP_ENV_OWNER+x}" ]; then
     if [[ ! "$NOTIFS_BACKUP_ENV_OWNER" =~ ^[0-9]+:[0-9]+$ ]]; then
       echo "FATAL: NOTIFS_BACKUP_ENV_OWNER must match uid:gid (digits)" >&2
       exit 2
     fi
     ENV_OWNER="$NOTIFS_BACKUP_ENV_OWNER"
+  else
+    local u g
+    if ! u="$(id -u -- 4irl-notifs 2> /dev/null)" || ! g="$(id -g -- 4irl-notifs 2> /dev/null)"; then
+      echo "FATAL: cannot resolve the uid:gid of user 4irl-notifs (the owner backup.env must have)" >&2
+      exit 2
+    fi
+    ENV_OWNER="$u:$g"
   fi
 }
 

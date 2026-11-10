@@ -804,3 +804,71 @@ describe('notifs-ops-key.yml and the stack deploy workflows', () => {
     );
   });
 });
+
+const BACKUP_SECRETS = [
+  'BACKUP_RESTIC_REPOSITORY',
+  'BACKUP_RESTIC_PASSWORD',
+  'BACKUP_R2_ACCESS_KEY_ID',
+  'BACKUP_R2_SECRET_ACCESS_KEY',
+  'BACKUP_DISCORD_WEBHOOK',
+];
+
+function assertBackupEnvDeploy(deployText, buildText) {
+  const deploy = stripComments(deployText);
+  for (const secret of BACKUP_SECRETS) {
+    assert.ok(
+      new RegExp(`^ {6}${secret}:\\n {8}required: false`, 'm').test(deployText),
+      `${secret} is an optional workflow_call secret`,
+    );
+    assert.ok(
+      buildText.includes(`${secret}: \${{ secrets.${secret} }}`),
+      `${secret} is passed explicitly by prod-build-and-deploy.yml`,
+    );
+    assert.ok(deploy.includes(`\${{ secrets.${secret} }}`), `${secret} is used by the deploy`);
+  }
+  assert.ok(
+    deploy.includes('- name: Validate BACKUP secrets'),
+    'a runner-side validation step exists',
+  );
+  assert.ok(
+    deploy.indexOf('- name: Validate BACKUP secrets') <
+      deploy.indexOf('- name: Deploy Docker Compose Stack'),
+    'BACKUP secrets are validated before the VPS is touched',
+  );
+  assert.ok(deploy.includes('"${set}" -ne 5'), 'a partial BACKUP set aborts the deploy');
+  assert.ok(
+    deploy.includes('( umask 077; printf') &&
+      deploy.includes('> ./secrets-persistent/backup.env.new )'),
+    'backup.env is written under umask 077',
+  );
+  assert.ok(
+    deploy.includes('chmod 600 ./secrets-persistent/backup.env.new') &&
+      deploy.includes('mv -f ./secrets-persistent/backup.env.new ./secrets-persistent/backup.env'),
+    'backup.env is 0600 and moved into place atomically',
+  );
+  assert.ok(deploy.includes('"AWS_DEFAULT_REGION=auto"'), 'the region is fixed, not a secret');
+}
+
+describe('backup.env is written by the stack deploy', () => {
+  it('renders secrets-persistent/backup.env from the BACKUP_* secrets, 0600, validated first', () => {
+    assertBackupEnvDeploy(DEPLOY, BUILD_AND_DEPLOY);
+  });
+
+  it('control: backup.env rules fail on violating fixtures', () => {
+    assertFails(
+      assertBackupEnvDeploy,
+      mutate(DEPLOY, '"${set}" -ne 5', '"${set}" -ne 9'),
+      BUILD_AND_DEPLOY,
+    );
+    assertFails(
+      assertBackupEnvDeploy,
+      mutate(DEPLOY, 'chmod 600 ./secrets-persistent/backup.env.new', 'true'),
+      BUILD_AND_DEPLOY,
+    );
+    assertFails(
+      assertBackupEnvDeploy,
+      DEPLOY,
+      BUILD_AND_DEPLOY.replace('BACKUP_DISCORD_WEBHOOK: ${{ secrets.BACKUP_DISCORD_WEBHOOK }}', ''),
+    );
+  });
+});

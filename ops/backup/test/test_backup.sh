@@ -415,9 +415,18 @@ if [ "$(id -u):$(id -g)" = "0:0" ]; then
 else
   unset NOTIFS_BACKUP_ENV_OWNER
   run_case 'main nightly'
-  expect_rc "owner unset: a file owned by another user is refused" 2
-  expect_out_has "owner refusal names the expected owner" "owner is not 0:0"
+  expect_rc "owner unset: a file not owned by the 4irl-notifs user (or an unresolvable user) is refused" 2
+  if id -u -- 4irl-notifs > /dev/null 2>&1; then
+    expect_out_has "owner refusal names the 4irl-notifs uid:gid" "owner is not $(id -u -- 4irl-notifs):$(id -g -- 4irl-notifs)"
+  else
+    expect_out_has "an unresolvable 4irl-notifs user fails closed" "cannot resolve the uid:gid of user 4irl-notifs"
+  fi
 fi
+new_case
+unset NOTIFS_BACKUP_ENV_OWNER
+run_case 'id() { return 1; }; main nightly'
+expect_rc "owner unset and the user unresolvable exits 2 (fail closed)" 2
+expect_out_has "unresolvable user is named" "cannot resolve the uid:gid of user 4irl-notifs"
 for bad in "abc" "1:" "" "1:2:3" "root:root"; do
   new_case
   export NOTIFS_BACKUP_ENV_OWNER="$bad"
@@ -689,22 +698,22 @@ expect_rc "empty path override exits 2" 2
 new_case
 unset NOTIFS_BACKUP_TESTING
 export NOTIFS_BACKUP_ENV_FILE="relative/backup.env"
-run_case 'load_overrides; echo "ENV_FILE=$ENV_FILE ROOT=$BACKUP_ROOT LOCK=$LOCK_FILE STATE=$STATE_DIR LOG=$LOG_DIR OWNER=$ENV_OWNER"'
-expect_out_has "without the flag the overrides are ignored (production env file)" "ENV_FILE=/etc/notifs-backup/backup.env"
+run_case 'id() { case "$1" in -u) echo 1001 ;; *) echo 1002 ;; esac; }; load_overrides; echo "ENV_FILE=$ENV_FILE ROOT=$BACKUP_ROOT LOCK=$LOCK_FILE STATE=$STATE_DIR LOG=$LOG_DIR OWNER=$ENV_OWNER"'
+expect_out_has "without the flag the overrides are ignored (production env file)" "ENV_FILE=/home/4irl-notifs/secrets-persistent/backup.env"
 expect_out_has "...and the production work root applies" "ROOT=/var/lib/notifs-backup/work"
 expect_out_has "...and the production lock applies" "LOCK=/run/notifs-backup.lock"
 expect_out_has "...and the production state dir applies" "STATE=/var/lib/notifs-backup/status"
 expect_out_has "...and the production log dir applies" "LOG=/var/log/notifs-backup"
-expect_out_has "...and the owner stays 0:0" "OWNER=0:0"
+expect_out_has "...and the owner is the 4irl-notifs user's uid:gid" "OWNER=1001:1002"
 expect_out_has "the ignored overrides are named in a warning" "ignoring test overrides without NOTIFS_BACKUP_TESTING=1"
 new_case
 export NOTIFS_BACKUP_TESTING=0
-run_case 'load_overrides; echo "ROOT=$BACKUP_ROOT"'
+run_case 'resolve_env_owner() { ENV_OWNER=9:9; }; load_overrides; echo "ROOT=$BACKUP_ROOT"'
 expect_out_has "a flag value other than 1 does not enable the overrides" "ROOT=/var/lib/notifs-backup/work"
 new_case
 unset NOTIFS_BACKUP_TESTING
 export NOTIFS_BACKUP_DEADLINE_SECS=5
-run_case 'load_overrides; echo "DEADLINE=$DEADLINE_SECS"'
+run_case 'resolve_env_owner() { ENV_OWNER=9:9; }; load_overrides; echo "DEADLINE=$DEADLINE_SECS"'
 expect_out_has "the deadline override is ignored without the flag" "DEADLINE=4200"
 new_case
 run_case 'load_overrides; echo "ROOT=$BACKUP_ROOT"'
