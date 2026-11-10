@@ -419,6 +419,12 @@ func assertSubmitRejections(testInstance *testing.T, routedChannel string) {
 	requireErrorMessage(testInstance, "POST message with an invalid recipient", body,
 		"to.recipient must be an email or person_hash")
 
+	emptyViaBody := submitBody(routedChannel, "it-empty-via-"+randomSuffix(testInstance))
+	emptyViaBody["to"] = map[string]any{"recipient": "someone@example.com", "via": ""}
+	status, body = apiRequest(testInstance, http.MethodPost, messagesPath, emptyViaBody)
+	requireStatus(testInstance, "POST message with an empty to.via", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "POST message with an empty to.via", body, "invalid to.via")
+
 	unroutedChannel := "it_" + randomSuffix(testInstance)
 	status, body = apiRequest(testInstance, http.MethodPost, messagesPath,
 		submitBody(unroutedChannel, "it-unrouted-"+randomSuffix(testInstance)))

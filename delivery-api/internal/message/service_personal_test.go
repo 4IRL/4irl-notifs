@@ -87,6 +87,25 @@ func TestSubmitRecipientViaBothTargetsRecipientPlusNamedIDsOnly(testInstance *te
 	}
 }
 
+// TestResolveRecipientTargetsDeniesAnUnknownVia pins the fail-closed default
+// branch: an enum member the resolver does not know yields a 400 validation
+// error, no targets and no store or personal lookup. Validation normally rejects
+// it first, so the resolver is called directly.
+func TestResolveRecipientTargetsDeniesAnUnknownVia(testInstance *testing.T) {
+	fake := threeDestinations()
+	fixture := newPersonalFixture(allSinks, fake)
+
+	targets, err := fixture.service.resolveRecipientTargets(context.Background(), routedRecipientEnvelope(RecipientVia("future"), 4))
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Message != "invalid to.via" {
+		testInstance.Fatalf("error = %v, want ValidationError invalid to.via", err)
+	}
+	if len(targets) != 0 || len(fake.calls) != 0 {
+		testInstance.Fatalf("targets = %+v, lookups = %v, want none", targets, fake.calls)
+	}
+}
+
 func TestSubmitRecipientViaNtfyOrUnsetIsNtfyOnlyAndNeverQueriesPersonal(testInstance *testing.T) {
 	for _, via := range []RecipientVia{"", RecipientViaNtfy} {
 		testInstance.Run("via="+string(via), func(subTest *testing.T) {

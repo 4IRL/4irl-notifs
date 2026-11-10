@@ -303,6 +303,63 @@ func TestSubmitAcceptsARecipientBody(testInstance *testing.T) {
 	}
 }
 
+func TestSubmitForwardsViaAndPersonalDestinationIDsOnBothRoutes(testInstance *testing.T) {
+	body := `{"app_id":"urls4irl","to":{"recipient":"alice@example.com","via":"both","personal_destination_ids":[12,15]},` +
+		`"channel":"alerts","idempotency_key":"key-1","payload":{},"display":{"title":"T"}}`
+	for _, path := range []string{"/v1/messages", "/v1/admin/messages"} {
+		testInstance.Run(path, func(subTest *testing.T) {
+			fake := &fakeMessages{submitResult: sampleStoredMessage()}
+
+			recorder := serveMessages(fake, nil, http.MethodPost, path, body)
+
+			if recorder.Code != http.StatusAccepted {
+				subTest.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			if len(fake.submitCalls) != 1 {
+				subTest.Fatalf("Submit calls = %d, want 1", len(fake.submitCalls))
+			}
+			got := fake.submitCalls[0]
+			if got.ToRecipientVia != message.RecipientViaBoth || !reflect.DeepEqual(got.ToPersonalDestinationIDs, []int64{12, 15}) {
+				subTest.Fatalf("via = %q ids = %v, want both [12 15]", got.ToRecipientVia, got.ToPersonalDestinationIDs)
+			}
+		})
+	}
+}
+
+func TestSubmitNullOrAbsentViaForwardsUnset(testInstance *testing.T) {
+	for _, toBlock := range []string{`{"recipient":"alice@example.com","via":null}`, `{"recipient":"alice@example.com"}`} {
+		testInstance.Run(toBlock, func(subTest *testing.T) {
+			fake := &fakeMessages{submitResult: sampleStoredMessage()}
+			body := `{"app_id":"urls4irl","to":` + toBlock + `,"channel":"alerts","idempotency_key":"key-1","payload":{}}`
+
+			recorder := serveMessages(fake, nil, http.MethodPost, "/v1/messages", body)
+
+			if recorder.Code != http.StatusAccepted {
+				subTest.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			if len(fake.submitCalls) != 1 || fake.submitCalls[0].ToRecipientVia != "" || fake.submitCalls[0].ToPersonalDestinationIDs != nil {
+				subTest.Fatalf("Submit calls = %+v, want unset via and no ids", fake.submitCalls)
+			}
+		})
+	}
+}
+
+func TestSubmitRejectsAnEmptyViaBeforeTheService(testInstance *testing.T) {
+	body := `{"app_id":"urls4irl","to":{"recipient":"alice@example.com","via":""},"channel":"alerts","idempotency_key":"key-1","payload":{}}`
+	for _, path := range []string{"/v1/messages", "/v1/admin/messages"} {
+		testInstance.Run(path, func(subTest *testing.T) {
+			fake := &fakeMessages{submitResult: sampleStoredMessage()}
+
+			recorder := serveMessages(fake, nil, http.MethodPost, path, body)
+
+			assertResponse(subTest, recorder, http.StatusBadRequest, `{"error":"invalid to.via"}`+"\n")
+			if fake.totalCalls() != 0 {
+				subTest.Fatalf("service was called %d times for an empty via", fake.totalCalls())
+			}
+		})
+	}
+}
+
 func TestSubmitPassesRecipientAndDeliverAtToValidation(testInstance *testing.T) {
 	fake := &fakeMessages{submitErr: &message.ValidationError{Message: "to.recipient must be an email or person_hash"}}
 	body := `{"app_id":"urls4irl","to":{"recipient":"someone"},"channel":"alerts","idempotency_key":"key-1",` +
@@ -432,6 +489,8 @@ func TestSubmitRejectsBadBodies(testInstance *testing.T) {
 		{name: "unknown field in display", body: `{"app_id":"urls4irl","channel":"alerts","idempotency_key":"k","payload":{},"display":{"bogus":1}}`},
 		{name: "wrong type for app_id", body: `{"app_id":5,"channel":"alerts","idempotency_key":"k","payload":{}}`},
 		{name: "wrong type for critical", body: `{"app_id":"urls4irl","channel":"alerts","idempotency_key":"k","payload":{},"critical":"yes"}`},
+		{name: "non-string via", body: `{"app_id":"urls4irl","channel":"alerts","idempotency_key":"k","payload":{},"to":{"recipient":"a@b.co","via":5}}`},
+		{name: "non-integer personal ids", body: `{"app_id":"urls4irl","channel":"alerts","idempotency_key":"k","payload":{},"to":{"recipient":"a@b.co","via":"personal","personal_destination_ids":["x"]}}`},
 		{name: "malformed deliver_at", body: `{"app_id":"urls4irl","channel":"alerts","idempotency_key":"k","payload":{},"deliver_at":"soon"}`},
 		{name: "truncated payload", body: `{"app_id":"urls4irl","channel":"alerts","idempotency_key":"k","payload":{"a":`},
 	}
@@ -735,6 +794,8 @@ func TestWriteMessageErrorBranches(testInstance *testing.T) {
 		{name: "unsupported type", err: message.ErrUnsupportedDestinationType, wantStatus: 422, wantBody: `{"error":"destination type not yet supported"}`},
 		{name: "no publisher", err: registry.ErrNoPublisher, wantStatus: 422, wantBody: `{"error":"app has no ntfy publisher"}`},
 		{name: "wrapped no publisher", err: fmt.Errorf("submit: %w", registry.ErrNoPublisher), wantStatus: 422, wantBody: `{"error":"app has no ntfy publisher"}`},
+		{name: "personal destination unavailable", err: message.ErrPersonalDestinationUnavailable, wantStatus: 422, wantBody: `{"error":"personal destination not available for recipient"}`},
+		{name: "wrapped personal destination unavailable", err: fmt.Errorf("submit: %w", message.ErrPersonalDestinationUnavailable), wantStatus: 422, wantBody: `{"error":"personal destination not available for recipient"}`},
 		{name: "message not found", err: message.ErrMessageNotFound, wantStatus: 404, wantBody: `{"error":"message not found"}`},
 		{name: "delivery not found", err: message.ErrDeliveryNotFound, wantStatus: 404, wantBody: `{"error":"delivery not found"}`},
 		{name: "delivery not dead", err: message.ErrDeliveryNotDead, wantStatus: 409, wantBody: `{"error":"delivery not dead"}`},
