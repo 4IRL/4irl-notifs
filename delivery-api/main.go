@@ -486,6 +486,8 @@ func runServe(ctx context.Context, logger *slog.Logger) error {
 		AppTeardown:          appTeardown,
 		AppIdentity:          appIdentityService,
 		ProvisioningHealth:   buildProvisioningHealth(provisionClient),
+		HeldSummary:          messageStore,
+		UnassignedAlerts:     heartbeatStore,
 	}).Handler()
 
 	listenAddress := envOrDefault("LISTEN_ADDRESS", defaultListenAddress)
