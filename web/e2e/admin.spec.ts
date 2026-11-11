@@ -27,6 +27,8 @@ import {
 } from './support/adminMocks';
 import type { DeliveryMockSeed } from './support/adminMocks';
 
+const NO_DESTINATION_WARNING = "No enabled destination is selected; this check's alerts will wait.";
+
 // The real provisioning API is Cloudflare Access-gated, so these critical-flow
 // e2e tests run against the production build (vite preview) with the API mocked
 // at the network layer via page.route.
@@ -1882,19 +1884,66 @@ test.describe('admin UI Delivery tab', () => {
     expect(mock.unmocked).toEqual([]);
   });
 
-  test('heartbeats: Add check is blocked without destinations', async ({ page }) => {
-    // No destinations seeded: Add check stays blocked with its hint.
+  test('heartbeats: Add check works without destinations', async ({ page }) => {
+    // No destinations seeded: Add check is enabled and saves with none.
     const mock = await mockDelivery(page);
     await page.goto('/#delivery');
     const section = page.getByRole('region', { name: 'Heartbeats' });
     await expect(section.getByText('No heartbeat checks yet.')).toBeVisible();
     const add = section.getByRole('button', { name: 'Add check', exact: true });
-    await expect(add).toBeDisabled();
-    await expect(add).toHaveAttribute('aria-disabled', 'true');
-    await expect(section.getByText(/^Add a destination first\./)).toBeVisible();
-    // Playwright would wait forever on an aria-disabled button; force the click.
-    await add.click({ force: true });
-    await expect(page.getByRole('form', { name: 'Add check' })).toHaveCount(0);
+    await expect(add).toBeEnabled();
+    await add.click();
+
+    const form = section.getByRole('form', { name: 'Add check' });
+    await expect(form.getByText(/^No destinations are registered yet\./)).toBeVisible();
+    // The registry is empty, so the warning stays hidden (region still mounted).
+    await expect(form.getByRole('status')).toBeAttached();
+    await expect(form.getByRole('status')).toBeHidden();
+    await form.getByLabel('App ID').fill('minecrafting');
+    await form.getByLabel('Check name').fill('daily_report');
+    await form.getByRole('button', { name: 'Add check', exact: true }).click();
+
+    await expect(section.getByText('Added minecrafting/daily_report.')).toBeVisible();
+    await expect(form).toHaveCount(0);
+    const creates = mock.mutations.filter((request) => request.method === 'POST');
+    expect(creates).toHaveLength(1);
+    expect(creates[0].body).toEqual({
+      app_id: 'minecrafting',
+      name: 'daily_report',
+      period_seconds: 86400,
+      grace_seconds: 7200,
+      destinations: [],
+    });
+    const createdRow = section.getByRole('row', { name: /minecrafting\s*\/\s*daily_report/ });
+    await expect(createdRow.getByText('No destination', { exact: true })).toBeVisible();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats: the no-destination warning follows interaction on Add', async ({ page }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [destinationWire({ name: 'hook1', type: 'webhook' })],
+    });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Heartbeats' });
+    await section.getByRole('button', { name: 'Add check', exact: true }).click();
+    const form = section.getByRole('form', { name: 'Add check' });
+    const warning = form.getByRole('status');
+    const warningText = NO_DESTINATION_WARNING;
+
+    // Pristine: the region is present but empty.
+    await expect(warning).toBeAttached();
+    await expect(warning).toBeHidden();
+    await expect(form.getByText(warningText)).toHaveCount(0);
+
+    // Tick then untick: the warning appears; ticking again clears it.
+    const hook = form.getByRole('checkbox', { name: /^hook1/ });
+    await hook.check();
+    await expect(warning).toBeHidden();
+    await hook.uncheck();
+    await expect(warning).toBeVisible();
+    await expect(warning).toHaveText(warningText);
+    await hook.check();
+    await expect(warning).toBeHidden();
     expect(mock.mutations).toEqual([]);
     expect(mock.unmocked).toEqual([]);
   });
@@ -1954,14 +2003,25 @@ test.describe('admin UI Delivery tab', () => {
     await expect(form.getByLabel('Grace', { exact: true })).toHaveValue('2');
     await expect(form.locator('label', { hasText: 'ops_discord' })).toContainText('(disabled)');
 
-    // Submit-time validation: nothing is sent while it fails.
-    await form.getByLabel('App ID').fill('minecrafting');
+    // The no-destination warning region is mounted but hidden on the pristine form.
+    const warning = form.getByRole('status');
+    await expect(warning).toBeAttached();
+    await expect(warning).toBeHidden();
+
+    // Submit-time validation: a bad app id blocks, nothing is sent while it fails.
+    await form.getByLabel('App ID').fill('Bad App!');
     await form.getByLabel('Check name').fill('daily_report');
     await form.getByRole('button', { name: 'Add check', exact: true }).click();
-    await expect(form.locator('.destination-form__field-error')).toHaveText(
-      'Select at least one alert destination.',
-    );
+    await expect(
+      form.locator('.destination-form__field-error', {
+        hasText: 'App ID must be lowercase letters, digits or underscores',
+      }),
+    ).toBeVisible();
     expect(mock.mutations).toEqual([]);
+    // The blocked attempt with nothing ticked shows the warning; ticking hook1 clears it.
+    await expect(warning).toHaveText(NO_DESTINATION_WARNING);
+    await form.getByRole('checkbox', { name: /^hook1/ }).check();
+    await expect(warning).toBeHidden();
 
     // A duplicate surfaces the server's message and keeps the form open.
     await form.getByLabel('App ID').fill('urls4irl');
@@ -2084,6 +2144,64 @@ test.describe('admin UI Delivery tab', () => {
     await expect(form).toHaveCount(0);
     await expect(edit).toBeFocused();
     expect(mock.mutations.filter((request) => request.method === 'PATCH')).toHaveLength(3);
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats: clearing every destination in an edit warns and PATCHes an empty list', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      destinations: [destinationWire({ name: 'hook1', type: 'webhook' })],
+      heartbeats: [
+        heartbeatWire({
+          id: 1,
+          name: 'nightly_backup',
+          destinations: [{ name: 'hook1', type: 'webhook', enabled: true }],
+        }),
+      ],
+    });
+
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Heartbeats' });
+    await section
+      .getByRole('button', { name: 'Edit urls4irl/nightly_backup', exact: true })
+      .click();
+    const form = page
+      .getByRole('dialog', { name: 'Edit urls4irl/nightly_backup', exact: true })
+      .locator('form');
+    const warning = form.getByRole('status');
+    await expect(warning).toBeAttached();
+    await expect(warning).toBeHidden();
+
+    await form.getByRole('checkbox', { name: /^hook1/ }).uncheck();
+    await expect(warning).toHaveText(NO_DESTINATION_WARNING);
+    await form.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(section.getByText('Saved urls4irl/nightly_backup.')).toBeVisible();
+    await expect(form).toHaveCount(0);
+
+    const patches = mock.mutations.filter((request) => request.method === 'PATCH');
+    expect(patches).toHaveLength(1);
+    expect(patches[0].body).toEqual({ destinations: [] });
+    const row = section.getByRole('row', { name: /urls4irl\s*\/\s*nightly_backup/ });
+    await expect(row.getByText('No destination', { exact: true })).toBeVisible();
+    expect(mock.unmocked).toEqual([]);
+  });
+
+  test('heartbeats at 390px: a check with no destination shows the placeholder on one line', async ({
+    page,
+  }) => {
+    const mock = await mockDelivery(page, {
+      heartbeats: [heartbeatWire({ id: 1, name: 'nightly_backup', destinations: [] })],
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#delivery');
+    const section = page.getByRole('region', { name: 'Heartbeats' });
+    const row = section.getByRole('row', { name: /urls4irl\s*\/\s*nightly_backup/ });
+    const placeholder = row.getByText('No destination', { exact: true });
+    await expect(placeholder).toBeVisible();
+    expect(await maxRenderedLines({ root: placeholder })).toBe(1);
+    await expectNoPageOverflow(page);
     expect(mock.unmocked).toEqual([]);
   });
 
