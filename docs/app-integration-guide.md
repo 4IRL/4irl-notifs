@@ -372,8 +372,8 @@ senders** below alongside these steps.
    instead (operator-owned, usable by every app), add the destinations the app's messages should reach
    (ntfy, Discord or webhook) and the routes that send the app's traffic to them in the Delivery tab. Use the
    destination's send-test to confirm each one. Without a matching route or destination a send with no
-   `to` fails with `422 no destination matched`, unless the operator has turned on holding
-   (`DELIVERY_HOLD_UNROUTED`, off by default), in which case an app-key send is accepted as `202` with
+   `to` fails with `422 no destination matched` only if the operator has turned holding off
+   (`DELIVERY_HOLD_UNROUTED=0`); by default holding is on and an app-key send is accepted as `202` with
    status `unrouted` (see "Unrouted messages (held)"). A route match whose destinations are all disabled
    counts as no match and is held the same way; a `to.destination` that is disabled or unknown is still
    `409`/`400`.
@@ -1427,9 +1427,10 @@ due, instead of sending at once.
 
 ### Unrouted messages (held)
 
-By default a send that matches no route (and names no `to`) is refused with `422 no destination matched`.
-When the operator turns holding on (`DELIVERY_HOLD_UNROUTED=1`; it is off by default), `POST /v1/messages`
-accepts such a send instead and keeps it.
+Holding is on by default: a send that matches no route (and names no `to`) is accepted and kept rather than
+refused. This changed from the earlier behaviour, where such a send got `422 no destination matched`; that
+`422` now only happens when the operator turns holding off (`DELIVERY_HOLD_UNROUTED=0` or `false`). With
+holding on, `POST /v1/messages` accepts such a send and keeps it.
 
 - **What you get:** `202` with `status` `unrouted`, an empty `deliveries` array and `"duplicate": false`.
   `?wait=` is ignored (an immediate `202`). Nothing is delivered while the message is held.

@@ -149,7 +149,7 @@ func startPipeline(testInstance *testing.T, respond func(requestNumber int) int,
 }
 
 // startPipelineHolding is startPipeline with the message service's hold setting
-// (DELIVERY_HOLD_UNROUTED) chosen by holdUnrouted.
+// (the DELIVERY_HOLD_UNROUTED setting, off in a hand-built config) chosen by holdUnrouted.
 func startPipelineHolding(
 	testInstance *testing.T, respond func(requestNumber int) int, guarded, holdUnrouted bool,
 ) *pipeline {

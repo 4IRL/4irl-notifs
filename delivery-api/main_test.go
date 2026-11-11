@@ -243,7 +243,8 @@ func TestRunServeFailsFastOnInvalidRetention(testInstance *testing.T) {
 
 // TestHoldSettingsReachTheServiceAndSweeperConfigs verifies valid hold
 // environment values land in the message service and sweeper configs, and that
-// an unset environment leaves the flag off with the code defaults.
+// an unset environment turns the flag on with the code defaults, while 0 and
+// false turn it off.
 func TestHoldSettingsReachTheServiceAndSweeperConfigs(testInstance *testing.T) {
 	env := map[string]string{
 		"DELIVERY_HOLD_UNROUTED":    "1",
@@ -269,9 +270,23 @@ func TestHoldSettingsReachTheServiceAndSweeperConfigs(testInstance *testing.T) {
 		testInstance.Fatalf("holdSettingsFromEnv with nothing set: %v", defaultsErr)
 	}
 	defaultService := defaults.applyToService(message.ServiceConfig{})
-	if defaultService.HoldUnrouted || defaultService.MaxHeldPerApp != message.DefaultMaxHeldPerApp ||
+	if !defaultService.HoldUnrouted || defaultService.MaxHeldPerApp != message.DefaultMaxHeldPerApp ||
 		defaultService.MaxHeldTotal != message.DefaultMaxHeldTotal {
-		testInstance.Errorf("default service config = %+v, want the flag off and the code default caps", defaultService)
+		testInstance.Errorf("default service config = %+v, want the flag on and the code default caps", defaultService)
+	}
+	for _, offValue := range []string{"0", "false"} {
+		offSettings, offErr := holdSettingsFromEnv(func(name string) string {
+			if name == "DELIVERY_HOLD_UNROUTED" {
+				return offValue
+			}
+			return ""
+		})
+		if offErr != nil {
+			testInstance.Fatalf("holdSettingsFromEnv with DELIVERY_HOLD_UNROUTED=%s: %v", offValue, offErr)
+		}
+		if offSettings.applyToService(message.ServiceConfig{}).HoldUnrouted {
+			testInstance.Errorf("DELIVERY_HOLD_UNROUTED=%s must turn holding off", offValue)
+		}
 	}
 	if want := time.Duration(dispatch.DefaultHeldTTLDays) * 24 * time.Hour; defaults.applyToSweeper(dispatch.SweeperConfig{}).HeldTTL != want {
 		testInstance.Errorf("default HeldTTL is not %v", want)

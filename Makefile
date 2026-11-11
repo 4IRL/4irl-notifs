@@ -199,9 +199,11 @@ delivery-integration-test: ## Run delivery-api integration tests (local stack mu
 	@C="$$($(COMPOSE) ps -q delivery-api)"; D="$$($(COMPOSE) ps -q delivery-postgres)"; cd delivery-api && NOTIFS_DELIVERY_CONTAINER="$$C" NOTIFS_DELIVERY_DB_CONTAINER="$$D" NOTIFS_DELIVERY_MAX_SCHEDULED="$${DELIVERY_MAX_SCHEDULED_PER_APP:-1000}" NOTIFS_DELIVERY_HOLD_UNROUTED="$${DELIVERY_HOLD_UNROUTED:-$(DELIVERY_HOLD_DEFAULT)}" NOTIFS_DELIVERY_MAX_HELD="$${DELIVERY_MAX_HELD_PER_APP:-1000}" NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_NTFY_URL=$(NTFY_URL) NOTIFS_DELIVERY_TEST_DSN="postgres://delivery:delivery-local-dev@127.0.0.1:$(DELIVERY_DB_PORT_HOST)/delivery?sslmode=disable" go test -p 1 -tags integration ./...
 
 # Live hold tests (delivery-api/integration/held_integration_test.go, names start with TestHold) and the
-# onboard verify unrouted case need a stack with DELIVERY_HOLD_UNROUTED=1 and a small
-# DELIVERY_MAX_HELD_PER_APP. A plain `make delivery-integration-test` / `make onboard-integration-test`
-# stays flag-off and skips them (the flag-off 422 assertions stay in that default run).
+# onboard verify unrouted case need a stack with DELIVERY_HOLD_UNROUTED on (the default) and, for the two
+# cap tests, a small DELIVERY_MAX_HELD_PER_APP / DELIVERY_MAX_HELD_TOTAL. A plain
+# `make delivery-integration-test` / `make onboard-integration-test` runs on the default (flag-on) stack,
+# so it runs the hold tests and skips only the cap tests; the 422 assertions live in the explicit
+# flag-off pass (`make delivery-integration-test-hold-off`).
 #
 # The -run target only RUNS the tests against an already flag-on stack and never touches the stack (CI
 # recreates the stack with its own compose command, then calls this). NOTIFS_DELIVERY_MAX_HELD must equal
@@ -230,10 +232,10 @@ delivery-integration-test-hold-run: ## Run the live hold tests (Go + onboard) ag
 
 # Local composed target (`up -d --build` re-applies the environment, rebuilds the image from this checkout
 # and re-runs delivery-migrate when needed): recreate delivery-api with the hold flag on and a small per-app cap
-# (HOLD_TEST_MAX_HELD, default 3), run the runners target, then recreate it flag-off. The restore always
-# runs (even when the tests fail), waits for delivery-api to be healthy and checks the new container's
-# environment says DELIVERY_HOLD_UNROUTED=0. The exit status is the test failure; a failed restore only
-# fails the target when the tests passed. Other DELIVERY_* settings in the environment (for example
+# (HOLD_TEST_MAX_HELD, default 3), run the runners target, then recreate it on the default hold flag. The
+# restore always runs (even when the tests fail), waits for delivery-api to be healthy and checks the new
+# container's environment says DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT). The exit status is the
+# test failure; a failed restore only fails the target when the tests passed. Other DELIVERY_* settings in the environment (for example
 # DELIVERY_MAX_SCHEDULED_PER_APP) carry over to both recreates.
 HOLD_TEST_MAX_HELD ?= 3
 HOLD_TEST_MAX_HELD_TOTAL ?= 20
@@ -242,14 +244,14 @@ HOLD_WAIT_HEALTHY = wait_healthy() { for _ in $$(seq 1 60); do STATUS="$$(docker
 # DELIVERY_HOLD_DEFAULT is the hold flag value the local stack runs with outside the hold targets: the
 # restore fragment recreates with it, and the plain test target forwards it. It must equal the code default
 # and both compose files' integer default (a unit test in delivery-api/internal/message enforces it).
-DELIVERY_HOLD_DEFAULT := 0
+DELIVERY_HOLD_DEFAULT := 1
 # Shared by the hold and hold-off targets (they define wait_healthy and RESTORE_RC first): recreate
 # delivery-api with the default flag, wait healthy, assert that exact line in the container env.
 HOLD_RESTORE = restore() { echo "hold: restoring delivery-api with DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT)"; \
 	DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT) $(COMPOSE) up -d --build delivery-api || RESTORE_RC=$$?; \
 	if [ "$$RESTORE_RC" -eq 0 ]; then wait_healthy || RESTORE_RC=$$?; fi; \
 	if [ "$$RESTORE_RC" -eq 0 ]; then docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$$($(COMPOSE) ps -q delivery-api)" | grep -qx 'DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT)' || { echo "hold: the restored delivery-api does not have DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT)" >&2; RESTORE_RC=1; }; fi; \
-	if [ "$$RESTORE_RC" -ne 0 ]; then echo "hold: RESTORE FAILED: delivery-api may not be on its default hold flag; run 'make local-up'" >&2; fi; }
+	if [ "$$RESTORE_RC" -ne 0 ]; then echo "hold: RESTORE FAILED: delivery-api may not be back on the default hold setting; run 'make local-up'" >&2; fi; }
 
 # Flag-off pass (the third pass beside plain and hold): the TestUnroutedSubmitIsRefusedWhenHoldOff and
 # TestAnotherAppsDestinationIsRefusedWhenHoldOff tests pin the 422 and run only on a stack with the flag
@@ -280,7 +282,7 @@ delivery-integration-test-hold-off: ## Recreate delivery-api with the hold flag 
 	if [ "$$RC" -ne 0 ]; then exit "$$RC"; fi; \
 	exit "$$RESTORE_RC"
 
-delivery-integration-test-hold: ## Recreate delivery-api flag-on, run the live hold tests, restore flag-off (local stack must be up)
+delivery-integration-test-hold: ## Recreate delivery-api flag-on, run the live hold tests, restore the default (local stack must be up)
 	@$(HOLD_WAIT_HEALTHY); \
 	RC=0; RESTORE_RC=0; \
 	$(HOLD_RESTORE); \

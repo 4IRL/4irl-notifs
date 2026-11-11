@@ -2,15 +2,16 @@
 
 package integration
 
-// Live-stack tests of holding an unrouted app message (DELIVERY_HOLD_UNROUTED=1). They need a
-// stack with the flag on, so every test starts with requireHoldStack: with
-// NOTIFS_DELIVERY_HOLD_UNROUTED unset or 0 (the default flag-off run) it skips with a reason; with 1
-// it verifies the stack really holds (the container's environment when NOTIFS_DELIVERY_CONTAINER is
+// Live-stack tests of holding an unrouted app message (DELIVERY_HOLD_UNROUTED, on by default). They
+// need a holding stack, so every test starts with requireHoldStack: with
+// NOTIFS_DELIVERY_HOLD_UNROUTED=0 (the explicit flag-off run) it skips with a reason; unset or 1 it
+// verifies the stack really holds (the container's environment when NOTIFS_DELIVERY_CONTAINER is
 // set, plus a behavioural probe that an unrouted app-key submit answers 202, not 422) and fails
-// loudly on a mismatch, never skipping. Run them with `make delivery-integration-test-hold`.
+// loudly on a mismatch, never skipping. Run them with `make delivery-integration-test` (the cap
+// tests skip there) or `make delivery-integration-test-hold` (small caps).
 //
-// Three passes exist: the plain run (`make delivery-integration-test`, flag as the stack has it, hold
-// tests skip on a flag-off stack), the hold run with low caps (`make delivery-integration-test-hold`),
+// Three passes exist: the plain run (`make delivery-integration-test`, the default flag-on stack, cap
+// tests skipped), the hold run with low caps (`make delivery-integration-test-hold`),
 // and the hold-off run (`make delivery-integration-test-hold-off`) for the tests whose names end in
 // WhenHoldOff, which pin the 422 refusal and call requireHoldOffStack. Those names must not start
 // with TestHold, so `-run '^TestHold'` never picks them up.
@@ -34,7 +35,8 @@ import (
 )
 
 const (
-	// holdFlagEnv says the stack under test was started with DELIVERY_HOLD_UNROUTED=1.
+	// holdFlagEnv carries the stack's DELIVERY_HOLD_UNROUTED as the Makefile or CI forwards it: unset
+	// or 1 for the default holding stack, 0 for the flag-off pass.
 	holdFlagEnv = "NOTIFS_DELIVERY_HOLD_UNROUTED"
 	// holdMaxHeldEnv carries the stack's DELIVERY_MAX_HELD_PER_APP, forwarded by the Makefile.
 	holdMaxHeldEnv = "NOTIFS_DELIVERY_MAX_HELD"
@@ -65,15 +67,16 @@ const (
 // app_id.
 var holdAppPattern = regexp.MustCompile(`^(ithold_[0-9a-f]{16}|itholdprobe)$`)
 
-// requireHoldStack skips on a flag-off run and otherwise proves the stack holds unrouted
-// messages. A mismatch fails the test; flag=1 never results in a skip.
+// requireHoldStack skips only on an explicit flag-off run ("0") and otherwise proves the stack holds
+// unrouted messages. Unset means the default stack, which holds. A mismatch (for example a stale
+// flag-off stack with the variable unset) fails the test; it never results in a skip.
 func requireHoldStack(testInstance *testing.T) {
 	testInstance.Helper()
 	switch flag := os.Getenv(holdFlagEnv); flag {
-	case "", "0":
-		testInstance.Skipf("%s is unset or 0: needs a stack with DELIVERY_HOLD_UNROUTED=1 "+
-			"(run `make delivery-integration-test-hold`)", holdFlagEnv)
-	case "1":
+	case "0":
+		testInstance.Skipf("%s=0: the stack holds nothing on purpose; the flag-off path is "+
+			"`make delivery-integration-test-hold-off`", holdFlagEnv)
+	case "", "1":
 	default:
 		testInstance.Fatalf("%s=%q: only 0, 1 or unset is valid", holdFlagEnv, flag)
 	}
@@ -90,7 +93,7 @@ func requireContainerHoldsFlag(testInstance *testing.T, container string) {
 	testInstance.Helper()
 	output, runErr := execRunner("docker", "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
 	if runErr != nil {
-		testInstance.Fatalf("%s=1 but docker inspect of %s failed: %v", holdFlagEnv, container, runErr)
+		testInstance.Fatalf("%s (unset or 1) but docker inspect of %s failed: %v", holdFlagEnv, container, runErr)
 	}
 	for _, line := range strings.Split(string(output), "\n") {
 		switch strings.TrimSpace(line) {
@@ -98,7 +101,7 @@ func requireContainerHoldsFlag(testInstance *testing.T, container string) {
 			return
 		}
 	}
-	testInstance.Fatalf("%s=1 but container %s does not have DELIVERY_HOLD_UNROUTED=1: recreate the stack "+
+	testInstance.Fatalf("%s (unset or 1) but container %s does not have DELIVERY_HOLD_UNROUTED=1: recreate the stack "+
 		"with the flag on (make delivery-integration-test-hold does)", holdFlagEnv, container)
 }
 
@@ -110,7 +113,7 @@ func probeHoldStack(testInstance *testing.T) {
 	status, body := apiRequest(testInstance, http.MethodPost, messagesPath,
 		probe.body("probe-"+randomSuffix(testInstance), "it_probe_"+randomSuffix(testInstance)))
 	if status != http.StatusAccepted {
-		testInstance.Fatalf("%s=1 but an unrouted app-key submit answered %d (body: %s), want 202: "+
+		testInstance.Fatalf("%s (unset or 1) but an unrouted app-key submit answered %d (body: %s), want 202: "+
 			"the stack was not recreated with DELIVERY_HOLD_UNROUTED=1", holdFlagEnv, status, body)
 	}
 	var decoded submitResponse
