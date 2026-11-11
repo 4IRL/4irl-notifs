@@ -685,7 +685,8 @@ Consuming apps link to it as `?app=<app_id>&user=u_<hash>&name=<display name>`; 
   application on the hostname (and any wildcard `*.4irl.app` Access app that would cover it).
 - **CI:** the check `CI and Tests / Test / Setup page end-to-end` runs the Playwright suite. It is a
   new check name; if branch protection on `main` lists required checks by name, the operator must add it
-  there once it has reported.
+  there once it has reported. The Playwright browsers and apt packages are cached (keyed per
+  Playwright version) and kept warm on `main` by the weekly `playwright-cache-warm.yml` workflow.
 
 ---
 

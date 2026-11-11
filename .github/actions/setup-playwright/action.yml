@@ -75,6 +75,7 @@ runs:
           "Dir::Cache::Archives \"$HOME/.cache/apt-archives\";" \
           'APT::Keep-Downloaded-Packages "true";' \
           'Binary::apt::APT::Keep-Downloaded-Packages "true";' \
+          'APT::Sandbox::User "root";' \
           | sudo tee /etc/apt/apt.conf.d/99-notifs-archive-cache > /dev/null
 
     - name: Install Playwright browsers
