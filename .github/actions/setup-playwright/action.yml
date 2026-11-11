@@ -77,7 +77,7 @@ runs:
           echo "::warning::$MIRROR_HOST does not resolve; pointing the runner's DNS at $FALLBACK_DNS_SERVERS"
           print_diagnostics
           local default_interface
-          default_interface=$(ip route show default | awk '{print $5; exit}')
+          default_interface=$(ip route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {next_field = i + 1; print $next_field; exit}}')
           if [[ -z "$default_interface" ]]; then
             echo "::warning::no default network interface found; leaving DNS unchanged"
             return 0
