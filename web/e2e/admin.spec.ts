@@ -1928,12 +1928,11 @@ test.describe('admin UI Delivery tab', () => {
     await section.getByRole('button', { name: 'Add check', exact: true }).click();
     const form = section.getByRole('form', { name: 'Add check' });
     const warning = form.getByRole('status');
-    const warningText = NO_DESTINATION_WARNING;
 
     // Pristine: the region is present but empty.
     await expect(warning).toBeAttached();
     await expect(warning).toBeHidden();
-    await expect(form.getByText(warningText)).toHaveCount(0);
+    await expect(form.getByText(NO_DESTINATION_WARNING)).toHaveCount(0);
 
     // Tick then untick: the warning appears; ticking again clears it.
     const hook = form.getByRole('checkbox', { name: /^hook1/ });
@@ -1941,7 +1940,7 @@ test.describe('admin UI Delivery tab', () => {
     await expect(warning).toBeHidden();
     await hook.uncheck();
     await expect(warning).toBeVisible();
-    await expect(warning).toHaveText(warningText);
+    await expect(warning).toHaveText(NO_DESTINATION_WARNING);
     await hook.check();
     await expect(warning).toBeHidden();
     expect(mock.mutations).toEqual([]);
