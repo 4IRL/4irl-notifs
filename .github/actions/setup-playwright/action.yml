@@ -1,6 +1,7 @@
 name: 'setup playwright'
 description: >-
   Installs Playwright's browsers and their system packages (`playwright install --with-deps`) and
+  restores/saves apt's downloaded packages and the browsers through a shared cache, and
   survives a broken runner resolver: each try is time-boxed, a failed try is retried after a pause,
   the runner's DNS is pointed at 1.1.1.1 when the Ubuntu apt mirror name does not resolve, and every
   failure prints the resolver state so the log alone names the cause. Needs the repo checked out and
@@ -25,9 +26,57 @@ inputs:
     required: false
     default: '4'
 
+outputs:
+  cache-hit:
+    description: "'true' when the exact Playwright cache key was restored"
+    value: ${{ steps.playwright-cache.outputs.cache-hit }}
+
 runs:
   using: composite
   steps:
+    - name: Read Playwright version
+      id: playwright-version
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BROWSERS: ${{ inputs.browsers }}
+      run: |
+        version="$(node -p 'const manifest = require("./package.json"); (manifest.devDependencies || {})["@playwright/test"] || (manifest.dependencies || {})["@playwright/test"] || ""')"
+        if [[ -z "$version" ]]; then
+          echo "::error::no @playwright/test pin found in package.json"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "browsers=${BROWSERS// /-}" >> "$GITHUB_OUTPUT"
+
+    # Caches apt's .deb archives (Playwright's --with-deps system packages) together with the
+    # browser in ~/.cache/ms-playwright, so a warm run needs no Ubuntu downloads. The schema tag
+    # (v1) precedes the version so a hand bump to v2 also escapes restore-keys. web/ and setup-web/
+    # pin the same Playwright and install the same browsers, so they share one entry.
+    # The path list is part of the cache version hash, so it must stay byte-identical to the save
+    # step's: a mismatch is a silent miss.
+    - name: Restore Playwright apt packages and browsers
+      id: playwright-cache
+      uses: actions/cache/restore@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
+      with:
+        path: |
+          ~/.cache/apt-archives
+          ~/.cache/ms-playwright
+        key: ${{ runner.os }}-${{ runner.arch }}-playwright-v1-${{ steps.playwright-version.outputs.version }}-${{ steps.playwright-version.outputs.browsers }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-playwright-v1-
+
+    # --with-deps runs apt-get, which then reuses the cached debs and only downloads changed ones.
+    - name: Point apt at the cached archive dir
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.cache/apt-archives/partial"
+        printf '%s\n' \
+          "Dir::Cache::Archives \"$HOME/.cache/apt-archives\";" \
+          'APT::Keep-Downloaded-Packages "true";' \
+          'Binary::apt::APT::Keep-Downloaded-Packages "true";' \
+          | sudo tee /etc/apt/apt.conf.d/99-notifs-archive-cache > /dev/null
+
     - name: Install Playwright browsers
       shell: bash
       working-directory: ${{ inputs.working-directory }}
@@ -115,3 +164,25 @@ runs:
 
         echo "::error::playwright install failed after $ATTEMPTS attempts"
         exit 1
+
+    # apt writes the archives (and its lock/partial files) as root; hand them to the runner
+    # user so the save step can tar them, dropping the lock and any half-downloaded partials.
+    - name: Prepare apt archive dir for caching
+      if: steps.playwright-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        sudo rm -f "$HOME/.cache/apt-archives/lock"
+        sudo find "$HOME/.cache/apt-archives/partial" -mindepth 1 -delete
+        sudo chown -R "$(id -u):$(id -g)" "$HOME/.cache/apt-archives"
+
+    # Saved right after the install, so a job that later fails in the tests still persists it.
+    # Concurrent saves of one key race on a miss; the losers log a harmless "unable to reserve
+    # cache" warning.
+    - name: Save Playwright apt packages and browsers
+      if: steps.playwright-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
+      with:
+        path: |
+          ~/.cache/apt-archives
+          ~/.cache/ms-playwright
+        key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
