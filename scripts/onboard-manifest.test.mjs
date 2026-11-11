@@ -391,16 +391,49 @@ describe('validateManifest — single-file rules (DD-1)', () => {
       [],
     );
 
-    const tooFewHeartbeat = validateManifest(
+    const emptyHeartbeat = validateManifest(
       baseAppManifest({
         destinations,
         routes: [{ channel: 'ops', destinations: manyNames }],
         heartbeats: [{ name: 'nightly', period: '24h', grace: '1h', destinations: [] }],
       }),
     );
+    assert.deepEqual(
+      emptyHeartbeat.errors.filter((e) => e.path.startsWith('heartbeats')),
+      [],
+    );
+
+    const omittedHeartbeat = validateManifest(
+      baseAppManifest({
+        destinations,
+        routes: [{ channel: 'ops', destinations: manyNames }],
+        heartbeats: [{ name: 'nightly', period: '24h', grace: '1h' }],
+      }),
+    );
+    assert.deepEqual(
+      omittedHeartbeat.errors.filter((e) => e.path.startsWith('heartbeats')),
+      [],
+    );
+
+    const nonArrayHeartbeat = validateManifest(
+      baseAppManifest({
+        destinations,
+        routes: [{ channel: 'ops', destinations: manyNames }],
+        heartbeats: [{ name: 'nightly', period: '24h', grace: '1h', destinations: 'myapp_ops' }],
+      }),
+    );
     assert.ok(
-      tooFewHeartbeat.errors.some(
-        (e) => e.path === 'heartbeats[0].destinations' && /1-20 destinations/.test(e.message),
+      nonArrayHeartbeat.errors.some(
+        (e) => e.path === 'heartbeats[0].destinations' && /must be an array/.test(e.message),
+      ),
+    );
+
+    const omittedRoute = validateManifest(
+      baseAppManifest({ destinations, routes: [{ channel: 'ops' }] }),
+    );
+    assert.ok(
+      omittedRoute.errors.some(
+        (e) => e.path === 'routes[0].destinations' && /must be an array/.test(e.message),
       ),
     );
 
@@ -413,7 +446,7 @@ describe('validateManifest — single-file rules (DD-1)', () => {
     );
     assert.ok(
       tooManyHeartbeat.errors.some(
-        (e) => e.path === 'heartbeats[0].destinations' && /1-20 destinations/.test(e.message),
+        (e) => e.path === 'heartbeats[0].destinations' && /0-20 destinations/.test(e.message),
       ),
     );
   });
@@ -539,6 +572,16 @@ describe('validateManifest — platform manifest schema', () => {
 });
 
 describe('resolveManifest', () => {
+  it('resolves a heartbeat with destinations omitted to an empty list', () => {
+    const manifest = baseAppManifest({
+      heartbeats: [{ name: 'nightly', period: '24h', grace: '1h' }],
+    });
+    const resolved = resolveManifest(manifest, {
+      env: { MYAPP_OPS_WEBHOOK: 'https://discord.com/x' },
+    });
+    assert.deepEqual(resolved.checks[0].destinations, []);
+  });
+
   it('converts durations, resolves secrets from env, and sorts destination lists', () => {
     const manifest = baseAppManifest({
       destinations: [
@@ -705,6 +748,28 @@ describe('lintDirectory', () => {
     const result = lintDirectory({ dir });
     assert.ok(
       result.errors.some((e) => e.includes('appc_ops') && e.includes('more than one file')),
+    );
+  });
+
+  it('still reports a 21-destination heartbeat and a zero-destination route', () => {
+    const dir = tmpDir();
+    const names = Array.from({ length: 21 }, (_, i) => `appe_d${i}`);
+    writeManifest(dir, 'appe.json', {
+      app_id: 'appe',
+      destinations: names.map((name) => ({
+        name,
+        type: 'discord',
+        secrets: { webhook_url: { env: `E_${name}` } },
+      })),
+      routes: [{ channel: 'ops', destinations: [] }],
+      heartbeats: [{ name: 'nightly', period: '24h', grace: '1h', destinations: names }],
+    });
+    const result = lintDirectory({ dir });
+    assert.ok(result.errors.some((e) => e.includes('routes[0].destinations')));
+    assert.ok(
+      result.errors.some(
+        (e) => e.includes('heartbeats[0].destinations') && e.includes('0-20 destinations'),
+      ),
     );
   });
 

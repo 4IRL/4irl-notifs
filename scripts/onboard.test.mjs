@@ -56,6 +56,7 @@ function createFakeApi() {
   const pingCheckQueue = [];
   const cancelMessageQueue = [];
   let pendingMidRunSeed = null;
+  let pendingCheckSeed = null;
   let failCreateDestination = null;
 
   function apiError(status, message) {
@@ -221,7 +222,14 @@ function createFakeApi() {
 
     async listChecks() {
       calls.push({ method: 'listChecks' });
-      return [...checks.values()].map(checkView);
+      const result = [...checks.values()].map(checkView);
+      if (pendingCheckSeed) {
+        const id = pendingCheckSeed.id ?? nextCheckId;
+        if (id >= nextCheckId) nextCheckId = id + 1;
+        checks.set(id, { ...pendingCheckSeed, id });
+        pendingCheckSeed = null;
+      }
+      return result;
     },
     async createCheck(body) {
       calls.push({ method: 'createCheck', body });
@@ -320,6 +328,15 @@ function createFakeApi() {
         name: data.name,
         data: { config: {}, secrets: {}, enabled: true, ...data },
       };
+    },
+    seedCheckAfterNextList(check) {
+      pendingCheckSeed = check;
+    },
+    checkDestinationNames(appId, name) {
+      for (const check of checks.values()) {
+        if (check.app_id === appId && check.name === name) return [...check.destinations];
+      }
+      return undefined;
     },
     failNextCreateDestination(name, error) {
       failCreateDestination = { name, error };
@@ -431,6 +448,61 @@ describe('onboard.mjs apply: create from empty and re-run', () => {
       ].includes(c.method),
     );
     assert.equal(writeCalls.length, 0);
+  });
+});
+
+describe('onboard.mjs apply: heartbeat without destinations', () => {
+  const optionalManifest = () =>
+    appManifest({
+      heartbeats: [{ name: 'nightly_backup', period: '24h', grace: '1h' }],
+    });
+
+  it('creates the check with an empty list, then clears destinations added later via PATCH []', async () => {
+    const dir = tmpDir();
+    writeManifest(dir, 'myapp.json', optionalManifest());
+    const fake = createFakeApi();
+    const deps = buildDeps(fake, { env: { MYAPP_OPS_WEBHOOK: 'wh-secret-value' } });
+
+    await captureOutput(() => main(['apply', path.join(dir, 'myapp.json')], deps));
+    assert.equal(process.exitCode, undefined);
+    const createCall = fake.calls.find((c) => c.method === 'createCheck');
+    assert.deepEqual(createCall.body.destinations, []);
+
+    await fake.adminApi.patchCheck(1, { destinations: ['myapp_ops'] });
+    assert.deepEqual(fake.checkDestinationNames('myapp', 'nightly_backup'), ['myapp_ops']);
+
+    fake.calls.length = 0;
+    await captureOutput(() => main(['apply', path.join(dir, 'myapp.json')], deps));
+    assert.equal(process.exitCode, undefined);
+    const patchCalls = fake.calls.filter((c) => c.method === 'patchCheck');
+    assert.equal(patchCalls.length, 1);
+    assert.deepEqual(patchCalls[0].body.destinations, []);
+    assert.deepEqual(fake.checkDestinationNames('myapp', 'nightly_backup'), []);
+  });
+
+  it('sends the explicit [] PATCH on the 409 create-conflict recovery too', async () => {
+    const dir = tmpDir();
+    writeManifest(dir, 'myapp.json', optionalManifest());
+    const fake = createFakeApi();
+    fake.seedDestination({ name: 'myapp_ops', type: 'discord', secrets: { webhook_url: 'x' } });
+    fake.seedCheckAfterNextList({
+      app_id: 'myapp',
+      name: 'nightly_backup',
+      period_seconds: 86400,
+      grace_seconds: 3600,
+      destinations: ['myapp_ops'],
+    });
+    const deps = buildDeps(fake, { env: { MYAPP_OPS_WEBHOOK: 'wh-secret-value' } });
+
+    await captureOutput(() => main(['apply', path.join(dir, 'myapp.json')], deps));
+    assert.equal(process.exitCode, undefined);
+    const order = fake.calls
+      .map((c) => c.method)
+      .filter((m) => m === 'createCheck' || m === 'patchCheck');
+    assert.deepEqual(order, ['createCheck', 'patchCheck']);
+    const patchCall = fake.calls.find((c) => c.method === 'patchCheck');
+    assert.deepEqual(patchCall.body.destinations, []);
+    assert.deepEqual(fake.checkDestinationNames('myapp', 'nightly_backup'), []);
   });
 });
 

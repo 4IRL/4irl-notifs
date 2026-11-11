@@ -509,6 +509,49 @@ describe('computePlan — route and check diffing', () => {
     assert.ok(!('app_id' in actions[0].body));
     assert.ok(!('name' in actions[0].body));
   });
+
+  it('a desired empty destination list against a server check with destinations plans one clearing update', () => {
+    const server = { destinations: [], routes: [], checks: [checkView()] };
+    const d = desired({
+      destinations: [],
+      routes: [],
+      checks: [desiredCheck({ destinations: [] })],
+    });
+    const actions = computePlan(d, server, appScope);
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].type, 'update-check');
+    assert.deepEqual(actions[0].body, {
+      period_seconds: 86400,
+      grace_seconds: 3600,
+      destinations: [],
+    });
+    assert.deepEqual(
+      actions[0].changes.find((c) => c.field === 'destinations'),
+      { field: 'destinations', before: ['myapp_ops'], after: [] },
+    );
+  });
+
+  it('plans nothing when both the desired and the server destination lists are empty', () => {
+    const server = { destinations: [], routes: [], checks: [checkView({ destinations: [] })] };
+    const d = desired({
+      destinations: [],
+      routes: [],
+      checks: [desiredCheck({ destinations: [] })],
+    });
+    assert.deepEqual(computePlan(d, server, appScope), []);
+  });
+
+  it('creates an absent check with an empty destination list', () => {
+    const d = desired({
+      destinations: [],
+      routes: [],
+      checks: [desiredCheck({ destinations: [] })],
+    });
+    const actions = computePlan(d, { destinations: [], routes: [], checks: [] }, appScope);
+    const create = actions.find((a) => a.type === 'create-check');
+    assert.ok(create);
+    assert.deepEqual(create.body.destinations, []);
+  });
 });
 
 describe('computePlan — unmanaged and prune ordering', () => {

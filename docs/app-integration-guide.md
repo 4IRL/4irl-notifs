@@ -115,8 +115,9 @@ operator-authored one under `apps/` has a basename equal to `app_id`):
 - `destinations`: either an **owned** destination — `{ "name", "type": "ntfy"|"discord"|"webhook", "config"?, "secrets"?, "enabled"? }`, with `name` required to start with `<app_id>_` — that the tool creates, patches and (with `--prune`) deletes, or a **shared reference** `{ "use": "<name>" }` to a destination owned by another manifest, which the app only routes to and never modifies.
 - `routes`: `{ "channel", "destinations", "enabled"? }` — `app_pattern` is always derived as the
   manifest's own `app_id` and is never written by hand.
-- `heartbeats`: `{ "name", "period", "grace", "destinations" }`, with `period`/`grace` as durations
-  (`24h`, `1h`, …) rather than raw seconds.
+- `heartbeats`: `{ "name", "period", "grace", "destinations"? }`, with `period`/`grace` as durations
+  (`24h`, `1h`, …) rather than raw seconds. `destinations` is optional: omitted or `[]` means none
+  (at most 20; routes still need 1 to 20).
 - an optional `environments.<env>` block overriding `heartbeats.<name>.{period,grace}` and
   `destinations.<name>.enabled` per environment.
 
@@ -1649,8 +1650,10 @@ down and sends **one** down alert, then **one** recovery alert when the next pin
 through the normal message pipeline to the check's own destinations (0 to 20 of them, set when the
 operator creates the check), as `channel: "heartbeat"` messages.
 
-The API accepts a check with no destinations, but the admin UI and the onboard manifests still require one
-until a later release. An alert waits until a deliverable destination (enabled, supported type) is assigned.
+A check may have no destination. Its alert stays pending, is visible as an unassigned alert in the admin UI
+and the watchdog, and is sent when a deliverable destination (enabled, supported type) is assigned. Manifests
+are declarative: a heartbeat that omits `destinations` or lists `[]` clears any destinations the operator set
+in the UI on the next apply.
 Only the latest state is sent: a check has a single pending-alert slot, so one that went down and recovered
 while unassigned sends only `recovered`.
 
