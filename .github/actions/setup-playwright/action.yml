@@ -1,10 +1,10 @@
 name: 'setup playwright'
 description: >-
   Installs Playwright's browsers and their system packages (`playwright install --with-deps`) and
-  survives a flaky apt mirror: each try is time-boxed, a failed try is retried after a pause, the
-  Azure mirror is swapped for archive.ubuntu.com when its name does not resolve, and every failure
-  prints the resolver state so the log alone names the cause. Needs the repo checked out and the
-  calling project's dependencies installed first (`npx` resolves its pinned Playwright).
+  survives a broken runner resolver: each try is time-boxed, a failed try is retried after a pause,
+  the runner's DNS is pointed at 1.1.1.1 when the Ubuntu apt mirror name does not resolve, and every
+  failure prints the resolver state so the log alone names the cause. Needs the repo checked out and
+  the calling project's dependencies installed first (`npx` resolves its pinned Playwright).
 
 inputs:
   working-directory:
@@ -40,9 +40,17 @@ runs:
         set +e
         set -uo pipefail
 
-        AZURE_MIRROR="azure.archive.ubuntu.com"
-        FALLBACK_MIRROR="archive.ubuntu.com"
-        APT_MIRRORS_FILE="/etc/apt/apt-mirrors.txt"
+        # apt's mirror list (mirror+file:/etc/apt/apt-mirrors.txt) points at this host.
+        MIRROR_HOST="azure.archive.ubuntu.com"
+        # Ubuntu's authoritative nameservers (ns*.canonical.com) can be unreachable from the runner's
+        # Azure resolver while public resolvers still answer, so every Ubuntu name times out.
+        FALLBACK_DNS_SERVERS="1.1.1.1 1.0.0.1"
+        # A failing lookup otherwise blocks about 20s each, which made one diagnostics dump take minutes.
+        LOOKUP_TIMEOUT_SECONDS=5
+
+        lookup_ok() {
+          timeout "$LOOKUP_TIMEOUT_SECONDS" getent hosts "$1" > /dev/null
+        }
 
         # Name resolution and apt run through the same resolver, so a failed lookup here predicts
         # the apt failure before it burns a try.
@@ -52,33 +60,41 @@ runs:
           cat /etc/resolv.conf || true
           echo "--- resolvectl status"
           resolvectl status 2>&1 | head -30 || true
-          for host in "$AZURE_MIRROR" ubuntu-archive-asm.trafficmanager.net "$FALLBACK_MIRROR" security.ubuntu.com; do
-            if getent hosts "$host" > /dev/null; then
+          for host in "$MIRROR_HOST" ubuntu-archive-asm.trafficmanager.net archive.ubuntu.com security.ubuntu.com; do
+            if lookup_ok "$host"; then
               echo "lookup ok:   $host"
             else
               echo "lookup FAIL: $host"
             fi
           done
-          echo "--- $APT_MIRRORS_FILE"
-          cat "$APT_MIRRORS_FILE" 2>&1 || true
           echo "::endgroup::"
         }
 
-        use_fallback_mirror_if_azure_unresolvable() {
-          if getent hosts "$AZURE_MIRROR" > /dev/null; then
+        use_fallback_dns_if_mirror_unresolvable() {
+          if lookup_ok "$MIRROR_HOST"; then
             return 0
           fi
-          echo "::warning::$AZURE_MIRROR does not resolve; pointing apt at $FALLBACK_MIRROR"
+          echo "::warning::$MIRROR_HOST does not resolve; pointing the runner's DNS at $FALLBACK_DNS_SERVERS"
           print_diagnostics
-          if [[ -f "$APT_MIRRORS_FILE" ]]; then
-            sudo sed -i "s/${AZURE_MIRROR//./\\.}/$FALLBACK_MIRROR/g" "$APT_MIRRORS_FILE"
+          local default_interface
+          default_interface=$(ip route show default | awk '{print $5; exit}')
+          if [[ -z "$default_interface" ]]; then
+            echo "::warning::no default network interface found; leaving DNS unchanged"
+            return 0
+          fi
+          # FALLBACK_DNS_SERVERS is intentionally unquoted so each server becomes its own argument.
+          # shellcheck disable=SC2086
+          sudo resolvectl dns "$default_interface" $FALLBACK_DNS_SERVERS
+          sudo resolvectl flush-caches
+          if lookup_ok "$MIRROR_HOST"; then
+            echo "DNS override worked: $MIRROR_HOST resolves via $FALLBACK_DNS_SERVERS on $default_interface"
           else
-            echo "::warning::$APT_MIRRORS_FILE not found; leaving apt sources unchanged"
+            echo "::warning::$MIRROR_HOST still does not resolve after the DNS override"
           fi
         }
 
         for attempt in $(seq 1 "$ATTEMPTS"); do
-          use_fallback_mirror_if_azure_unresolvable
+          use_fallback_dns_if_mirror_unresolvable
           echo "playwright install: attempt $attempt of $ATTEMPTS (limit ${ATTEMPT_TIMEOUT_MINUTES}m)"
           start_seconds=$SECONDS
           # BROWSERS is intentionally unquoted so a space-separated list becomes separate args.
