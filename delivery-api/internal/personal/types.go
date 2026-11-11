@@ -38,7 +38,8 @@ const (
 // single message may name is the separate message.MaxPersonalDestinationsPerMessage.
 const MaxPerPersonPerApp = 1000
 
-// AdminListLimit is how many of the newest rows the operator list returns.
+// AdminListLimit is how many of the newest rows the unfiltered operator list
+// returns; a person_hash-filtered list is not capped.
 const AdminListLimit = 200
 
 // Sentinel errors returned by the store (and, from Step 2, the service).

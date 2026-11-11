@@ -112,9 +112,10 @@ WHERE person_hash = $1 ORDER BY created_at DESC, id DESC`, personHash)
 	return collectDestinations(rows, "list personal destinations")
 }
 
-// ListForAdmin returns the newest AdminListLimit destinations, optionally for
-// one person (empty personHash means all), and the total count matching the
-// filter before the limit.
+// ListForAdmin returns the newest AdminListLimit destinations across everyone
+// (empty personHash), or every destination of one person when personHash is set
+// (that set is bounded by MaxPerPersonPerApp per app, so the cap is not applied),
+// and the total count matching the filter.
 func (store *PGStore) ListForAdmin(ctx context.Context, personHash string) ([]Destination, int, error) {
 	var total int
 	if countErr := store.pool.QueryRow(ctx,
@@ -123,7 +124,7 @@ func (store *PGStore) ListForAdmin(ctx context.Context, personHash string) ([]De
 	}
 	rows, queryErr := store.pool.Query(ctx,
 		`SELECT `+destinationColumns+` FROM personal_destinations WHERE ($1 = '' OR person_hash = $1)
-ORDER BY created_at DESC, id DESC LIMIT $2`, personHash, AdminListLimit)
+ORDER BY created_at DESC, id DESC LIMIT (CASE WHEN $1 = '' THEN $2::int END)`, personHash, AdminListLimit)
 	if queryErr != nil {
 		return nil, 0, pgutil.WrapDBError("list personal destinations for admin", queryErr)
 	}

@@ -382,8 +382,8 @@ func (service *Service) OptOut(
 	return appViewResult, false, viewErr
 }
 
-// AdminList returns the newest AdminListLimit destinations (optionally one
-// person's; an empty personHash means all) and the total matching the filter.
+// AdminList returns the newest AdminListLimit destinations, or all of one
+// person's when personHash is set (not capped), and the total matching the filter.
 func (service *Service) AdminList(ctx context.Context, personHash string) ([]AdminView, int, error) {
 	if personHash != "" && !personhash.IsHash(personHash) {
 		return nil, 0, &ValidationError{Message: msgInvalidPerson}

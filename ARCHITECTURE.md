@@ -287,7 +287,7 @@ End users can receive an app's `to.recipient` messages at their own Discord or w
   operator lists are untouched. `message_deliveries.dead_reason` gains `opted_out`. Cap: 1000 per person per registering app (`personal.MaxPerPersonPerApp`; separate from the 50-id per-send bound).
 - **Routes:** `POST` (create), `POST …/lookup`, `PATCH`, `DELETE` and `PUT`/`DELETE …/opt-in` under
   `/v1/apps/{app_id}/personal-destinations` (key-gated, person always in the JSON body, `503` when the service
-  is not wired); operator `GET /v1/admin/personal-destinations?person_hash=`, `PATCH`/`DELETE …/{id}`.
+  is not wired); operator `GET /v1/admin/personal-destinations?person_hash=` (newest 200 unfiltered; a `person_hash` filter returns every one of that person's destinations, uncapped), `PATCH`/`DELETE …/{id}`.
   Operator disable (`disabled_by = 'operator'`) cannot be undone by an app.
 - **Explicit routing and naming (migration `0015_recipient_via.sql`):** there is no implicit fan-out. The
   message carries an optional `to.via` (`ntfy` default, `personal`, `both`) and `to.personal_destination_ids`

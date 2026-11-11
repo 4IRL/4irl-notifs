@@ -184,6 +184,29 @@ func TestListByPersonNewestFirstAndAdminListTotal(testInstance *testing.T) {
 	}
 }
 
+func TestAdminListCapsUnfilteredButNotPersonFiltered(testInstance *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), storeTestBudget)
+	defer cancel()
+	store, _, _ := newTestStore(ctx, testInstance)
+
+	const personRows = AdminListLimit + 5
+	for index := range personRows {
+		mustInsert(ctx, testInstance, store, newDestination(personOne, "urls4irl", fmt.Sprintf("many%d", index), true))
+	}
+	mustInsert(ctx, testInstance, store, newDestination(personTwo, "urls4irl", "elsewhere", true))
+
+	all, allTotal, allErr := store.ListForAdmin(ctx, "")
+	if allErr != nil || len(all) != AdminListLimit || allTotal != personRows+1 {
+		testInstance.Fatalf("unfiltered = (%d rows, total %d, %v), want %d rows and total %d",
+			len(all), allTotal, allErr, AdminListLimit, personRows+1)
+	}
+	filtered, filteredTotal, filteredErr := store.ListForAdmin(ctx, personOne)
+	if filteredErr != nil || len(filtered) != personRows || filteredTotal != personRows {
+		testInstance.Fatalf("person filtered = (%d rows, total %d, %v), want all %d",
+			len(filtered), filteredTotal, filteredErr, personRows)
+	}
+}
+
 func TestConcurrentCreatesNeverExceedThePersonCap(testInstance *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), storeTestBudget)
 	defer cancel()

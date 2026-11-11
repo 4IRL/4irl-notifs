@@ -327,44 +327,35 @@ func TestPipelineViaNtfyReachesOnlyNtfy(testInstance *testing.T) {
 	requireStrings(testInstance, "webhook paths", live.webhookPaths(), nil)
 }
 
-func TestPipelineViaPersonalSkipsNtfyAndWorksWithoutPublisher(testInstance *testing.T) {
-	live := startFanoutPipelineWith(testInstance, false)
-	hookA := live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
-	live.register(testInstance, fanoutAlice, fanoutApp, "/hook-b", true)
+// via=personal never reaches ntfy, with or without a minted publisher, and only the named hook is hit.
+func TestPipelineViaPersonalSkipsNtfy(testInstance *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		mintPublisher bool
+	}{
+		{name: "without publisher", mintPublisher: false},
+		{name: "with publisher", mintPublisher: true},
+	} {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			live := startFanoutPipelineWith(subTest, testCase.mintPublisher)
+			hookA := live.register(subTest, fanoutAlice, fanoutApp, "/hook-a", true)
+			live.register(subTest, fanoutAlice, fanoutApp, "/hook-b", true)
 
-	stored, _, submitErr := live.messages.Submit(
-		live.ctx, live.routedEnvelope("via-personal", fanoutAlice, message.RecipientViaPersonal, hookA.ID))
-	if submitErr != nil {
-		testInstance.Fatalf("Submit = %v", submitErr)
+			stored, _, submitErr := live.messages.Submit(
+				live.ctx, live.routedEnvelope("via-personal", fanoutAlice, message.RecipientViaPersonal, hookA.ID))
+			if submitErr != nil {
+				subTest.Fatalf("Submit = %v", submitErr)
+			}
+			requireDeliveryNames(subTest, stored.Deliveries, personal.PersonalDeliveryName(hookA.ID))
+			live.waitAllDelivered(subTest, stored.ID, 1)
+			time.Sleep(pipelineQuietPeriod)
+
+			if got := len(live.ntfySeen()); got != 0 {
+				subTest.Fatalf("ntfy saw %d requests, want 0", got)
+			}
+			requireStrings(subTest, "webhook paths", live.webhookPaths(), []string{"/hook-a"})
+		})
 	}
-	requireDeliveryNames(testInstance, stored.Deliveries, personal.PersonalDeliveryName(hookA.ID))
-	live.waitAllDelivered(testInstance, stored.ID, 1)
-	time.Sleep(pipelineQuietPeriod)
-
-	if got := len(live.ntfySeen()); got != 0 {
-		testInstance.Fatalf("ntfy saw %d requests, want 0", got)
-	}
-	requireStrings(testInstance, "webhook paths", live.webhookPaths(), []string{"/hook-a"})
-}
-
-// With a publisher minted, via=personal must still never reach ntfy.
-func TestPipelineViaPersonalSkipsNtfyEvenWithPublisher(testInstance *testing.T) {
-	live := startFanoutPipeline(testInstance)
-	hookA := live.register(testInstance, fanoutAlice, fanoutApp, "/hook-a", true)
-
-	stored, _, submitErr := live.messages.Submit(
-		live.ctx, live.routedEnvelope("via-personal-pub", fanoutAlice, message.RecipientViaPersonal, hookA.ID))
-	if submitErr != nil {
-		testInstance.Fatalf("Submit = %v", submitErr)
-	}
-	requireDeliveryNames(testInstance, stored.Deliveries, personal.PersonalDeliveryName(hookA.ID))
-	live.waitAllDelivered(testInstance, stored.ID, 1)
-	time.Sleep(pipelineQuietPeriod)
-
-	if got := len(live.ntfySeen()); got != 0 {
-		testInstance.Fatalf("ntfy saw %d requests, want 0", got)
-	}
-	requireStrings(testInstance, "webhook paths", live.webhookPaths(), []string{"/hook-a"})
 }
 
 func TestPipelineViaBothReachesNtfyAndOnlyNamedDestinations(testInstance *testing.T) {
