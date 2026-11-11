@@ -167,6 +167,17 @@ jobs:
           echo "delivery-api did not become healthy in time"
           exit 1
 
+      # The stack is flag-off here, so the 422 assertions run without a recreate. The runner fails
+      # unless both WhenHoldOff tests pass (a skip fails it).
+      - name: Run flag-off integration tests
+        env:
+          # The make recipe sets the URL and DSN itself (the Makefile defaults, 8300 and 18300).
+          NOTIFS_DELIVERY_HOLD_UNROUTED: "0"
+        run: |
+          NOTIFS_DELIVERY_DB_CONTAINER="$(docker compose --project-directory . -f docker-compose.yml ps -q delivery-postgres)"
+          export NOTIFS_DELIVERY_DB_CONTAINER
+          make delivery-integration-test-hold-off-run
+
       # The make target cannot find this stack (different compose project name), so hand it the
       # provisioning-api credential straight from the running container, masked.
       - name: Run app onboarding integration test

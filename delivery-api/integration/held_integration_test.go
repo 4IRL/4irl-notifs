@@ -9,6 +9,12 @@ package integration
 // set, plus a behavioural probe that an unrouted app-key submit answers 202, not 422) and fails
 // loudly on a mismatch, never skipping. Run them with `make delivery-integration-test-hold`.
 //
+// Three passes exist: the plain run (`make delivery-integration-test`, flag as the stack has it, hold
+// tests skip on a flag-off stack), the hold run with low caps (`make delivery-integration-test-hold`),
+// and the hold-off run (`make delivery-integration-test-hold-off`) for the tests whose names end in
+// WhenHoldOff, which pin the 422 refusal and call requireHoldOffStack. Those names must not start
+// with TestHold, so `-run '^TestHold'` never picks them up.
+//
 // Isolation: each case owns a unique app_id (and so its own dak_ key) and cancels every message it
 // holds in t.Cleanup, then deletes the app's message rows, so a rerun on a reused stack and the
 // case order cannot consume or poison the per-app cap. The cap case fills a dedicated app to the
@@ -112,6 +118,58 @@ func probeHoldStack(testInstance *testing.T) {
 	probe.track(decoded.Message.MessageID)
 	// A flag-off stack with a catch-all route also answers 202, so require the held status too.
 	requireUnroutedView(testInstance, "hold probe", decoded.Message)
+}
+
+// requireHoldOffStack skips unless the forwarded flag is exactly "0" and otherwise proves the stack
+// refuses unrouted messages. A mismatch fails the test; flag=0 never results in a skip.
+func requireHoldOffStack(testInstance *testing.T) {
+	testInstance.Helper()
+	if os.Getenv(holdFlagEnv) != "0" {
+		testInstance.Skipf("%s is not 0: needs a stack with DELIVERY_HOLD_UNROUTED=0 "+
+			"(run make delivery-integration-test-hold-off)", holdFlagEnv)
+	}
+	waitForReady(testInstance)
+	if container := os.Getenv(holdContainerEnv); container != "" {
+		requireContainerHoldFlagOff(testInstance, container)
+	}
+	probeHoldOffStack(testInstance)
+}
+
+// requireContainerHoldFlagOff fails unless the delivery-api container's own environment has
+// DELIVERY_HOLD_UNROUTED=0 or false.
+func requireContainerHoldFlagOff(testInstance *testing.T, container string) {
+	testInstance.Helper()
+	output, runErr := execRunner("docker", "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", container)
+	if runErr != nil {
+		testInstance.Fatalf("%s=0 but docker inspect of %s failed: %v", holdFlagEnv, container, runErr)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		switch strings.TrimSpace(line) {
+		case "DELIVERY_HOLD_UNROUTED=0", "DELIVERY_HOLD_UNROUTED=false":
+			return
+		}
+	}
+	testInstance.Fatalf("%s=0 but container %s does not have DELIVERY_HOLD_UNROUTED=0: recreate the stack "+
+		"with the flag off (make delivery-integration-test-hold-off does)", holdFlagEnv, container)
+}
+
+// probeHoldOffStack submits an unrouted app-key message and requires 422 `no destination matched`.
+// A 202 means the stack holds: the probe message is cancelled and the test fails, never skips.
+func probeHoldOffStack(testInstance *testing.T) {
+	testInstance.Helper()
+	probe := newHoldApp(testInstance, holdProbeApp)
+	status, body := apiRequest(testInstance, http.MethodPost, messagesPath,
+		probe.body("probe-off-"+randomSuffix(testInstance), "it_probe_"+randomSuffix(testInstance)))
+	if status == http.StatusAccepted {
+		var decoded submitResponse
+		decodeBody(testInstance, "hold-off probe", body, &decoded)
+		probe.track(decoded.Message.MessageID)
+	}
+	if status != http.StatusUnprocessableEntity {
+		testInstance.Fatalf("%s=0 but an unrouted app-key submit answered %d (body: %s), want 422: "+
+			"the stack was not recreated with DELIVERY_HOLD_UNROUTED=0", holdFlagEnv, status, body)
+	}
+	requireErrorMessage(testInstance, "hold-off probe", body, "no destination matched")
 }
 
 // holdApp is one test's own app: its key, and the messages it holds so cleanup cancels them.
@@ -330,13 +388,7 @@ func TestHoldBodyHoldFieldIsRefused(testInstance *testing.T) {
 // message to be refused with 429.
 func TestHoldPerAppCapIs429(testInstance *testing.T) {
 	requireHoldStack(testInstance)
-	capText := os.Getenv(holdMaxHeldEnv)
-	capValue, parseErr := strconv.Atoi(capText)
-	if parseErr != nil || capValue < 1 || capValue > holdMaxCapForLiveTest {
-		testInstance.Fatalf("%s=%q: with the hold flag on the cap test needs the stack's "+
-			"DELIVERY_MAX_HELD_PER_APP, between 1 and %d (make delivery-integration-test-hold sets it)",
-			holdMaxHeldEnv, capText, holdMaxCapForLiveTest)
-	}
+	capValue := holdCapFromEnv(testInstance, holdMaxHeldEnv, holdMaxCapForLiveTest)
 	app := newUniqueHoldApp(testInstance)
 	suffix := randomSuffix(testInstance)
 	channel := "it_" + suffix
@@ -397,14 +449,23 @@ func TestHoldTotalCapIs429(testInstance *testing.T) {
 	requireErrorMessage(testInstance, "POST over the total held cap", body, heldCapacityReachedMsg)
 }
 
-// holdCapFromEnv reads a stack cap forwarded by the Makefile or CI and requires 1..limit.
+// holdCapFromEnv reads a stack cap forwarded by the Makefile or CI. It skips the test when the cap
+// is unset or above limit (a stack not started for the cap tests; make delivery-integration-test-hold
+// does, and its runner requires the cap tests to pass), and fails on a malformed or below-1 value.
 func holdCapFromEnv(testInstance *testing.T, name string, limit int) int {
 	testInstance.Helper()
 	text := os.Getenv(name)
+	if text == "" {
+		testInstance.Skipf("%s is unset: the cap test needs the stack's matching cap, between 1 and %d "+
+			"(run make delivery-integration-test-hold)", name, limit)
+	}
 	value, parseErr := strconv.Atoi(text)
-	if parseErr != nil || value < 1 || value > limit {
-		testInstance.Fatalf("%s=%q: the total cap test needs the stack's matching cap between 1 and %d "+
-			"(make delivery-integration-test-hold sets it)", name, text, limit)
+	if parseErr != nil || value < 1 {
+		testInstance.Fatalf("%s=%q: must be a number of at least 1", name, text)
+	}
+	if value > limit {
+		testInstance.Skipf("%s=%d is above %d: the cap test needs a small cap (run make delivery-integration-test-hold)",
+			name, value, limit)
 	}
 	return value
 }

@@ -106,7 +106,14 @@ small `DELIVERY_MAX_HELD_PER_APP` (`HOLD_TEST_MAX_HELD`, default 3) and `DELIVER
 onboard integration test, then recreates delivery-api flag-off and waits for it to be healthy; the restore
 runs even when the tests fail. `make delivery-integration-test-hold-run` only runs the tests against a stack
 that is already flag-on (set `NOTIFS_DELIVERY_MAX_HELD` and `NOTIFS_DELIVERY_MAX_HELD_TOTAL` to the stack's per-app and total caps); CI uses it after
-recreating its own stack. Both fail if either runner ran zero hold tests.
+recreating its own stack. Both fail if either runner ran zero hold tests, and the hold target also fails
+unless both cap tests passed.
+
+A third pass pins the flag-off refusals (`TestUnroutedSubmitIsRefusedWhenHoldOff` and
+`TestAnotherAppsDestinationIsRefusedWhenHoldOff`, `422 no destination matched`). `make delivery-integration-test-hold-off`
+(local stack must be up) recreates delivery-api with `DELIVERY_HOLD_UNROUTED=0`, runs them, and always restores the
+stack's default flag; `make delivery-integration-test-hold-off-run` runs them against an already flag-off stack
+(CI uses it). Both fail if either test skipped.
 
 Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own
 compose project and ports; see [`docs/worktrees.md`](docs/worktrees.md). In a worktree, start the

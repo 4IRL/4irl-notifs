@@ -29,6 +29,7 @@ Guidance for Claude Code when working in this repository.
   | Delivery Go tests | `make delivery-test` (`go test ./...` in `delivery-api/`) |
   | Delivery integration tests | `make delivery-integration-test` (needs local stack up; `go test -p 1 -tags integration ./...`) |
   | Delivery hold integration tests | `make delivery-integration-test-hold` (local stack up; recreates delivery-api with `DELIVERY_HOLD_UNROUTED=1`, runs Go `TestHold*` + the onboard unrouted case, restores flag-off) / `make delivery-integration-test-hold-run` (runners only, against an already flag-on stack; set `NOTIFS_DELIVERY_MAX_HELD` and `NOTIFS_DELIVERY_MAX_HELD_TOTAL`) |
+  | Delivery flag-off integration tests | `make delivery-integration-test-hold-off` (local stack up; recreates delivery-api with `DELIVERY_HOLD_UNROUTED=0`, runs the `*WhenHoldOff` 422 tests, restores the default) / `make delivery-integration-test-hold-off-run` (runner only, against an already flag-off stack) |
   | UI/e2e tests | `make web-e2e` (`npx playwright test` in `web/`; `E2E_ARGS=...` passes extra args) |
   | JS/unit tests | `make web-test` (`npm test` in `web/`, Vitest) |
   | Build | `make web-build` (`tsc -b` + Vite → `dist/`) |
@@ -152,6 +153,8 @@ shown for reference only.
 | `make delivery-integration-test` (`go test -p 1 -tags integration ./...`) | Run delivery-api integration tests (local stack must be up) |
 | `make delivery-integration-test-hold` | Recreate delivery-api with `DELIVERY_HOLD_UNROUTED=1`, run the live Go `TestHold*` tests plus the onboard unrouted case, then restore flag-off (local stack must be up) |
 | `make delivery-integration-test-hold-run` | Hold runners only, against an already flag-on stack (set `NOTIFS_DELIVERY_MAX_HELD` and `NOTIFS_DELIVERY_MAX_HELD_TOTAL`) |
+| `make delivery-integration-test-hold-off` | Recreate delivery-api with `DELIVERY_HOLD_UNROUTED=0`, run the live `*WhenHoldOff` tests (422 refusals), then restore the default flag (local stack must be up) |
+| `make delivery-integration-test-hold-off-run` | Flag-off runner only, against an already flag-off stack (a skip fails it) |
 | `make delivery-lint` / `make delivery-fmt` (`gofmt -l .` + pinned `golangci-lint run` / `gofmt -w .`) | Check / apply delivery-api Go formatting + lint (same pinned golangci-lint as `go-lint`) |
 | `make delivery-vet-integration` (`go vet -tags integration ./...` in `delivery-api/`) | Vet delivery-api including integration-tagged files (`delivery-lint` does not compile them) |
 | `make workflows-lint` (`actionlint`, pinned `v1.7.12`) | Lint the GitHub Actions workflow YAML and the composite actions under `.github/actions/*/action.yml` (through generated wrappers in `.local/action-lint/`; needs node (wrapper generation) and Go (actionlint), no npm install) |

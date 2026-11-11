@@ -1,6 +1,6 @@
 .PHONY: help lint test backup-lint backup-test backup-test-live host-backup host-backup-status local-up local-down local-logs dev-oidc-keys dev-web dev-web-bg dev-web-stop notif-smoke-test \
 	go-test go-test-race go-integration-test go-lint go-fmt golangci-pin-check \
-	delivery-test delivery-integration-test delivery-integration-test-hold delivery-integration-test-hold-run delivery-lint delivery-vet-integration delivery-fmt workflows-lint \
+	delivery-test delivery-integration-test delivery-integration-test-hold delivery-integration-test-hold-run delivery-integration-test-hold-off delivery-integration-test-hold-off-run delivery-lint delivery-vet-integration delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	setup-web-dev setup-web-test setup-web-e2e setup-web-build setup-web-lint setup-web-format setup-web-pages-dev \
 	worker-test worker-build worker-deploy watchdog-test watchdog-build scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm \
@@ -196,7 +196,7 @@ delivery-test: ## Run delivery-api Go unit tests
 # DELIVERY_MAX_SCHEDULED_PER_APP for `make local-up` and this target) so the live 429 test
 # can fill a small cap; it skips when the cap is not small.
 delivery-integration-test: ## Run delivery-api integration tests (local stack must be up)
-	@C="$$($(COMPOSE) ps -q delivery-api)"; D="$$($(COMPOSE) ps -q delivery-postgres)"; cd delivery-api && NOTIFS_DELIVERY_CONTAINER="$$C" NOTIFS_DELIVERY_DB_CONTAINER="$$D" NOTIFS_DELIVERY_MAX_SCHEDULED="$${DELIVERY_MAX_SCHEDULED_PER_APP:-1000}" NOTIFS_DELIVERY_HOLD_UNROUTED="$${DELIVERY_HOLD_UNROUTED:-0}" NOTIFS_DELIVERY_MAX_HELD="$${DELIVERY_MAX_HELD_PER_APP:-1000}" NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_NTFY_URL=$(NTFY_URL) NOTIFS_DELIVERY_TEST_DSN="postgres://delivery:delivery-local-dev@127.0.0.1:$(DELIVERY_DB_PORT_HOST)/delivery?sslmode=disable" go test -p 1 -tags integration ./...
+	@C="$$($(COMPOSE) ps -q delivery-api)"; D="$$($(COMPOSE) ps -q delivery-postgres)"; cd delivery-api && NOTIFS_DELIVERY_CONTAINER="$$C" NOTIFS_DELIVERY_DB_CONTAINER="$$D" NOTIFS_DELIVERY_MAX_SCHEDULED="$${DELIVERY_MAX_SCHEDULED_PER_APP:-1000}" NOTIFS_DELIVERY_HOLD_UNROUTED="$${DELIVERY_HOLD_UNROUTED:-$(DELIVERY_HOLD_DEFAULT)}" NOTIFS_DELIVERY_MAX_HELD="$${DELIVERY_MAX_HELD_PER_APP:-1000}" NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_NTFY_URL=$(NTFY_URL) NOTIFS_DELIVERY_TEST_DSN="postgres://delivery:delivery-local-dev@127.0.0.1:$(DELIVERY_DB_PORT_HOST)/delivery?sslmode=disable" go test -p 1 -tags integration ./...
 
 # Live hold tests (delivery-api/integration/held_integration_test.go, names start with TestHold) and the
 # onboard verify unrouted case need a stack with DELIVERY_HOLD_UNROUTED=1 and a small
@@ -219,11 +219,13 @@ delivery-integration-test-hold-run: ## Run the live hold tests (Go + onboard) ag
 	NOTIFS_DELIVERY_HOLD_UNROUTED=1 ONBOARD_INTEGRATION_URL=$(DELIVERY_URL) ONBOARD_INTEGRATION_PROVISIONING_URL=$(API_URL) NOTIFS_INTERNAL_CREDENTIAL="$$CRED" node --test --test-reporter=tap scripts/onboard.integration.test.mjs > "$$OUT/node.txt" 2>&1 || NODE_RC=$$?; \
 	cat "$$OUT/node.txt"; \
 	GO_PASSED=0; grep -Eq '^[[:space:]]*--- PASS: TestHold' "$$OUT/go.txt" && GO_PASSED=1; \
+	CAPS_PASSED=0; grep -Eq '^[[:space:]]*--- PASS: TestHoldPerAppCapIs429' "$$OUT/go.txt" && grep -Eq '^[[:space:]]*--- PASS: TestHoldTotalCapIs429' "$$OUT/go.txt" && CAPS_PASSED=1; \
 	NODE_PASSED=0; grep -E '^[[:space:]]*ok [0-9]+ - reports an unrouted channel' "$$OUT/node.txt" | grep -qv '# SKIP' && NODE_PASSED=1; \
 	rm -rf "$$OUT"; \
 	if [ "$$GO_RC" -ne 0 ]; then echo "hold: the Go hold tests failed (exit $$GO_RC)" >&2; exit "$$GO_RC"; fi; \
 	if [ "$$NODE_RC" -ne 0 ]; then echo "hold: the onboard integration test failed (exit $$NODE_RC)" >&2; exit "$$NODE_RC"; fi; \
 	if [ "$$GO_PASSED" -ne 1 ]; then echo "hold: zero Go hold tests passed (no '--- PASS: TestHold' line): NOTIFS_DELIVERY_HOLD_UNROUTED was not forwarded to go test, or every test skipped" >&2; exit 1; fi; \
+	if [ "$$CAPS_PASSED" -ne 1 ]; then echo "hold: TestHoldPerAppCapIs429 and TestHoldTotalCapIs429 must both pass (a skip counts as failure): NOTIFS_DELIVERY_MAX_HELD and NOTIFS_DELIVERY_MAX_HELD_TOTAL must be set to the stack's small caps" >&2; exit 1; fi; \
 	if [ "$$NODE_PASSED" -ne 1 ]; then echo "hold: the onboard unrouted test did not pass (skipped or missing): check ONBOARD_INTEGRATION_URL, ONBOARD_INTEGRATION_PROVISIONING_URL, NOTIFS_INTERNAL_CREDENTIAL and NOTIFS_DELIVERY_HOLD_UNROUTED" >&2; exit 1; fi
 
 # Local composed target (`up -d --build` re-applies the environment, rebuilds the image from this checkout
@@ -237,14 +239,51 @@ HOLD_TEST_MAX_HELD ?= 3
 HOLD_TEST_MAX_HELD_TOTAL ?= 20
 HOLD_WAIT_HEALTHY = wait_healthy() { for _ in $$(seq 1 60); do STATUS="$$(docker inspect -f '{{.State.Health.Status}}' "$$($(COMPOSE) ps -q delivery-api)" 2>/dev/null || echo unknown)"; if [ "$$STATUS" = healthy ]; then return 0; fi; sleep 2; done; echo "delivery-api did not become healthy in time" >&2; return 1; }
 
+# DELIVERY_HOLD_DEFAULT is the hold flag value the local stack runs with outside the hold targets: the
+# restore fragment recreates with it, and the plain test target forwards it. It must equal the code default
+# and both compose files' integer default (a unit test in delivery-api/internal/message enforces it).
+DELIVERY_HOLD_DEFAULT := 0
+# Shared by the hold and hold-off targets (they define wait_healthy and RESTORE_RC first): recreate
+# delivery-api with the default flag, wait healthy, assert that exact line in the container env.
+HOLD_RESTORE = restore() { echo "hold: restoring delivery-api with DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT)"; \
+	DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT) $(COMPOSE) up -d --build delivery-api || RESTORE_RC=$$?; \
+	if [ "$$RESTORE_RC" -eq 0 ]; then wait_healthy || RESTORE_RC=$$?; fi; \
+	if [ "$$RESTORE_RC" -eq 0 ]; then docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$$($(COMPOSE) ps -q delivery-api)" | grep -qx 'DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT)' || { echo "hold: the restored delivery-api does not have DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT)" >&2; RESTORE_RC=1; }; fi; \
+	if [ "$$RESTORE_RC" -ne 0 ]; then echo "hold: RESTORE FAILED: delivery-api may not be on its default hold flag; run 'make local-up'" >&2; fi; }
+
+# Flag-off pass (the third pass beside plain and hold): the TestUnroutedSubmitIsRefusedWhenHoldOff and
+# TestAnotherAppsDestinationIsRefusedWhenHoldOff tests pin the 422 and run only on a stack with the flag
+# explicitly 0. The -run target only runs them against an already flag-off stack (CI calls it after its own
+# recreate); both tests must PASS (a skip fails the target).
+delivery-integration-test-hold-off-run: ## Run the flag-off live tests against an already flag-off stack (never touches the stack)
+	@OUT="$$(mktemp -d)" || exit 1; \
+	C="$$($(COMPOSE) ps -q delivery-api)"; D="$${NOTIFS_DELIVERY_DB_CONTAINER:-$$($(COMPOSE) ps -q delivery-postgres)}"; \
+	GO_RC=0; \
+	(cd delivery-api && NOTIFS_DELIVERY_HOLD_UNROUTED=0 NOTIFS_DELIVERY_CONTAINER="$$C" NOTIFS_DELIVERY_DB_CONTAINER="$$D" NOTIFS_DELIVERY_URL=$(DELIVERY_URL) NOTIFS_NTFY_URL=$(NTFY_URL) NOTIFS_DELIVERY_TEST_DSN="postgres://delivery:delivery-local-dev@127.0.0.1:$(DELIVERY_DB_PORT_HOST)/delivery?sslmode=disable" go test -v -count=1 -p 1 -tags integration -run 'WhenHoldOff$$' ./integration/) > "$$OUT/go.txt" 2>&1 || GO_RC=$$?; \
+	cat "$$OUT/go.txt"; \
+	BOTH_PASSED=0; grep -Eq '^[[:space:]]*--- PASS: TestUnroutedSubmitIsRefusedWhenHoldOff' "$$OUT/go.txt" && grep -Eq '^[[:space:]]*--- PASS: TestAnotherAppsDestinationIsRefusedWhenHoldOff' "$$OUT/go.txt" && BOTH_PASSED=1; \
+	rm -rf "$$OUT"; \
+	if [ "$$GO_RC" -ne 0 ]; then echo "hold-off: the flag-off tests failed (exit $$GO_RC)" >&2; exit "$$GO_RC"; fi; \
+	if [ "$$BOTH_PASSED" -ne 1 ]; then echo "hold-off: TestUnroutedSubmitIsRefusedWhenHoldOff and TestAnotherAppsDestinationIsRefusedWhenHoldOff must both pass (a skip counts as failure): NOTIFS_DELIVERY_HOLD_UNROUTED must be exactly 0" >&2; exit 1; fi
+
+delivery-integration-test-hold-off: ## Recreate delivery-api with the hold flag explicitly off, run the flag-off live tests, restore the default (local stack must be up)
+	@$(HOLD_WAIT_HEALTHY); \
+	RC=0; RESTORE_RC=0; \
+	$(HOLD_RESTORE); \
+	trap 'restore; exit 130' INT TERM; \
+	wait_healthy || RC=$$?; \
+	if [ "$$RC" -eq 0 ]; then echo "hold-off: recreating delivery-api with DELIVERY_HOLD_UNROUTED=0"; DELIVERY_HOLD_UNROUTED=0 $(COMPOSE) up -d --build delivery-api || RC=$$?; fi; \
+	if [ "$$RC" -eq 0 ]; then wait_healthy || RC=$$?; fi; \
+	D="$${NOTIFS_DELIVERY_DB_CONTAINER:-$$($(COMPOSE) ps -q delivery-postgres)}"; \
+	if [ "$$RC" -eq 0 ]; then NOTIFS_DELIVERY_DB_CONTAINER="$$D" $(MAKE) delivery-integration-test-hold-off-run || RC=$$?; fi; \
+	trap - INT TERM; restore; \
+	if [ "$$RC" -ne 0 ]; then exit "$$RC"; fi; \
+	exit "$$RESTORE_RC"
+
 delivery-integration-test-hold: ## Recreate delivery-api flag-on, run the live hold tests, restore flag-off (local stack must be up)
 	@$(HOLD_WAIT_HEALTHY); \
 	RC=0; RESTORE_RC=0; \
-	restore() { echo "hold: restoring delivery-api with DELIVERY_HOLD_UNROUTED=0"; \
-	DELIVERY_HOLD_UNROUTED=0 $(COMPOSE) up -d --build delivery-api || RESTORE_RC=$$?; \
-	if [ "$$RESTORE_RC" -eq 0 ]; then wait_healthy || RESTORE_RC=$$?; fi; \
-	if [ "$$RESTORE_RC" -eq 0 ]; then docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$$($(COMPOSE) ps -q delivery-api)" | grep -qx 'DELIVERY_HOLD_UNROUTED=0' || { echo "hold: the restored delivery-api does not have DELIVERY_HOLD_UNROUTED=0" >&2; RESTORE_RC=1; }; fi; \
-	if [ "$$RESTORE_RC" -ne 0 ]; then echo "hold: RESTORE FAILED: delivery-api may still hold unrouted messages; run 'make local-up'" >&2; fi; }; \
+	$(HOLD_RESTORE); \
 	trap 'restore; exit 130' INT TERM; \
 	echo "hold: recreating delivery-api with DELIVERY_HOLD_UNROUTED=1 DELIVERY_MAX_HELD_PER_APP=$(HOLD_TEST_MAX_HELD)"; \
 	DELIVERY_HOLD_UNROUTED=1 DELIVERY_MAX_HELD_PER_APP=$(HOLD_TEST_MAX_HELD) DELIVERY_MAX_HELD_TOTAL=$(HOLD_TEST_MAX_HELD_TOTAL) $(COMPOSE) up -d --build delivery-api || RC=$$?; \
