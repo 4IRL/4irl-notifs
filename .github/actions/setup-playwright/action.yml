@@ -1,0 +1,99 @@
+name: 'setup playwright'
+description: >-
+  Installs Playwright's browsers and their system packages (`playwright install --with-deps`) and
+  survives a flaky apt mirror: each try is time-boxed, a failed try is retried after a pause, the
+  Azure mirror is swapped for archive.ubuntu.com when its name does not resolve, and every failure
+  prints the resolver state so the log alone names the cause. Needs the repo checked out and the
+  calling project's dependencies installed first (`npx` resolves its pinned Playwright).
+
+inputs:
+  working-directory:
+    description: Directory whose package.json pins `@playwright/test` (e.g. `web`, `setup-web`).
+    required: true
+  browsers:
+    description: Space-separated browsers to install.
+    required: false
+    default: 'chromium'
+  attempts:
+    description: How many times to try the install before failing the job.
+    required: false
+    default: '3'
+  attempt-timeout-minutes:
+    description: >-
+      Time limit for one try. A healthy install takes about a minute; without a limit apt's own
+      retries kept one failing try alive for about 10 minutes.
+    required: false
+    default: '4'
+
+runs:
+  using: composite
+  steps:
+    - name: Install Playwright browsers
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BROWSERS: ${{ inputs.browsers }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        ATTEMPT_TIMEOUT_MINUTES: ${{ inputs.attempt-timeout-minutes }}
+      run: |
+        set -uo pipefail
+
+        AZURE_MIRROR="azure.archive.ubuntu.com"
+        FALLBACK_MIRROR="archive.ubuntu.com"
+        APT_MIRRORS_FILE="/etc/apt/apt-mirrors.txt"
+
+        # Name resolution and apt run through the same resolver, so a failed lookup here predicts
+        # the apt failure before it burns a try.
+        print_diagnostics() {
+          echo "::group::DNS diagnostics"
+          echo "--- /etc/resolv.conf"
+          cat /etc/resolv.conf || true
+          echo "--- resolvectl status"
+          resolvectl status 2>&1 | head -30 || true
+          for host in "$AZURE_MIRROR" ubuntu-archive-asm.trafficmanager.net "$FALLBACK_MIRROR" security.ubuntu.com; do
+            if getent hosts "$host" > /dev/null; then
+              echo "lookup ok:   $host"
+            else
+              echo "lookup FAIL: $host"
+            fi
+          done
+          echo "--- $APT_MIRRORS_FILE"
+          cat "$APT_MIRRORS_FILE" 2>&1 || true
+          echo "::endgroup::"
+        }
+
+        use_fallback_mirror_if_azure_unresolvable() {
+          if getent hosts "$AZURE_MIRROR" > /dev/null; then
+            return 0
+          fi
+          echo "::warning::$AZURE_MIRROR does not resolve; pointing apt at $FALLBACK_MIRROR"
+          print_diagnostics
+          if [[ -f "$APT_MIRRORS_FILE" ]]; then
+            sudo sed -i "s/${AZURE_MIRROR//./\\.}/$FALLBACK_MIRROR/g" "$APT_MIRRORS_FILE"
+          else
+            echo "::warning::$APT_MIRRORS_FILE not found; leaving apt sources unchanged"
+          fi
+        }
+
+        for attempt in $(seq 1 "$ATTEMPTS"); do
+          use_fallback_mirror_if_azure_unresolvable
+          echo "playwright install: attempt $attempt of $ATTEMPTS (limit ${ATTEMPT_TIMEOUT_MINUTES}m)"
+          start_seconds=$SECONDS
+          # BROWSERS is intentionally unquoted so a space-separated list becomes separate args.
+          # shellcheck disable=SC2086
+          timeout "${ATTEMPT_TIMEOUT_MINUTES}m" npx playwright install --with-deps $BROWSERS
+          install_rc=$?
+          echo "playwright install: attempt $attempt rc=$install_rc after $((SECONDS - start_seconds))s"
+          if [[ "$install_rc" -eq 0 ]]; then
+            exit 0
+          fi
+          print_diagnostics
+          # A timed-out apt can leave dpkg half-configured, which would fail the next try.
+          sudo dpkg --configure -a || true
+          if [[ "$attempt" -lt "$ATTEMPTS" ]]; then
+            sleep $((attempt * 20))
+          fi
+        done
+
+        echo "::error::playwright install failed after $ATTEMPTS attempts"
+        exit 1
