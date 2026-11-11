@@ -81,7 +81,7 @@ runs:
           start_seconds=$SECONDS
           # BROWSERS is intentionally unquoted so a space-separated list becomes separate args.
           # shellcheck disable=SC2086
-          timeout "${ATTEMPT_TIMEOUT_MINUTES}m" npx playwright install --with-deps $BROWSERS
+          timeout --kill-after=30s "${ATTEMPT_TIMEOUT_MINUTES}m" npx playwright install --with-deps $BROWSERS
           install_rc=$?
           echo "playwright install: attempt $attempt rc=$install_rc after $((SECONDS - start_seconds))s"
           if [[ "$install_rc" -eq 0 ]]; then
