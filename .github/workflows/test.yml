@@ -108,8 +108,9 @@ jobs:
         run: npm ci
 
       - name: Install Playwright browsers
-        working-directory: web
-        run: npx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-playwright
+        with:
+          working-directory: web
 
       - name: Run Playwright e2e tests
         working-directory: web
@@ -134,8 +135,9 @@ jobs:
         run: npm ci
 
       - name: Install Playwright browsers
-        working-directory: setup-web
-        run: npx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-playwright
+        with:
+          working-directory: setup-web
 
       # No standalone build step: the webServer command in setup-web/playwright.config.ts
       # builds dist/ itself, mirroring the web E2E job above.
