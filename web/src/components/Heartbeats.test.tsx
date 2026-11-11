@@ -1413,11 +1413,38 @@ async function setDuration({
   await user.selectOptions(screen.getByLabelText(unitLabel), unit);
 }
 
+describe('Heartbeats Alerts to cell', () => {
+  function alertsCell(row: HTMLElement): HTMLElement {
+    const cell = row.querySelector<HTMLElement>('td.admin-table__fill');
+    if (cell === null) {
+      throw new Error('Alerts to cell not found');
+    }
+    return cell;
+  }
+
+  it('shows No destination for a zero-destination check only', async () => {
+    const bare = buildCheck({ id: 1, destinations: [] });
+    renderSection(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([bare, CHECK_2]) }));
+    await screen.findByRole('button', { name: `Pause ${label(bare)}` });
+
+    expect(
+      within(alertsCell(rowOf(1))).getByText(strings.heartbeatNoDestination, {
+        exact: true,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(alertsCell(rowOf(2))).queryByText(strings.heartbeatNoDestination, {
+        exact: true,
+      }),
+    ).toBeNull();
+    expect(within(alertsCell(rowOf(2))).getByText('ops_discord')).toBeInTheDocument();
+  });
+});
+
 describe('Heartbeats add check', () => {
   const hintCases: Array<[string, DestinationsLoadState, string]> = [
     ['loading', { status: 'loading', destinations: [] }, strings.addHeartbeatHintLoading],
     ['error', { status: 'error', destinations: [] }, strings.addHeartbeatHintError],
-    ['empty', { status: 'ready', destinations: [] }, strings.addHeartbeatHintEmpty],
   ];
 
   it.each(hintCases)('is aria-disabled with a %s hint', async (_label, destinationsState, hint) => {
@@ -1443,6 +1470,20 @@ describe('Heartbeats add check', () => {
     expect(add).not.toHaveAttribute('aria-disabled');
     expect(add).not.toHaveAttribute('aria-describedby');
     expect(document.getElementById('heartbeats-add-hint')).toBeNull();
+  });
+
+  it('is enabled with no hint and opens the form for a ready empty registry', async () => {
+    const user = userEvent.setup();
+    renderSection(buildClient(), { status: 'ready', destinations: [] });
+    await screen.findByText(strings.heartbeatsEmpty);
+
+    const add = button(strings.addHeartbeatAction);
+    expect(add).not.toHaveAttribute('aria-disabled');
+    expect(add).not.toHaveAttribute('aria-describedby');
+    expect(document.getElementById('heartbeats-add-hint')).toBeNull();
+
+    await user.click(add);
+    expect(screen.getByRole('form', { name: strings.addHeartbeatHeading })).toBeInTheDocument();
   });
 
   it('opens focused on the App ID, with the default period and grace and destination marks', async () => {
@@ -1557,6 +1598,72 @@ describe('Heartbeats add check', () => {
       expect(screen.queryByRole('form', { name: strings.addHeartbeatHeading })).toBeNull(),
     );
   });
+
+  it('shows the empty-registry hint and no warning on a pristine and a submit-attempted Add with a ready empty registry', async () => {
+    const user = userEvent.setup();
+    const createHeartbeat = vi.fn();
+    renderSection(buildClient({ createHeartbeat }), { status: 'ready', destinations: [] });
+    await user.click(button(strings.addHeartbeatAction));
+
+    const form = addForm();
+    const hint = within(form).getByText(strings.heartbeatDestinationsHintEmpty);
+    const fieldset = within(form).getByRole('group', { name: strings.heartbeatDestinationsLegend });
+    expect(fieldset.getAttribute('aria-describedby')).toBe(hint.id);
+    expect(within(form).getByRole('status')).toBeEmptyDOMElement();
+
+    // App ID left empty so the submit attempt fails validation and the form stays open.
+    await fillAddForm({ user, appId: '', name: 'nightly' });
+    await user.click(submitButton());
+    expect(createHeartbeat).not.toHaveBeenCalled();
+    expect(within(addForm()).getByRole('status')).toBeEmptyDOMElement();
+    expect(within(addForm()).queryByText(strings.heartbeatDestinationsNoEnabledWarning)).toBeNull();
+  });
+
+  it('saves a check with destinations [] from an Add form opened on an empty registry', async () => {
+    const user = userEvent.setup();
+    const createHeartbeat = vi.fn().mockResolvedValue(CHECK_1);
+    renderSection(buildClient({ createHeartbeat }), { status: 'ready', destinations: [] });
+    await user.click(button(strings.addHeartbeatAction));
+    await fillAddForm({ user, appId: 'urls4irl', name: 'nightly' });
+    await user.click(submitButton());
+
+    await waitFor(() =>
+      expect(createHeartbeat).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'push', destinations: [] }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole('form', { name: strings.addHeartbeatHeading })).toBeNull(),
+    );
+  });
+
+  const notReadyCases: Array<[string, DestinationsLoadState]> = [
+    ['loading', { status: 'loading', destinations: [] }],
+    ['error', { status: 'error', destinations: [] }],
+  ];
+  it.each(notReadyCases)(
+    'shows neither the empty-registry hint nor the warning on an open Add form when the registry turns %s',
+    async (_label, notReady) => {
+      const user = userEvent.setup();
+      const client = buildClient();
+      const { rerender } = renderSection(client, FULL_DESTINATIONS);
+      await user.click(button(strings.addHeartbeatAction));
+      // Tick then untick so the form counts as interacted: the warning would show if ready.
+      await user.click(checkbox('ops_discord'));
+      await user.click(checkbox('ops_discord'));
+      expect(
+        within(addForm()).getByText(strings.heartbeatDestinationsNoEnabledWarning),
+      ).toBeInTheDocument();
+
+      rerender(<Heartbeats client={client} destinationsState={notReady} />);
+
+      expect(
+        within(addForm()).queryByText(strings.heartbeatDestinationsNoEnabledWarning),
+      ).toBeNull();
+      expect(within(addForm()).queryByText(strings.heartbeatDestinationsHintEmpty)).toBeNull();
+      expect(within(addForm()).getByRole('status')).toBeEmptyDOMElement();
+    },
+  );
 
   it('reveals the no-enabled-destination warning on a failed submit with nothing ticked, and clears it on an enabled tick', async () => {
     const user = userEvent.setup();

@@ -729,7 +729,7 @@ export const strings = {
   addingHeartbeat: 'Adding…',
   addHeartbeatHintLoading: 'Loading destinations…',
   addHeartbeatHintError: 'Could not load destinations.',
-  addHeartbeatHintEmpty: 'Add a destination first. Checks alert through registered destinations.',
+  heartbeatNoDestination: 'No destination',
   editHeartbeatNamed: ({ check }: { check: string }): string => `Edit ${check}`,
   editHeartbeatTrigger: 'Edit',
   saveHeartbeat: 'Save',
