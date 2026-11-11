@@ -148,6 +148,15 @@
   overflow-wrap: anywhere;
 }
 
+.destination-form__hint--status {
+  color: var(--text-h);
+}
+
+/* Always mounted (live region) but empty: cancel the column gap so it adds no visible space. */
+.destination-form__hint--status:empty {
+  margin-top: calc(-1 * var(--space-2));
+}
+
 .destination-form__error {
   border: 1px solid var(--danger);
   background: var(--danger-bg);

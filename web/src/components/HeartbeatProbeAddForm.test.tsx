@@ -104,9 +104,12 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
   };
 }
 
-async function openAddForm(client: DeliveryApiClient): Promise<{ user: User; form: HTMLElement }> {
+async function openAddForm(
+  client: DeliveryApiClient,
+  state: DestinationsLoadState = DESTINATIONS,
+): Promise<{ user: User; form: HTMLElement }> {
   const user = userEvent.setup();
-  render(<Heartbeats client={client} destinationsState={DESTINATIONS} />);
+  render(<Heartbeats client={client} destinationsState={state} />);
   await user.click(await screen.findByRole('button', { name: strings.addHeartbeatAction }));
   return { user, form: screen.getByRole('form', { name: strings.addHeartbeatHeading }) };
 }
@@ -278,7 +281,7 @@ describe('add form: check type', () => {
         'heartbeat-credentials-hint-new',
       );
     }
-    expect(within(form).queryByRole('status')).toBeNull();
+    expect(within(group).queryByRole('status')).toBeNull();
   });
 });
 
@@ -433,28 +436,58 @@ describe('add form: validation', () => {
     expect(timeout).toHaveFocus();
   });
 
-  it('puts the destinations error on the destinations, not the form alert', async () => {
+  it('puts the max-20 destinations error on the destinations, not the form alert', async () => {
+    const many: DestinationsLoadState = {
+      status: 'ready',
+      destinations: Array.from({ length: 21 }, (_unused, index) =>
+        destination(`dest_${String(index + 1).padStart(2, '0')}`),
+      ),
+    };
     const client = buildClient();
-    const { user, form } = await openAddForm(client);
+    const { user, form } = await openAddForm(client, many);
     await user.type(field(form, strings.heartbeatAppIdLabel), 'zqapp');
     await user.type(field(form, strings.heartbeatNameLabel), 'site');
+    for (const checkboxElement of within(form).getAllByRole('checkbox')) {
+      await user.click(checkboxElement);
+    }
     await user.click(submit(form));
 
-    const first = within(form).getByRole('checkbox', { name: /^ops_discord/ });
-    const errorElement = within(form).getByText(strings.heartbeatNeedsDestination);
+    const first = within(form).getAllByRole('checkbox')[0];
+    const errorElement = within(form).getByText(strings.heartbeatTooManyDestinations);
     expect(within(form).queryByRole('alert')).toBeNull();
     expect(first).toHaveFocus();
     expect(first).toHaveAttribute('aria-invalid', 'true');
     expect(first).toHaveAttribute('aria-describedby', errorElement.id);
     const fieldset = within(form).getByRole('group', { name: strings.heartbeatDestinationsLegend });
-    expect(fieldset).toHaveAttribute('aria-describedby', errorElement.id);
+    expect(fieldset).toHaveAttribute(
+      'aria-describedby',
+      `heartbeat-destinations-new-hint ${errorElement.id}`,
+    );
     expect(fieldset).not.toHaveAttribute('aria-invalid');
 
     await user.click(first);
-    expect(within(form).queryByText(strings.heartbeatNeedsDestination)).toBeNull();
+    expect(within(form).queryByText(strings.heartbeatTooManyDestinations)).toBeNull();
     expect(first).not.toHaveAttribute('aria-invalid');
     expect(first).not.toHaveAttribute('aria-describedby');
-    expect(fieldset).not.toHaveAttribute('aria-describedby');
+    expect(fieldset).toHaveAttribute('aria-describedby', 'heartbeat-destinations-new-hint');
+  });
+
+  it('creates a probe check with no destination selected', async () => {
+    const client = buildClient();
+    const { user, form } = await openAddForm(client);
+    await chooseProbe({ user, form });
+    await user.type(field(form, strings.heartbeatAppIdLabel), 'zqapp');
+    await user.type(field(form, strings.heartbeatNameLabel), 'site');
+    await fillProbe({ user, form });
+    await user.click(submit(form));
+    await waitFor(() =>
+      expect(client.createHeartbeat).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'probe', destinations: [] }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole('form', { name: strings.addHeartbeatHeading })).toBeNull(),
+    );
   });
 
   it('focuses the empty credential half before the destinations in DOM order', async () => {
@@ -466,7 +499,6 @@ describe('add form: validation', () => {
     await user.type(field(form, strings.heartbeatCredentialsClientSecretLabel), 'sec1');
     await user.click(submit(form));
     expect(field(form, strings.heartbeatCredentialsClientIdLabel)).toHaveFocus();
-    expect(within(form).getByText(strings.heartbeatNeedsDestination)).toBeInTheDocument();
   });
 
   it('wires Period error and hint ids on push', async () => {

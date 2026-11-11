@@ -123,13 +123,18 @@ function heading(): HTMLElement {
   return screen.getByRole('heading', { name: strings.heartbeatsHeading });
 }
 
+function sectionStatuses(): HTMLElement[] {
+  // Forms carry their own role=status warning regions; the section's are outside any form.
+  return screen.getAllByRole('status').filter((element) => element.closest('form') === null);
+}
+
 /** The Down-count live region (the first role=status, above the action-result line). */
 function summary(): HTMLElement {
-  return screen.getAllByRole('status')[0];
+  return sectionStatuses()[0];
 }
 
 function resultLine(): HTMLElement {
-  return screen.getAllByRole('status')[1];
+  return sectionStatuses()[1];
 }
 
 const CHECK_1 = buildCheck({ id: 1 });
@@ -479,7 +484,7 @@ describe('Heartbeats row rendering', () => {
   it('keeps the summary distinct from the action-result line', async () => {
     await renderAtNow([UP]);
 
-    expect(screen.getAllByRole('status')).toHaveLength(2);
+    expect(sectionStatuses()).toHaveLength(2);
     expect(summary()).toHaveTextContent('0 of 1 check down');
     expect(resultLine()).toBeEmptyDOMElement();
   });
@@ -1535,6 +1540,43 @@ describe('Heartbeats add check', () => {
     );
   });
 
+  it('creates a push check with no destination selected and closes the card', async () => {
+    const user = userEvent.setup();
+    const createHeartbeat = vi.fn().mockResolvedValue(CHECK_1);
+    renderSection(buildClient({ createHeartbeat }), FULL_DESTINATIONS);
+    await user.click(button(strings.addHeartbeatAction));
+    await fillAddForm({ user, appId: 'urls4irl', name: 'nightly' });
+    await user.click(submitButton());
+
+    await waitFor(() =>
+      expect(createHeartbeat).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'push', destinations: [] }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole('form', { name: strings.addHeartbeatHeading })).toBeNull(),
+    );
+  });
+
+  it('reveals the no-enabled-destination warning on a failed submit with nothing ticked, and clears it on an enabled tick', async () => {
+    const user = userEvent.setup();
+    const createHeartbeat = vi.fn();
+    renderSection(buildClient({ createHeartbeat }), FULL_DESTINATIONS);
+    await user.click(button(strings.addHeartbeatAction));
+    // App ID left empty so the form stays open on another invalid field.
+    await fillAddForm({ user, appId: '', name: 'nightly' });
+    const warning = within(addForm()).getByRole('status');
+    expect(warning).toBeEmptyDOMElement();
+    await user.click(submitButton());
+
+    expect(createHeartbeat).not.toHaveBeenCalled();
+    expect(within(addForm()).getByText(strings.invalidHeartbeatAppId)).toBeInTheDocument();
+    expect(warning).toHaveTextContent(strings.heartbeatDestinationsNoEnabledWarning);
+
+    await user.click(checkbox('family_ntfy'));
+    expect(warning).toBeEmptyDOMElement();
+  });
+
   describe('submit-time validation', () => {
     type Case = {
       name: string;
@@ -1567,7 +1609,6 @@ describe('Heartbeats add check', () => {
       },
       { name: 'a grace of zero', grace: ['0', 'hours'], message: strings.invalidHeartbeatGrace },
       { name: 'a grace over 7 days', grace: ['8', 'days'], message: strings.invalidHeartbeatGrace },
-      { name: 'no destination', destinations: [], message: strings.heartbeatNeedsDestination },
     ];
 
     it.each(cases)('blocks $name', async (testCase) => {
@@ -2186,18 +2227,177 @@ describe('Heartbeats edit check', () => {
     expect(updateHeartbeat).not.toHaveBeenCalled();
   });
 
-  it('blocks unticking every destination', async () => {
-    const updateHeartbeat = vi.fn();
+  it('saves with destinations [] after unticking every destination', async () => {
+    const updateHeartbeat = vi.fn().mockResolvedValue(EDITED);
     const { user } = await openEditor({ client: { updateHeartbeat } });
 
     await user.click(checkbox('ops_discord'));
+    expect(
+      within(editForm()).getByText(strings.heartbeatDestinationsNoEnabledWarning),
+    ).toBeInTheDocument();
     await user.click(button(strings.saveHeartbeat));
 
-    expect(within(editForm()).getByText(strings.heartbeatNeedsDestination)).toHaveClass(
-      'destination-form__field-error',
+    await waitFor(() =>
+      expect(updateHeartbeat).toHaveBeenCalledWith(
+        expect.objectContaining({ id: EDITED.id, destinations: [] }),
+      ),
     );
-    expect(within(editForm()).queryByRole('alert')).not.toBeInTheDocument();
-    expect(updateHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it('shows the hint on edit and add forms with distinct ids and wires the warning', async () => {
+    const { user } = await openEditor();
+    const editHint = within(editForm()).getByText(strings.heartbeatDestinationsHint);
+    expect(editHint.id).toBe(`heartbeat-destinations-${EDITED.id}-hint`);
+    const editFieldset = within(editForm()).getByRole('group', {
+      name: strings.heartbeatDestinationsLegend,
+    });
+    // An edit with an enabled destination: hint only, empty warning.
+    expect(editFieldset).toHaveAttribute('aria-describedby', editHint.id);
+    await user.click(formClose());
+    await waitFor(() => expect(editDialog()).toBeNull());
+    await user.click(button(strings.addHeartbeatAction));
+
+    const addHint = within(addForm()).getByText(strings.heartbeatDestinationsHint);
+    expect(addHint.id).toBe('heartbeat-destinations-new-hint');
+    const addFieldset = within(addForm()).getByRole('group', {
+      name: strings.heartbeatDestinationsLegend,
+    });
+    // Pristine Add: hint only, empty warning.
+    expect(addFieldset).toHaveAttribute('aria-describedby', addHint.id);
+    const addWarning = within(addForm()).getByRole('status');
+    expect(addWarning).toBeEmptyDOMElement();
+
+    // Add: ticking then unticking reveals the warning.
+    await user.click(within(addForm()).getByRole('checkbox', { name: /^ops_discord/ }));
+    expect(addWarning).toBeEmptyDOMElement();
+    await user.click(within(addForm()).getByRole('checkbox', { name: /^ops_discord/ }));
+    expect(addWarning).toHaveTextContent(strings.heartbeatDestinationsNoEnabledWarning);
+    expect(addFieldset).toHaveAttribute('aria-describedby', `${addHint.id} ${addWarning.id}`);
+    expect(addWarning.id).toBe('heartbeat-destinations-new-warning');
+  });
+
+  const OPS_DISABLED: DestinationsLoadState = {
+    status: 'ready',
+    destinations: [
+      destination('ops_discord', { type: 'discord', enabled: false }),
+      destination('family_ntfy'),
+    ],
+  };
+
+  it('warns on an edit that opens with only disabled destinations and clears on an enabled tick', async () => {
+    const disabledOnly = buildCheck({
+      id: 1,
+      destinations: [{ name: 'ops_discord', type: 'discord', enabled: false }],
+    });
+    const { user } = await openEditor({
+      checks: [disabledOnly],
+      target: disabledOnly,
+      destinationsState: OPS_DISABLED,
+    });
+    const warning = within(editForm(disabledOnly)).getByText(
+      strings.heartbeatDestinationsNoEnabledWarning,
+    );
+    const fieldset = within(editForm(disabledOnly)).getByRole('group', {
+      name: strings.heartbeatDestinationsLegend,
+    });
+    expect(fieldset).toHaveAttribute(
+      'aria-describedby',
+      `heartbeat-destinations-1-hint ${warning.id}`,
+    );
+    expect(warning.id).toBe('heartbeat-destinations-1-warning');
+    // Ticking an enabled destination clears it.
+    await user.click(checkbox('family_ntfy'));
+    expect(warning).toBeEmptyDOMElement();
+    expect(fieldset).toHaveAttribute('aria-describedby', 'heartbeat-destinations-1-hint');
+  });
+
+  // The Add button is aria-disabled until the registry is ready and non-empty, so the
+  // loading and error states are only reachable through an edit.
+  const unreadyCases: Array<[string, DestinationsLoadState]> = [
+    ['loading', { status: 'loading', destinations: [] }],
+    ['error', { status: 'error', destinations: [] }],
+  ];
+
+  describe.each(unreadyCases)('while the registry is %s', (_label, destinationsState) => {
+    it('shows no warning on an edit of a check with only disabled destinations', async () => {
+      const disabledOnly = buildCheck({
+        id: 1,
+        destinations: [{ name: 'ops_discord', type: 'discord', enabled: false }],
+      });
+      await openEditor({ checks: [disabledOnly], target: disabledOnly, destinationsState });
+      expect(
+        within(editForm(disabledOnly)).queryByText(strings.heartbeatDestinationsNoEnabledWarning),
+      ).toBeNull();
+    });
+
+    it('shows no warning and the normal hint on an edit of a check with an embedded enabled destination', async () => {
+      await openEditor({ destinationsState });
+      expect(
+        within(editForm()).queryByText(strings.heartbeatDestinationsNoEnabledWarning),
+      ).toBeNull();
+      expect(within(editForm()).getByText(strings.heartbeatDestinationsHint)).toBeInTheDocument();
+      expect(within(editForm()).queryByText(strings.heartbeatDestinationsHintEmpty)).toBeNull();
+    });
+
+    it('shows the normal hint, not the empty variant, on an edit of a check with no destinations', async () => {
+      const bare = buildCheck({ id: 1, destinations: [] });
+      await openEditor({ checks: [bare], target: bare, destinationsState });
+      expect(
+        within(editForm(bare)).getByText(strings.heartbeatDestinationsHint),
+      ).toBeInTheDocument();
+      expect(within(editForm(bare)).queryByText(strings.heartbeatDestinationsHintEmpty)).toBeNull();
+    });
+  });
+
+  it('shows the empty-registry hint and an empty warning on an edit of a check with no destinations', async () => {
+    const bare = buildCheck({ id: 1, destinations: [] });
+    await openEditor({
+      checks: [bare],
+      target: bare,
+      destinationsState: { status: 'ready', destinations: [] },
+    });
+    expect(
+      within(editForm(bare)).getByText(strings.heartbeatDestinationsHintEmpty),
+    ).toBeInTheDocument();
+    expect(within(editForm(bare)).queryByText(strings.heartbeatDestinationsHint)).toBeNull();
+    expect(
+      within(editForm(bare)).queryByText(strings.heartbeatDestinationsNoEnabledWarning),
+    ).toBeNull();
+    // The live region is always mounted, just empty.
+    expect(within(editForm(bare)).getByRole('status')).toBeEmptyDOMElement();
+  });
+
+  it('treats a stale-only edit with an empty registry as having no enabled destination', async () => {
+    const staleOnly = buildCheck({
+      id: 1,
+      destinations: [{ name: 'old_hook', type: 'webhook', enabled: true }],
+    });
+    await openEditor({
+      checks: [staleOnly],
+      target: staleOnly,
+      destinationsState: { status: 'ready', destinations: [] },
+    });
+    const form = editForm(staleOnly);
+    expect(within(form).getByText(strings.heartbeatDestinationsHint)).toBeInTheDocument();
+    expect(within(form).queryByText(strings.heartbeatDestinationsHintEmpty)).toBeNull();
+    expect(
+      within(form).getByText(strings.heartbeatDestinationsNoEnabledWarning),
+    ).toBeInTheDocument();
+  });
+
+  it('lets the registry win over the embedded copy of an enabled destination', async () => {
+    // EDITED embeds ops_discord as enabled; the registry says disabled.
+    await openEditor({ destinationsState: OPS_DISABLED });
+    expect(
+      within(editForm()).getByText(strings.heartbeatDestinationsNoEnabledWarning),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no warning for the same embedded-enabled check while the registry is loading', async () => {
+    await openEditor({ destinationsState: { status: 'loading', destinations: [] } });
+    expect(
+      within(editForm()).queryByText(strings.heartbeatDestinationsNoEnabledWarning),
+    ).toBeNull();
   });
 
   it('keeps an unknown destination selected, marked not found, and omits destinations when only the grace changed', async () => {

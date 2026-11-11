@@ -750,6 +750,11 @@ export const strings = {
   heartbeatGraceHint:
     'Extra wait before “down” (1 min – 7 days). Use ≥ 1 h for daily jobs to absorb DST shifts.',
   heartbeatDestinationsLegend: 'Alert destinations',
+  heartbeatDestinationsHint: 'Optional. Alerts wait until an enabled destination is assigned.',
+  heartbeatDestinationsHintEmpty:
+    'No destinations are registered yet. You can save this check now; its alerts wait until you add an enabled destination and assign it here.',
+  heartbeatDestinationsNoEnabledWarning:
+    "No enabled destination is selected; this check's alerts will wait.",
   heartbeatKindLegend: 'Check type',
   heartbeatKindPush: 'Push (app pings in)',
   heartbeatKindProbe: 'Website probe',
@@ -813,7 +818,6 @@ export const strings = {
   invalidProbeTimeout: 'Timeout must be a whole number of seconds between 1 and 8.',
   invalidProbeCredentialPair: 'Enter both the client ID and secret.',
   invalidProbeCredential: 'Use 1 to 256 visible ASCII characters with no spaces.',
-  heartbeatNeedsDestination: 'Select at least one alert destination.',
   heartbeatTooManyDestinations: 'Select at most 20 alert destinations.',
 
   // Personal destinations section.
