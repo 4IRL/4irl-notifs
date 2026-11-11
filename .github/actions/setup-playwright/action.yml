@@ -36,6 +36,8 @@ runs:
         ATTEMPTS: ${{ inputs.attempts }}
         ATTEMPT_TIMEOUT_MINUTES: ${{ inputs.attempt-timeout-minutes }}
       run: |
+        # GitHub runs `bash -e`; the retry loop must see a failed install, not abort on it.
+        set +e
         set -uo pipefail
 
         AZURE_MIRROR="azure.archive.ubuntu.com"
