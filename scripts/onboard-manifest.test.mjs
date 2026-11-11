@@ -428,6 +428,19 @@ describe('validateManifest — single-file rules (DD-1)', () => {
       ),
     );
 
+    const nullHeartbeat = validateManifest(
+      baseAppManifest({
+        destinations,
+        routes: [{ channel: 'ops', destinations: manyNames }],
+        heartbeats: [{ name: 'nightly', period: '24h', grace: '1h', destinations: null }],
+      }),
+    );
+    assert.ok(
+      nullHeartbeat.errors.some(
+        (e) => e.path === 'heartbeats[0].destinations' && /must be an array/.test(e.message),
+      ),
+    );
+
     const omittedRoute = validateManifest(
       baseAppManifest({ destinations, routes: [{ channel: 'ops' }] }),
     );
