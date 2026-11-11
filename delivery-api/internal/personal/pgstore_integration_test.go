@@ -107,39 +107,57 @@ func TestInsertRefusesNtfyType(testInstance *testing.T) {
 	}
 }
 
-func TestListEnabledOptedInFiltersByAppPersonAndEnabled(testInstance *testing.T) {
+func TestListEnabledOptedInByIDs(testInstance *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), storeTestBudget)
 	defer cancel()
 	store, _, _ := newTestStore(ctx, testInstance)
 
 	wanted := mustInsert(ctx, testInstance, store, newDestination(personOne, "urls4irl", "wanted", true))
 	disabled := mustInsert(ctx, testInstance, store, newDestination(personOne, "urls4irl", "disabled", true))
-	mustInsert(ctx, testInstance, store, newDestination(personOne, "urls4irl", "no-optin", false))
-	otherApp := mustInsert(ctx, testInstance, store, newDestination(personOne, "chores4irl", "other-app", true))
-	mustInsert(ctx, testInstance, store, newDestination(personTwo, "urls4irl", "other-person", true))
+	noOptIn := mustInsert(ctx, testInstance, store, newDestination(personOne, "urls4irl", "no-optin", false))
+	otherAppOnly := mustInsert(ctx, testInstance, store, newDestination(personOne, "chores4irl", "other-app", true))
+	crossOptIn := mustInsert(ctx, testInstance, store, newDestination(personOne, "chores4irl", "cross-optin", true))
+	otherPerson := mustInsert(ctx, testInstance, store, newDestination(personTwo, "urls4irl", "other-person", true))
+	notSelected := mustInsert(ctx, testInstance, store, newDestination(personOne, "urls4irl", "not-selected", true))
 	if _, disableErr := store.DisableBySystem(ctx, disabled.ID, "Endpoint returned 410 Gone."); disableErr != nil {
 		testInstance.Fatalf("DisableBySystem: %v", disableErr)
 	}
-	// A second opt-in from urls4irl on a chores4irl-registered row makes it listed too.
-	if optErr := store.OptIn(ctx, "urls4irl", otherApp.ID); optErr != nil {
+	if optErr := store.OptIn(ctx, "urls4irl", crossOptIn.ID); optErr != nil {
 		testInstance.Fatalf("OptIn: %v", optErr)
 	}
 
-	listed, listErr := store.ListEnabledOptedIn(ctx, "urls4irl", personOne)
+	idsOf := func(destinations []Destination) []int64 {
+		got := make([]int64, 0, len(destinations))
+		for _, destination := range destinations {
+			got = append(got, destination.ID)
+		}
+		return got
+	}
+	named := []int64{crossOptIn.ID, otherPerson.ID, disabled.ID, noOptIn.ID, otherAppOnly.ID, 999999, wanted.ID}
+	listed, listErr := store.ListEnabledOptedInByIDs(ctx, "urls4irl", personOne, named)
 	if listErr != nil {
-		testInstance.Fatalf("ListEnabledOptedIn: %v", listErr)
+		testInstance.Fatalf("ListEnabledOptedInByIDs: %v", listErr)
 	}
-	gotIDs := make([]int64, 0, len(listed))
-	for _, destination := range listed {
-		gotIDs = append(gotIDs, destination.ID)
-	}
-	if want := []int64{wanted.ID, otherApp.ID}; !slices.Equal(gotIDs, want) {
-		testInstance.Fatalf("ListEnabledOptedIn ids = %v, want %v", gotIDs, want)
+	if want := []int64{wanted.ID, crossOptIn.ID}; !slices.Equal(idsOf(listed), want) {
+		testInstance.Fatalf("ids = %v, want %v (ordered by id, every ineligible id absent)", idsOf(listed), want)
 	}
 
-	chores, choresErr := store.ListEnabledOptedIn(ctx, "chores4irl", personOne)
-	if choresErr != nil || len(chores) != 1 || chores[0].ID != otherApp.ID {
-		testInstance.Fatalf("ListEnabledOptedIn(chores4irl) = (%v, %v), want only the chores4irl row", chores, choresErr)
+	// Per-app: the same ids for chores4irl select only the row chores4irl is opted in for.
+	chores, choresErr := store.ListEnabledOptedInByIDs(ctx, "chores4irl", personOne, named)
+	if choresErr != nil || !slices.Equal(idsOf(chores), []int64{otherAppOnly.ID, crossOptIn.ID}) {
+		testInstance.Fatalf("chores4irl ids = (%v, %v), want [%d %d]", idsOf(chores), choresErr, otherAppOnly.ID, crossOptIn.ID)
+	}
+
+	// Per-person: personTwo's own row is selectable only as personTwo.
+	asTwo, twoErr := store.ListEnabledOptedInByIDs(ctx, "urls4irl", personTwo, named)
+	if twoErr != nil || !slices.Equal(idsOf(asTwo), []int64{otherPerson.ID}) {
+		testInstance.Fatalf("personTwo ids = (%v, %v), want [%d]", idsOf(asTwo), twoErr, otherPerson.ID)
+	}
+
+	// Rows not named are never returned.
+	one, oneErr := store.ListEnabledOptedInByIDs(ctx, "urls4irl", personOne, []int64{notSelected.ID})
+	if oneErr != nil || !slices.Equal(idsOf(one), []int64{notSelected.ID}) {
+		testInstance.Fatalf("single id = (%v, %v), want [%d]", idsOf(one), oneErr, notSelected.ID)
 	}
 }
 
@@ -163,6 +181,29 @@ func TestListByPersonNewestFirstAndAdminListTotal(testInstance *testing.T) {
 	filtered, filteredTotal, filteredErr := store.ListForAdmin(ctx, personTwo)
 	if filteredErr != nil || len(filtered) != 1 || filteredTotal != 1 {
 		testInstance.Fatalf("ListForAdmin person = (%d rows, total %d, %v), want 1 and 1", len(filtered), filteredTotal, filteredErr)
+	}
+}
+
+func TestAdminListCapsUnfilteredButNotPersonFiltered(testInstance *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), storeTestBudget)
+	defer cancel()
+	store, _, _ := newTestStore(ctx, testInstance)
+
+	const personRows = AdminListLimit + 5
+	for index := range personRows {
+		mustInsert(ctx, testInstance, store, newDestination(personOne, "urls4irl", fmt.Sprintf("many%d", index), true))
+	}
+	mustInsert(ctx, testInstance, store, newDestination(personTwo, "urls4irl", "elsewhere", true))
+
+	all, allTotal, allErr := store.ListForAdmin(ctx, "")
+	if allErr != nil || len(all) != AdminListLimit || allTotal != personRows+1 {
+		testInstance.Fatalf("unfiltered = (%d rows, total %d, %v), want %d rows and total %d",
+			len(all), allTotal, allErr, AdminListLimit, personRows+1)
+	}
+	filtered, filteredTotal, filteredErr := store.ListForAdmin(ctx, personOne)
+	if filteredErr != nil || len(filtered) != personRows || filteredTotal != personRows {
+		testInstance.Fatalf("person filtered = (%d rows, total %d, %v), want all %d",
+			len(filtered), filteredTotal, filteredErr, personRows)
 	}
 }
 

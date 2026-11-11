@@ -27,22 +27,24 @@ const (
 
 // Error messages returned by the message endpoints.
 const (
-	errMsgMessagesUnavailable        = "messages unavailable"
-	errMsgInvalidWait                = "invalid wait"
-	errMsgInvalidDeliveryID          = "invalid delivery id"
-	errMsgAppIDRequired              = "app_id is required"
-	errMsgKeyLookupRequired          = "app_id and idempotency_key are required"
-	errMsgDestinationDisabled        = "destination disabled"
-	errMsgNoDestinationMatched       = "no destination matched"
-	errMsgDestinationTypeUnsupported = "destination type not yet supported"
-	errMsgNoPublisher                = "app has no ntfy publisher"
-	errMsgMessageNotFound            = "message not found"
-	errMsgDeliveryNotFound           = "delivery not found"
-	errMsgDeliveryNotDead            = "delivery not dead"
-	errMsgTooManyScheduled           = "too many scheduled messages"
-	errMsgScheduledCapacityReached   = "scheduled message capacity reached"
-	errMsgTooManyHeld                = "too many held messages"
-	errMsgHeldCapacityReached        = "held message capacity reached"
+	errMsgMessagesUnavailable            = "messages unavailable"
+	errMsgInvalidWait                    = "invalid wait"
+	errMsgInvalidDeliveryID              = "invalid delivery id"
+	errMsgAppIDRequired                  = "app_id is required"
+	errMsgKeyLookupRequired              = "app_id and idempotency_key are required"
+	errMsgDestinationDisabled            = "destination disabled"
+	errMsgNoDestinationMatched           = "no destination matched"
+	errMsgDestinationTypeUnsupported     = "destination type not yet supported"
+	errMsgNoPublisher                    = "app has no ntfy publisher"
+	errMsgInvalidVia                     = "invalid to.via"
+	errMsgPersonalDestinationUnavailable = "personal destination not available for recipient"
+	errMsgMessageNotFound                = "message not found"
+	errMsgDeliveryNotFound               = "delivery not found"
+	errMsgDeliveryNotDead                = "delivery not dead"
+	errMsgTooManyScheduled               = "too many scheduled messages"
+	errMsgScheduledCapacityReached       = "scheduled message capacity reached"
+	errMsgTooManyHeld                    = "too many held messages"
+	errMsgHeldCapacityReached            = "held message capacity reached"
 )
 
 // Query parameter and path value names, and list defaults.
@@ -119,6 +121,10 @@ type createMessageRequestBody struct {
 type messageToRequestBody struct {
 	Destination string `json:"destination"`
 	Recipient   string `json:"recipient"`
+	// Via is a pointer so an explicit "" (rejected) is told apart from absent or
+	// null (unset, meaning ntfy).
+	Via                    *string `json:"via"`
+	PersonalDestinationIDs []int64 `json:"personal_destination_ids"`
 }
 
 // messageView is the JSON form of a stored message. It deliberately omits the
@@ -340,6 +346,14 @@ func (server *Server) createMessage(responseWriter http.ResponseWriter, request 
 	if body.To != nil {
 		envelope.ToDestination = body.To.Destination
 		envelope.ToRecipient = body.To.Recipient
+		envelope.ToPersonalDestinationIDs = body.To.PersonalDestinationIDs
+		if body.To.Via != nil {
+			if *body.To.Via == "" {
+				server.writeMessageError(responseWriter, request, &message.ValidationError{Message: errMsgInvalidVia})
+				return
+			}
+			envelope.ToRecipientVia = message.RecipientVia(*body.To.Via)
+		}
 	}
 
 	stored, outcome, err := server.messages.Submit(request.Context(), envelope)
@@ -725,6 +739,8 @@ func (server *Server) writeMessageError(responseWriter http.ResponseWriter, requ
 		writeError(responseWriter, http.StatusUnprocessableEntity, errMsgDestinationTypeUnsupported)
 	case errors.Is(err, registry.ErrNoPublisher):
 		writeError(responseWriter, http.StatusUnprocessableEntity, errMsgNoPublisher)
+	case errors.Is(err, message.ErrPersonalDestinationUnavailable):
+		writeError(responseWriter, http.StatusUnprocessableEntity, errMsgPersonalDestinationUnavailable)
 	case errors.Is(err, message.ErrMessageNotFound):
 		writeError(responseWriter, http.StatusNotFound, errMsgMessageNotFound)
 	case errors.Is(err, message.ErrDeliveryNotFound):

@@ -23,6 +23,10 @@ const (
 	// renderable display text bound for an ntfy or discord destination.
 	errMsgDisplayRequired = "display.title or display.body is required for ntfy and discord destinations"
 
+	// errMsgInvalidVia is the validation message for an unknown or unusable
+	// to.via value; it is deliberately the same for every routing miss.
+	errMsgInvalidVia = "invalid to.via"
+
 	// DefaultListLimit is the page size of an operator delivery list that names
 	// no limit.
 	DefaultListLimit = 50
@@ -92,10 +96,11 @@ type Publishers interface {
 	HasPublisher(ctx context.Context, appID string) (bool, error)
 }
 
-// PersonalTargets lists the personal destinations a to.recipient message also
-// fans out to. *personal.Service satisfies it.
+// PersonalTargets resolves the personal destinations a to.recipient message
+// names (to.personal_destination_ids). *personal.Service satisfies it.
 type PersonalTargets interface {
-	OptedInTargets(ctx context.Context, appID, personHash string) ([]personal.Target, error)
+	// SelectedTargets returns only the named ids that are the person's, enabled and opted in for appID.
+	SelectedTargets(ctx context.Context, appID, personHash string, ids []int64) ([]personal.Target, error)
 }
 
 // ServiceConfig configures a Service.
@@ -313,6 +318,7 @@ func (service *Service) Submit(ctx context.Context, envelope Envelope) (StoredMe
 	if envelope.ToRecipient != "" && !personhash.IsHash(envelope.ToRecipient) {
 		envelope.ToRecipient = personhash.Hash(envelope.ToRecipient)
 	}
+	envelope = normaliseRouting(envelope)
 	now := service.now()
 
 	existing, findErr := service.store.GetMessageByKey(ctx, envelope.AppID, envelope.IdempotencyKey)
@@ -496,52 +502,97 @@ func (service *Service) routeTargets(
 	return targets, nil
 }
 
-// resolveRecipientTargets builds the synthetic ntfy delivery for a
-// to.recipient envelope, whose ToRecipient is already a person hash, followed
-// by one delivery per enabled personal destination of that person opted in for
-// the sending app (ordered by id). The set is a snapshot taken here, at
-// submit/replace time; it is never recomputed at release.
+// resolveRecipientTargets snapshots the delivery targets for a to.recipient
+// envelope, whose ToRecipient is already a person hash, according to its
+// effective via: ntfy builds only the @recipient target, personal only one
+// @personal_<id> target per named destination, both the two together. The set
+// is a snapshot taken here, at submit/replace time; it is never recomputed at
+// release. An unknown via is denied.
 //
-// The recipient bypasses the registry (there is no destination row), so it fails
+// The ntfy leg bypasses the registry (there is no destination row), so it fails
 // closed itself: ntfy must have a sink, the per-person topic must fit ntfy's
 // 64-character cap, the display must be renderable, and the app must have a
-// publisher token (a nil Publishers is that same refusal, not a panic).
+// publisher token (a nil Publishers is that same refusal, not a panic). The
+// personal leg needs only a renderable display and every named destination
+// deliverable.
 func (service *Service) resolveRecipientTargets(ctx context.Context, envelope Envelope) ([]DeliveryTarget, error) {
+	switch envelope.ToRecipientVia.OrDefault() {
+	case RecipientViaNtfy:
+		ntfyTarget, ntfyErr := service.recipientNtfyTarget(ctx, envelope)
+		if ntfyErr != nil {
+			return nil, ntfyErr
+		}
+		return []DeliveryTarget{ntfyTarget}, nil
+	case RecipientViaPersonal:
+		if !envelope.Display.HasRenderableText() {
+			return nil, &ValidationError{Message: errMsgDisplayRequired}
+		}
+		return service.selectedPersonalTargets(ctx, envelope)
+	case RecipientViaBoth:
+		ntfyTarget, ntfyErr := service.recipientNtfyTarget(ctx, envelope)
+		if ntfyErr != nil {
+			return nil, ntfyErr
+		}
+		personalTargets, personalErr := service.selectedPersonalTargets(ctx, envelope)
+		if personalErr != nil {
+			return nil, personalErr
+		}
+		return append([]DeliveryTarget{ntfyTarget}, personalTargets...), nil
+	default:
+		return nil, &ValidationError{Message: errMsgInvalidVia}
+	}
+}
+
+// recipientNtfyTarget runs the ntfy-leg checks (sink, topic length, display,
+// publisher) and returns the synthetic @recipient target.
+func (service *Service) recipientNtfyTarget(ctx context.Context, envelope Envelope) (DeliveryTarget, error) {
 	if !service.supportedTypes[registry.TypeNtfy] {
-		return nil, ErrUnsupportedDestinationType
+		return DeliveryTarget{}, ErrUnsupportedDestinationType
 	}
 	topic := personhash.PersonChannelTopic(envelope.AppID, envelope.ToRecipient, envelope.Channel)
 	if len(topic) > maxNtfyTopicLength {
-		return nil, &ValidationError{Message: "app_id and channel are too long for a recipient topic"}
+		return DeliveryTarget{}, &ValidationError{Message: "app_id and channel are too long for a recipient topic"}
 	}
 	if !envelope.Display.HasRenderableText() {
-		return nil, &ValidationError{Message: errMsgDisplayRequired}
+		return DeliveryTarget{}, &ValidationError{Message: errMsgDisplayRequired}
 	}
 	if service.publishers == nil {
-		return nil, registry.ErrNoPublisher
+		return DeliveryTarget{}, registry.ErrNoPublisher
 	}
 	hasPublisher, publisherErr := service.publishers.HasPublisher(ctx, envelope.AppID)
 	if publisherErr != nil {
-		return nil, publisherErr
+		return DeliveryTarget{}, publisherErr
 	}
 	if !hasPublisher {
-		return nil, registry.ErrNoPublisher
+		return DeliveryTarget{}, registry.ErrNoPublisher
 	}
-	targets := []DeliveryTarget{{
+	return DeliveryTarget{
 		DestinationID:   nil,
 		DestinationName: registry.RecipientDestinationName,
 		DestinationType: registry.TypeNtfy,
-	}}
-	if service.personals == nil {
-		return targets, nil
+	}, nil
+}
+
+// selectedPersonalTargets resolves the named personal destinations. Any miss
+// (nil service, count mismatch, a type with no sink) is the one generic
+// ErrPersonalDestinationUnavailable so a response never confirms that a named
+// id exists; a store error propagates unchanged.
+func (service *Service) selectedPersonalTargets(ctx context.Context, envelope Envelope) ([]DeliveryTarget, error) {
+	if service.personals == nil || len(envelope.ToPersonalDestinationIDs) == 0 {
+		return nil, ErrPersonalDestinationUnavailable
 	}
-	personalTargets, personalErr := service.personals.OptedInTargets(ctx, envelope.AppID, envelope.ToRecipient)
-	if personalErr != nil {
-		return nil, personalErr
+	selected, selectErr := service.personals.SelectedTargets(
+		ctx, envelope.AppID, envelope.ToRecipient, envelope.ToPersonalDestinationIDs)
+	if selectErr != nil {
+		return nil, selectErr
 	}
-	for _, personalTarget := range personalTargets {
+	if len(selected) != len(envelope.ToPersonalDestinationIDs) {
+		return nil, ErrPersonalDestinationUnavailable
+	}
+	targets := make([]DeliveryTarget, 0, len(selected))
+	for _, personalTarget := range selected {
 		if !service.supportedTypes[personalTarget.Type] {
-			return nil, ErrUnsupportedDestinationType
+			return nil, ErrPersonalDestinationUnavailable
 		}
 		targets = append(targets, DeliveryTarget{
 			DestinationID:   nil,

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/4IRL/4irl-notifs/delivery-api/internal/personal"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/personhash"
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/registry"
 )
@@ -248,6 +249,26 @@ func TestSubmitIdenticalRetryOfAScheduledMessageIsADuplicateWithoutResolving(tes
 			},
 			retry: func(envelope *Envelope) { envelope.ToDestination = "ops_webhook" },
 		},
+		{
+			name:   "legacy NULL via equals a retried explicit ntfy",
+			stored: routedEnvelope("", nil),
+			retry:  func(envelope *Envelope) { envelope.ToRecipientVia = RecipientViaNtfy },
+		},
+		{
+			name:   "stored ntfy equals a retried unset via",
+			stored: routedEnvelope(RecipientViaNtfy, nil),
+			retry:  func(envelope *Envelope) { envelope.ToRecipientVia = "" },
+		},
+		{
+			name:   "ntfy with an empty id slice equals no ids",
+			stored: routedEnvelope(RecipientViaNtfy, nil),
+			retry:  func(envelope *Envelope) { envelope.ToPersonalDestinationIDs = []int64{} },
+		},
+		{
+			name:   "ids compare as sorted sets",
+			stored: routedEnvelope(RecipientViaBoth, []int64{12, 15}),
+			retry:  func(envelope *Envelope) { envelope.ToPersonalDestinationIDs = []int64{15, 12} },
+		},
 	}
 	for _, testCase := range testCases {
 		testInstance.Run(testCase.name, func(subTest *testing.T) {
@@ -334,6 +355,162 @@ func TestSubmitAChangeInAnyComparedFieldIsAReplace(testInstance *testing.T) {
 			if len(fixture.store.replaceCalls) != 1 || len(fixture.resolver.calls) != 1 {
 				subTest.Fatalf("replace/resolve calls = %d/%d, want 1/1",
 					len(fixture.store.replaceCalls), len(fixture.resolver.calls))
+			}
+		})
+	}
+}
+
+// routedEnvelope returns a constructor for a scheduled recipient envelope with
+// the given routing, as the store would hold it.
+func routedEnvelope(via RecipientVia, ids []int64) func() Envelope {
+	return func() Envelope {
+		envelope := scheduledEnvelope()
+		envelope.ToRecipient = personhash.Hash("alice@example.com")
+		envelope.Display = &Display{Title: "T", Body: "B"}
+		envelope.ToRecipientVia = via
+		envelope.ToPersonalDestinationIDs = ids
+		return envelope
+	}
+}
+
+func TestSubmitAChangeInRoutingIsAReplace(testInstance *testing.T) {
+	testCases := []struct {
+		name   string
+		stored func() Envelope
+		change func(envelope *Envelope)
+	}{
+		{
+			name:   "via ntfy to both",
+			stored: routedEnvelope(RecipientViaNtfy, nil),
+			change: func(envelope *Envelope) {
+				envelope.ToRecipientVia = RecipientViaBoth
+				envelope.ToPersonalDestinationIDs = []int64{12}
+			},
+		},
+		{
+			name:   "legacy NULL via to personal",
+			stored: routedEnvelope("", nil),
+			change: func(envelope *Envelope) {
+				envelope.ToRecipientVia = RecipientViaPersonal
+				envelope.ToPersonalDestinationIDs = []int64{12}
+			},
+		},
+		{
+			name:   "via both to personal",
+			stored: routedEnvelope(RecipientViaBoth, []int64{12}),
+			change: func(envelope *Envelope) { envelope.ToRecipientVia = RecipientViaPersonal },
+		},
+		{
+			name:   "different id set",
+			stored: routedEnvelope(RecipientViaPersonal, []int64{12, 15}),
+			change: func(envelope *Envelope) { envelope.ToPersonalDestinationIDs = []int64{12, 16} },
+		},
+		{
+			name:   "subset id set",
+			stored: routedEnvelope(RecipientViaPersonal, []int64{12, 15}),
+			change: func(envelope *Envelope) { envelope.ToPersonalDestinationIDs = []int64{12} },
+		},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			fixture := newPersonalFixture(allSinks, &fakePersonalTargets{targets: []personal.Target{
+				{ID: 12, Type: registry.TypeWebhook}, {ID: 15, Type: registry.TypeWebhook}, {ID: 16, Type: registry.TypeWebhook},
+			}})
+			storedEnvelope := testCase.stored()
+			fixture.store.getByKeyPresent = true
+			fixture.store.getByKeyResult = storedAs(storedEnvelope, StateScheduled)
+			fixture.store.replaceReplaced = true
+			changed := storedEnvelope
+			testCase.change(&changed)
+
+			_, outcome, err := fixture.service.Submit(context.Background(), changed)
+			if err != nil || !outcome.Replaced || outcome.Duplicate {
+				subTest.Fatalf("Submit = (%v, outcome %+v), want replaced", err, outcome)
+			}
+			if len(fixture.store.replaceCalls) != 1 {
+				subTest.Fatalf("replace calls = %d, want 1", len(fixture.store.replaceCalls))
+			}
+		})
+	}
+}
+
+func TestSubmitChangedRoutingOnAnUnscheduledMessageIsADuplicate(testInstance *testing.T) {
+	immediate := func() Envelope {
+		envelope := routedEnvelope(RecipientViaNtfy, nil)()
+		envelope.DeliverAt = nil
+		return envelope
+	}
+	testCases := []struct {
+		name   string
+		stored func() Envelope
+		state  string
+	}{
+		{name: "released", stored: routedEnvelope(RecipientViaNtfy, nil), state: StatePending},
+		{name: "delivered", stored: routedEnvelope(RecipientViaNtfy, nil), state: StateDelivered},
+		{name: "cancelled", stored: routedEnvelope(RecipientViaNtfy, nil), state: StateCancelled},
+		{name: "immediate", stored: immediate, state: StatePending},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			storedEnvelope := testCase.stored()
+			fixture := newServiceFixture().withExisting(storedAs(storedEnvelope, testCase.state))
+			fixture.resolver.err = registry.ErrDestinationDisabled
+			retry := storedEnvelope
+			retry.ToRecipientVia = RecipientViaBoth
+			retry.ToPersonalDestinationIDs = []int64{12}
+
+			stored, outcome, err := fixture.service.Submit(context.Background(), retry)
+			if err != nil || !outcome.Duplicate || outcome.Replaced {
+				subTest.Fatalf("Submit = (%v, outcome %+v), want a duplicate", err, outcome)
+			}
+			if stored.Envelope.ToRecipientVia != RecipientViaNtfy || len(stored.Envelope.ToPersonalDestinationIDs) != 0 {
+				subTest.Fatalf("stored routing = %q/%v, want the original ntfy", stored.Envelope.ToRecipientVia,
+					stored.Envelope.ToPersonalDestinationIDs)
+			}
+			if len(fixture.store.replaceCalls) != 0 || len(fixture.resolver.calls) != 0 {
+				subTest.Fatalf("replace/resolve calls = %d/%d, want none",
+					len(fixture.store.replaceCalls), len(fixture.resolver.calls))
+			}
+		})
+	}
+}
+
+func TestSubmitNormalisesRoutingBeforeTheStore(testInstance *testing.T) {
+	testCases := []struct {
+		name      string
+		recipient string
+		via       RecipientVia
+		ids       []int64
+		wantVia   RecipientVia
+		wantIDs   []int64
+	}{
+		{name: "unset becomes ntfy", recipient: "alice@example.com", wantVia: RecipientViaNtfy},
+		{name: "empty ids become nil", recipient: "alice@example.com", via: RecipientViaNtfy, ids: []int64{}, wantVia: RecipientViaNtfy},
+		{name: "ids sorted", recipient: "alice@example.com", via: RecipientViaBoth, ids: []int64{15, 12}, wantVia: RecipientViaBoth, wantIDs: []int64{12, 15}},
+		{name: "no recipient has no routing", wantVia: ""},
+	}
+	for _, testCase := range testCases {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			fixture := newPersonalFixture(allSinks, &fakePersonalTargets{targets: []personal.Target{
+				{ID: 12, Type: registry.TypeWebhook}, {ID: 15, Type: registry.TypeWebhook},
+			}})
+			envelope := validEnvelope()
+			if testCase.recipient != "" {
+				envelope = recipientEnvelope(testCase.recipient)
+			}
+			envelope.ToRecipientVia = testCase.via
+			envelope.ToPersonalDestinationIDs = testCase.ids
+
+			if _, _, err := fixture.service.Submit(context.Background(), envelope); err != nil {
+				subTest.Fatalf("Submit: %v", err)
+			}
+			if len(fixture.store.insertCalls) != 1 {
+				subTest.Fatalf("insert calls = %d, want 1", len(fixture.store.insertCalls))
+			}
+			got := fixture.store.insertCalls[0].envelope
+			if got.ToRecipientVia != testCase.wantVia || !reflect.DeepEqual(got.ToPersonalDestinationIDs, testCase.wantIDs) {
+				subTest.Fatalf("stored routing = %q/%#v, want %q/%#v", got.ToRecipientVia,
+					got.ToPersonalDestinationIDs, testCase.wantVia, testCase.wantIDs)
 			}
 		})
 	}

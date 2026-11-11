@@ -69,6 +69,11 @@ func ValidateEnvelope(envelope Envelope) error {
 	if err := ValidateTo(envelope.ToDestination, envelope.ToRecipient); err != nil {
 		return err
 	}
+	if err := ValidateRecipientRouting(
+		envelope.ToDestination, envelope.ToRecipient, envelope.ToRecipientVia, envelope.ToPersonalDestinationIDs,
+	); err != nil {
+		return err
+	}
 	if err := ValidateDeliverAt(envelope.DeliverAt); err != nil {
 		return err
 	}
@@ -125,6 +130,57 @@ func ValidateTo(toDestination string, toRecipient string) error {
 		return &ValidationError{Message: "invalid to.destination"}
 	}
 	return nil
+}
+
+// ValidateRecipientRouting checks to.via and to.personal_destination_ids. Both
+// are only meaningful with a to.recipient. An empty id list (nil or []) counts
+// as absent. Selection is always explicit: personal and both need ids, ntfy
+// and unset refuse them. Unknown via values are denied by the default branch.
+func ValidateRecipientRouting(
+	toDestination string, toRecipient string, via RecipientVia, ids []int64,
+) error {
+	if via == "" && len(ids) == 0 {
+		return nil
+	}
+	if toDestination != "" || toRecipient == "" {
+		return &ValidationError{Message: "to.via requires to.recipient"}
+	}
+	switch via {
+	case "", RecipientViaNtfy:
+		if len(ids) > 0 {
+			return &ValidationError{Message: "to.personal_destination_ids not allowed for to.via ntfy"}
+		}
+		return nil
+	case RecipientViaPersonal, RecipientViaBoth:
+		if len(ids) == 0 {
+			return &ValidationError{Message: "to.personal_destination_ids required for to.via"}
+		}
+		if !validDestinationIDs(ids) {
+			return &ValidationError{Message: "invalid to.personal_destination_ids"}
+		}
+		return nil
+	default:
+		return &ValidationError{Message: errMsgInvalidVia}
+	}
+}
+
+// validDestinationIDs reports whether ids are all positive, unique and within
+// MaxPersonalDestinationsPerMessage.
+func validDestinationIDs(ids []int64) bool {
+	if len(ids) > MaxPersonalDestinationsPerMessage {
+		return false
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return false
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	return true
 }
 
 // maxDeliverAt is the latest accepted deliver_at, compared in UTC. It is the

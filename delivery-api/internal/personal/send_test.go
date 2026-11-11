@@ -79,7 +79,7 @@ func TestResolvePersonalUnknownStateErrorsAreRaw(testInstance *testing.T) {
 	})
 }
 
-func TestOptedInTargets(testInstance *testing.T) {
+func TestSelectedTargets(testInstance *testing.T) {
 	ctx := context.Background()
 	fix := newFixture(testInstance)
 	first := fix.create(testInstance, aliceEmail)
@@ -90,18 +90,19 @@ func TestOptedInTargets(testInstance *testing.T) {
 		testInstance.Fatalf("DisablePersonal: %v", disableErr)
 	}
 
-	targets, listErr := fix.service.OptedInTargets(ctx, appA, first.PersonHash)
-	if listErr != nil {
-		testInstance.Fatalf("OptedInTargets: %v", listErr)
+	ids := []int64{other.ID, disabled.ID, second.ID, first.ID, 9999}
+	targets, selectErr := fix.service.SelectedTargets(ctx, appA, first.PersonHash, ids)
+	if selectErr != nil {
+		testInstance.Fatalf("SelectedTargets: %v", selectErr)
 	}
 	if len(targets) != 2 || targets[0].ID != first.ID || targets[1].ID != second.ID || targets[0].Type != TypeDiscord {
-		testInstance.Fatalf("targets = %+v, want [%d %d] (disabled and other-person rows excluded)", targets, first.ID, second.ID)
+		testInstance.Fatalf("targets = %+v, want only [%d %d]", targets, first.ID, second.ID)
 	}
-	if forOther, otherErr := fix.service.OptedInTargets(ctx, appB, first.PersonHash); otherErr != nil || len(forOther) != 0 {
+	if forOther, otherErr := fix.service.SelectedTargets(ctx, appB, first.PersonHash, ids); otherErr != nil || len(forOther) != 0 {
 		testInstance.Fatalf("other app targets = %+v, %v, want none", forOther, otherErr)
 	}
-	if forBob, bobErr := fix.service.OptedInTargets(ctx, appA, other.PersonHash); bobErr != nil || len(forBob) != 1 {
-		testInstance.Fatalf("bob targets = %+v, %v, want one", forBob, bobErr)
+	if none, noneErr := fix.service.SelectedTargets(ctx, appA, first.PersonHash, nil); noneErr != nil || len(none) != 0 {
+		testInstance.Fatalf("no ids targets = %+v, %v, want none", none, noneErr)
 	}
 }
 

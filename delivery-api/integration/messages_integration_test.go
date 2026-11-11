@@ -419,6 +419,25 @@ func assertSubmitRejections(testInstance *testing.T, routedChannel string) {
 	requireErrorMessage(testInstance, "POST message with an invalid recipient", body,
 		"to.recipient must be an email or person_hash")
 
+	emptyViaBody := submitBody(routedChannel, "it-empty-via-"+randomSuffix(testInstance))
+	emptyViaBody["to"] = map[string]any{"recipient": "someone@example.com", "via": ""}
+	status, body = apiRequest(testInstance, http.MethodPost, messagesPath, emptyViaBody)
+	requireStatus(testInstance, "POST message with an empty to.via", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "POST message with an empty to.via", body, "invalid to.via")
+
+	badViaBody := submitBody(routedChannel, "it-bad-via-"+randomSuffix(testInstance))
+	badViaBody["to"] = map[string]any{"recipient": "someone@example.com", "via": "sms"}
+	status, body = apiRequest(testInstance, http.MethodPost, messagesPath, badViaBody)
+	requireStatus(testInstance, "POST message with an unknown to.via", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "POST message with an unknown to.via", body, "invalid to.via")
+
+	missingIDsBody := submitBody(routedChannel, "it-missing-ids-"+randomSuffix(testInstance))
+	missingIDsBody["to"] = map[string]any{"recipient": "someone@example.com", "via": "personal"}
+	status, body = apiRequest(testInstance, http.MethodPost, messagesPath, missingIDsBody)
+	requireStatus(testInstance, "POST via=personal without ids", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "POST via=personal without ids", body,
+		"to.personal_destination_ids required for to.via")
+
 	unroutedChannel := "it_" + randomSuffix(testInstance)
 	status, body = apiRequest(testInstance, http.MethodPost, messagesPath,
 		submitBody(unroutedChannel, "it-unrouted-"+randomSuffix(testInstance)))

@@ -188,10 +188,10 @@ func (store *fakeStore) IsOptedIn(_ context.Context, appID string, id int64) (bo
 	return store.optIns[id][appID], nil
 }
 
-func (store *fakeStore) ListEnabledOptedIn(_ context.Context, appID, personHash string) ([]Destination, error) {
+func (store *fakeStore) ListEnabledOptedInByIDs(_ context.Context, appID, personHash string, ids []int64) ([]Destination, error) {
 	var out []Destination
 	for id, row := range store.rows {
-		if row.PersonHash == personHash && row.Enabled && store.optIns[id][appID] {
+		if row.PersonHash == personHash && row.Enabled && store.optIns[id][appID] && slices.Contains(ids, id) {
 			out = append(out, *row)
 		}
 	}

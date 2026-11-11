@@ -112,9 +112,10 @@ WHERE person_hash = $1 ORDER BY created_at DESC, id DESC`, personHash)
 	return collectDestinations(rows, "list personal destinations")
 }
 
-// ListForAdmin returns the newest AdminListLimit destinations, optionally for
-// one person (empty personHash means all), and the total count matching the
-// filter before the limit.
+// ListForAdmin returns the newest AdminListLimit destinations across everyone
+// (empty personHash), or every destination of one person when personHash is set
+// (that set is bounded by MaxPerPersonPerApp per app, so the cap is not applied),
+// and the total count matching the filter.
 func (store *PGStore) ListForAdmin(ctx context.Context, personHash string) ([]Destination, int, error) {
 	var total int
 	if countErr := store.pool.QueryRow(ctx,
@@ -123,7 +124,7 @@ func (store *PGStore) ListForAdmin(ctx context.Context, personHash string) ([]De
 	}
 	rows, queryErr := store.pool.Query(ctx,
 		`SELECT `+destinationColumns+` FROM personal_destinations WHERE ($1 = '' OR person_hash = $1)
-ORDER BY created_at DESC, id DESC LIMIT $2`, personHash, AdminListLimit)
+ORDER BY created_at DESC, id DESC LIMIT (CASE WHEN $1 = '' THEN $2::int END)`, personHash, AdminListLimit)
 	if queryErr != nil {
 		return nil, 0, pgutil.WrapDBError("list personal destinations for admin", queryErr)
 	}
@@ -440,19 +441,20 @@ func (store *PGStore) IsOptedIn(ctx context.Context, appID string, id int64) (bo
 	return optedIn, nil
 }
 
-// ListEnabledOptedIn returns the person's enabled destinations that appID is
-// opted in for, ordered by id.
-func (store *PGStore) ListEnabledOptedIn(ctx context.Context, appID, personHash string) ([]Destination, error) {
+// ListEnabledOptedInByIDs returns the destinations among ids that are the
+// person's, enabled and opted in for appID, ordered by id. Any other id is
+// absent from the result.
+func (store *PGStore) ListEnabledOptedInByIDs(ctx context.Context, appID, personHash string, ids []int64) ([]Destination, error) {
 	rows, queryErr := store.pool.Query(ctx,
 		`SELECT `+destinationColumns+` FROM personal_destinations pd
-WHERE pd.person_hash = $2 AND pd.enabled
+WHERE pd.person_hash = $2 AND pd.enabled AND pd.id = ANY($3)
   AND EXISTS (SELECT 1 FROM personal_destination_opt_ins oi
               WHERE oi.personal_destination_id = pd.id AND oi.app_id = $1)
-ORDER BY pd.id`, appID, personHash)
+ORDER BY pd.id`, appID, personHash, ids)
 	if queryErr != nil {
-		return nil, pgutil.WrapDBError("list opted-in personal destinations", queryErr)
+		return nil, pgutil.WrapDBError("list selected personal destinations", queryErr)
 	}
-	return collectDestinations(rows, "list opted-in personal destinations")
+	return collectDestinations(rows, "list selected personal destinations")
 }
 
 // DisableBySystem disables an enabled destination as 'system' with reason. It

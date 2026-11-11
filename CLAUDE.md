@@ -114,8 +114,8 @@ Components:
   the sealed publisher token), relayed to provisioning-api; `GET /healthz/provisioning` reports its
   health. End users' personal Discord and webhook destinations are registered by apps under
   `/v1/apps/{app_id}/personal-destinations` (person in the body, opted in per app) and moderated by the
-  operator under `/v1/admin/personal-destinations`; a `to.recipient` message fans out to them as
-  `@personal_<id>` deliveries (see `ARCHITECTURE.md` "Personal destinations"). It runs the delivery worker (webhook,
+  operator under `/v1/admin/personal-destinations`; a `to.recipient` message reaches only the ones it names (`to.via` +
+  `to.personal_destination_ids`) as `@personal_<id>` deliveries (see `ARCHITECTURE.md` "Personal destinations"). It runs the delivery worker (webhook,
   Discord and ntfy sinks, including `to.recipient` delivery through each app's ntfy publisher
   token), the scheduled-message releaser (`RunReleaser`), the always-on held-message releaser (`RunReleaser` with kind `held`), the heartbeat checker, the heartbeat prober (website probe loop, 10 s scan,
   bounded concurrency) and the retention

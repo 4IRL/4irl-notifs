@@ -708,7 +708,7 @@ Every row except the exchange and `/readyz` also returns the key errors above (`
 | Method and path                                              | Request                       | Success                                                  | Errors                                                                          |
 | ------------------------------------------------------------ | ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `POST /v1/app-identity/exchange` (Access token only, no key) | `{"app_id","token":"<GitHub OIDC JWT>"}` or, for a registrar workflow, `{"name","token":"<GitHub OIDC JWT>"}` (exactly one of `app_id` / `name`) | `202 {"status":"pending","request_id"}` (awaits operator approval) or `200 {"status":"issued","app_id","key","key_id"}` (the plaintext key, once; `app_id` is `prefix + name` in registrar form) | 400 malformed body, `app_id`, `invalid name` or `send exactly one of app_id or name`, 401 `invalid identity token`, 403 `identity does not match the approved binding` / `app id is not owned by this registrar`, 409 `app id is reserved by a registrar` (normal form, id inside a registrar prefix) / `registrar app limit reached` / `app id overlaps an approved app id` / `registration changed, retry`, 429 `too many pending identity requests`, 502 / 503 `app registry unavailable` (registrar auto-create, person-service), 503 `identity unavailable`. The `notifs-app` action calls this for you. |
-| `POST /v1/messages` (optional `?wait=0..10`)                 | envelope JSON (see Envelope)  | `202 {"message":{…},"duplicate":bool,"replaced":bool}` (status `unrouted`, with `deliveries: []`, when holding is on and no route matched) | 400 validation, 409 `destination disabled`, 413, 422 `no destination matched` (holding off) / `app has no ntfy publisher`, 429 (`too many held messages`, `held message capacity reached`, scheduled caps), 503 `messages unavailable` |
+| `POST /v1/messages` (optional `?wait=0..10`)                 | envelope JSON (see Envelope)  | `202 {"message":{…},"duplicate":bool,"replaced":bool}` (status `unrouted`, with `deliveries: []`, when holding is on and no route matched) | 400 validation, 409 `destination disabled`, 413, 422 `no destination matched` (holding off) / `app has no ntfy publisher` / `personal destination not available for recipient`, 429 (`too many held messages`, `held message capacity reached`, scheduled caps), 503 `messages unavailable` |
 | `GET /v1/messages/{id}?app_id=<app>`                         | none                          | `200 {"message":{…}}`                                    | 400 `app_id is required`, 404 `message not found`                               |
 | `GET /v1/messages?app_id=<app>&idempotency_key=<key>`        | none                          | `200 {"message":{…}}`                                    | 400, 404                                                                        |
 | `DELETE /v1/messages/{id}?app_id=<app>` or `DELETE /v1/messages?app_id=<app>&idempotency_key=<key>` | none | `200 {"message_id","cancelled":bool,"status"}` (idempotent) | 400                                          |
@@ -1309,6 +1309,8 @@ token alone is no longer enough.
 | `channel`         | yes      | `^[a-z0-9][a-z0-9_]{0,31}$` (exact name, no wildcards)                                     |
 | `idempotency_key` | yes      | 1-200 printable, non-space ASCII characters                                                |
 | `to`              | no       | `{"destination": "<name>"}` or `{"recipient": "<email or person_hash>"}`, never both; empty fans out through the routes |
+| `to.via`          | no       | with `to.recipient` only: `ntfy` (default when absent or `null`), `personal` or `both`; case-sensitive, an empty string is `400` (see "Recipients" and "Choosing where a recipient message goes") |
+| `to.personal_destination_ids` | no | with `to.recipient` only: ids of the person's personal destinations; required (1-50 unique positive integers) for `via` `personal` and `both`, refused for `ntfy`; `[]` counts as absent |
 | `critical`        | no       | boolean, recorded only (see `critical` below)                                              |
 | `payload`         | yes      | a single JSON object, at most 128 KiB, storable in Postgres jsonb                         |
 | `display`         | no       | `title` (max 250 bytes), `body` (max 4096), `url` (max 2048, https), `priority` (`min` `low` `default` `high` `urgent`) |
@@ -1318,7 +1320,10 @@ Validation is checked in a fixed order (`app_id`, `channel`, `idempotency_key`, 
 `payload`, `display`) and the first failure is returned as `400 {"error":"<message>"}`, for example
 `invalid app_id`, `invalid channel`, `invalid idempotency_key`, `invalid to.destination`,
 `to.destination and to.recipient cannot both be set`, `to.recipient must be an email or person_hash`,
-`invalid deliver_at`, `invalid payload`, `invalid display.title`, `invalid display.body`,
+`to.via requires to.recipient` (also returned for `to.personal_destination_ids` without a recipient),
+`invalid to.via`, `to.personal_destination_ids not allowed for to.via ntfy`,
+`to.personal_destination_ids required for to.via`, `invalid to.personal_destination_ids` (non-positive,
+duplicate or more than 50 ids), `invalid deliver_at`, `invalid payload`, `invalid display.title`, `invalid display.body`,
 `invalid display.url`, `invalid display.priority`.
 
 A successful submit is `202 {"message": {...}, "duplicate": false, "replaced": false}`. The message
@@ -1334,7 +1339,9 @@ reports the release time, or `null` when none was given), `created_at`, `cancell
 - **Idempotency:** `(app_id, idempotency_key)` identifies a message. Re-submitting it returns the
   original message with `"duplicate": true` and never waits, so retrying after a timeout is safe. The
   one exception is a message still held by `deliver_at`, which a re-post with different content
-  **replaces** (see Deferred send below).
+  **replaces** (see Deferred send below). `to.via` and `to.personal_destination_ids` count as content
+  (the ids compare as a set, so `[15,12]` equals `[12,15]`): a changed routing replaces a still-scheduled
+  message, and is ignored (a `duplicate`) for an immediate, released or cancelled one.
 - **`wait`:** `?wait=N` (whole seconds, 0-10, a larger value is clamped to 10) holds the response until
   every delivery has had a first attempt or the wait elapses. The message is already committed when the
   wait ends, so a short wait is not a failure: read the returned `deliveries[].state`. A non-integer or
@@ -1460,7 +1467,7 @@ accepts such a send instead and keeps it.
 | 403    | `app_id does not match app key`                                              | The `app_id` names another app than the key's              |
 | 409    | `destination disabled`                                                       | `to.destination` is disabled                               |
 | 413    | `request body too large`                                                     | Body over 256 KiB                                          |
-| 422    | `no destination matched`, `app has no ntfy publisher`, `destination type not yet supported` | No route/destination/publisher can take it. With holding on, an app-key send that matches no route is `202 unrouted` instead (see Unrouted messages), but the operator send-test still gets `no destination matched` |
+| 422    | `no destination matched`, `app has no ntfy publisher`, `destination type not yet supported`, `personal destination not available for recipient` | No route/destination/publisher can take it. With holding on, an app-key send that matches no route is `202 unrouted` instead (see Unrouted messages), but the operator send-test still gets `no destination matched` |
 | 429    | `too many held messages`                                                     | The app already holds the maximum held messages (see Unrouted messages) |
 | 429    | `held message capacity reached`                                              | All apps together hold the maximum held messages (see Unrouted messages) |
 | 429    | `too many scheduled messages`                                                | The app already holds the maximum scheduled messages (see Deferred send) |
@@ -1479,6 +1486,9 @@ is `{app_id}-{person_hash}-{channel}`, the same topic the user is subscribed to 
 within 64 characters (a longer combination is rejected at submit). The app also needs a **publisher**
 (minted by the app with `POST /v1/apps/{app_id}/ntfy-publisher` or by the operator with
 `POST /v1/admin/apps/{app_id}/ntfy-publisher`, see the runbook below); with none, the submit fails closed with **422**.
+The topic, publisher and topic-length requirements apply only when the message uses the ntfy leg
+(`to.via` absent, `ntfy` or `both`); with `to.via` `personal` they do not apply (see "Choosing where a
+recipient message goes").
 
 ```
 POST /v1/messages?wait=10
@@ -1494,11 +1504,11 @@ POST /v1/messages?wait=10
 
 ### Personal destinations (a person's own Discord or webhook endpoints)
 
-A person can receive an app's `to.recipient` messages at their **own** Discord or webhook endpoints in
-addition to their ntfy topic. The app builds a "my endpoints" settings page and calls the six endpoints
+A person can receive an app's `to.recipient` messages at their **own** Discord or webhook endpoints,
+instead of or in addition to their ntfy topic, as the app chooses per message (`to.via`). The app builds a "my endpoints" settings page and calls the six endpoints
 below with its own `dak_` key; the service stores only the `person_hash` (the app asserts the email, it is
 hashed and never stored, logged or returned). Types are `discord` or `webhook` only (anything else is
-`400 type must be discord or webhook`); the person's ntfy topic stays the recipient ntfy leg.
+`400 type must be discord or webhook`); the person's ntfy topic is the separate `ntfy` leg, chosen with `to.via`.
 
 **Calls** (all under `https://notifs-delivery.4irl.app/v1/apps/{app_id}/personal-destinations`, same
 Access headers and `Authorization: Bearer dak_...` as the rest of the app door; `{app_id}` must be the key's
@@ -1547,7 +1557,7 @@ there), `opted_in` (for the **calling app only**; other apps' opt-ins are never 
   also when the registering app has since been removed). Every app toggles the opt-in for **itself** only.
 - **A different person or an unknown id is `404 personal destination does not exist`**, identical to an
   absent row (no oracle); a malformed id is the same `404`.
-- **Cap:** at most 50 personal destinations per person per registering app; each app has its own allowance
+- **Cap:** at most 1000 personal destinations per person per registering app; each app has its own allowance
   for the same person (`409 personal destination limit reached`).
 - **Operator disable sticks:** `PATCH {"enabled": true}` on a row the operator disabled is
   `409 personal destination disabled by the operator` and nothing in that body is written. A row the
@@ -1570,15 +1580,62 @@ there), `opted_in` (for the **calling app only**; other apps' opt-ins are never 
   itself in to that person's personal destinations, by design. There is no per-person consent step, so only
   opt a person in after you have verified their email and their wish to receive messages there.
 
-**How `to.recipient` fans out.** A recipient message goes to the person's ntfy topic as before **plus** one
-delivery per **enabled** personal destination of that person that is opted in for the sending app. The set
-is frozen when the message is submitted (or a scheduled message is replaced): a destination or opt-in
-added afterwards never receives that message, and scheduled messages are not recomputed at release. If a
-selected personal type has no sink configured in this deployment, the submit fails `422`
-(`destination type not yet supported`). The ntfy leg is still required (no publisher stays `422`).
+### Choosing where a recipient message goes (`to.via`)
 
-**What you see in `deliveries[]`.** Besides the ntfy `@recipient` row the message shows one row per
-personal destination, named `@personal_<id>` (the destination `id`), so `deliveries[]` can hold several
+There is **no implicit fan-out**: a recipient message never reaches a personal destination unless the app
+names it. The app chooses per message with two sibling fields of `to.recipient`:
+
+| `to.via` | Delivered to |
+|---|---|
+| absent or `null`, or `ntfy` | the person's ntfy topic only (`@recipient`); personal destinations are never read |
+| `personal` | exactly the destinations in `to.personal_destination_ids`; **no ntfy delivery**, and no publisher or topic-length requirement |
+| `both` | the ntfy topic plus exactly the destinations in `to.personal_destination_ids` |
+
+```
+{"to": {"recipient": "user@example.com", "via": "personal", "personal_destination_ids": [12, 15]}}
+```
+
+- **The app names the ids.** Get them from the `lookup` (or create) call above; there is no "all my
+  destinations" shortcut. `personal` and `both` require 1-50 unique positive ids (the 50 bounds one send,
+  because every id is its own delivery and outbound request; it is separate from the 1000-per-person
+  stored cap); `ntfy` refuses ids; ids or `via` without `to.recipient` are refused. Those shape errors are
+  `400` (messages in the Envelope contract list). An unknown `via` (any other value, wrong case or an empty
+  string) is `400 invalid to.via`.
+- **Every named id must be deliverable or the whole send is refused.** Each id must belong to the
+  recipient, be enabled and be opted in for the sending app. Any miss answers
+  `422 {"error":"personal destination not available for recipient"}` before anything is stored; the
+  response never says which id or why (missing, disabled, other person, not opted in), and no id is
+  silently skipped. A named destination whose type has no sink configured in this deployment gets the same
+  `422`, so the response confirms nothing about an id.
+- **Snapshot frozen at submit.** The set of targets is computed when the message is submitted (or a
+  scheduled message is replaced) and never recomputed at release: a destination disabled or deleted
+  afterwards fails that delivery (see the `dead_reason`s below), one added afterwards never receives it.
+- **`via=personal` has no ntfy delivery.** Do not infer that the person got an ntfy push from the message
+  status; the `deliveries[]` rows show exactly what was targeted.
+- **Not echoed back.** The `202` message view does not repeat `via` or the ids.
+
+**Routing per notification type (app side).** The app, not delivery-api, stores each user's choice, and
+passes it on every send; delivery-api keeps no per-user routing preference. For example the app keeps
+`{"new_url": {"via": "personal", "ids": [12]}, "account_alert": {"via": "both", "ids": [15]}}` per user and
+builds the envelope from that row:
+
+```
+POST /v1/messages
+{
+  "app_id": "urls4irl",
+  "to": { "recipient": "user@example.com", "via": "personal", "personal_destination_ids": [12] },
+  "channel": "all",
+  "idempotency_key": "new-url-9001",
+  "payload": {},
+  "display": { "title": "New URL", "body": "Someone added a URL" }
+}
+```
+
+A notification type with no stored choice sends with no `via`, which is ntfy only.
+
+**What you see in `deliveries[]`.** With `via` `ntfy` or `both` the message shows the ntfy `@recipient`
+row; with `personal` it does not. Each named destination adds one row, named `@personal_<id>` (the
+destination `id`), so `deliveries[]` can hold several
 entries; a `202` is still not delivery. `?wait=` now waits for every one of them to have a first attempt, so
 a slow personal endpoint delays the response (bounded by the 10 s clamp; read the states, a short wait is
 not a failure). A personal delivery goes dead, never sent, with these `dead_reason`s:
@@ -1767,7 +1824,7 @@ minted once through provisioning-api by an explicit operator call, never lazily 
   deliveries then dead-letter as `terminal_status` with a 401 until the publisher is re-minted.
 - After `POST /v1/admin/apps/{app_id}/deprovision` the app's ntfy publisher user is gone, but delivery-api still holds
   its stored token, so recipient submits are accepted (202) and then dead-letter on a 401. Remove the
-  stored publisher so submits fail closed (422, `app has no ntfy publisher`):
+  stored publisher so submits that use the ntfy leg fail closed (422, `app has no ntfy publisher`):
   `curl -X DELETE https://notifs-delivery.4irl.app/v1/admin/apps/<app>/ntfy-publisher` with the same two
   proxy-token headers (204, idempotent; it removes only delivery-api's copy and revokes nothing in ntfy).
   Re-mint the publisher before recipient sends are expected to work again. (The app cascade

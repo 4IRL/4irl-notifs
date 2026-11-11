@@ -84,8 +84,9 @@ type Store interface {
 	OptOut(ctx context.Context, appID string, id int64) (reaped bool, err error)
 	OptedInAppIDs(ctx context.Context, id int64) ([]string, error)
 	IsOptedIn(ctx context.Context, appID string, id int64) (bool, error)
-	// ListEnabledOptedIn returns the person's enabled rows appID is opted in for, ordered by id.
-	ListEnabledOptedIn(ctx context.Context, appID, personHash string) ([]Destination, error)
+	// ListEnabledOptedInByIDs returns the person's enabled rows among ids that appID is opted in for,
+	// ordered by id; an ineligible id is simply absent.
+	ListEnabledOptedInByIDs(ctx context.Context, appID, personHash string, ids []int64) ([]Destination, error)
 	// DisableBySystem disables only an enabled row; it reports whether a transition happened.
 	DisableBySystem(ctx context.Context, id int64, reason string) (bool, error)
 	// ForgetPersonForApp drops appID's opt-ins for the person and reaps the rows that leave orphaned.
@@ -381,8 +382,8 @@ func (service *Service) OptOut(
 	return appViewResult, false, viewErr
 }
 
-// AdminList returns the newest AdminListLimit destinations (optionally one
-// person's; an empty personHash means all) and the total matching the filter.
+// AdminList returns the newest AdminListLimit destinations, or all of one
+// person's when personHash is set (not capped), and the total matching the filter.
 func (service *Service) AdminList(ctx context.Context, personHash string) ([]AdminView, int, error) {
 	if personHash != "" && !personhash.IsHash(personHash) {
 		return nil, 0, &ValidationError{Message: msgInvalidPerson}
