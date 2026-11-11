@@ -13,7 +13,7 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
   `/v1/admin` registry API (destinations and routes, AES-256-GCM sealed secrets, masked reads), the
   operator delivery log and replay (`/v1/admin/deliveries`) and the operator scheduled-message list
   and cancel (`/v1/admin/scheduled-messages`) and the operator held-message failure list
-  (`GET /v1/admin/held-failures`); takes heartbeat pings (`/v1/heartbeats`) with an operator
+  (`GET /v1/admin/held-failures`) and held counts (`GET /v1/admin/held-messages`); takes heartbeat pings (`/v1/heartbeats`) with an operator
   CRUD (`/v1/admin/heartbeats`); delivers webhook, Discord and ntfy messages through an
   in-process delivery worker, releases scheduled messages with an in-process releaser, releases held
   messages with an always-on in-process held releaser, raises heartbeat
@@ -132,5 +132,8 @@ by `.github/workflows/prod-build-and-deploy.yml` on merge to `main`; the admin U
 Cloudflare Pages. Public ingress, Cloudflare Access gating, and all required secrets are
 provisioned by hand — see [`ARCHITECTURE.md`](ARCHITECTURE.md) ("Deploy pipeline",
 "Hosts & DNS", "Authentication") for the complete human-in-the-loop checklist.
+
+Operations: nightly offsite backups, restores and the rebuild order are in
+[`ops/backup/RUNBOOK.md`](ops/backup/RUNBOOK.md).
 
 See `plans/` for design docs and implementation plans (not tracked in git).

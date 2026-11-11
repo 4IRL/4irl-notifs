@@ -1,19 +1,43 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
+import type { JSX } from 'react';
 
 import type {
   DeliveryApiClient,
   HeartbeatCheckerStatus,
   ReadinessResult,
 } from '../api/deliveryClient';
+import { heldTotal } from '../heldCounts';
+import type { HeldCounts } from '../heldCounts';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { strings } from '../strings';
 import { formatRelativePast } from './formatRelative';
 import { formatDateTimeZone } from './formatLocalTime';
 import { RefreshButton } from './RefreshButton';
 import './DeliveryStatusCard.css';
+import './visuallyHidden.css';
 
 interface DeliveryStatusCardProps {
   client: DeliveryApiClient;
+  /** The App-level held snapshot, shared with the Apps tables. */
+  held: HeldCounts;
+  /** Re-fetches the held snapshot; called alongside the readiness reload. */
+  onRefreshHeld: () => void;
+}
+
+/** A held-row value: the count when ready, else the loading or unavailable text. */
+function heldValue({ held, count }: { held: HeldCounts; count: number }): JSX.Element | string {
+  if (held.status === 'loading') {
+    return strings.deliveryStatusChecking;
+  }
+  if (held.status === 'unavailable') {
+    return (
+      <>
+        {strings.noValue}
+        <span className="visually-hidden">{strings.heldUnavailableHidden}</span>
+      </>
+    );
+  }
+  return String(count);
 }
 
 function pillFor(result: ReadinessResult | null): { label: string; modifier: string } {
@@ -54,7 +78,13 @@ function heartbeatCheckerFact({
  * delivery-api outage is rendered here only and never touches the shared
  * provisioning error banner.
  */
-export function DeliveryStatusCard({ client }: DeliveryStatusCardProps) {
+export function DeliveryStatusCard({ client, held, onRefreshHeld }: DeliveryStatusCardProps) {
+  const heldHintId = useId();
+  const unassignedHintId = useId();
+  const heldCount = heldTotal(held);
+  const unassignedCount = held.status === 'ready' ? held.unassignedTotal : 0;
+  const showHeldHint = held.status === 'ready' && heldCount > 0;
+  const showUnassignedHint = held.status === 'ready' && unassignedCount > 0;
   // null means a check is in flight.
   const [result, setResult] = useState<ReadinessResult | null>(null);
   // When the result was fetched; "last run" is relative to it, not to render time.
@@ -143,9 +173,34 @@ export function DeliveryStatusCard({ client }: DeliveryStatusCardProps) {
           onClick={() => {
             setResult(null);
             void load();
+            onRefreshHeld();
           }}
         />
       </div>
+      <dl className="status-card__facts status-card__held">
+        <div>
+          <dt>{strings.heldMessagesLabel}</dt>
+          <dd aria-describedby={showHeldHint ? heldHintId : undefined}>
+            {heldValue({ held, count: heldCount })}
+          </dd>
+        </div>
+        <div>
+          <dt>{strings.unassignedAlertsLabel}</dt>
+          <dd aria-describedby={showUnassignedHint ? unassignedHintId : undefined}>
+            {heldValue({ held, count: unassignedCount })}
+          </dd>
+        </div>
+      </dl>
+      {showHeldHint && (
+        <p id={heldHintId} className="status-card__hint">
+          {strings.heldMessagesHint}
+        </p>
+      )}
+      {showUnassignedHint && (
+        <p id={unassignedHintId} className="status-card__hint">
+          {strings.unassignedAlertsHint}
+        </p>
+      )}
       {hasSchema && result.heartbeatChecker.stale && (
         <p className="status-card__warn">{strings.heartbeatCheckerStalledWarning}</p>
       )}

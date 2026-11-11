@@ -23,6 +23,7 @@ import { messageOf, withoutKey } from './rowState';
 import './adminTable.css';
 import './OwnerBadge.css';
 import './PersonalDestinations.css';
+import './visuallyHidden.css';
 
 interface PersonalDestinationsProps {
   client: DeliveryApiClient;

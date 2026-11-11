@@ -6,6 +6,7 @@ import type {
   DeliveryApiClient,
   DeliveryState,
   DeliverySummary,
+  HeldFailuresList,
 } from '../api/deliveryClient';
 import { useCompactTable } from '../hooks/useCompactTable';
 import { useFocusRegistry } from '../hooks/useFocusRegistry';
@@ -16,7 +17,9 @@ import { ConfirmButton } from './ConfirmButton';
 import { formatTimeOfDay } from './formatLocalTime';
 import { LocalTime } from './LocalTime';
 import { RefreshButton } from './RefreshButton';
+import { ReleaseFailures } from './ReleaseFailures';
 import { messageOf, withoutKey } from './rowState';
+import { shortMessageId } from './shortMessageId';
 import './DeliveryLog.css';
 
 interface DeliveryLogProps {
@@ -34,13 +37,18 @@ const DESTINATION_DELETED = 'destination_deleted';
 const OPTED_OUT = 'opted_out';
 const PERSONAL_NAME_PREFIX = '@personal_';
 
-const FILTERS: { state: DeliveryState; label: string }[] = [
-  { state: 'dead', label: strings.deliveryLogFilterDead },
-  { state: 'pending', label: strings.deliveryLogFilterPending },
-  { state: 'delivered', label: strings.deliveryLogFilterDelivered },
+type LogFilter = DeliveryState | 'release_failed';
+
+const RELEASE_FAILED = 'release_failed';
+
+const FILTERS: { value: LogFilter; label: string }[] = [
+  { value: 'dead', label: strings.deliveryLogFilterDead },
+  { value: 'pending', label: strings.deliveryLogFilterPending },
+  { value: 'delivered', label: strings.deliveryLogFilterDelivered },
+  { value: RELEASE_FAILED, label: strings.deliveryLogFilterReleaseFailed },
 ];
 
-const DEFAULT_FILTER: DeliveryState = 'dead';
+const DEFAULT_FILTER: LogFilter = 'dead';
 
 function FunnelGlyph(): JSX.Element {
   return (
@@ -89,10 +97,6 @@ function formatClock(timestamp: string): string {
   return formatTimeOfDay({ timestamp, withSeconds: true });
 }
 
-function shortMessageId(id: string): string {
-  return id.length > 10 ? `${id.slice(0, 6)}…${id.slice(-2)}` : id;
-}
-
 /**
  * The Delivery Log section of the Delivery tab. Mounted lazily by the tab
  * shell, it owns the state filter, the expanded attempts row and the per-row
@@ -101,7 +105,7 @@ function shortMessageId(id: string): string {
 export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
   const compact = useCompactTable();
   const hintId = useId();
-  const [filter, setFilter] = useState<DeliveryState>(DEFAULT_FILTER);
+  const [filter, setFilter] = useState<LogFilter>(DEFAULT_FILTER);
   const [deliveries, setDeliveries] = useState<DeliverySummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -110,12 +114,18 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
   const [busyIds, setBusyIds] = useState<Record<number, true>>({});
   const [rowErrors, setRowErrors] = useState<Record<number, string>>({});
   const [replayResult, setReplayResult] = useState<string | null>(null);
+  // Release failures have their own state so a late response from the other source can never
+  // change the loading, error or empty state of the current filter.
+  const [failures, setFailures] = useState<HeldFailuresList | null>(null);
+  const [failuresLoading, setFailuresLoading] = useState(false);
+  const [failuresUnavailable, setFailuresUnavailable] = useState(false);
 
   const busyRef = useRef(new Set<number>());
   const filterRef = useRef(filter);
   const { registerControl, requestFocus } = useFocusRegistry();
   const trackDeliveries = useLatestRequest();
   const trackAttempts = useLatestRequest();
+  const trackFailures = useLatestRequest();
 
   const loadDeliveries = useCallback(
     (state: DeliveryState): Promise<void> =>
@@ -135,11 +145,41 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
     [client, trackDeliveries],
   );
 
-  // Initial load, and a reload whenever the state filter changes.
+  const loadFailures = useCallback(
+    (): Promise<void> =>
+      trackFailures(client.listHeldFailures()).then((outcome) => {
+        if (outcome.stale) {
+          return;
+        }
+        if (outcome.ok) {
+          setFailures(outcome.value);
+          setFailuresUnavailable(false);
+        } else {
+          setFailures(null);
+          setFailuresUnavailable(true);
+        }
+        setFailuresLoading(false);
+      }),
+    [client, trackFailures],
+  );
+
+  // Initial load, and a reload whenever the filter changes.
   useEffect(() => {
     filterRef.current = filter;
-    void loadDeliveries(filter);
-  }, [filter, loadDeliveries]);
+    if (filter === RELEASE_FAILED) {
+      void loadFailures();
+    } else {
+      void loadDeliveries(filter);
+    }
+  }, [filter, loadDeliveries, loadFailures]);
+
+  function beginFailuresLoad() {
+    // Supersede any deliveries load, and show only the loading text until the newest settles.
+    void trackDeliveries(Promise.resolve());
+    setFailures(null);
+    setFailuresUnavailable(false);
+    setFailuresLoading(true);
+  }
 
   function collapseAttempts() {
     // Supersede any attempts load still in flight for the row being collapsed.
@@ -147,21 +187,32 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
     setExpandedId(null);
   }
 
-  function startReload(state: DeliveryState) {
+  function startReload() {
     collapseAttempts();
     setReplayResult(null);
+    if (filter === RELEASE_FAILED) {
+      beginFailuresLoad();
+      void loadFailures();
+      return;
+    }
+    void trackFailures(Promise.resolve());
     setLoading(true);
-    void loadDeliveries(state);
+    void loadDeliveries(filter);
   }
 
-  function selectFilter(state: DeliveryState) {
-    if (state === filter) {
+  function selectFilter(next: LogFilter) {
+    if (next === filter) {
       return;
     }
     collapseAttempts();
     setReplayResult(null);
-    setLoading(true);
-    setFilter(state);
+    if (next === RELEASE_FAILED) {
+      beginFailuresLoad();
+    } else {
+      void trackFailures(Promise.resolve());
+      setLoading(true);
+    }
+    setFilter(next);
   }
 
   function toggleAttempts(id: number) {
@@ -191,6 +242,7 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
       return;
     }
     busyRef.current.add(id);
+    const startedOn = filterRef.current;
     setBusyIds((current) => ({ ...current, [id]: true }));
     setRowErrors((current) => withoutKey({ record: current, key: id }));
     const index = deliveries.findIndex((delivery) => delivery.id === id);
@@ -200,15 +252,22 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
       .then((replayed) => {
         setDeliveries((current) => current.filter((delivery) => delivery.id !== id));
         setExpandedId((current) => (current === id ? null : current));
-        setReplayResult(
-          strings.replayQueued({
-            next: replayed.nextAttemptAt === null ? null : formatClock(replayed.nextAttemptAt),
-          }),
-        );
-        requestFocus(neighbour === undefined ? HEADING_KEY : `attempts:${neighbour.id}`);
+        // Only the chip the replay started on shows its result and takes focus.
+        if (filterRef.current === startedOn) {
+          setReplayResult(
+            strings.replayQueued({
+              next: replayed.nextAttemptAt === null ? null : formatClock(replayed.nextAttemptAt),
+            }),
+          );
+          requestFocus(neighbour === undefined ? HEADING_KEY : `attempts:${neighbour.id}`);
+        }
         // Reload through the tracked loader so the newest response wins: an
-        // earlier in-flight reload can no longer re-insert the replayed row.
-        void loadDeliveries(filterRef.current);
+        // earlier in-flight reload can no longer re-insert the replayed row. The
+        // failures view has no replayed rows, so it reloads when re-entered.
+        const current = filterRef.current;
+        if (current !== RELEASE_FAILED) {
+          void loadDeliveries(current);
+        }
       })
       .catch((rejection: unknown) => {
         setRowErrors((current) => ({
@@ -280,7 +339,8 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
     );
   }
 
-  const showTable = !loading && deliveries.length > 0;
+  const releaseFailedActive = filter === RELEASE_FAILED;
+  const showTable = !releaseFailedActive && !loading && deliveries.length > 0;
 
   return (
     <section className="delivery-log" aria-labelledby="delivery-log-heading">
@@ -298,13 +358,13 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
             role="group"
             aria-label={strings.deliveryLogFilterLabel}
           >
-            {FILTERS.map(({ state, label }) => (
+            {FILTERS.map(({ value, label }) => (
               <button
-                key={state}
+                key={value}
                 type="button"
                 className="delivery-log__button"
-                aria-pressed={filter === state}
-                onClick={() => selectFilter(state)}
+                aria-pressed={filter === value}
+                onClick={() => selectFilter(value)}
               >
                 {label}
               </button>
@@ -314,13 +374,13 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
         <RefreshButton
           label={strings.deliveryLogRefresh}
           className="delivery-log__button"
-          busy={loading}
-          onClick={() => startReload(filter)}
+          busy={releaseFailedActive ? failuresLoading : loading}
+          onClick={startReload}
         />
         {compact && (
           <ChoiceMenu
             label={strings.deliveryLogFiltersMenu}
-            choices={FILTERS.map(({ state, label }) => ({ value: state, label }))}
+            choices={FILTERS}
             value={filter}
             onSelect={selectFilter}
             active={filter !== DEFAULT_FILTER}
@@ -330,19 +390,34 @@ export function DeliveryLog({ client }: DeliveryLogProps): JSX.Element {
         )}
       </div>
       <p id={hintId} className="delivery-log__hint">
-        {strings.deliveryLogHint({ state: filter })}
-        {filter === 'dead' && ` ${strings.deliveryLogReplayHint}`}
+        {filter === RELEASE_FAILED ? (
+          strings.releaseFailuresHint
+        ) : (
+          <>
+            {strings.deliveryLogHint({ state: filter })}
+            {filter === 'dead' && ` ${strings.deliveryLogReplayHint}`}
+          </>
+        )}
       </p>
       <p role="status" className="delivery-log__result">
         {replayResult}
       </p>
-      {loading && <p className="delivery-log__status">{strings.deliveryLogLoading}</p>}
-      {!loading && error !== null && (
+      {releaseFailedActive && (
+        <ReleaseFailures
+          loading={failuresLoading}
+          unavailable={failuresUnavailable}
+          failures={failures}
+        />
+      )}
+      {!releaseFailedActive && loading && (
+        <p className="delivery-log__status">{strings.deliveryLogLoading}</p>
+      )}
+      {!releaseFailedActive && !loading && error !== null && (
         <p role="alert" className="delivery-log__status">
           {error}
         </p>
       )}
-      {!loading && error === null && deliveries.length === 0 && (
+      {!releaseFailedActive && !loading && error === null && deliveries.length === 0 && (
         <p className="delivery-log__status">{strings.deliveryLogEmpty({ state: filter })}</p>
       )}
       {showTable && (

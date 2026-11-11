@@ -1,0 +1,18 @@
+# Ported from apps/platform/backup/*.service (GPropersi/apps), adapted to the 4irl-notifs VPS (Docker, root, tighter memory caps).
+# No EnvironmentFile=: backup.sh reads /etc/notifs-backup/backup.env itself with a literal KEY=VALUE reader.
+# install-backup.sh run-now passes exactly these properties to systemd-run (a static test compares them).
+[Unit]
+Description=Nightly offsite backup of 4irl-notifs (restic to Cloudflare R2)
+After=network-online.target time-sync.target docker.service
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/notifs-backup/backup.sh nightly
+TimeoutStartSec=4500
+Nice=10
+IOSchedulingClass=idle
+MemoryHigh=256M
+MemoryMax=384M

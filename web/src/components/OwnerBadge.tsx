@@ -4,6 +4,7 @@ import type { OwnerFields } from '../api/deliveryClient';
 import { strings } from '../strings';
 import { classifyOwner } from './ownership';
 import './OwnerBadge.css';
+import './visuallyHidden.css';
 
 /**
  * Who owns a destination, route or check. Always text (never colour alone), with a

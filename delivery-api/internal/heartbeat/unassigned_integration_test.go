@@ -3,6 +3,7 @@
 package heartbeat_test
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/heartbeat"
@@ -53,6 +54,48 @@ func (stack fixture) setPending(testInstance *testing.T, name string) {
 	if _, execErr := stack.pool.Exec(stack.ctx,
 		`UPDATE heartbeat_checks SET pending_alert = 'down' WHERE name = $1`, name); execErr != nil {
 		testInstance.Fatalf("set pending_alert on %s: %v", name, execErr)
+	}
+}
+
+func TestListUnassignedAlertsMatchesTheCountPredicate(testInstance *testing.T) {
+	stack := newFixture(testInstance) // supported set: {webhook: true}
+	stack.typedDestination(testInstance, "off_one", registry.TypeWebhook, false)
+	stack.typedDestination(testInstance, "ntfy_on", registry.TypeNtfy, true)
+	stack.typedDestination(testInstance, "hook_on", registry.TypeWebhook, true)
+
+	stack.zeroDestinationCheck(testInstance, "zeta_none", false)
+	stack.zeroDestinationCheck(testInstance, "alpha_none", false)
+	stack.check(testInstance, "only_disabled", "off_one")
+	stack.check(testInstance, "only_unsupported", "ntfy_on")
+	stack.check(testInstance, "deliverable", "hook_on")
+	stack.zeroDestinationCheck(testInstance, "no_alert", false)
+	for _, name := range []string{"zeta_none", "alpha_none", "only_disabled", "only_unsupported", "deliverable"} {
+		stack.setPending(testInstance, name)
+	}
+
+	listed, total, err := stack.store.ListUnassignedAlerts(stack.ctx, 50)
+	if err != nil {
+		testInstance.Fatalf("ListUnassignedAlerts: %v", err)
+	}
+	counted, countErr := stack.store.CountUnassignedAlerts(stack.ctx)
+	if countErr != nil || counted != total || total != len(listed) {
+		testInstance.Fatalf("list = %d, total = %d, count = (%d, %v); want all equal", len(listed), total, counted, countErr)
+	}
+	var names []string
+	for _, check := range listed {
+		names = append(names, check.Name)
+		if check.AppID != "billing" || check.PendingAlert != "down" || check.CheckID == 0 {
+			testInstance.Errorf("check = %+v, want app billing, pending down and an id", check)
+		}
+	}
+	wantNames := []string{"alpha_none", "only_disabled", "only_unsupported", "zeta_none"}
+	if !reflect.DeepEqual(names, wantNames) {
+		testInstance.Fatalf("names = %v, want %v (app then name order; deliverable and no-alert excluded)", names, wantNames)
+	}
+
+	capped, cappedTotal, cappedErr := stack.store.ListUnassignedAlerts(stack.ctx, 2)
+	if cappedErr != nil || len(capped) != 2 || cappedTotal != 4 {
+		testInstance.Fatalf("capped = (%d items, total %d, %v), want 2 items with the uncapped total 4", len(capped), cappedTotal, cappedErr)
 	}
 }
 

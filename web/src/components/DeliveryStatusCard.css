@@ -74,6 +74,18 @@
   font-size: 0.875rem;
 }
 
+.status-card__held {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.status-card__hint {
+  margin: var(--space-2) 0 0;
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
 /* A stalled heartbeat checker reads in the accent (warning) colour. */
 .status-card__facts dd.status-card__stalled {
   color: var(--accent);

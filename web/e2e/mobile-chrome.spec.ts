@@ -71,7 +71,7 @@ test.describe('Mobile chrome at 420px', () => {
   });
 
   test('the text filter buttons are replaced by the funnel', async ({ page }) => {
-    await expect(page.getByRole('group', { name: 'Filter by state' })).toHaveCount(0);
+    await expect(page.getByRole('group', { name: 'Filter deliveries' })).toHaveCount(0);
     await expect(funnel(page)).toBeVisible();
     await expectTouchTarget(funnel(page));
     await expectNoPageOverflow(page);
@@ -114,17 +114,17 @@ test.describe('Mobile chrome at 420px', () => {
     await trigger.focus();
     await page.keyboard.press('ArrowDown');
     const items = menu(page).getByRole('menuitemradio');
-    await expect(items).toHaveCount(3);
+    await expect(items).toHaveCount(4);
     await expect(items.nth(0)).toBeFocused();
 
     await page.keyboard.press('ArrowDown');
     await expect(items.nth(1)).toBeFocused();
     await page.keyboard.press('End');
-    await expect(items.nth(2)).toBeFocused();
+    await expect(items.nth(3)).toBeFocused();
     await page.keyboard.press('ArrowDown');
     await expect(items.nth(0)).toBeFocused();
     await page.keyboard.press('ArrowUp');
-    await expect(items.nth(2)).toBeFocused();
+    await expect(items.nth(3)).toBeFocused();
     await page.keyboard.press('Home');
     await expect(items.nth(0)).toBeFocused();
 
@@ -149,7 +149,7 @@ test.describe('Mobile chrome at 420px', () => {
   test('ArrowUp opens on the last item', async ({ page }) => {
     await funnel(page).focus();
     await page.keyboard.press('ArrowUp');
-    await expect(menu(page).getByRole('menuitemradio').nth(2)).toBeFocused();
+    await expect(menu(page).getByRole('menuitemradio').nth(3)).toBeFocused();
   });
 
   test('Tab dismisses the menu', async ({ page }) => {
@@ -194,7 +194,7 @@ test.describe('Mobile chrome at 1280px', () => {
 
   test('the filter is the text button group, with no funnel', async ({ page }) => {
     await expect(funnel(page)).toHaveCount(0);
-    const group = page.getByRole('group', { name: 'Filter by state' });
+    const group = page.getByRole('group', { name: 'Filter deliveries' });
     await expect(group).toBeVisible();
     await expect(group.getByRole('button', { name: 'Dead' })).toHaveAttribute(
       'aria-pressed',
