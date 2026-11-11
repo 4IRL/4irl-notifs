@@ -1811,10 +1811,16 @@ describe('App Delivery tab', () => {
         }),
       );
 
-      await waitFor(() => expect(add).toHaveAttribute('aria-disabled', 'true'));
-      expect(document.getElementById(add.getAttribute('aria-describedby') ?? '')).toHaveTextContent(
-        strings.addHeartbeatHintEmpty,
+      await waitFor(() =>
+        expect(
+          screen.queryByRole('button', {
+            name: strings.deleteDestination({ name: 'ops_discord' }),
+          }),
+        ).toBeNull(),
       );
+      const addAfter = screen.getByRole('button', { name: strings.addHeartbeatAction });
+      expect(addAfter).not.toHaveAttribute('aria-disabled');
+      expect(addAfter).not.toHaveAttribute('aria-describedby');
     });
   });
 });

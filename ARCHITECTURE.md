@@ -56,7 +56,7 @@ the VPS; person-service + admin UI are Cloudflare-native.
   with no deliverable destination: an alert held solely because every deliverable destination permanently
   rejects the Submit (unknown, disabled at the registry, unsupported type at Submit) is not counted and shows up
   only in the throttled waiting log. `PATCH` with `"destinations":[]` clears them; omitted or `null` leaves them
-  unchanged. The admin UI and onboard manifests still require one destination until a later release.
+  unchanged. The admin UI and onboard manifests accept a check with no destination (a manifest that omits destinations or lists [] clears any set in the UI on the next apply).
   The ping routes bind `app_id` to the caller's key (the same model as `/v1/messages`), so one app can
   no longer ping or fail another app's check.
   **Probe checks.** `POST /v1/admin/heartbeats` also creates a website probe check: instead of

@@ -252,6 +252,8 @@ export function HeartbeatForm({
   const [fieldErrors, setFieldErrors] = useState<FieldErrors<FormField>>({});
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Add only: the no-enabled-destination warning stays hidden until the user interacts.
+  const [destinationsTouched, setDestinationsTouched] = useState(false);
   const localFirstFieldRef = useRef<HTMLInputElement | null>(null);
   const localPeriodRef = useRef<HTMLInputElement | null>(null);
   const localUrlRef = useRef<HTMLInputElement | null>(null);
@@ -345,6 +347,17 @@ export function HeartbeatForm({
     });
   }
 
+  const hasEnabledSelected = options.some(
+    (option) => selected.includes(option.name) && !option.disabled && !option.notFound,
+  );
+  const warningVisible =
+    destinationsReady &&
+    options.length > 0 &&
+    !hasEnabledSelected &&
+    (isEdit || destinationsTouched);
+  const destinationsFieldId = `heartbeat-destinations-${idSuffix}`;
+  const destinationsWarningId = `${destinationsFieldId}-warning`;
+
   function toggleDestination({
     destinationName,
     checked,
@@ -352,6 +365,7 @@ export function HeartbeatForm({
     destinationName: string;
     checked: boolean;
   }) {
+    setDestinationsTouched(true);
     setSelected((current) =>
       checked
         ? [...current, destinationName]
@@ -520,6 +534,7 @@ export function HeartbeatForm({
     if (submitting || saving) {
       return;
     }
+    setDestinationsTouched(true);
     // Add mode, Enter/Save mid-composition: submit what the fields will show.
     const submitAppId = isEdit ? appId : appId.toLowerCase();
     const submitName = isEdit ? name : name.toLowerCase();
@@ -553,9 +568,7 @@ export function HeartbeatForm({
         ? validateProbe({ url: submitUrl, intervalSeconds, timeoutSeconds })
         : validatePush({ periodSeconds, graceSeconds }),
     );
-    if (selected.length < 1) {
-      errors.destinations = strings.heartbeatNeedsDestination;
-    } else if (selected.length > MAX_HEARTBEAT_DESTINATIONS) {
+    if (selected.length > MAX_HEARTBEAT_DESTINATIONS) {
       errors.destinations = strings.heartbeatTooManyDestinations;
     }
     setFieldErrors(errors);
@@ -882,13 +895,19 @@ export function HeartbeatForm({
       )}
       <fieldset
         className="route-form__fieldset"
-        aria-describedby={
-          fieldErrors.destinations
-            ? fieldErrorId({ fieldId: `heartbeat-destinations-${idSuffix}` })
-            : undefined
-        }
+        aria-describedby={describedBy({
+          fieldId: destinationsFieldId,
+          hasHint: true,
+          error: fieldErrors.destinations,
+          extraIds: [warningVisible ? destinationsWarningId : null],
+        })}
       >
         <legend>{strings.heartbeatDestinationsLegend}</legend>
+        <p className="destination-form__hint" id={`${destinationsFieldId}-hint`}>
+          {destinationsReady && options.length === 0
+            ? strings.heartbeatDestinationsHintEmpty
+            : strings.heartbeatDestinationsHint}
+        </p>
         <div className="route-form__checks">
           {options.map((option, index) => (
             <label key={option.name}>
@@ -922,6 +941,13 @@ export function HeartbeatForm({
           {fieldErrors.destinations}
         </span>
       )}
+      <p
+        role="status"
+        id={destinationsWarningId}
+        className="destination-form__hint destination-form__hint--status"
+      >
+        {warningVisible ? strings.heartbeatDestinationsNoEnabledWarning : ''}
+      </p>
       {isProbeEdit && (
         <p className="destination-form__hint">{strings.heartbeatProbeEditRestartNote}</p>
       )}

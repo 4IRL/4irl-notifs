@@ -40,9 +40,10 @@ export const MIN_GRACE_SECONDS = 60;
 export const MAX_GRACE_SECONDS = 604_800;
 
 // Mirrors registry/validate.go's minRouteDestinations / maxRouteDestinations and
-// heartbeat/validate.go's MaxDestinations. The heartbeat API accepts 0..20 destinations, but
-// manifests keep requiring 1..20 until the later release that makes them optional.
+// heartbeat/validate.go's MaxDestinations. Heartbeats accept 0..20 destinations like the API
+// (omitted or `[]` means none); routes keep requiring 1..20.
 export const MIN_ROUTE_DESTINATIONS = 1;
+export const MIN_HEARTBEAT_DESTINATIONS = 0;
 export const MAX_ROUTE_DESTINATIONS = 20;
 
 const DESTINATION_TYPES = ['ntfy', 'discord', 'webhook'];
@@ -254,13 +255,14 @@ function validateDestinationsArray(
   return { ownedNames, useNames };
 }
 
-function validateDestinationRefs(names, base, { push, knownNames }) {
+function validateDestinationRefs(names, base, { push, knownNames, min, optional = false }) {
+  if (names === undefined && optional) return;
   if (!Array.isArray(names)) {
     push(base, 'must be an array');
     return;
   }
-  if (names.length < MIN_ROUTE_DESTINATIONS || names.length > MAX_ROUTE_DESTINATIONS) {
-    push(base, `must have ${MIN_ROUTE_DESTINATIONS}-${MAX_ROUTE_DESTINATIONS} destinations`);
+  if (names.length < min || names.length > MAX_ROUTE_DESTINATIONS) {
+    push(base, `must have ${min}-${MAX_ROUTE_DESTINATIONS} destinations`);
   }
   const seen = new Set();
   names.forEach((name, index) => {
@@ -310,6 +312,7 @@ function validateRoutesArray(routes, { push, knownNames, allowWildcard }) {
     validateDestinationRefs(entry.destinations, pathKey(base, 'destinations'), {
       push,
       knownNames,
+      min: MIN_ROUTE_DESTINATIONS,
     });
     if ('enabled' in entry && typeof entry.enabled !== 'boolean') {
       push(pathKey(base, 'enabled'), 'must be a boolean');
@@ -374,6 +377,8 @@ function validateHeartbeatsArray(heartbeats, { push, knownNames }) {
     validateDestinationRefs(entry.destinations, pathKey(base, 'destinations'), {
       push,
       knownNames,
+      min: MIN_HEARTBEAT_DESTINATIONS,
+      optional: true,
     });
   });
   return names;
@@ -726,7 +731,7 @@ export function resolveManifest(manifest, { env = process.env, envName } = {}) {
       name: heartbeat.name,
       period_seconds: periodSeconds,
       grace_seconds: graceSeconds,
-      destinations: [...heartbeat.destinations].sort(),
+      destinations: [...(heartbeat.destinations ?? [])].sort(),
     };
   });
 

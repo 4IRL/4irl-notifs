@@ -720,6 +720,34 @@ describe('Heartbeats table, narrow layout', () => {
   });
 });
 
+describe('Heartbeats Alerts to cell, narrow layout', () => {
+  beforeEach(() => {
+    setCompactViewport(true);
+  });
+
+  it('shows No destination for a zero-destination check only', async () => {
+    const bare = buildCheck({ id: 1, destinations: [] });
+    renderHeartbeats(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([bare, CHECK_2]) }));
+    await screen.findByRole('button', { name: `Actions for ${ROW_1}` });
+
+    const cellOf = (id: number): HTMLElement => {
+      const cell = document.querySelector<HTMLElement>(
+        `tr[data-check-id="${id}"] td.admin-table__fill`,
+      );
+      if (cell === null) {
+        throw new Error(`Alerts to cell ${id} not found`);
+      }
+      return cell;
+    };
+    expect(
+      within(cellOf(1)).getByText(strings.heartbeatNoDestination, { exact: true }),
+    ).toBeInTheDocument();
+    expect(
+      within(cellOf(2)).queryByText(strings.heartbeatNoDestination, { exact: true }),
+    ).toBeNull();
+  });
+});
+
 describe('Heartbeats table, roomy layout', () => {
   it('keeps the inline buttons and has no kebab', async () => {
     renderHeartbeats(buildClient({ listHeartbeats: vi.fn().mockResolvedValue([CHECK_1]) }));

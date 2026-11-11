@@ -21,6 +21,10 @@ This directory keeps the **`_platform.json`** manifest, which stays operator-app
 `make onboard` and `make onboard-lint` for an operator-applied app, but it is no longer the route
 for a new app.
 
+A heartbeat's `destinations` is optional: omitted or `[]` means no destination (its alert waits
+until one is assigned). Manifests are declarative, so applying one whose heartbeat lists none clears
+any destinations the operator set for that check in the admin UI. Routes still need 1 to 20.
+
 ## The two file kinds
 
 - `<app_id>.json` — an **app manifest**. One file per app; the file's basename must equal its own

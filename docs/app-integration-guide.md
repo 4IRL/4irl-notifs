@@ -115,8 +115,9 @@ operator-authored one under `apps/` has a basename equal to `app_id`):
 - `destinations`: either an **owned** destination — `{ "name", "type": "ntfy"|"discord"|"webhook", "config"?, "secrets"?, "enabled"? }`, with `name` required to start with `<app_id>_` — that the tool creates, patches and (with `--prune`) deletes, or a **shared reference** `{ "use": "<name>" }` to a destination owned by another manifest, which the app only routes to and never modifies.
 - `routes`: `{ "channel", "destinations", "enabled"? }` — `app_pattern` is always derived as the
   manifest's own `app_id` and is never written by hand.
-- `heartbeats`: `{ "name", "period", "grace", "destinations" }`, with `period`/`grace` as durations
-  (`24h`, `1h`, …) rather than raw seconds.
+- `heartbeats`: `{ "name", "period", "grace", "destinations"? }`, with `period`/`grace` as durations
+  (`24h`, `1h`, …) rather than raw seconds. `destinations` is optional: omitted or `[]` means none
+  (at most 20; routes still need 1 to 20).
 - an optional `environments.<env>` block overriding `heartbeats.<name>.{period,grace}` and
   `destinations.<name>.enabled` per environment.
 
@@ -853,7 +854,7 @@ The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_pr
 | `POST /v1/admin/routes`                              | `{"app_pattern","channel_pattern","destinations":["<name>",…],"enabled"?}`                    | `201 {"route":{…}}`                              | 400 validation or `unknown destination`, 409 `route already exists`          |
 | `GET /v1/admin/routes`; `GET`, `PATCH`, `DELETE /v1/admin/routes/{id}` | `PATCH`: any of the four fields; `destinations` replaces the whole set       | `200` (`DELETE`: `{"id","deleted"}`)             | 404 `route does not exist`; `PATCH` of an app-owned route's `app_pattern` away from its owner is 400 `request violates a data constraint` |
 | `POST /v1/admin/heartbeats`                          | `{"app_id","name","period_seconds","grace_seconds","destinations":["<name>",…]?}` (`destinations` may be omitted, `null` or `[]`) | `201 {"check":{…}}`                              | 400 validation or `unknown destination`, 409 `check already exists`          |
-| `POST /v1/admin/heartbeats` (probe check)            | `{"app_id","name","destinations":[…],"probe":{"url","expected_statuses","body_match"?,"timeout_seconds","interval_seconds","access_token"?:{"client_id","client_secret"}}}` (no `period_seconds`/`grace_seconds`) | `201 {"check":{…}}` with a `probe` block | 400 validation (`invalid probe.<field>`), 400 if `period_seconds`/`grace_seconds` is present at all, 409 `check already exists` |
+| `POST /v1/admin/heartbeats` (probe check)            | `{"app_id","name","destinations":[…]?,"probe":{"url","expected_statuses","body_match"?,"timeout_seconds","interval_seconds","access_token"?:{"client_id","client_secret"}}}` (no `period_seconds`/`grace_seconds`; `destinations` may be omitted, `null` or `[]`) | `201 {"check":{…}}` with a `probe` block | 400 validation (`invalid probe.<field>`), 400 if `period_seconds`/`grace_seconds` is present at all, 409 `check already exists` |
 | `GET /v1/admin/heartbeats`                           | none                                                                                          | `200 {"checks":[…]}`                             |                                                                              |
 | `GET`, `PATCH`, `DELETE /v1/admin/heartbeats/{id}`   | `PATCH`: any of `period_seconds`, `grace_seconds`, `destinations` (`[]` clears, `null` or omitted leaves unchanged) | `200 {"check":{…}}` (`DELETE`: `{"id","deleted"}`, idempotent) | 400 `app_id and name are immutable`, 404 `check not found`         |
 | `PATCH /v1/admin/heartbeats/{id}` (probe check)      | `destinations` and/or `probe` with any of `url`, `expected_statuses`, `body_match` (`null` clears), `timeout_seconds`, `interval_seconds`, `access_token` (omitted keeps, `null` clears, a `{client_id,client_secret}` pair replaces) | `200 {"check":{…}}` | 400 validation, 400 `check kind is immutable` (`probe: null`), 400 on `period_seconds`/`grace_seconds`, 404 |
@@ -1649,8 +1650,10 @@ down and sends **one** down alert, then **one** recovery alert when the next pin
 through the normal message pipeline to the check's own destinations (0 to 20 of them, set when the
 operator creates the check), as `channel: "heartbeat"` messages.
 
-The API accepts a check with no destinations, but the admin UI and the onboard manifests still require one
-until a later release. An alert waits until a deliverable destination (enabled, supported type) is assigned.
+A check may have no destination. Its alert stays pending, is visible as an unassigned alert in the admin UI
+and the watchdog, and is sent when a deliverable destination (enabled, supported type) is assigned. Manifests
+are declarative: a heartbeat that omits `destinations` or lists `[]` clears any destinations the operator set
+in the UI on the next apply.
 Only the latest state is sent: a check has a single pending-alert slot, so one that went down and recovered
 while unassigned sends only `recovered`.
 

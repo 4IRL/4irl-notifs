@@ -807,15 +807,13 @@ export function Heartbeats({
   const downCount = checks.filter((check) => rowStateOf({ check, now }) === 'down').length;
   const showTable = !loading && checks.length > 0;
 
-  // A check alerts through registered destinations, so Add stays blocked until
-  // the shared destinations list has loaded with at least one entry.
+  // Add stays blocked only while the shared destinations list is loading or failed
+  // to load; an empty registry is fine (a check may have no destination).
   let addHint: string | null = null;
   if (destinationsState.status === 'loading') {
     addHint = strings.addHeartbeatHintLoading;
   } else if (destinationsState.status === 'error') {
     addHint = strings.addHeartbeatHintError;
-  } else if (destinationsState.destinations.length === 0) {
-    addHint = strings.addHeartbeatHintEmpty;
   }
   const addBlocked = addHint !== null;
   const destinationsReady = destinationsState.status === 'ready';
@@ -991,6 +989,9 @@ export function Heartbeats({
                       )}
                     </td>
                     <td className="admin-table__fill">
+                      {check.destinations.length === 0 && (
+                        <span className="heartbeats__sub">{strings.heartbeatNoDestination}</span>
+                      )}
                       {check.destinations.map((destination) => (
                         <span key={destination.name}>
                           <span className="heartbeats__name">{destination.name}</span>

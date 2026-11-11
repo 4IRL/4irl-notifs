@@ -189,8 +189,15 @@ function lastUpdate(api: DeliveryApiClient): unknown {
   return mock.mock.calls[mock.mock.calls.length - 1][0];
 }
 
+function credentialGroup(form: HTMLElement): HTMLElement {
+  // Named by its status line when credentials are stored, by the caption otherwise: locate by class.
+  const group = form.querySelector<HTMLElement>('.heartbeat-form__creds');
+  if (group === null) throw new Error('credentials group not found');
+  return group;
+}
+
 function credentialStatus(form: HTMLElement): HTMLElement {
-  return within(form).getByRole('status');
+  return within(credentialGroup(form)).getByRole('status');
 }
 
 describe('probe edit form: layout', () => {
@@ -670,7 +677,7 @@ describe('probe edit form: stored credentials', () => {
     expect(within(form).queryByRole('button', { name: strings.heartbeatCredentialsClear })).toBe(
       null,
     );
-    expect(within(form).queryByRole('status')).toBeNull();
+    expect(within(credentialGroup(form)).queryByRole('status')).toBeNull();
     expect(form).not.toHaveTextContent('Cleared if you switch to Push.');
     await user.type(field(form, strings.heartbeatCredentialsClientIdLabel), 'zq-id');
     await user.type(field(form, strings.heartbeatCredentialsClientSecretLabel), 'zq-secret');
@@ -709,11 +716,13 @@ describe('probe edit form: stored credentials', () => {
 
   it('adds exactly one status region only with stored credentials', async () => {
     const withStored = await openEditor({ check: stored() });
-    expect(screen.getAllByRole('status')).toHaveLength(3);
-    expect(screen.getAllByRole('status')[2]).toBe(credentialStatus(withStored.form));
+    const withStoredCount = screen.getAllByRole('status').length;
+    expect(within(credentialGroup(withStored.form)).getAllByRole('status')).toHaveLength(1);
+    expect(screen.getAllByRole('status')).toContain(credentialStatus(withStored.form));
     cleanup();
-    await openEditor();
-    expect(screen.getAllByRole('status')).toHaveLength(2);
+    const nothingStored = await openEditor();
+    expect(within(credentialGroup(nothingStored.form)).queryByRole('status')).toBeNull();
+    expect(screen.getAllByRole('status')).toHaveLength(withStoredCount - 1);
   });
 });
 
