@@ -127,6 +127,10 @@ function buildClient(overrides: Partial<DeliveryApiClient> = {}): DeliveryApiCli
     listPersonalDestinations: vi.fn().mockResolvedValue({ personalDestinations: [], total: 0 }),
     setPersonalDestinationEnabled: vi.fn(),
     deletePersonalDestination: vi.fn(),
+    getHeldMessages: vi
+      .fn()
+      .mockResolvedValue({ apps: [], unassignedChecks: [], unassignedTotal: 0 }),
+    listHeldFailures: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     ...overrides,
   };
 }
@@ -196,7 +200,13 @@ const SITES: Site[] = [
     settled: READY,
     firstLoad: { kind: 'unavailable' },
     announced: strings.deliveryStatusReady,
-    element: (client) => <DeliveryStatusCard client={client} />,
+    element: (client) => (
+      <DeliveryStatusCard
+        client={client}
+        held={{ status: 'ready', byApp: new Map(), unassignedTotal: 0 }}
+        onRefreshHeld={() => undefined}
+      />
+    ),
   },
   {
     name: 'AppIdentities',

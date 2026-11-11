@@ -4,6 +4,7 @@ package message_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -84,6 +85,34 @@ func TestHeldSummaryCountsOnlyHeldRowsPerApp(testInstance *testing.T) {
 		if got.AppID != wantRow.AppID || got.Count != wantRow.Count || !got.OldestHeldAt.Equal(wantRow.OldestHeldAt) {
 			testInstance.Errorf("row %d = %+v, want %+v", index, got, wantRow)
 		}
+	}
+}
+
+// The held summary has no app cap (readyz's HeldCache caps at 20; the operator endpoint must not).
+func TestHeldSummaryHasNoAppCap(testInstance *testing.T) {
+	ctx, store, _, _ := newMessageStore(testInstance)
+	const appCount = 21
+	seeded := map[string]bool{}
+	for index := 0; index < appCount; index++ {
+		appID := fmt.Sprintf("capapp_%02d", index)
+		seeded[appID] = true
+		if _, _, err := store.InsertHeldMessage(ctx, heldEnvelopeFor(appID, "k"), heldCaps(50, 100), scheduleBase); err != nil {
+			testInstance.Fatalf("hold for %s: %v", appID, err)
+		}
+	}
+
+	summary, err := store.HeldSummary(ctx)
+	if err != nil {
+		testInstance.Fatalf("HeldSummary: %v", err)
+	}
+	found := 0
+	for _, row := range summary {
+		if seeded[row.AppID] {
+			found++
+		}
+	}
+	if found != appCount {
+		testInstance.Fatalf("HeldSummary returned %d of %d seeded apps, want all", found, appCount)
 	}
 }
 

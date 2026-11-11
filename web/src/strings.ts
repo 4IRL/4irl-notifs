@@ -234,6 +234,15 @@ export const strings = {
   columnAppDescription: 'Description',
   columnSubscribers: 'Subscribers',
 
+  // Held-message counts (Apps and Unprovisioned apps).
+  columnHeld: 'Held',
+  heldLoading: 'Checking…',
+  heldUnavailableHidden: ' unavailable',
+  heldPill: ({ count }: { count: number }) => `${count} held`,
+  heldZeroSub: '0 held',
+  heldZeroCell: '0',
+  heldSubLabel: 'Held: ',
+
   addAppHeading: 'Add an app',
   appDisplayNameLabel: 'Display name',
   appDescriptionLabel: 'Description',
@@ -276,8 +285,10 @@ export const strings = {
   unregisteredAppsHeading: 'Unprovisioned apps',
   unregisteredAppsLoading: 'Loading…',
   unregisteredAppsHint:
-    'These apps have users or topics but no registry entry. Have each app register itself with 4irl-notifs — its backend calls POST /v1/apps/{app_id}/provision with its own delivery key (see docs/app-integration-guide.md) — or add it above via “Add an app”.',
+    'These apps have users, topics or waiting messages but no registry entry. Have each app register itself with 4irl-notifs — its backend calls POST /v1/apps/{app_id}/provision with its own delivery key (see docs/app-integration-guide.md) — or add it above via “Add an app”. Waiting messages are delivered once the app has a matching route.',
   unregisteredAppsEmpty: 'None — every in-use app is registered.',
+  unregisteredAppsEmptyHeldReady:
+    'None — every in-use app is registered and no messages are waiting for an unregistered app.',
 
   // Page tabs.
   tabsAriaLabel: 'Admin sections',
@@ -296,6 +307,10 @@ export const strings = {
   deliveryStatusMigrationLabel: 'Last migration failure',
   deliveryStatusNone: 'none',
   noValue: '—',
+  heldMessagesLabel: 'Held messages',
+  unassignedAlertsLabel: 'Unassigned heartbeat alerts',
+  heldMessagesHint: 'Add a route or destination for the app so waiting messages are delivered.',
+  unassignedAlertsHint: 'Give each check an enabled destination in Heartbeats.',
   columnActions: 'Actions',
   separator: ' · ',
   adminTestDeliveryTitle: 'Test from 4IRL admin',
@@ -478,10 +493,23 @@ export const strings = {
 
   // Delivery Log section.
   deliveryLogHeading: 'Delivery log',
-  deliveryLogFilterLabel: 'Filter by state',
+  deliveryLogFilterLabel: 'Filter deliveries',
   deliveryLogFilterDead: 'Dead',
   deliveryLogFilterPending: 'Pending',
   deliveryLogFilterDelivered: 'Delivered',
+  deliveryLogFilterReleaseFailed: 'Release failed',
+  releaseFailuresHint:
+    "Held messages that could not be sent when their route appeared. Check the app's Routes and Destinations.",
+  releaseFailuresLoading: 'Loading release failures…',
+  releaseFailuresUnavailable: 'Release failures are unavailable on this backend.',
+  releaseFailuresEmpty:
+    'No release failures. Held messages wait until a matching route and destination exist; see Routes and Destinations.',
+  releaseFailuresTruncated: ({ shown, total }: { shown: number; total: number }): string =>
+    `Showing the newest ${shown} of ${total} release failures.`,
+  releaseFailuresTableLabel: 'Release failures',
+  releaseReasonInvalid: "Invalid when released — fix the app's Routes or Destinations",
+  columnReleaseReason: 'Reason',
+  columnReleaseFailed: 'Failed',
   deliveryLogFiltersMenu: 'Filter deliveries',
   deliveryLogRefresh: 'Refresh log',
   deliveryLogHint: ({ state }: { state: string }): string =>

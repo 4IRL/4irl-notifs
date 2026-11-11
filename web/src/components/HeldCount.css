@@ -1,0 +1,18 @@
+.held-count {
+  /* Contains the absolutely positioned visually-hidden text, so it can never
+     widen the page when the cell sits in a horizontally scrolled table. */
+  position: relative;
+  display: inline-block;
+}
+
+.held-count__pill {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  white-space: nowrap;
+}

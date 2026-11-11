@@ -1,0 +1,13 @@
+# Ported from apps/platform/backup/*.timer (GPropersi/apps). 03:35 America/Los_Angeles (10:35/11:35 UTC) avoids the
+# co-tenant urls4irl backup (01:00) and purges (02:00-05:00 UTC). install-backup.sh verify checks that
+# OnCalendar + the service TimeoutStartSec + AccuracySec stay inside window.env.
+[Unit]
+Description=Nightly offsite backup of 4irl-notifs
+
+[Timer]
+OnCalendar=*-*-* 03:35:00 America/Los_Angeles
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

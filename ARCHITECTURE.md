@@ -12,7 +12,7 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | none (compose network only, no public hostname; the public route, its Access app and the origin port were removed when the runbook ran 2026-11-05) | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`), callable only by delivery-api with the internal credential. |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD (including `/personal-destinations`, with the operator `/v1/admin/personal-destinations` moderation routes), the app provisioning door `/v1/apps/{app_id}/{provision,deprovision,set-password,reset-password,ntfy-publisher}` (the only way an app reaches provisioning-api), the operator provisioning relay under `/v1/admin` (`provision`, `deprovision`, `reset-password`, `users`, `test-notify`, `apps/{app_id}/…`), `GET /healthz/provisioning`, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel, and the operator `GET /v1/admin/held-failures` list. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`, 1 s), a held-message releaser (the same `RunReleaser` with kind `held`, 5 s, always on whatever `DELIVERY_HOLD_UNROUTED` is), a retention sweeper the heartbeat checker (30 s tick) and the heartbeat prober (website probe loop, 10 s scan, bounded concurrency). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD (including `/personal-destinations`, with the operator `/v1/admin/personal-destinations` moderation routes), the app provisioning door `/v1/apps/{app_id}/{provision,deprovision,set-password,reset-password,ntfy-publisher}` (the only way an app reaches provisioning-api), the operator provisioning relay under `/v1/admin` (`provision`, `deprovision`, `reset-password`, `users`, `test-notify`, `apps/{app_id}/…`), `GET /healthz/provisioning`, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel, and the operator `GET /v1/admin/held-failures` list and `GET /v1/admin/held-messages` counts. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`, 1 s), a held-message releaser (the same `RunReleaser` with kind `held`, 5 s, always on whatever `DELIVERY_HOLD_UNROUTED` is), a retention sweeper the heartbeat checker (30 s tick) and the heartbeat prober (website probe loop, 10 s scan, bounded concurrency). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/people`, `/apps` and `/delivery/*` proxy Functions. |
 | **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor on Cloudflare's network, independent of the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`; a stale or malformed `heartbeat_prober` also pages, an absent one is tolerated so an older delivery-api stays quiet), provisioning-api (target id `provisioning-api`, probed through delivery-api `GET /healthz/provisioning`; reachability only, it does not detect internal-credential drift) and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes, held-message alerts and a daily summary (16:00 UTC) to a dedicated Discord webhook. Held alerts read the status-neutral `held` block of `/readyz`: a first alert fires when the oldest held message is 15+ minutes old, 25+ messages are held, or 1+ heartbeat alert is unassigned; a reminder follows once per UTC date at 16:00 while anything is held; a `HELD CLEARED` note posts after two consecutive fresh all-zero runs. The alert state is an optional `held` object in the version-1 KV document (omitted while no alert is open). A failed probe is retried once after 30 s and only the retry's verdict can alert, so a transient failure (a stray 520, or the few seconds a production deploy takes to recreate the containers) stays quiet; each attempt (`watchdog: probe id=… attempt=… ok=… http=… duration_ms=…`) and each run (`watchdog: run state=… up=… down=… transitions=… discord=… kv_write=… duration_ms=… held=none/absent/ok/stale held_alert=open/closed`) is logged and kept by Workers Logs. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
@@ -192,7 +192,13 @@ the VPS; person-service + admin UI are Cloudflare-native.
   (optional `limit`, default 50, max 200, else `400` `invalid limit`; newest first). It returns
   `{"failures":[{"message_id","app_id","channel","reason":"release_invalid","failed_at"}],"total":N}`
   where `total` is the uncapped count and the body carries no payload, display, idempotency key or
-  recipient hash. Like the planned `GET /v1/admin/held-messages`, it sits under `/v1/admin`, so
+  recipient hash. The operator held counts are `GET /v1/admin/held-messages`, returning
+  `{"apps":[{"app_id","count","oldest_at"}],"unassigned_checks":[{"check_id","app_id","name","pending_alert"}],"unassigned_total":N}`:
+  every app with held messages (no app cap, `oldest_at` UTC) and up to 50 heartbeat checks whose pending
+  alert has no enabled destination of a supported type, ordered by app, name, id, with `unassigned_total`
+  the uncapped count of the same predicate. Unlike `/readyz`'s held block it is uncached and uncapped for
+  apps (it reads the stores directly, not `HeldCache`). It answers `503` `held messages unavailable` when
+  a data source is not wired and a plain `500` on a store error. Both routes sit under `/v1/admin`, so
   operator-only is enforced by the Cloudflare Access split and not by delivery-api code.
   The in-process worker delivers each queued message to its webhook, Discord or ntfy destination (or,
   for `to.recipient`, to the person's ntfy topic) with retries. The operator delivery log lives under
@@ -621,6 +627,20 @@ sequenceDiagram
     The Pending sends section lists scheduled messages (soonest first) and cancels one through
     `DELETE /delivery/v1/admin/scheduled-messages/{id}`, a non-GET that the existing `/delivery` Access
     Bypass and the Pages Function allowlist already cover.
+  - Held messages in the UI (counts only; the UI cannot list, inspect or cancel an individual held
+    message). `App` reads `GET /delivery/v1/admin/held-messages` once, when a delivery client exists and
+    either the Apps section is on or the Delivery tab (with destinations on) has been visited, and shares
+    the snapshot: the Apps table gets a Held column (a `N held` pill, a plain `0`; a `Held:` sub-line in
+    the compact layout), Unprovisioned apps lists an app that has held messages but no registry row (the
+    list is only extended once the registry has loaded and no re-fetch is pending), and the delivery-api
+    status card shows `Held messages` and `Unassigned heartbeat alerts` rows (the unassigned row is the
+    uncapped total, not the length of the capped list). The snapshot is re-read after each registry change and tri-state: first load shows
+    `Checking…`; a failed or older backend (any error, including 404 and 503) shows an em dash with a
+    visually hidden `unavailable`, never `0` and never an error banner; a re-fetch keeps the previous
+    snapshot on screen until the new result arrives, and the status card Refresh re-reads it. The Delivery
+    log has a fourth filter, "Release failed", fed by `GET /delivery/v1/admin/held-failures` (server default
+    limit 50; an unavailable backend shows "unavailable on this backend" text there instead of a dash; `Showing the newest N of M` when truncated), fetched by the log itself only while that filter is
+    selected, so each source degrades on its own.
 
 **Pages project `notifs-admin` — runtime bindings** (set in dashboard, not committed):
 
@@ -1007,10 +1027,21 @@ graph TD
   deploy fails before touching the VPS if it is missing or malformed, so set it before the first merge.
   Like the DB password it is written to `secrets-persistent/` on every deploy and never deleted, but only
   delivery-api receives it (as `DELIVERY_MASTER_KEY_FILE`; `delivery-migrate` never needs it). **Back it up
-  offline**: it seals four tables (destination secrets, app publisher tokens, probe Access credentials,
+  offline in Infisical** (it is deliberately not in the nightly R2 backup): it seals four tables (destination secrets, app publisher tokens, probe Access credentials,
   personal destination secrets: `personal_destinations.sealed_secrets`, AAD `delivery-api/personal-destination/v1:<id>`, registered in `keyrotation.Registry()`),
   and changing it without the rotation runbook below orphans all of them. Keys are read only at process
   start (no reload), so a key change takes effect only when delivery-api is recreated.
+- **`NOTIFS_OPS_ACCESS_CLIENT_ID`, `NOTIFS_OPS_ACCESS_CLIENT_SECRET`, `NOTIFS_OPS_DISCORD_WEBHOOK` (repo or
+  `production` environment secrets)**: used only by `notifs-ops-key.yml`, a separate workflow that runs on
+  every push to `main` (and by manual dispatch on `main`) and never blocks the stack deploy. The first two are
+  the Cloudflare Access service token the `notifs_ops` app uses to reach delivery-api; the webhook is the
+  Discord destination (`notifs_ops_discord`) that receives the nightly backup heartbeat alerts. The workflow
+  validates all three before any ssh or exchange, mints a delivery key for the `notifs_ops` app through the
+  GitHub OIDC exchange, applies `ops/notifs-ops/manifest.json`, and replaces
+  `/home/4irl-notifs/secrets-persistent/NOTIFS_OPS_DELIVERY_KEY` on the VPS on every push to `main` (a
+  successful exchange supersedes the previous key). The first run only files an identity request (repository,
+  workflow `.github/workflows/notifs-ops-key.yml`, `refs/heads/main`, environment `production`) that the
+  operator approves in the admin UI; re-run the workflow after approving.
 - **`DELIVERY_MASTER_KEY_PREVIOUS` (optional repo secret)**: the old master key during a rotation window,
   64 lowercase hex characters and different from `DELIVERY_MASTER_KEY`. Unset normally. When unset, the
   deploy writes an empty `secrets-persistent/DELIVERY_MASTER_KEY_PREVIOUS` file (compose needs the file to
@@ -1019,7 +1050,8 @@ graph TD
 
   **Master-key rotation runbook** (`rotate-keys` and `verify-keys` are delivery-api subcommands; run them
   on the VPS):
-  1. Back up: take a `pg_dump` of the delivery database and keep it until step 4 is done.
+  1. Back up: the nightly snapshot exists (see "Backups"), but take a fresh manual `pg_dump` of the delivery
+     database right before rotating and keep it until step 4 is done.
   2. Set the new key as the `DELIVERY_MASTER_KEY` secret and the old key as `DELIVERY_MASTER_KEY_PREVIOUS`,
      then deploy. A deploy alone does not restart delivery-api (a changed secret file does not trigger a
      recreate), so run `docker compose -f docker-compose.prod.yml up -d --force-recreate --no-deps
@@ -1076,6 +1108,24 @@ graph TD
   the dashboard (keeps the CI token account-scoped, no zone perms).
 - Access apps, policies, service tokens, and Pages bindings are **dashboard-managed** (no Terraform,
   not in CI).
+
+### Backups
+
+A root systemd timer on the VPS runs `ops/backup/backup.sh` every night at 03:35 America/Los_Angeles (window
+03:30 to 05:00). It dumps the delivery Postgres database (`pg_dump -Fc`, checked with `pg_restore --list`) and takes a
+consistent online copy of ntfy's `auth.db`, then uploads both with restic to a dedicated Cloudflare R2 bucket
+(encrypted client-side; retention 7 daily, 4 weekly, 6 monthly snapshots; a metadata `restic check` after each run).
+
+- **In the backup:** the delivery database and ntfy's subscriber accounts.
+- **Not in the backup, on purpose:** everything under `secrets-persistent/`, above all `DELIVERY_MASTER_KEY` and
+  `DELIVERY_MASTER_KEY_PREVIOUS`. The dump holds sealed secrets, so it is safe offsite but useless without the key; the
+  key lives in Infisical and the GitHub secret, and a restore needs it. `backup.env` and the `ntfy-cache` volume are
+  not backed up either.
+- **Signals:** one Discord notice per run (ok or failed with the failing phase); a ping to the `notifs_ops/nightly_backup`
+  heartbeat (period 24 h, grace 12 h, declared in `ops/notifs-ops/manifest.json`) so a run that silently stops
+  alerts; and the external watchdog Worker, which alerts if delivery-api itself is down.
+- **Operating it:** `make host-backup` / `make host-backup-status`; setup, restores, the full rebuild order and the drill
+  are in [`ops/backup/RUNBOOK.md`](ops/backup/RUNBOOK.md).
 
 ### Operator runbook: heartbeat watchdog (one-time, manual)
 
@@ -1185,6 +1235,7 @@ account IDs stay in the Cloudflare dashboard and are never committed.
 | Exchange `403 identity does not match the approved binding` | The app is bound, but the token's repository, workflow file, ref or environment differs from the approved binding (a renamed workflow, a deploy from another branch, a new `environment:`). Nothing is filed. Fix the workflow, or unbind the app and approve the new request. |
 | Exchange `401 invalid identity token`                 | The token failed a check: wrong audience (the action's `audience` input differs from `DELIVERY_OIDC_AUDIENCE`), expired, a replayed `jti` (the same token exchanged twice), a bad signature or issuer, or an unknown signing key inside the one-minute refetch window. The exact reason is in the delivery-api log, not the response. |
 | Held message stays `unrouted` | No enabled, app-usable destination is reachable by a route yet (the "no route yet" state logs at Debug only, so a quiet log is normal). Otherwise read `held messages released` (service: precise `released` / `failed` split), `held message release failed` (a message went terminal `release_invalid`) and `held release failed` (the loop's batch hit an error; the next 5 s tick retries). A message stuck on an unsupported type, missing publisher or unseal error shows only the throttled Warns `held pair cannot release` / `held message cannot release`. |
+| Operator wants to know which apps have waiting messages, or which held messages failed to release | Admin UI: the Held column in Apps (apps without a registry row appear under Unprovisioned apps), the held rows on the delivery-api status card, and the Delivery log "Release failed" filter. An em dash with no number means that source is unavailable (older backend or a failing read), not zero. Counts only: individual held messages are not listed. |
 | `/readyz` `held` block shows non-zero counts | `messages.count` > 0: held messages wait for a route or destination, add one that reaches the app (`apps` names the apps). `unassigned_alerts.count` > 0: assign the heartbeat check a deliverable (enabled, supported-type) destination. `available: false`: the count query is failing, read the Warn log in `docker compose logs delivery-api`; `stale: true` means the last refresh failed and the counts are from `as_of`. The block never changes the `/readyz` status. |
 | Exchange `429 too many pending identity requests`     | 20 requests are already pending (any GitHub repo that can mint a token for the audience can file one). Reject the stale ones in the admin UI (undecided ones also expire after `DELIVERY_PENDING_IDENTITY_REQUEST_DAYS`, 7 by default); the app's next deploy retries. |
 | Exchange `503 identity unavailable`                   | GitHub's signing keys could not be fetched (the log has `oidc jwks fetch failed`; retries are limited to one fetch a minute). A Postgres failure during an exchange is instead `500 internal error` (log `app identity service error`). |

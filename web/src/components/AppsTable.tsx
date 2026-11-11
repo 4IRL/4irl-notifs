@@ -5,12 +5,14 @@ import type { ProvisionAppResult } from '../api/client';
 import type { AppSummary, UpdateAppParams } from '../api/personClient';
 import { useCompactTable } from '../hooks/useCompactTable';
 import { useFocusRegistry } from '../hooks/useFocusRegistry';
+import type { HeldCounts } from '../heldCounts';
 import { strings } from '../strings';
 import { revealFocusedControl } from './adminTableFocus';
 import { ConfirmButton } from './ConfirmButton';
 import { EditAppForm } from './EditAppForm';
 import { EditModal } from './EditModal';
 import type { ConfirmStep } from './EditModal';
+import { HeldCount } from './HeldCount';
 import { LocalTime } from './LocalTime';
 import { RowActionsMenu } from './RowActionsMenu';
 import './adminTable.css';
@@ -33,6 +35,8 @@ interface AppsTableProps {
   onRemoveApp: (params: RemoveAppParams) => Promise<boolean>;
   /** appIds with a removal in flight; their Remove controls are busy. */
   removingAppIds?: ReadonlySet<string>;
+  /** Held-message snapshot; when undefined the Held column and compact sub-line are omitted. */
+  held?: HeldCounts;
 }
 
 const NO_REMOVING: ReadonlySet<string> = new Set();
@@ -49,6 +53,7 @@ export function AppsTable({
   onRemintToken,
   onRemoveApp,
   removingAppIds = NO_REMOVING,
+  held,
 }: AppsTableProps): JSX.Element {
   const compact = useCompactTable();
   const [editingAppId, setEditingAppId] = useState<string | null>(null);
@@ -249,6 +254,7 @@ export function AppsTable({
                       {strings.columnAppDescription}
                     </th>
                     <th scope="col">{strings.columnSubscribers}</th>
+                    {held !== undefined && <th scope="col">{strings.columnHeld}</th>}
                     <th scope="col">{strings.columnCreated}</th>
                   </>
                 )}
@@ -274,6 +280,11 @@ export function AppsTable({
                         <td className="admin-table__lead apps-table__lead" title={app.appId}>
                           <span className="apps-table__id">{app.appId}</span>
                           <span className="admin-table__sub">{app.displayName}</span>
+                          {held !== undefined && (
+                            <span className="admin-table__sub">
+                              <HeldCount held={held} appId={app.appId} variant="sub" />
+                            </span>
+                          )}
                         </td>
                         <td className="admin-table__fill">
                           <LocalTime timestamp={app.createdAt} />
@@ -321,6 +332,11 @@ export function AppsTable({
                         <td className="apps-table__id">{app.appId}</td>
                         <td className="admin-table__fill">{app.description ?? ''}</td>
                         <td>{subscriberCountByApp.get(app.appId) ?? 0}</td>
+                        {held !== undefined && (
+                          <td>
+                            <HeldCount held={held} appId={app.appId} variant="cell" />
+                          </td>
+                        )}
                         <td>
                           <LocalTime timestamp={app.createdAt} />
                         </td>
