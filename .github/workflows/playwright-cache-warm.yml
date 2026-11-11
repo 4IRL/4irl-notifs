@@ -1,0 +1,58 @@
+name: Warm Playwright Cache
+
+permissions:
+  contents: read
+
+# Tests only run through pull requests, so the e2e jobs save the Playwright cache under their own
+# refs/pull/N/merge scope, which no other PR can read. A cache saved on main is readable by every
+# PR, so this workflow keeps one there and a new PR's first e2e run starts warm.
+on:
+  # Refill whenever the cache key or its contents could change: the @playwright/test pin lives in
+  # each package.json, and the key, paths and install steps live in the composite action.
+  push:
+    branches: [main]
+    paths:
+      - web/package.json
+      - setup-web/package.json
+      - .github/actions/setup-playwright/**
+      - .github/workflows/playwright-cache-warm.yml
+  # Manual refill, e.g. after deleting the cache entry by hand.
+  workflow_dispatch:
+  # GitHub evicts a cache entry after 7 days without access, and the paths filter alone would not
+  # refill it after a quiet week. A weekly run either restores the entry (refreshing its
+  # last-access time) or, if it was already evicted, saves a fresh one.
+  schedule:
+    - cron: '17 6 * * 1'
+
+jobs:
+  WarmPlaywrightCache:
+    name: Warm Playwright Cache (${{ matrix.working-directory }})
+    # Must match the e2e jobs' runner so the runner.os/runner.arch key parts line up.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      # One row per package that pins its own Playwright, so each key is warmed even if the two
+      # pins drift apart. While they match, both rows save the same key (a harmless save race).
+      matrix:
+        working-directory: [web, setup-web]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup node
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ${{ matrix.working-directory }}/package-lock.json
+
+      # Same install as the e2e jobs, so the npx-resolved Playwright matches the cache key.
+      - name: Install frontend dependencies
+        working-directory: ${{ matrix.working-directory }}
+        run: npm ci
+
+      - name: Install Playwright browsers (cached apt deps + browsers)
+        uses: ./.github/actions/setup-playwright
+        with:
+          working-directory: ${{ matrix.working-directory }}
