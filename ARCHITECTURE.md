@@ -219,7 +219,7 @@ the VPS; person-service + admin UI are Cloudflare-native.
   message status is still derived, never stored: cancelled, then `unrouted` (held), then
   `release_failed`, then the delivery-derived status (zero deliveries with no state stays `pending`).
   0012 replaces `messages_cancelled_at_check` so a held message (no `deliver_at`) can be cancelled.
-  Holding is gated by `DELIVERY_HOLD_UNROUTED` (default off, so an unrouted app message stays `422`).
+  Holding is gated by `DELIVERY_HOLD_UNROUTED` (default on, so an unrouted app message is held; `0` or `false` turns holding off and restores the `422`).
   Caps: `DELIVERY_MAX_HELD_PER_APP` (default 1000) and `DELIVERY_MAX_HELD_TOTAL` (default 100000); a hold
   over either cap is `429`. The sweeper expires an unreleased held message after `DELIVERY_HELD_TTL_DAYS`
   (default 7). Held cancel (`DELETE /v1/messages`) sets `cancelled_at` and `held_cancelled_at` to the same

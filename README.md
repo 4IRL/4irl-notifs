@@ -75,7 +75,7 @@ delivery-api runtime configuration (environment):
 | `DELIVERY_RETENTION_DAYS` | `30` | Days a message is kept before the retention sweeper deletes it (integer 1-3650; a message with a `pending` or `scheduled` delivery is never deleted; age counts from the latest of `created_at`, `deliver_at`, `released_at` and `release_failed_at`, and a cancelled message ages from `cancelled_at`; a still-held message is never deleted by this sweep; an invalid value fails startup) |
 | `DELIVERY_MAX_SCHEDULED_PER_APP` | `1000` | Most scheduled (`deliver_at`) messages one app may hold; a new scheduled submit over it is a `429` (integer 1-100000; an invalid value fails startup) |
 | `DELIVERY_MAX_SCHEDULED_TOTAL` | `100000` | Most scheduled messages all apps may hold together; a new scheduled submit over it is a `429` `scheduled message capacity reached`, distinct from the per-app `too many scheduled messages` (integer 1-10000000; an invalid value fails startup; the per-app cap is checked first) |
-| `DELIVERY_HOLD_UNROUTED` | `0` | Hold an app message that matches no route (`202`, status `unrouted`) instead of refusing it with `422`. `0`/`false` off, `1`/`true` on; anything else fails startup. Do not enable before the releaser ships: nothing releases held messages until then |
+| `DELIVERY_HOLD_UNROUTED` | `1` | Hold an app message that matches no route (`202`, status `unrouted`) instead of refusing it with `422`. On by default (unset or empty means on); `0`/`false` turns holding off (restores the `422`), `1`/`true` on; anything else fails startup |
 | `DELIVERY_MAX_HELD_PER_APP` | `1000` | Most held messages one app may have; a new held message over it is a `429` (integer 1-100000; an invalid value fails startup) |
 | `DELIVERY_MAX_HELD_TOTAL` | `100000` | Most held messages all apps may have together; a new held message over it is a `429` (integer 1-10000000; an invalid value fails startup) |
 | `DELIVERY_HELD_TTL_DAYS` | `7` | Days an unreleased held message is kept before it expires, counted from `held_at` (integer 1-365; an invalid value fails startup) |
@@ -99,14 +99,22 @@ Start the stack and run the suite with the same value:
 The CI integration job starts its stack with a cap of 2, so the case runs there.
 
 The live hold tests (an unrouted app message accepted as `202` `unrouted`, the held caps, cancel, replay,
-and the `onboard verify` unrouted outcome) need a stack with `DELIVERY_HOLD_UNROUTED=1`, so the default
-`make delivery-integration-test` and `make onboard-integration-test` runs (flag off, `422`) skip them.
-`make delivery-integration-test-hold` (local stack must be up) recreates delivery-api with the flag on and a
-small `DELIVERY_MAX_HELD_PER_APP` (`HOLD_TEST_MAX_HELD`, default 3) and `DELIVERY_MAX_HELD_TOTAL` (`HOLD_TEST_MAX_HELD_TOTAL`, default 20), runs the Go `TestHold*` tests and the
-onboard integration test, then recreates delivery-api flag-off and waits for it to be healthy; the restore
+and the `onboard verify` unrouted outcome) run on the default stack, where holding is on, so the plain
+`make delivery-integration-test` and `make onboard-integration-test` runs include them; only the two cap
+tests skip there (they need small caps).
+`make delivery-integration-test-hold` (local stack must be up) recreates delivery-api with
+a small `DELIVERY_MAX_HELD_PER_APP` (`HOLD_TEST_MAX_HELD`, default 3) and `DELIVERY_MAX_HELD_TOTAL` (`HOLD_TEST_MAX_HELD_TOTAL`, default 20), runs the Go `TestHold*` tests (cap tests included) and the
+onboard integration test, then recreates delivery-api on the default and waits for it to be healthy; the restore
 runs even when the tests fail. `make delivery-integration-test-hold-run` only runs the tests against a stack
-that is already flag-on (set `NOTIFS_DELIVERY_MAX_HELD` and `NOTIFS_DELIVERY_MAX_HELD_TOTAL` to the stack's per-app and total caps); CI uses it after
-recreating its own stack. Both fail if either runner ran zero hold tests.
+that is already holding with small caps (set `NOTIFS_DELIVERY_MAX_HELD` and `NOTIFS_DELIVERY_MAX_HELD_TOTAL` to the stack's per-app and total caps); CI uses it after
+recreating its own stack. Both fail if either runner ran zero hold tests, and the hold target also fails
+unless both cap tests passed.
+
+A third pass pins the flag-off refusals (`TestUnroutedSubmitIsRefusedWhenHoldOff` and
+`TestAnotherAppsDestinationIsRefusedWhenHoldOff`, `422 no destination matched`). `make delivery-integration-test-hold-off`
+(local stack must be up) recreates delivery-api with `DELIVERY_HOLD_UNROUTED=0`, runs them, and always restores the
+stack's default flag; `make delivery-integration-test-hold-off-run` runs them against an already flag-off stack
+(CI uses it). Both fail if either test skipped.
 
 Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own
 compose project and ports; see [`docs/worktrees.md`](docs/worktrees.md). In a worktree, start the

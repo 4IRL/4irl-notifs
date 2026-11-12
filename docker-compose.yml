@@ -206,9 +206,9 @@ services:
       # ("scheduled message capacity reached"). The default must equal the code default
       # (message.DefaultMaxScheduledTotal). LOCKSTEP: keep in sync with docker-compose.prod.yml.
       - DELIVERY_MAX_SCHEDULED_TOTAL=${DELIVERY_MAX_SCHEDULED_TOTAL:-100000}
-      # Hold an app message that matches no route instead of refusing it (1/true = on). Off by default; must
-      # not be enabled before the releaser ships. LOCKSTEP: keep in sync with docker-compose.prod.yml.
-      - DELIVERY_HOLD_UNROUTED=${DELIVERY_HOLD_UNROUTED:-0}
+      # Hold an app message that matches no route instead of refusing it. On by default; 0 or false turns
+      # holding off (the held releaser always runs). LOCKSTEP: keep in sync with docker-compose.prod.yml.
+      - DELIVERY_HOLD_UNROUTED=${DELIVERY_HOLD_UNROUTED:-1}
       # Per-app cap on held messages; a new held message over it is a 429. The default must equal the code
       # default (message.DefaultMaxHeldPerApp). LOCKSTEP: keep in sync with docker-compose.prod.yml.
       - DELIVERY_MAX_HELD_PER_APP=${DELIVERY_MAX_HELD_PER_APP:-1000}

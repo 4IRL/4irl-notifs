@@ -58,9 +58,25 @@ func TestAppOwnedDestinationIsUnusableByOtherApps(testInstance *testing.T) {
 		body["to"] = map[string]string{"destination": destination}
 		return apiRequest(testInstance, http.MethodPost, messagesPath, body)
 	}, ownedName, absentName, http.StatusBadRequest)
+}
 
-	// Delivery time: link the destination to a wildcard route behind the write path's
-	// back. The message still matches no destination, so nothing is queued.
+// TestAnotherAppsDestinationIsRefusedWhenHoldOff is the delivery-time step: link the other app's
+// destination to a wildcard route behind the write path's back. The message still matches no
+// destination, so a flag-off stack refuses it with 422 (a flag-on stack holds it instead).
+func TestAnotherAppsDestinationIsRefusedWhenHoldOff(testInstance *testing.T) {
+	requireHoldOffStack(testInstance)
+	suffix := randomSuffix(testInstance)
+	ownedName := usableOwnerApp + "_" + suffix
+	channel := "it_" + suffix
+
+	// Cleanups run last-in first: the route goes before the destination it links.
+	testInstance.Cleanup(func() {
+		psql(testInstance, fmt.Sprintf("DELETE FROM destinations WHERE name = '%s'", ownedName))
+	})
+	testInstance.Cleanup(func() {
+		psql(testInstance, fmt.Sprintf("DELETE FROM routes WHERE channel_pattern = '%s'", channel))
+	})
+	psql(testInstance, fmt.Sprintf(usableInsertDestinationSQL, ownedName, usableOwnerApp))
 	psql(testInstance, fmt.Sprintf(usableInsertBadRouteSQL, channel, ownedName))
 	status, body := apiRequest(testInstance, http.MethodPost, messagesPath,
 		submitBody(channel, "it-usable-routed-"+randomSuffix(testInstance)))

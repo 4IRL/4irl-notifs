@@ -372,8 +372,8 @@ senders** below alongside these steps.
    instead (operator-owned, usable by every app), add the destinations the app's messages should reach
    (ntfy, Discord or webhook) and the routes that send the app's traffic to them in the Delivery tab. Use the
    destination's send-test to confirm each one. Without a matching route or destination a send with no
-   `to` fails with `422 no destination matched`, unless the operator has turned on holding
-   (`DELIVERY_HOLD_UNROUTED`, off by default), in which case an app-key send is accepted as `202` with
+   `to` fails with `422 no destination matched` only if the operator has turned holding off
+   (`DELIVERY_HOLD_UNROUTED=0`); by default holding is on and an app-key send is accepted as `202` with
    status `unrouted` (see "Unrouted messages (held)"). A route match whose destinations are all disabled
    counts as no match and is held the same way; a `to.destination` that is disabled or unknown is still
    `409`/`400`.
@@ -629,7 +629,7 @@ notifs_heartbeat() {
 
 Both were run against a local stack (before delivery keys were required; the only change since is the
 `Authorization: Bearer` header and reading the key file on every call): an accepted message, the same key resubmitted (same `message_id`), a
-send with no route (`422`), a malformed envelope (`400`), an unreachable service (a clean failure, no
+send with no route (`202 unrouted` unless holding is off, then `422`), a malformed envelope (`400`), an unreachable service (a clean failure, no
 exception), and the heartbeat success, `/fail` and unknown-check cases. A workflow container that can only
 run a restricted `curl` needs its allowlist to admit the delivery-api host and the two Access headers.
 
@@ -1427,9 +1427,10 @@ due, instead of sending at once.
 
 ### Unrouted messages (held)
 
-By default a send that matches no route (and names no `to`) is refused with `422 no destination matched`.
-When the operator turns holding on (`DELIVERY_HOLD_UNROUTED=1`; it is off by default), `POST /v1/messages`
-accepts such a send instead and keeps it.
+Unrouted app-key messages are held by default rather than rejected. A send that matches no route (and
+names no `to`) is accepted and kept. `422 no destination matched` only happens when the operator turns
+holding off (`DELIVERY_HOLD_UNROUTED=0` or `false`; unset or empty means on). An app should check for
+status `unrouted` in the `202` response; `onboard verify` reports it as `fail: unrouted`. With holding on, `POST /v1/messages` accepts such a send and keeps it.
 
 - **What you get:** `202` with `status` `unrouted`, an empty `deliveries` array and `"duplicate": false`.
   `?wait=` is ignored (an immediate `202`). Nothing is delivered while the message is held.
@@ -1453,8 +1454,6 @@ accepts such a send instead and keeps it.
   most 100000 (`DELIVERY_MAX_HELD_TOTAL`): one more is `429 {"error":"held message capacity reached"}`; a
   replay is never refused by either. A held message that is not released within 7 days
   (`DELIVERY_HELD_TTL_DAYS`, 1 to 365) is removed by the retention sweeper.
-- **Do not enable yet:** holding needs migration 0012. Do not turn the flag on before the release feature that
-  turns held messages into deliveries is deployed, because until then nothing releases them.
 - **Check it:** `onboard verify` reports a channel with no route as `unrouted` (and cancels its held test
   message) instead of a generic failure.
 
