@@ -42,7 +42,7 @@ Guidance for Claude Code when working in this repository.
   | Backup shell lint / tests | `make backup-lint` (pinned shellcheck from `ops/backup/pins.env`, fetched into gitignored `.local/bin` by `ops/backup/fetch-pinned.sh`; covers `ops/backup/**/*.sh` and `ops/notifs-ops/*.sh`) / `make backup-test` (`ops/backup/test/run.sh`: every `test_*.sh` except the live ones); both are part of `make lint` / `make test` |
   | Backup live round trip | `make backup-test-live` (docker round trip: real `backup.sh` + `restore.sh` against throwaway Postgres, sqlite and a local restic repo, using the pinned restic from `.local/bin`; `REQUIRE_DOCKER=1` fails instead of skipping, `NBLIVE_SKIP=1` opts out; runs in CI's integration job) |
   | Backup host install / status | `make host-backup HOST=<ssh-alias> ARGS=install\|status\|verify\|run-now\|init-repo` (runs `ops/backup/install-backup.sh` on the VPS with sudo; `HOST` has no default and is honoured only from the command line) / `make host-backup-status HOST=<ssh-alias>` (last `last-run.tsv` result and the timer, no sudo) |
-  | Watchdog Worker tests / build | `make watchdog-test` (`npm test` in `watchdog/`, Vitest + workers pool) / `make watchdog-build` (tsc + `wrangler deploy --dry-run`) |
+  | Watchdog Worker tests / build | `make watchdog-test` (`npm test` in `watchdog/`, Vitest + workers pool) / `make watchdog-build` (tsc + `wrangler deploy --dry-run`) / `make watchdog-deploy` (`wrangler deploy`, operator-run; CI deploys post-merge) / `make watchdog-tail` (`wrangler tail notifs-watchdog`) |
   | App onboarding (plan/apply/verify) / manifest lint | `make onboard app=<app_id\|_platform> [cmd=plan\|apply\|verify] [env=<name>] [prune=1] [resend_secrets=1]` / `make onboard-lint` (`node scripts/onboard.mjs lint apps`, part of `make lint`) |
   | App onboarding integration test | `make onboard-integration-test` (needs local stack up; sends `NOTIFS_INTERNAL_CREDENTIAL`, auto-read from the running provisioning-api container or exported to override; `node --test scripts/onboard.integration.test.mjs`; also runs in CI's integration job) |
   | Credential audit | `make credential-audit [SINCE=<docker --since value>]` (fails if provisioning-api logged any request the internal-credential check would reject; run after the integration targets and `make notif-smoke-test` on a stack started fresh, or set `SINCE` to the harness start time; also runs in CI) |
@@ -121,7 +121,7 @@ Components:
   bounded concurrency) and the retention
   sweeper in-process.
 - **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api (through delivery-api's
-  `/healthz/provisioning`) and ntfy from outside the VPS and posts state changes, held-message alerts and a daily summary to Discord.
+  `/healthz/provisioning`), ntfy and the urls4irl website (`/health?db=true`) from outside the VPS and posts state changes, held-message alerts and a daily summary to Discord.
 - **web** — React/Vite admin UI, deployed to Cloudflare Pages behind Cloudflare Access
   (Google/GitHub OAuth).
 - **setup-web** — public static ntfy setup page (React/Vite, `qrcode.react`) deployed to its own
@@ -175,7 +175,7 @@ shown for reference only.
 | `make backup-test-live` | Docker round trip: real `backup.sh` + `restore.sh` against throwaway Postgres, sqlite and a local restic repo (pinned restic from `.local/bin`); `REQUIRE_DOCKER=1` fails instead of skipping, `NBLIVE_SKIP=1` opts out |
 | `make host-backup HOST=<ssh-alias> ARGS=install\|status\|verify\|run-now\|init-repo` | Run the backup installer on the VPS with sudo (`HOST` has no default and is honoured only from the command line) |
 | `make host-backup-status HOST=<ssh-alias>` | Print the last backup result (`last-run.tsv`) and the timer's next run, no sudo |
-| `make watchdog-test` / `make watchdog-build` | Run the watchdog Worker tests (Vitest + workers pool) / typecheck and dry-run bundle it |
+| `make watchdog-test` / `make watchdog-build` / `make watchdog-deploy` / `make watchdog-tail` | Run the watchdog Worker tests (Vitest + workers pool) / typecheck and dry-run bundle it / deploy it (operator-run; CI deploys post-merge; needs wrangler auth) / stream its live logs |
 | `make onboard app=<app_id\|_platform> [cmd=plan\|apply\|verify] [env=<name>] [prune=1] [resend_secrets=1]` | Plan/apply/verify an app's (or `_platform`'s) declarative onboarding manifest under `apps/` |
 | `make onboard-lint` (`node scripts/onboard.mjs lint apps`) | Offline schema + cross-manifest lint of every manifest under `apps/` (part of `make lint`, run in CI) |
 | `make onboard-integration-test` (`node --test scripts/onboard.integration.test.mjs`) | Live plan/apply/verify/prune of a throwaway app manifest against the local stack (local stack must be up; sends `NOTIFS_INTERNAL_CREDENTIAL`, auto-read from the running provisioning-api container or exported to override; also runs in CI's integration job) |

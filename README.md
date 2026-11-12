@@ -20,7 +20,7 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
   alerts with an in-process heartbeat checker and prunes old messages with a retention sweeper; see
   [`ARCHITECTURE.md`](ARCHITECTURE.md#delivery-api-endpoints)
 - **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api (through delivery-api's
-  `/healthz/provisioning`) and ntfy from outside the VPS and posts state changes to Discord
+  `/healthz/provisioning`), ntfy and the urls4irl website (`/health?db=true`) from outside the VPS and posts state changes to Discord
 - **web** — admin UI (Cloudflare Pages, behind Cloudflare Access)
 
 ## Why build on it
