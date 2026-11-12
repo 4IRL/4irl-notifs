@@ -629,7 +629,7 @@ notifs_heartbeat() {
 
 Both were run against a local stack (before delivery keys were required; the only change since is the
 `Authorization: Bearer` header and reading the key file on every call): an accepted message, the same key resubmitted (same `message_id`), a
-send with no route (`422` then; now `202 unrouted` unless holding is off), a malformed envelope (`400`), an unreachable service (a clean failure, no
+send with no route (`202 unrouted` unless holding is off, then `422`), a malformed envelope (`400`), an unreachable service (a clean failure, no
 exception), and the heartbeat success, `/fail` and unknown-check cases. A workflow container that can only
 run a restricted `curl` needs its allowlist to admit the delivery-api host and the two Access headers.
 
@@ -1427,12 +1427,10 @@ due, instead of sending at once.
 
 ### Unrouted messages (held)
 
-**Behaviour change (2026-11):** unrouted app-key messages are now held by default rather than rejected. A send
-that matches no route (and names no `to`) is accepted and kept, where it used to get
-`422 no destination matched`. That `422` now only happens when the operator turns holding off
-(`DELIVERY_HOLD_UNROUTED=0` or `false`; unset or empty means on). An app that relied on the `422` should
-instead check for status `unrouted` in the `202` response; `onboard verify` already reports it as
-`fail: unrouted`. With holding on, `POST /v1/messages` accepts such a send and keeps it.
+Unrouted app-key messages are held by default rather than rejected. A send that matches no route (and
+names no `to`) is accepted and kept. `422 no destination matched` only happens when the operator turns
+holding off (`DELIVERY_HOLD_UNROUTED=0` or `false`; unset or empty means on). An app should check for
+status `unrouted` in the `202` response; `onboard verify` reports it as `fail: unrouted`. With holding on, `POST /v1/messages` accepts such a send and keeps it.
 
 - **What you get:** `202` with `status` `unrouted`, an empty `deliveries` array and `"duplicate": false`.
   `?wait=` is ignored (an immediate `202`). Nothing is delivered while the message is held.

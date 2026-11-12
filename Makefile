@@ -230,13 +230,6 @@ delivery-integration-test-hold-run: ## Run the live hold tests (Go + onboard) ag
 	if [ "$$CAPS_PASSED" -ne 1 ]; then echo "hold: TestHoldPerAppCapIs429 and TestHoldTotalCapIs429 must both pass (a skip counts as failure): NOTIFS_DELIVERY_MAX_HELD and NOTIFS_DELIVERY_MAX_HELD_TOTAL must be set to the stack's small caps" >&2; exit 1; fi; \
 	if [ "$$NODE_PASSED" -ne 1 ]; then echo "hold: the onboard unrouted test did not pass (skipped or missing): check ONBOARD_INTEGRATION_URL, ONBOARD_INTEGRATION_PROVISIONING_URL, NOTIFS_INTERNAL_CREDENTIAL and NOTIFS_DELIVERY_HOLD_UNROUTED" >&2; exit 1; fi
 
-# Local composed target (`up -d --build` re-applies the environment, rebuilds the image from this checkout
-# and re-runs delivery-migrate when needed): recreate delivery-api with the hold flag on and a small per-app cap
-# (HOLD_TEST_MAX_HELD, default 3), run the runners target, then recreate it on the default hold flag. The
-# restore always runs (even when the tests fail), waits for delivery-api to be healthy and checks the new
-# container's environment says DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT). The exit status is the
-# test failure; a failed restore only fails the target when the tests passed. Other DELIVERY_* settings in the environment (for example
-# DELIVERY_MAX_SCHEDULED_PER_APP) carry over to both recreates.
 HOLD_TEST_MAX_HELD ?= 3
 HOLD_TEST_MAX_HELD_TOTAL ?= 20
 HOLD_WAIT_HEALTHY = wait_healthy() { for _ in $$(seq 1 60); do STATUS="$$(docker inspect -f '{{.State.Health.Status}}' "$$($(COMPOSE) ps -q delivery-api)" 2>/dev/null || echo unknown)"; if [ "$$STATUS" = healthy ]; then return 0; fi; sleep 2; done; echo "delivery-api did not become healthy in time" >&2; return 1; }
@@ -282,6 +275,13 @@ delivery-integration-test-hold-off: ## Recreate delivery-api with the hold flag 
 	if [ "$$RC" -ne 0 ]; then exit "$$RC"; fi; \
 	exit "$$RESTORE_RC"
 
+# Local composed target (`up -d --build` re-applies the environment, rebuilds the image from this checkout
+# and re-runs delivery-migrate when needed): recreate delivery-api with the hold flag on and a small per-app
+# cap (HOLD_TEST_MAX_HELD, default 3), run the runners target, then recreate it on the default hold flag.
+# The restore always runs (even when the tests fail), waits for delivery-api to be healthy and checks the
+# new container's environment says DELIVERY_HOLD_UNROUTED=$(DELIVERY_HOLD_DEFAULT). The exit status is the
+# test failure; a failed restore only fails the target when the tests passed. Other DELIVERY_* settings
+# in the environment (for example DELIVERY_MAX_SCHEDULED_PER_APP) carry over to both recreates.
 delivery-integration-test-hold: ## Recreate delivery-api flag-on, run the live hold tests, restore the default (local stack must be up)
 	@$(HOLD_WAIT_HEALTHY); \
 	RC=0; RESTORE_RC=0; \

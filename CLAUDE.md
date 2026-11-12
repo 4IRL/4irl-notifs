@@ -152,7 +152,7 @@ shown for reference only.
 | `make delivery-test` (`go test ./...` in `delivery-api/`) | Run delivery-api Go unit tests |
 | `make delivery-integration-test` (`go test -p 1 -tags integration ./...`) | Run delivery-api integration tests (local stack must be up) |
 | `make delivery-integration-test-hold` | Recreate delivery-api with `DELIVERY_HOLD_UNROUTED=1`, run the live Go `TestHold*` tests plus the onboard unrouted case, then restore the default (local stack must be up) |
-| `make delivery-integration-test-hold-run` | Hold runners only, against an already flag-on stack (set `NOTIFS_DELIVERY_MAX_HELD` and `NOTIFS_DELIVERY_MAX_HELD_TOTAL`) |
+| `make delivery-integration-test-hold-run` | Hold runners only, against an already holding stack with small caps (set `NOTIFS_DELIVERY_MAX_HELD` and `NOTIFS_DELIVERY_MAX_HELD_TOTAL`) |
 | `make delivery-integration-test-hold-off` | Recreate delivery-api with `DELIVERY_HOLD_UNROUTED=0`, run the live `*WhenHoldOff` tests (422 refusals), then restore the default flag (local stack must be up) |
 | `make delivery-integration-test-hold-off-run` | Flag-off runner only, against an already flag-off stack (a skip fails it) |
 | `make delivery-lint` / `make delivery-fmt` (`gofmt -l .` + pinned `golangci-lint run` / `gofmt -w .`) | Check / apply delivery-api Go formatting + lint (same pinned golangci-lint as `go-lint`) |
