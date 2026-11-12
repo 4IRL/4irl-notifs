@@ -7,15 +7,17 @@
 #
 # Exit codes: 0 ok, 1 failed, 2 usage or env/override problem.
 #
-# Credentials: /etc/notifs-backup/backup.env is read by this script itself with a literal KEY=VALUE reader (never
-# sourced; see read_backup_env). The systemd unit has no EnvironmentFile=, so nothing depends on the caller's environment.
+# Credentials: /home/4irl-notifs/secrets-persistent/backup.env is written by the prod deploy from GitHub secrets (owned by
+# the 4irl-notifs user, mode 0600) and read by this script itself with a literal KEY=VALUE reader (never sourced; see
+# read_backup_env). The systemd unit has no EnvironmentFile=, so nothing depends on the caller's environment.
 #
 # Test overrides (all optional, each read once at startup, default = production value, an unparsable value exits 2).
 # They are honoured ONLY when NOTIFS_BACKUP_TESTING=1; otherwise every NOTIFS_BACKUP_* / INSTALL_BACKUP_* variable is
 # ignored (unset, named in a warning) and the production values apply. A work root other than the production one must
 # hold a .notifs-backup-root sentinel file before staging/ is wiped.
-#   NOTIFS_BACKUP_ENV_FILE        /etc/notifs-backup/backup.env
-#   NOTIFS_BACKUP_ENV_OWNER       0:0   (numeric uid:gid the env file must have; mode 0600 and no-symlink never relax)
+#   NOTIFS_BACKUP_ENV_FILE        /home/4irl-notifs/secrets-persistent/backup.env
+#   NOTIFS_BACKUP_ENV_OWNER       uid:gid of the 4irl-notifs user (numeric uid:gid the env file must have; mode 0600 and
+#                                 no-symlink never relax; an unresolvable user exits 2)
 #   NOTIFS_BACKUP_ROOT            /var/lib/notifs-backup/work   (staging/, restic-cache/, restore scratch)
 #   NOTIFS_BACKUP_STATE_DIR       /var/lib/notifs-backup/status   (last-run.tsv)
 #   NOTIFS_BACKUP_LOG_DIR         /var/log/notifs-backup
@@ -45,6 +47,10 @@ DISCORD_WEBHOOK=""
 # Production locations (the overrides in load_overrides default to these; prepare_staging compares against PROD_ROOT).
 PROD_ROOT=/var/lib/notifs-backup/work
 ROOT_SENTINEL=.notifs-backup-root
+# The prod deploy (as ENV_USER) writes the credentials file; this root job only reads it, and read_backup_env insists the
+# file belongs to ENV_USER (never another account, never a symlink, always mode 0600).
+ENV_USER=4irl-notifs
+PROD_ENV_FILE=/home/4irl-notifs/secrets-persistent/backup.env
 
 # Phases run in order after env and lock. Each entry is a function that returns 0 on success; it runs its external
 # calls through timed. A function named phase_<name> has the label <name> (failed_phase, logs); a phase may refine
@@ -224,9 +230,20 @@ gate_test_overrides() {
   return 0
 }
 
+# resolve_env_owner: sets ENV_OWNER to the uid:gid of ENV_USER. Fail closed: an account that cannot be resolved exits 2
+# rather than falling back to root (or to anyone), so the env file is never accepted from an unknown owner.
+resolve_env_owner() {
+  local u g
+  if ! u="$(id -u -- "$ENV_USER" 2> /dev/null)" || ! g="$(id -g -- "$ENV_USER" 2> /dev/null)"; then
+    echo "FATAL: cannot resolve the uid:gid of user $ENV_USER (the owner backup.env must have)" >&2
+    exit 2
+  fi
+  ENV_OWNER="$u:$g"
+}
+
 load_overrides() {
   gate_test_overrides
-  ov_path ENV_FILE NOTIFS_BACKUP_ENV_FILE /etc/notifs-backup/backup.env
+  ov_path ENV_FILE NOTIFS_BACKUP_ENV_FILE "$PROD_ENV_FILE"
   ov_path BACKUP_ROOT NOTIFS_BACKUP_ROOT "$PROD_ROOT"
   ov_path STATE_DIR NOTIFS_BACKUP_STATE_DIR /var/lib/notifs-backup/status
   ov_path LOG_DIR NOTIFS_BACKUP_LOG_DIR /var/log/notifs-backup
@@ -237,14 +254,15 @@ load_overrides() {
   ov_word SQLITE_IMAGE NOTIFS_BACKUP_SQLITE_IMAGE
   ov_int PG_WAIT_SECS NOTIFS_BACKUP_PG_WAIT_SECS 0
   ov_int PG_POLL_SECS NOTIFS_BACKUP_PG_POLL_SECS 1
-  # Honoured only when set; default 0:0. A set-but-malformed (or empty) value exits 2.
-  ENV_OWNER="0:0"
+  # Honoured only when set; default is ENV_USER's uid:gid. A set-but-malformed (or empty) value exits 2.
   if [ -n "${NOTIFS_BACKUP_ENV_OWNER+x}" ]; then
     if [[ ! "$NOTIFS_BACKUP_ENV_OWNER" =~ ^[0-9]+:[0-9]+$ ]]; then
       echo "FATAL: NOTIFS_BACKUP_ENV_OWNER must match uid:gid (digits)" >&2
       exit 2
     fi
     ENV_OWNER="$NOTIFS_BACKUP_ENV_OWNER"
+  else
+    resolve_env_owner
   fi
   if [ -n "${NOTIFS_BACKUP_DEADLINE_SECS+x}" ]; then
     if [[ ! "$NOTIFS_BACKUP_DEADLINE_SECS" =~ ^[1-9][0-9]{0,6}$ ]]; then

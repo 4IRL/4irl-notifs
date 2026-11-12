@@ -96,6 +96,21 @@ rr() {
 # d_args <pattern>: the "-d <value>" values on the recorded docker lines that match the pattern.
 d_values() { grep -E "$1" "$CALL_LOG" | grep -oE ' -d [^ ]+' | sed 's/^ -d //' || true; }
 
+# ---- env owner resolution (no NOTIFS_BACKUP_ENV_OWNER): the 4irl-notifs user's uid:gid, fail closed ----
+new_case
+mkdir -p "$CASE_DIR/shimbin"
+printf '#!/bin/sh\nexit 1\n' > "$CASE_DIR/shimbin/id"
+chmod 755 "$CASE_DIR/shimbin/id"
+run_cmd env -i PATH="$CASE_DIR/shimbin:$PATH" CALL_LOG="$CALL_LOG" CASE_DIR="$CASE_DIR" NOTIFS_BACKUP_TESTING=1 \
+  NOTIFS_BACKUP_ENV_FILE="$ENVF" NOTIFS_BACKUP_ROOT="$CASE_DIR/work" NOTIFS_BACKUP_LOCK="$LOCKF" bash "$SCRIPT" list
+expect_rc "unresolvable 4irl-notifs user exits 2" 2
+expect_out_has "unresolvable user is named" "cannot resolve the uid:gid of user 4irl-notifs"
+printf '#!/bin/sh\nif [ "$1" = "-u" ]; then echo 12345; else echo 12346; fi\n' > "$CASE_DIR/shimbin/id"
+run_cmd env -i PATH="$CASE_DIR/shimbin:$PATH" CALL_LOG="$CALL_LOG" CASE_DIR="$CASE_DIR" NOTIFS_BACKUP_TESTING=1 \
+  NOTIFS_BACKUP_ENV_FILE="$ENVF" NOTIFS_BACKUP_ROOT="$CASE_DIR/work" NOTIFS_BACKUP_LOCK="$LOCKF" bash "$SCRIPT" list
+expect_rc "a resolved user whose uid:gid does not own backup.env is refused" 2
+expect_out_has "default owner is the resolved uid:gid" "owner is not 12345:12346"
+
 # ---- list ----
 new_case
 rr list

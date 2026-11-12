@@ -24,24 +24,31 @@ backup runs.
 1. In the Cloudflare dashboard create **one** dedicated R2 bucket for this backup.
 2. Create an **Object Read & Write** API token scoped to that bucket only (no account-wide access).
 3. Note the bucket's S3 endpoint, the token's access key id and secret, and create a Discord webhook for the notices.
-4. Write `/etc/notifs-backup/backup.env` yourself (the installer never writes it). Values are literal: write
-   `KEY=value` with **no quotes** (the reader refuses a leading quote, a carriage return, an unknown key and a
-   duplicate key):
+4. Add five GitHub secrets (repo `4IRL/4irl-notifs`, same place as the other deploy secrets). The prod deploy renders
+   them into `/home/4irl-notifs/secrets-persistent/backup.env` (owned by the 4irl-notifs user, mode 0600; the installer
+   never writes it). Values are literal with **no quotes, `$`, backticks, backslashes or whitespace** (the deploy
+   refuses them, and the reader refuses a leading quote, a carriage return, an unknown key and a duplicate key). All
+   five set writes the file; none set leaves it as is; a partial set aborts the deploy before it touches the VPS.
 
-   ```sh
-   sudo install -d -m 0700 -o root -g root /etc/notifs-backup
-   sudo install -m 0600 -o root -g root /dev/null /etc/notifs-backup/backup.env
-   sudoedit /etc/notifs-backup/backup.env
-   ```
+   | GitHub secret | `backup.env` key | Value |
+   | ------------- | ---------------- | ----- |
+   | `BACKUP_RESTIC_REPOSITORY` | `RESTIC_REPOSITORY` | `s3:https://<account-id>.r2.cloudflarestorage.com/<bucket>` |
+   | `BACKUP_RESTIC_PASSWORD` | `RESTIC_PASSWORD` | a long random restic password |
+   | `BACKUP_R2_ACCESS_KEY_ID` | `AWS_ACCESS_KEY_ID` | the token access key id |
+   | `BACKUP_R2_SECRET_ACCESS_KEY` | `AWS_SECRET_ACCESS_KEY` | the token secret |
+   | `BACKUP_DISCORD_WEBHOOK` | `DISCORD_WEBHOOK` | the webhook url |
 
-   ```
-   RESTIC_REPOSITORY=s3:https://<account-id>.r2.cloudflarestorage.com/<bucket>
-   RESTIC_PASSWORD=<long random restic password>
-   AWS_ACCESS_KEY_ID=<token access key id>
-   AWS_SECRET_ACCESS_KEY=<token secret>
-   AWS_DEFAULT_REGION=auto
-   DISCORD_WEBHOOK=<webhook url>
-   ```
+   `AWS_DEFAULT_REGION=auto` is fixed by the deploy. Then run a prod deploy (merge to `main`, or re-run the deploy
+   workflow) and check the file landed: `ssh <ssh-alias> 'stat -c "%U %a" secrets-persistent/backup.env'` should print
+   `4irl-notifs 600`. The deploy checks that `BACKUP_DISCORD_WEBHOOK` is a Discord webhook url.
+
+   **Existing host (migration).** Hosts set up before this change keep reading `/etc/notifs-backup/backup.env` until the
+   scripts are reinstalled, and after the reinstall they read only the file above. So: set the five secrets, run a prod
+   deploy, confirm `4irl-notifs 600`, then reinstall (step 5) and run `verify`, and only then delete the old
+   `/etc/notifs-backup/backup.env` (it still holds live credentials and no longer follows a rotation). If the deploy
+   path is down during a restore, recreate the file by hand from the Infisical copies with
+   `sudo install -m 0600 -o 4irl-notifs -g 4irl-notifs /dev/stdin /home/4irl-notifs/secrets-persistent/backup.env`.
+   The deploy user can already run containers on this host, so the owner check is defence in depth, not a boundary.
 
 5. Install the units, scripts and restic (prompts for the sudo password, so run it yourself):
    `make host-backup HOST=<ssh-alias> ARGS="install"`.
@@ -51,8 +58,9 @@ backup runs.
    `make host-backup HOST=<ssh-alias> ARGS="verify"`.
 
 **Store `RESTIC_PASSWORD`, the R2 token (access key id and secret) and the account id in Infisical.** Without the restic
-password the backups cannot be restored, without the R2 credentials they cannot be read, and the copy in `backup.env`
-is lost together with the host. The `backup.env` file is intentionally not in the backup.
+password the backups cannot be restored and without the R2 credentials they cannot be read. The GitHub secrets are
+write-only, so Infisical is the readable copy; the host file is rendered from them on every deploy and is
+intentionally not in the backup.
 
 ## 2. Daily checks
 
@@ -140,8 +148,8 @@ The restore writes into a new directory outside every docker volume; you swap th
 2. **Deploy the stack.** The deploy rewrites `secrets-persistent/` from GitHub secrets, so `DELIVERY_MASTER_KEY` must be
    present as the GitHub secret. If GitHub lost it, restore it from Infisical first. A different key here would orphan
    every sealed row.
-3. Write `backup.env` (section 1, step 4) and run `make host-backup HOST=<ssh-alias> ARGS="install"`. Do **not** run
-   `init-repo`: the repository already exists and `init-repo` refuses.
+3. Make sure the `BACKUP_*` GitHub secrets are set (section 1, step 4; the step 2 deploy renders `backup.env`), and
+   run `make host-backup HOST=<ssh-alias> ARGS="install"`. Do **not** run `init-repo`: the repository already exists and `init-repo` refuses.
 4. Stop delivery-api: `sudo docker stop 4irl-notifs-delivery-api`.
 5. Restore the dump (section 4, steps 1 to 3), then `auth.db` (section 5).
 6. Start delivery-api, ntfy and provisioning-api, then run `verify-keys` from the stack directory:

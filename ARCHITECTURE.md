@@ -1121,7 +1121,8 @@ consistent online copy of ntfy's `auth.db`, then uploads both with restic to a d
 - **Not in the backup, on purpose:** everything under `secrets-persistent/`, above all `DELIVERY_MASTER_KEY` and
   `DELIVERY_MASTER_KEY_PREVIOUS`. The dump holds sealed secrets, so it is safe offsite but useless without the key; the
   key lives in Infisical and the GitHub secret, and a restore needs it. `backup.env` and the `ntfy-cache` volume are
-  not backed up either.
+  not backed up either. `backup.env` is itself in `secrets-persistent/`: the prod deploy renders it from the five
+  `BACKUP_*` GitHub secrets (4irl-notifs user, 0600), and the root backup job accepts it only when that user owns it.
 - **Signals:** one Discord notice per run (ok or failed with the failing phase); a ping to the `notifs_ops/nightly_backup`
   heartbeat (period 24 h, grace 12 h, declared in `ops/notifs-ops/manifest.json`) so a run that silently stops
   alerts; and the external watchdog Worker, which alerts if delivery-api itself is down.

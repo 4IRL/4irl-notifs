@@ -7,14 +7,16 @@
 #
 # Single definitions (never redefined here): the restic version and archive hashes come from DIR/pins.env via read_pins;
 # SRC_SQLITE_IMAGE, the Postgres container and the ntfy-auth volume are parsed from DIR/backup.sh.
-# This script never creates or modifies /etc/notifs-backup/backup.env (only its 0700 directory); init-repo reads it.
+# This script never creates or modifies backup.env (/home/4irl-notifs/secrets-persistent/backup.env, written by the prod
+# deploy from GitHub secrets as the 4irl-notifs user); init-repo reads it.
 #
 # Exit codes: 0 ok, 1 failed (or a verify FAIL), 2 usage.
 #
 # Test overrides, honoured ONLY when NOTIFS_BACKUP_TESTING=1 (otherwise every NOTIFS_BACKUP_* / INSTALL_BACKUP_* variable
 # is unset with a warning, fail closed):
 #   INSTALL_BACKUP_ROOT    prefix for every host path (default empty = the real filesystem)
-#   INSTALL_BACKUP_OWNER   numeric uid:gid files must have for verify and the env file (default 0:0)
+#   INSTALL_BACKUP_OWNER   numeric uid:gid files must have for verify (default 0:0)
+#   INSTALL_BACKUP_ENV_OWNER   numeric uid:gid backup.env must have (default: the 4irl-notifs user's; unresolvable exits 2)
 #   INSTALL_BACKUP_TOOLS   space-separated tool list for the precondition check
 set -euo pipefail
 
@@ -74,12 +76,24 @@ set_paths() {
   fi
   OWNER="${INSTALL_BACKUP_OWNER:-0:0}"
   if [[ ! "$OWNER" =~ ^[0-9]+:[0-9]+$ ]]; then echo "install-backup: INSTALL_BACKUP_OWNER must be uid:gid" >&2; exit 2; fi
+  # backup.env is written by the prod deploy as the 4irl-notifs user, so it must belong to that user (not OWNER, which
+  # is root for the files this installer lays down). Fail closed when the user cannot be resolved.
+  if [ -n "${INSTALL_BACKUP_ENV_OWNER+x}" ]; then
+    ENV_OWNER="$INSTALL_BACKUP_ENV_OWNER"
+  elif u="$(id -u -- 4irl-notifs 2> /dev/null)" && g="$(id -g -- 4irl-notifs 2> /dev/null)"; then
+    ENV_OWNER="$u:$g"
+  else
+    ENV_OWNER=""
+  fi
+  if [[ ! "$ENV_OWNER" =~ ^[0-9]+:[0-9]+$ ]]; then
+    echo "install-backup: cannot resolve the uid:gid of user 4irl-notifs (or INSTALL_BACKUP_ENV_OWNER is not uid:gid)" >&2
+    exit 2
+  fi
   TOOLS="${INSTALL_BACKUP_TOOLS:-docker curl flock timeout bunzip2 sha256sum systemctl}"
   OPT_DIR="$ROOT/opt/notifs-backup"
   BIN="$ROOT/usr/local/bin/restic"
   SHAFILE="$OPT_DIR/restic.sha256"
-  ETC_DIR="$ROOT/etc/notifs-backup"
-  ENV_FILE="$ETC_DIR/backup.env"
+  ENV_FILE="$ROOT/home/4irl-notifs/secrets-persistent/backup.env"
   LIB_DIR="$ROOT/var/lib/notifs-backup"
   WORK_DIR="$LIB_DIR/work"
   STATUS_DIR="$LIB_DIR/status"
@@ -285,7 +299,6 @@ cmd_install() {
   if ! restic_current; then fetch_restic; fi
 
   ensure_dir "$OPT_DIR" 0755
-  ensure_dir "$ETC_DIR" 0700
   ensure_dir "$LIB_DIR" 0755
   ensure_dir "$WORK_DIR" 0700
   ensure_dir "$STATUS_DIR" 0755
@@ -332,7 +345,7 @@ cmd_install() {
   fi
 
   if [ ! -e "$ENV_FILE" ]; then
-    say "note: $ENV_FILE is missing; create it yourself (root, 0600, six keys), then run init-repo"
+    say "note: $ENV_FILE is missing; it is written by the prod deploy (GitHub secrets BACKUP_*, 4irl-notifs user, 0600, six keys); run a deploy, then init-repo"
   fi
   return 0
 }
@@ -422,7 +435,7 @@ cmd_verify() {
     chk_fail "$BIN is missing, not executable or has the wrong owner/mode"
   fi
 
-  if read_backup_env "$ENV_FILE" "$OWNER"; then
+  if read_backup_env "$ENV_FILE" "$ENV_OWNER"; then
     for k in "${ENV_KEYS[@]}"; do
       if [ -z "${!k}" ]; then chk_fail "backup.env has an empty or missing $k"; fi
     done
@@ -479,7 +492,7 @@ cmd_run_now() {
 cmd_init_repo() {
   local rc=0 errf k
   [ -x "$BIN" ] || die "$BIN is not installed; run install first"
-  read_backup_env "$ENV_FILE" "$OWNER" || die "backup.env: $ENV_READ_ERROR"
+  read_backup_env "$ENV_FILE" "$ENV_OWNER" || die "backup.env: $ENV_READ_ERROR"
   for k in "${ENV_KEYS[@]}"; do
     [ -n "${!k}" ] || die "backup.env has an empty or missing $k"
     export "${k?}"
