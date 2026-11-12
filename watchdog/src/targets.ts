@@ -131,8 +131,31 @@ async function evaluateNtfy({ response }: { response: Response }): Promise<Probe
 }
 
 /**
+ * urls4irl `GET https://urls.4irl.app/health?db=true` (handler: `urls4irl` repo
+ * `backend/system/routes.py`, `health()`; `?db=true` runs `get_missing_tables()`). Ok iff HTTP 200
+ * and a JSON object whose `status` is exactly `Success` and whose `message` is exactly
+ * `All database tables verified`. Plain `/health` returns `status` alone, so the `message` is what
+ * proves the database check ran. The body carries no app-identity field. Anything else (a 503
+ * missing-tables body, an HTML fallback page served as 200, a redirect) is down; a failure body is
+ * never echoed.
+ */
+async function evaluateUrls4irl({ response }: { response: Response }): Promise<ProbeVerdict> {
+  if (response.status !== STATUS_OK) {
+    return down(`HTTP ${response.status}`);
+  }
+  const body = asRecord(await readJson(response));
+  if (body === null) {
+    return down('invalid JSON response');
+  }
+  if (body.status !== 'Success') {
+    return down(`urls4irl status ${describeValue(body.status)}`);
+  }
+  return body.message === 'All database tables verified' ? OK : down('database not verified');
+}
+
+/**
  * The probe list. Adding another app's health URL later means adding an entry here; the run logic
- * is target-agnostic.
+ * is target-agnostic. Keep `delivery-api` first (`held.test.ts` reads `TARGETS[0]`).
  */
 export const TARGETS: readonly Target[] = [
   {
@@ -152,5 +175,11 @@ export const TARGETS: readonly Target[] = [
     url: 'https://notifs.4irl.app/v1/health',
     access: false,
     evaluate: evaluateNtfy,
+  },
+  {
+    id: 'urls4irl',
+    url: 'https://urls.4irl.app/health?db=true',
+    access: false,
+    evaluate: evaluateUrls4irl,
   },
 ];
