@@ -8,7 +8,7 @@
 # Single definitions (never redefined here): the restic version and archive hashes come from DIR/pins.env via read_pins;
 # SRC_SQLITE_IMAGE, the Postgres container and the ntfy-auth volume are parsed from DIR/backup.sh.
 # This script never creates or modifies backup.env (/home/4irl-notifs/secrets-persistent/backup.env, written by the prod
-# deploy from GitHub secrets as the 4irl-notifs user); init-repo reads it.
+# deploy from GitHub secrets as the site-ops user); init-repo reads it.
 #
 # Exit codes: 0 ok, 1 failed (or a verify FAIL), 2 usage.
 #
@@ -16,7 +16,7 @@
 # is unset with a warning, fail closed):
 #   INSTALL_BACKUP_ROOT    prefix for every host path (default empty = the real filesystem)
 #   INSTALL_BACKUP_OWNER   numeric uid:gid files must have for verify (default 0:0)
-#   INSTALL_BACKUP_ENV_OWNER   numeric uid:gid backup.env must have (default: the 4irl-notifs user's; unresolvable exits 2)
+#   INSTALL_BACKUP_ENV_OWNER   numeric uid:gid backup.env must have (default: the site-ops user's; unresolvable exits 2)
 #   INSTALL_BACKUP_TOOLS   space-separated tool list for the precondition check
 set -euo pipefail
 
@@ -76,17 +76,17 @@ set_paths() {
   fi
   OWNER="${INSTALL_BACKUP_OWNER:-0:0}"
   if [[ ! "$OWNER" =~ ^[0-9]+:[0-9]+$ ]]; then echo "install-backup: INSTALL_BACKUP_OWNER must be uid:gid" >&2; exit 2; fi
-  # backup.env is written by the prod deploy as the 4irl-notifs user, so it must belong to that user (not OWNER, which
+  # backup.env is written by the prod deploy as the site-ops user, so it must belong to that user (not OWNER, which
   # is root for the files this installer lays down). Fail closed when the user cannot be resolved.
   if [ -n "${INSTALL_BACKUP_ENV_OWNER+x}" ]; then
     ENV_OWNER="$INSTALL_BACKUP_ENV_OWNER"
-  elif u="$(id -u -- 4irl-notifs 2> /dev/null)" && g="$(id -g -- 4irl-notifs 2> /dev/null)"; then
+  elif u="$(id -u -- site-ops 2> /dev/null)" && g="$(id -g -- site-ops 2> /dev/null)"; then
     ENV_OWNER="$u:$g"
   else
     ENV_OWNER=""
   fi
   if [[ ! "$ENV_OWNER" =~ ^[0-9]+:[0-9]+$ ]]; then
-    echo "install-backup: cannot resolve the uid:gid of user 4irl-notifs (or INSTALL_BACKUP_ENV_OWNER is not uid:gid)" >&2
+    echo "install-backup: cannot resolve the uid:gid of user site-ops (or INSTALL_BACKUP_ENV_OWNER is not uid:gid)" >&2
     exit 2
   fi
   TOOLS="${INSTALL_BACKUP_TOOLS:-docker curl flock timeout bunzip2 sha256sum systemctl}"
@@ -345,7 +345,7 @@ cmd_install() {
   fi
 
   if [ ! -e "$ENV_FILE" ]; then
-    say "note: $ENV_FILE is missing; it is written by the prod deploy (GitHub secrets BACKUP_*, 4irl-notifs user, 0600, six keys); run a deploy, then init-repo"
+    say "note: $ENV_FILE is missing; it is written by the prod deploy (GitHub secrets BACKUP_*, site-ops user, 0600, six keys); run a deploy, then init-repo"
   fi
   return 0
 }

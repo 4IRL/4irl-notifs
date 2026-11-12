@@ -56,7 +56,7 @@ on:
       PROVISIONING_INTERNAL_CREDENTIAL:
         required: true
       # Nightly backup credentials, optional as a group. All five set: the deploy renders
-      # ./secrets-persistent/backup.env (4irl-notifs user, 0600) that the root backup job reads. None set: the file
+      # ./secrets-persistent/backup.env (site-ops user, 0600) that the root backup job reads. None set: the file
       # is left as is. A partial set aborts the deploy on the runner first. Values must not contain quotes, `$`,
       # backticks, backslashes or whitespace (the backup env reader refuses quotes and they are interpolated into the ssh script).
       BACKUP_RESTIC_REPOSITORY:

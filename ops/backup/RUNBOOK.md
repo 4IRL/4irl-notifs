@@ -25,7 +25,7 @@ backup runs.
 2. Create an **Object Read & Write** API token scoped to that bucket only (no account-wide access).
 3. Note the bucket's S3 endpoint, the token's access key id and secret, and create a Discord webhook for the notices.
 4. Add five GitHub secrets (repo `4IRL/4irl-notifs`, same place as the other deploy secrets). The prod deploy renders
-   them into `/home/4irl-notifs/secrets-persistent/backup.env` (owned by the 4irl-notifs user, mode 0600; the installer
+   them into `/home/4irl-notifs/secrets-persistent/backup.env` (owned by the site-ops user, mode 0600; the installer
    never writes it). Values are literal with **no quotes, `$`, backticks, backslashes or whitespace** (the deploy
    refuses them, and the reader refuses a leading quote, a carriage return, an unknown key and a duplicate key). All
    five set writes the file; none set leaves it as is; a partial set aborts the deploy before it touches the VPS.
@@ -40,14 +40,14 @@ backup runs.
 
    `AWS_DEFAULT_REGION=auto` is fixed by the deploy. Then run a prod deploy (merge to `main`, or re-run the deploy
    workflow) and check the file landed: `ssh <ssh-alias> 'stat -c "%U %a" secrets-persistent/backup.env'` should print
-   `4irl-notifs 600`. The deploy checks that `BACKUP_DISCORD_WEBHOOK` is a Discord webhook url.
+   `site-ops 600`. The deploy checks that `BACKUP_DISCORD_WEBHOOK` is a Discord webhook url.
 
    **Existing host (migration).** Hosts set up before this change keep reading `/etc/notifs-backup/backup.env` until the
    scripts are reinstalled, and after the reinstall they read only the file above. So: set the five secrets, run a prod
-   deploy, confirm `4irl-notifs 600`, then reinstall (step 5) and run `verify`, and only then delete the old
+   deploy, confirm `site-ops 600`, then reinstall (step 5) and run `verify`, and only then delete the old
    `/etc/notifs-backup/backup.env` (it still holds live credentials and no longer follows a rotation). If the deploy
    path is down during a restore, recreate the file by hand from the Infisical copies with
-   `sudo install -m 0600 -o 4irl-notifs -g 4irl-notifs /dev/stdin /home/4irl-notifs/secrets-persistent/backup.env`.
+   `sudo install -m 0600 -o site-ops -g site-ops /dev/stdin /home/4irl-notifs/secrets-persistent/backup.env`.
    The deploy user can already run containers on this host, so the owner check is defence in depth, not a boundary.
 
 5. Install the units, scripts and restic (prompts for the sudo password, so run it yourself):

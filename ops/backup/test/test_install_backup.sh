@@ -228,7 +228,7 @@ good_state
 inst verify --source "$SRC"
 expect_rc "verify passes on a good install" 0
 
-# backup.env is judged against ENV_OWNER (the 4irl-notifs user), not OWNER: an env owner that differs fails verify.
+# backup.env is judged against ENV_OWNER (the site-ops user), not OWNER: an env owner that differs fails verify.
 EXTRA_ENV=(INSTALL_BACKUP_ENV_OWNER=12345:12345)
 inst verify --source "$SRC"
 expect_rc "verify fails when backup.env is not owned by the env owner" 1
@@ -236,23 +236,23 @@ expect_out_has "env owner mismatch is named" "owner is not 12345:12345"
 EXTRA_ENV=(INSTALL_BACKUP_ENV_OWNER=abc)
 inst verify --source "$SRC"
 expect_rc "a malformed INSTALL_BACKUP_ENV_OWNER exits 2" 2
-expect_out_has "malformed env owner message" "cannot resolve the uid:gid of user 4irl-notifs"
+expect_out_has "malformed env owner message" "cannot resolve the uid:gid of user site-ops"
 EXTRA_ENV=()
 
-# No override and an unresolvable 4irl-notifs user: fail closed (exit 2), never fall back to another owner.
+# No override and an unresolvable site-ops user: fail closed (exit 2), never fall back to another owner.
 mkdir -p "$ROOT/shimbin"
 printf '#!/bin/sh\nexit 1\n' > "$ROOT/shimbin/id"
 chmod 755 "$ROOT/shimbin/id"
 run_cmd "${ENVU[@]}" env PATH="$ROOT/shimbin:$PATH" NOTIFS_BACKUP_TESTING=1 INSTALL_BACKUP_ROOT="$ROOT" INSTALL_BACKUP_OWNER="$OWNER" \
   bash "$INSTALLER" verify --source "$SRC"
-expect_rc "unresolvable 4irl-notifs user exits 2" 2
-expect_out_has "unresolvable user is named" "cannot resolve the uid:gid of user 4irl-notifs"
+expect_rc "unresolvable site-ops user exits 2" 2
+expect_out_has "unresolvable user is named" "cannot resolve the uid:gid of user site-ops"
 
 # A resolvable user supplies the default env owner.
 printf '#!/bin/sh\nif [ "$1" = "-u" ]; then echo 12345; else echo 12346; fi\n' > "$ROOT/shimbin/id"
 run_cmd "${ENVU[@]}" env PATH="$ROOT/shimbin:$PATH" NOTIFS_BACKUP_TESTING=1 INSTALL_BACKUP_ROOT="$ROOT" INSTALL_BACKUP_OWNER="$OWNER" \
   bash "$INSTALLER" verify --source "$SRC"
-expect_rc "default env owner comes from the 4irl-notifs uid:gid" 1
+expect_rc "default env owner comes from the site-ops uid:gid" 1
 expect_out_has "default env owner is the resolved uid:gid" "owner is not 12345:12346"
 rm -rf "$ROOT/shimbin"
 

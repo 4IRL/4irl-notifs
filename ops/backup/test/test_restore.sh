@@ -96,15 +96,15 @@ rr() {
 # d_args <pattern>: the "-d <value>" values on the recorded docker lines that match the pattern.
 d_values() { grep -E "$1" "$CALL_LOG" | grep -oE ' -d [^ ]+' | sed 's/^ -d //' || true; }
 
-# ---- env owner resolution (no NOTIFS_BACKUP_ENV_OWNER): the 4irl-notifs user's uid:gid, fail closed ----
+# ---- env owner resolution (no NOTIFS_BACKUP_ENV_OWNER): the site-ops user's uid:gid, fail closed ----
 new_case
 mkdir -p "$CASE_DIR/shimbin"
 printf '#!/bin/sh\nexit 1\n' > "$CASE_DIR/shimbin/id"
 chmod 755 "$CASE_DIR/shimbin/id"
 run_cmd env -i PATH="$CASE_DIR/shimbin:$PATH" CALL_LOG="$CALL_LOG" CASE_DIR="$CASE_DIR" NOTIFS_BACKUP_TESTING=1 \
   NOTIFS_BACKUP_ENV_FILE="$ENVF" NOTIFS_BACKUP_ROOT="$CASE_DIR/work" NOTIFS_BACKUP_LOCK="$LOCKF" bash "$SCRIPT" list
-expect_rc "unresolvable 4irl-notifs user exits 2" 2
-expect_out_has "unresolvable user is named" "cannot resolve the uid:gid of user 4irl-notifs"
+expect_rc "unresolvable site-ops user exits 2" 2
+expect_out_has "unresolvable user is named" "cannot resolve the uid:gid of user site-ops"
 printf '#!/bin/sh\nif [ "$1" = "-u" ]; then echo 12345; else echo 12346; fi\n' > "$CASE_DIR/shimbin/id"
 run_cmd env -i PATH="$CASE_DIR/shimbin:$PATH" CALL_LOG="$CALL_LOG" CASE_DIR="$CASE_DIR" NOTIFS_BACKUP_TESTING=1 \
   NOTIFS_BACKUP_ENV_FILE="$ENVF" NOTIFS_BACKUP_ROOT="$CASE_DIR/work" NOTIFS_BACKUP_LOCK="$LOCKF" bash "$SCRIPT" list
