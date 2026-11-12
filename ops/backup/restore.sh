@@ -41,7 +41,7 @@ SCRUB_ENV=(RESTIC_PASSWORD_FILE RESTIC_PASSWORD_COMMAND RESTIC_REPOSITORY_FILE R
   DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG)
 
 PROD_ROOT=/var/lib/notifs-backup/work
-ENV_USER=4irl-notifs
+ENV_USER=site-ops
 PROD_ENV_FILE=/home/4irl-notifs/secrets-persistent/backup.env
 LIVE_DB=delivery
 ENV_READ_ERROR=""
@@ -150,7 +150,7 @@ load_overrides() {
   ov_path ENV_FILE NOTIFS_BACKUP_ENV_FILE "$PROD_ENV_FILE"
   ov_path BACKUP_ROOT NOTIFS_BACKUP_ROOT "$PROD_ROOT"
   ov_path LOCK_FILE NOTIFS_BACKUP_LOCK /run/notifs-backup.lock
-  # The prod deploy writes backup.env as the 4irl-notifs user; default owner is that user's uid:gid. Fail closed: an
+  # The prod deploy writes backup.env as the site-ops user; default owner is that user's uid:gid. Fail closed: an
   # unresolvable user exits 2 rather than accepting any other owner.
   if [ -n "${NOTIFS_BACKUP_ENV_OWNER+x}" ]; then
     if [[ ! "$NOTIFS_BACKUP_ENV_OWNER" =~ ^[0-9]+:[0-9]+$ ]]; then

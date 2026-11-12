@@ -415,18 +415,18 @@ if [ "$(id -u):$(id -g)" = "0:0" ]; then
 else
   unset NOTIFS_BACKUP_ENV_OWNER
   run_case 'main nightly'
-  expect_rc "owner unset: a file not owned by the 4irl-notifs user (or an unresolvable user) is refused" 2
-  if id -u -- 4irl-notifs > /dev/null 2>&1; then
-    expect_out_has "owner refusal names the 4irl-notifs uid:gid" "owner is not $(id -u -- 4irl-notifs):$(id -g -- 4irl-notifs)"
+  expect_rc "owner unset: a file not owned by the site-ops user (or an unresolvable user) is refused" 2
+  if id -u -- site-ops > /dev/null 2>&1; then
+    expect_out_has "owner refusal names the site-ops uid:gid" "owner is not $(id -u -- site-ops):$(id -g -- site-ops)"
   else
-    expect_out_has "an unresolvable 4irl-notifs user fails closed" "cannot resolve the uid:gid of user 4irl-notifs"
+    expect_out_has "an unresolvable site-ops user fails closed" "cannot resolve the uid:gid of user site-ops"
   fi
 fi
 new_case
 unset NOTIFS_BACKUP_ENV_OWNER
 run_case 'id() { return 1; }; main nightly'
 expect_rc "owner unset and the user unresolvable exits 2 (fail closed)" 2
-expect_out_has "unresolvable user is named" "cannot resolve the uid:gid of user 4irl-notifs"
+expect_out_has "unresolvable user is named" "cannot resolve the uid:gid of user site-ops"
 for bad in "abc" "1:" "" "1:2:3" "root:root"; do
   new_case
   export NOTIFS_BACKUP_ENV_OWNER="$bad"
@@ -704,7 +704,7 @@ expect_out_has "...and the production work root applies" "ROOT=/var/lib/notifs-b
 expect_out_has "...and the production lock applies" "LOCK=/run/notifs-backup.lock"
 expect_out_has "...and the production state dir applies" "STATE=/var/lib/notifs-backup/status"
 expect_out_has "...and the production log dir applies" "LOG=/var/log/notifs-backup"
-expect_out_has "...and the owner is the 4irl-notifs user's uid:gid" "OWNER=1001:1002"
+expect_out_has "...and the owner is the site-ops user's uid:gid" "OWNER=1001:1002"
 expect_out_has "the ignored overrides are named in a warning" "ignoring test overrides without NOTIFS_BACKUP_TESTING=1"
 new_case
 export NOTIFS_BACKUP_TESTING=0

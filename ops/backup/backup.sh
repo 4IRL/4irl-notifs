@@ -8,7 +8,7 @@
 # Exit codes: 0 ok, 1 failed, 2 usage or env/override problem.
 #
 # Credentials: /home/4irl-notifs/secrets-persistent/backup.env is written by the prod deploy from GitHub secrets (owned by
-# the 4irl-notifs user, mode 0600) and read by this script itself with a literal KEY=VALUE reader (never sourced; see
+# the site-ops user, mode 0600) and read by this script itself with a literal KEY=VALUE reader (never sourced; see
 # read_backup_env). The systemd unit has no EnvironmentFile=, so nothing depends on the caller's environment.
 #
 # Test overrides (all optional, each read once at startup, default = production value, an unparsable value exits 2).
@@ -16,7 +16,7 @@
 # ignored (unset, named in a warning) and the production values apply. A work root other than the production one must
 # hold a .notifs-backup-root sentinel file before staging/ is wiped.
 #   NOTIFS_BACKUP_ENV_FILE        /home/4irl-notifs/secrets-persistent/backup.env
-#   NOTIFS_BACKUP_ENV_OWNER       uid:gid of the 4irl-notifs user (numeric uid:gid the env file must have; mode 0600 and
+#   NOTIFS_BACKUP_ENV_OWNER       uid:gid of the site-ops user (numeric uid:gid the env file must have; mode 0600 and
 #                                 no-symlink never relax; an unresolvable user exits 2)
 #   NOTIFS_BACKUP_ROOT            /var/lib/notifs-backup/work   (staging/, restic-cache/, restore scratch)
 #   NOTIFS_BACKUP_STATE_DIR       /var/lib/notifs-backup/status   (last-run.tsv)
@@ -49,7 +49,7 @@ PROD_ROOT=/var/lib/notifs-backup/work
 ROOT_SENTINEL=.notifs-backup-root
 # The prod deploy (as ENV_USER) writes the credentials file; this root job only reads it, and read_backup_env insists the
 # file belongs to ENV_USER (never another account, never a symlink, always mode 0600).
-ENV_USER=4irl-notifs
+ENV_USER=site-ops
 PROD_ENV_FILE=/home/4irl-notifs/secrets-persistent/backup.env
 
 # Phases run in order after env and lock. Each entry is a function that returns 0 on success; it runs its external
