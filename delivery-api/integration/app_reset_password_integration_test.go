@@ -133,6 +133,7 @@ func TestAppCannotResetAPersonNotInIt(testInstance *testing.T) {
 
 	requireStatus(testInstance, "stranger app reset", status, http.StatusNotFound, body)
 	requireErrorMessage(testInstance, "stranger app reset", body, "user does not exist")
+	requireErrorCode(testInstance, "stranger app reset", body, "person_not_in_app")
 	rig.requirePasswordWorks(testInstance, "the person's password after the refused call", rig.currentPwd)
 }
 

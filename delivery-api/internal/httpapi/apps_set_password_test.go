@@ -31,7 +31,8 @@ func TestAppSetPasswordRelaysUpstreamAnswers(testInstance *testing.T) {
 	}{
 		{name: "200", status: http.StatusOK, body: `{"user_id":"u_x","app_id":"urls4irl","updated":true}`},
 		{name: "400 invalid password", status: http.StatusBadRequest, body: `{"error":"invalid password"}`},
-		{name: "404 user does not exist", status: http.StatusNotFound, body: `{"error":"user does not exist"}`},
+		{name: "404 person not in app", status: http.StatusNotFound, body: `{"code":"person_not_in_app","error":"user does not exist"}`},
+		{name: "404 plain", status: http.StatusNotFound, body: `{"error":"user does not exist"}`},
 		{name: "500", status: http.StatusInternalServerError, body: `{"error":"internal error"}`},
 	}
 	for _, testCase := range testCases {

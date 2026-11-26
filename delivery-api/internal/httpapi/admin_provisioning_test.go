@@ -448,6 +448,15 @@ func TestAdminDeleteUserEmptySegmentThroughMuxMakesNoCall(testInstance *testing.
 	}
 }
 
+func TestAdminResetRelaysPersonNotInAppBodyByteForByte(testInstance *testing.T) {
+	const body = `{"code":"person_not_in_app","error":"user does not exist"}`
+	rig := newAdminProvisioningRig(&fakeAdminProvisioning{
+		answer: provisionclient.Passthrough{Status: http.StatusNotFound, Body: []byte(body)},
+	}, true)
+	recorder := rig.do(http.MethodPost, "/v1/admin/reset-password", `{"app_id":"urls4irl","email":"a@example.com"}`)
+	assertResponse(testInstance, recorder, http.StatusNotFound, body)
+}
+
 func TestAdminResetNeverReservesAndWorksWithoutLimiter(testInstance *testing.T) {
 	rig := newAdminProvisioningRig(&fakeAdminProvisioning{answer: adminOKAnswer}, true)
 	// rig.limiter is not wired into the server (nil ResetLimiter) and must stay unused either way.
