@@ -341,7 +341,7 @@ mints run at once (`503` over the cap). Attempts are recorded in `app_publisher_
 existing replay cleanup ticker.
 `POST /v1/apps/{app_id}/set-password` (`{email, password}`, legacy: not for new apps) sets the person's one
 shared password across apps through provisioning-api's `/v1/set-password`; the answer is relayed as for
-provision (a person not in this app is the upstream `404 user does not exist`). Only presence of email and
+provision (a person not in this app is the upstream `404 user does not exist` with `"code":"person_not_in_app"`). Only presence of email and
 password is checked here; the password is never logged.
 `POST /v1/apps/{app_id}/reset-password` (`{email}`) resets the person's password through provisioning-api's
 `/v1/reset-password` and relays the answer as for provision (the `200` body carries the new password once;
@@ -778,7 +778,7 @@ a `Title` header (RFC 2047-encoded when non-ASCII).
 `POST /v1/set-password {app_id, email, password}` → `{user_id, app_id, updated}` sets a person's
 ntfy password (via `ntfy user change-pass`) so they can log into the ntfy iOS app directly with
 `u_<person_hash>` + that password; it is **not for new apps** (use the generated password). The user
-must already be provisioned (missing user → `404 {"error":"user does not exist"}`), the password is
+must already be provisioned (a person not in the app → `404 {"error":"user does not exist","code":"person_not_in_app"}`; a bare CLI "does not exist" stays `404` without the code, which is ambiguous), the password is
 validated at 8–128 chars (`400 {"error":"invalid password"}`), it records `password_set_at` before
 changing the password (so a later provision won't replace a chosen one) and returns `500` with nothing
 changed when that record can't be written, and like every `/v1/*` route it needs the internal credential. Full contract: `docs/app-integration-guide.md` + `provisioning-api/internal/httpapi`.
@@ -810,7 +810,7 @@ runs the same two modes, so the integration suite exercises both for real.
   deprovision still revokes only the calling app's grant). Every decision logs an `app grant check` line (INFO
   for `allow` and `already_gone`, ERROR for an enforced `lookup_failed`, WARN otherwise) with `mode`, `route`, `app_id`, `person_hash`, `decision` and `reason` (never an email or password). Decisions:
   `allow`; `would_reject` (`log-only`, no grant: the request continues) or `rejected` (`enforce`, no grant:
-  `404 {"error":"user does not exist"}`); `already_gone` (deprovision of a user that does not exist, never a
+  `404 {"error":"user does not exist","code":"person_not_in_app"}`); `already_gone` (deprovision of a user that does not exist, never a
   rejection in either mode: per-user `POST /v1/deprovision` of an absent ntfy user now answers 200
   `{removed:true}` in both modes instead of the former 404, an idempotent no-op outside the log-only safety
   net); `lookup_failed` (any other lookup error: `enforce` answers 500, `log-only`
@@ -820,7 +820,7 @@ runs the same two modes, so the integration suite exercises both for real.
 `POST /v1/provision` gains an optional `password` (`xxxx-xxxx-xxxx-xxxx`, about 80 bits) only when that call
 generated one; every `200` sends `Cache-Control: no-store`. `POST /v1/reset-password {app_id, email}` →
 `{user_id, app_id, password}` makes a fresh one (`400` invalid JSON body / app_id / email, `404`
-user does not exist, `429` too many password changes, `500`), every response `Cache-Control: no-store`.
+user does not exist (with `"code":"person_not_in_app"` when the person is definitively not in the app), `429` too many password changes, `500`), every response `Cache-Control: no-store`.
 The limit is 5 resets per person per rolling hour and is checked first, so `429` wins over `404`. Ahead of
 the grant lookup, an in-process throttle of 20 attempts per person and app per rolling hour (rejected
 attempts included, no reset slot claimed) answers `429` without any ntfy CLI call; its

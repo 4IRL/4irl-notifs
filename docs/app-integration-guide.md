@@ -715,9 +715,9 @@ Every row except the exchange and `/readyz` also returns the key errors above (`
 | `POST /v1/heartbeats/{app_id}/{name}`                        | none                          | `200 {"app_id","name","state"}`                          | 400, 404 `check not found`, 503 `heartbeats unavailable`                        |
 | `POST /v1/heartbeats/{app_id}/{name}/fail`                   | none                          | `200 {"app_id","name","state"}` (state `down`)           | same                                                                            |
 | `POST /v1/apps/{app_id}/provision`                           | `{"email"}`                   | `200 {user_id, app_id, person_hash, topic_pattern, broadcast_topic, token, password?}` (`Cache-Control: no-store`) | 400, 401, 403, 429, 502 `provisioning request failed`, 503 `provisioning unavailable` (see "Door errors") |
-| `POST /v1/apps/{app_id}/deprovision`                         | `{"email"}` or `{"person_hash"}` | `200 {user_id, app_id, removed}`                      | as provision, plus 404 `user does not exist` (treat as already removed) |
-| `POST /v1/apps/{app_id}/reset-password`                      | `{"email"}`                   | `200 {user_id, app_id, password}` (`Cache-Control: no-store`) | as provision, plus 404 `user does not exist`, 429 with `Retry-After`, 503 `reset limit unavailable` |
-| `POST /v1/apps/{app_id}/set-password`                        | `{"email","password"}` (legacy, not for new apps) | `200 {user_id, app_id, updated}`  | as provision, plus 404 `user does not exist` |
+| `POST /v1/apps/{app_id}/deprovision`                         | `{"email"}` or `{"person_hash"}` | `200 {user_id, app_id, removed}`                      | as provision, plus 404 `user does not exist` (treat as already removed, coded or not) |
+| `POST /v1/apps/{app_id}/reset-password`                      | `{"email"}`                   | `200 {user_id, app_id, password}` (`Cache-Control: no-store`) | as provision, plus 404 `user does not exist` (`code` `person_not_in_app` marks the person as definitively gone; without it the 404 is ambiguous), 429 with `Retry-After`, 503 `reset limit unavailable` |
+| `POST /v1/apps/{app_id}/set-password`                        | `{"email","password"}` (legacy, not for new apps) | `200 {user_id, app_id, updated}`  | as provision, plus 404 `user does not exist` (`code` `person_not_in_app` when definitively gone; without it ambiguous) |
 | `POST /v1/apps/{app_id}/ntfy-publisher`                      | `{}` or `{"rotate":true}` (body required) | `200 {"publisher":{"app_id","publisher_user_id","topic_pattern","created_at","updated_at"}}` (never the token) | 400, 401, 403, 404 `app has no approved binding`, 409 `publisher mint already in progress`, 429 `publisher mint rate limit exceeded`, 502, 503 |
 | `GET /readyz`                                                | none                          | `200` readiness body (below)                             | `503 {"status":"unavailable"}` (database unreachable) or `503` with `"status":"schema_mismatch"` |
 
@@ -1197,7 +1197,8 @@ is **not idempotent**; its retry behavior is exact:
 - `200 {removed}` when the person's ntfy user is already gone, or when this app's grant is revoked by
   the call. That is why a repeat call answers `200` once the person held no other app.
 - `404 "user does not exist"` when the person exists but holds no grant in this app. This includes a
-  repeat call while the person still has another app. Treat a `404` as already removed.
+  repeat call while the person still has another app. Treat a `404` as already removed, whether or not
+  it carries `"code":"person_not_in_app"`; the code only marks the definitive case and adds no new branching.
 - `removed: true` is also the answer for a person who never existed.
 - A `404` also results from an email whose person exists only in another app (a person absent everywhere answers `200`), so deprovision with the `person_hash`
   returned by provision rather than a re-typed email.
@@ -1213,7 +1214,7 @@ is **not idempotent**; its retry behavior is exact:
 | `400 invalid person_hash` | The `person_hash` is not a valid hash. | Fix the request; do not retry. |
 | `401 app key required` / `401 invalid app key` (with `WWW-Authenticate: Bearer`) | The `dak_` key is missing, malformed, unknown or expired. | Fix the key; run the `notifs-app` key exchange again if it was superseded more than 24 h ago. Do not retry unchanged. |
 | `403 app_id does not match app key` | The `app_id` in the path is not your key's app (an `app_id` in the body is an unknown field: `400 invalid JSON body`). | Fix the request; do not retry. |
-| `404 user does not exist` | reset-password and set-password: the person is absent or has no grant in this app (deliberately indistinguishable). Deprovision: the person exists but holds no grant in this app (an absent person answers `200 {removed:true}`). | reset-password and set-password: stop, the person is not in this app. Deprovision: treat as already removed. |
+| `404 user does not exist` | The body may also carry `"code":"person_not_in_app"`, which marks the person definitively not in this app (absent or no grant). reset-password and set-password: a 404 without the code is ambiguous (for example a transient upstream "does not exist"). Deprovision: the person exists but holds no grant in this app (an absent person answers `200 {removed:true}`). | reset-password and set-password: branch on the code; with `person_not_in_app` the person is gone, without it do not conclude that (retry later, keep the row). Deprovision: treat any 404, coded or code-less, as already removed; the code only marks the definitive case. |
 | `413 request body too large` | The body exceeds the limit. | Fix the request; do not retry. |
 | `429` + `Retry-After` | A rate limit was hit (reset-password limits or a provisioning-api limit). Every reset-password attempt counts toward the door limits (3 per app+person per hour), so retry sparingly rather than in a tight loop. | Wait for `Retry-After`, then retry with backoff. |
 | `500` (relayed) | Provisioning-api failed internally. | Retry later; contact the operator if it persists. |
@@ -2018,7 +2019,8 @@ Authorization: Bearer dak_<43 chars>
 | ------ | ---- | ----- |
 | `200` | `{ "user_id", "app_id", "password" }` | The new password, shown once. `Cache-Control: no-store`. |
 | `400` | `{ "error": "invalid JSON body" }` / `"email required"`; a malformed address is relayed from provisioning-api as `"invalid email"` | Fix the request. |
-| `404` | `{ "error": "user does not exist" }` | The person is absent or has no grant in this app. |
+| `404` | `{ "error": "user does not exist", "code": "person_not_in_app" }` | The person is definitively not in this app (absent or no grant): branch on the code. |
+| `404` | `{ "error": "user does not exist" }` | No `code`: ambiguous, not proof the person is gone (for example a transient upstream failure). Keep status-only handling; do not delete the person's row. |
 | `429` | `{ "error": "reset rate limit exceeded" }` + `Retry-After` | A door limit: 30 per app per hour, 3 per app+person per hour. Every attempt that passes body validation counts, whatever its outcome. |
 | `429` | `{ "error": "too many password changes" }` + `Retry-After` | provisioning-api's own per-person limit, a different layer. |
 | `503` | `{ "error": "reset limit unavailable" }` | The limit store is down. It fails closed: no reset was attempted. |
@@ -2066,7 +2068,7 @@ use the generated password**. The person's one password is shared across every a
 that the person has a password (`password_set_at`) before changing it, so a later provision will not
 replace a chosen password. It returns `500` and changes nothing when that record cannot be written (person
 store unavailable). The password policy is 8–128 characters (`400 { "error": "invalid password" }`), and
-the person must already be provisioned in this app (`404 { "error": "user does not exist" }`).
+the person must already be provisioned in this app (`404 { "error": "user does not exist", "code": "person_not_in_app" }`; a 404 without the `code` is ambiguous, as for reset-password).
 
 ```
 POST https://notifs-delivery.4irl.app/v1/apps/urls4irl/set-password
@@ -2179,7 +2181,8 @@ responses are JSON. The `app_id` in the path must be your key's app.
 Notes:
 - `user_id` is always the derived ntfy id `u_<person_hash>`. `email` must be a valid address
   (validated after trim + lowercase — case-insensitive; `Alice@x.com` == `alice@x.com`).
-- Errors are `{ "error": "<message>" }` with the matching HTTP status; see "Door errors" for every
+- Errors are `{ "error": "<message>" }` with the matching HTTP status; a `404 user does not exist` may also
+  carry `"code":"person_not_in_app"` (reset-password and set-password: without it the 404 is ambiguous); see "Door errors" for every
   status, what it means and what to do.
 - Every response from these routes carries `Cache-Control: no-store`.
 - `POST /v1/apps/{app_id}/provision` returns `password` (`xxxx-xxxx-xxxx-xxxx`) **only** when this call
