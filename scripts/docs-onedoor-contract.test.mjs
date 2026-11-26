@@ -578,10 +578,7 @@ test('negative self-test: door example checks fire', () => {
     /"email"/,
   );
   assert.deepEqual(check(block('provision.error', '{ "error": "x" }')).problems, []);
-  assert.deepEqual(
-    check(block('provision.error', '{ "error": "x", "code": "y" }')).problems,
-    [],
-  );
+  assert.deepEqual(check(block('provision.error', '{ "error": "x", "code": "y" }')).problems, []);
 
   const elided = check(block('provision.response', '{ "user_id": "u", ... }'));
   assert.deepEqual(elided.problems, []);
