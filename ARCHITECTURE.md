@@ -12,7 +12,7 @@ wired in Cloudflare — enough to operate and debug it. For how a *client app* i
 | -------------------- | ----------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
 | **ntfy**             | ntfy `v2.26.0`, Docker (VPS)                    | `notifs.4irl.app`        | Pub/sub server. Topics, users, ACLs, tokens. `auth-default-access: deny-all`.     |
 | **provisioning-api** | Go, Docker (VPS)                                | none (compose network only, no public hostname; the public route, its Access app and the origin port were removed when the runbook ran 2026-11-05) | Creates ntfy users/tokens/ACLs by shelling to the `ntfy` CLI. HTTP API (`/v1/*`), callable only by delivery-api with the internal credential. |
-| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD (including `/personal-destinations`, with the operator `/v1/admin/personal-destinations` moderation routes), the app provisioning door `/v1/apps/{app_id}/{provision,deprovision,set-password,reset-password,ntfy-publisher}` (the only way an app reaches provisioning-api), the operator provisioning relay under `/v1/admin` (`provision`, `deprovision`, `reset-password`, `users`, `test-notify`, `apps/{app_id}/…`), `GET /healthz/provisioning`, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel, and the operator `GET /v1/admin/held-failures` list and `GET /v1/admin/held-messages` counts. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`, 1 s), a held-message releaser (the same `RunReleaser` with kind `held`, 5 s, always on whatever `DELIVERY_HOLD_UNROUTED` is), a retention sweeper the heartbeat checker (30 s tick) and the heartbeat prober (website probe loop, 10 s scan, bounded concurrency). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
+| **delivery-api**     | Go + Postgres, Docker (VPS)                     | `notifs-delivery.4irl.app` (Tunnel → `127.0.0.1:8300`) | Generic delivery service: `/healthz`, `/readyz`, the operator `/v1/admin` registry API, `/v1/messages` (submit, status read and `DELETE` cancel), the app-scoped `/v1/apps/{app_id}/…` CRUD (including `/personal-destinations`, with the operator `/v1/admin/personal-destinations` moderation routes), the app provisioning door `/v1/apps/{app_id}/{provision,deprovision,set-password,reset-password,ntfy-publisher}` (the only way an app reaches provisioning-api), the operator provisioning relay under `/v1/admin` (`provision`, `deprovision`, `reset-password`, `users`, `test-notify`, `apps/{app_id}/…`), `GET /healthz/provisioning`, the app identity exchange `/v1/app-identity/exchange`, the operator `/v1/admin/app-identity/*` approvals and the operator `/v1/admin/scheduled-messages` list and cancel, and the operator `GET /v1/admin/held-failures` list and `GET /v1/admin/held-messages` counts. Runs an in-process delivery worker (SSRF-guarded webhook and Discord sinks, an ntfy sink, and `to.recipient` delivery), a scheduled-message releaser (`RunReleaser`, 1 s), a held-message releaser (the same `RunReleaser` with kind `held`, 5 s, always on whatever `DELIVERY_HOLD_UNROUTED` is), a retention sweeper, the heartbeat checker (30 s tick) and the heartbeat prober (website probe loop, 10 s scan, bounded concurrency). Cloudflare Access is the network gate in front of it (path-scoped Access apps below); on top of that every app-facing endpoint needs the calling app's own delivery key, so the service knows which app is calling (see "App identity"). |
 | **person-service**   | Cloudflare Worker + D1                          | `notifs-people.4irl.app` | Reverse index `person_hash → email`. No auth of its own (Access is its boundary). |
 | **admin UI**         | React/Vite → Cloudflare Pages + Pages Functions | `notifs-admin.4irl.app`  | Human console. SPA + same-origin `/people`, `/apps` and `/delivery/*` proxy Functions. |
 | **watchdog**         | Cloudflare Worker (cron `*/5`) + one Workers KV key | none (cron-only, `workers_dev = false`) | External monitor on Cloudflare's network, independent of the VPS. Probes delivery-api `/readyz` (including `heartbeat_checker.stale`; a stale or malformed `heartbeat_prober` also pages, an absent one is tolerated so an older delivery-api stays quiet), provisioning-api (target id `provisioning-api`, probed through delivery-api `GET /healthz/provisioning`; reachability only, it does not detect internal-credential drift) and ntfy `/v1/health` through the Tunnel with the `notifs-watchdog` service token, keeps last-known state in KV, and posts changes, held-message alerts and a daily summary (16:00 UTC) to a dedicated Discord webhook. Held alerts read the status-neutral `held` block of `/readyz`: a first alert fires when the oldest held message is 15+ minutes old, 25+ messages are held, or 1+ heartbeat alert is unassigned; a reminder follows once per UTC date at 16:00 while anything is held; a `HELD CLEARED` note posts after two consecutive fresh all-zero runs. The alert state is an optional `held` object in the version-1 KV document (omitted while no alert is open). A failed probe is retried once after 30 s and only the retry's verdict can alert, so a transient failure (a stray 520, or the few seconds a production deploy takes to recreate the containers) stays quiet; each attempt (`watchdog: probe id=… attempt=… ok=… http=… duration_ms=…`) and each run (`watchdog: run state=… up=… down=… transitions=… discord=… kv_write=… duration_ms=… held=none/absent/ok/stale held_alert=open/closed`) is logged and kept by Workers Logs. A KV read that throws with nothing to post skips the state write, so the summary date and each target's `since` are not reset. |
@@ -208,9 +208,10 @@ the VPS; person-service + admin UI are Cloudflare-native.
   `updated_at`). The full envelope contract is in `docs/app-integration-guide.md`.
 - Retention sweeper: an in-process sweeper deletes messages older than `DELIVERY_RETENTION_DAYS`
   (default 30, integer 1-3650; an invalid value fails startup). A message with a `pending` or
-  `scheduled` delivery is never deleted. A message's age counts from the later of `created_at` and
-  `deliver_at`, so a long-scheduled message keeps its full retention after release; a cancelled message
-  ages from `cancelled_at` instead.
+  `scheduled` delivery is never deleted. A message's age counts from the latest of `created_at`,
+  `deliver_at`, `released_at` and `release_failed_at`, so a long-scheduled or long-held message keeps its
+  full retention after release; a cancelled message ages from `cancelled_at` instead. A still-held message
+  is never deleted by this sweep; it expires after `DELIVERY_HELD_TTL_DAYS`.
 - Message-level held state (migration 0012): the `messages` row carries `held_at` (accepted with no
   matching route, no delivery rows), `held_cancelled_at` (witness that a held message was cancelled;
   `cancelled_at` is set to the same instant), `released_at`, `release_failed_at` and
@@ -248,8 +249,8 @@ the VPS; person-service + admin UI are Cloudflare-native.
   `failed` split (logged only when at least one message was released; a batch that only terminal-fails
   logs just `held message release failed`). "No route yet" pairs log at Debug only, so a quiet log with
   held messages means no route, not a stuck releaser.
-  Rollback note: rolling the delivery-api image back past 0012 needs a paired schema rollback, or
-  acceptance of `/readyz` `503 schema_mismatch` until rolled forward, because the version check fails
+  Rollback note: rolling the delivery-api image back past any migration (0015 is the current highest,
+  0012 is the held-message one) needs a paired schema rollback, or acceptance of `/readyz` `503 schema_mismatch` until rolled forward, because the version check fails
   in both directions.
 
 **Exposure and authentication.** delivery-api stays bound to `127.0.0.1:8300` and has two layers.
@@ -408,7 +409,8 @@ stem or inside a registrar prefix (`409 app id is reserved by a registrar`, chec
 again under the lock when filing), and a registrar's own claims sent with an `app_id` are `403 identity
 does not match the approved binding`. The operator approves with
 `POST …/requests/{id}/approve-registrar {"prefix"}` (`201 {"registrar":…}`; pending app requests inside
-the prefix are rejected in the same transaction), lists with `GET …/registrars`, deletes with
+the prefix are rejected in the same transaction; refusals are `409 prefix already used`,
+`409 prefix overlaps an approved app id or registrar` and `409 request is not a registrar request`), lists with `GET …/registrars`, deletes with
 `DELETE …/registrars/{id}` (FK cascade unbinds every app it created), and clears the informational **New**
 state with `POST …/bindings/{app_id}/acknowledge` and `POST …/bindings/acknowledge-all {"app_ids"}`.
 `GET …/bindings` gains `registrar` and `acknowledged_at`. Registrar apps run the same
@@ -606,7 +608,8 @@ sequenceDiagram
   `Set-Cookie` → return. People view gated by `VITE_PEOPLE_ENABLED=true`, Apps view by `VITE_APPS_ENABLED=true`.
 - **Delivery proxy** (`web/functions/delivery/[[path]].ts`) → delivery-api at `DELIVERY_API_URL`, with the
   `/delivery` prefix stripped (browser `/delivery/v1/admin/destinations` → upstream
-  `/v1/admin/destinations`; the query string is kept). delivery-api has no auth of its own, so the
+  `/v1/admin/destinations`; the query string is kept). delivery-api has no auth of its own on `/v1/admin/*`
+  (the Access `/v1/admin` split is its boundary), so the
   Function is stricter than the other proxies, in this order: **allowlist → cross-site guard → `proxyTo`**
   (JWT auth runs inside `proxyTo`):
   - Allowlist (anything else is `404 {"error":"not found"}` with no upstream call): `GET /delivery/readyz`
