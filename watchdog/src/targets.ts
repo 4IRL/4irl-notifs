@@ -130,16 +130,52 @@ async function evaluateNtfy({ response }: { response: Response }): Promise<Probe
   return body.healthy === true ? OK : down('reported unhealthy');
 }
 
+const URLS4IRL_COMPONENTS = ['postgres', 'session_redis', 'metrics_redis'] as const;
+const URLS4IRL_UP = 'up';
+const URLS4IRL_KNOWN_BAD_VALUES = ['down', 'not configured'];
+const STATUS_UNAUTHORIZED = 401;
+const STATUS_RATE_LIMITED = 429;
+const STATUS_UNAVAILABLE = 503;
+
+/** `unhealthy: <key>=<value>, ...` for the components not exactly `up`, or null when all are up. */
+function urls4irlUnhealthyDetail(components: Record<string, unknown>): string | null {
+  const parts: string[] = [];
+  for (const key of URLS4IRL_COMPONENTS) {
+    if (!Object.hasOwn(components, key)) {
+      parts.push(`${key}=missing`);
+      continue;
+    }
+    const value = components[key];
+    if (value === URLS4IRL_UP) {
+      continue;
+    }
+    const shown = typeof value === 'string' && URLS4IRL_KNOWN_BAD_VALUES.includes(value) ? value : 'invalid';
+    parts.push(`${key}=${shown}`);
+  }
+  return parts.length === 0 ? null : `unhealthy: ${parts.join(', ')}`;
+}
+
 /**
- * urls4irl `GET https://urls.4irl.app/health?db=true` (handler: `urls4irl` repo
- * `backend/system/routes.py`, `health()`; `?db=true` runs `get_missing_tables()`). Ok iff HTTP 200
- * and a JSON object whose `status` is exactly `Success` and whose `message` is exactly
- * `All database tables verified`. Plain `/health` returns `status` alone, so the `message` is what
- * proves the database check ran. The body carries no app-identity field. Anything else (a 503
- * missing-tables body, an HTML fallback page served as 200, a redirect) is down; a failure body is
- * never echoed.
+ * urls4irl `GET https://urls.4irl.app/health/deep` with header `X-Health-Token` (handler: `urls4irl`
+ * repo `backend/system/routes.py`, `health_deep()`). Ok iff HTTP 200 and a JSON object whose
+ * `status` is exactly `Success` and whose `components.postgres`, `components.session_redis` and
+ * `components.metrics_redis` are all exactly `up`. A 401 means the Worker's `HEALTH_CHECK_TOKEN` is
+ * wrong or urls4irl's secret is unset, and a 429 means repeated bad tokens: both are setup problems,
+ * reported as such rather than as an outage. The app answers within 7 s, under `PROBE_TIMEOUT_MS`.
+ * Only the component keys and their fixed values are echoed, never `message` or any other field.
  */
 async function evaluateUrls4irl({ response }: { response: Response }): Promise<ProbeVerdict> {
+  if (response.status === STATUS_UNAUTHORIZED) {
+    return down('unauthorized: check HEALTH_CHECK_TOKEN');
+  }
+  if (response.status === STATUS_RATE_LIMITED) {
+    return down('rate limited (HTTP 429): check HEALTH_CHECK_TOKEN');
+  }
+  if (response.status === STATUS_UNAVAILABLE) {
+    const components = asRecord(asRecord(await readJson(response))?.components);
+    const detail = components === null ? null : urls4irlUnhealthyDetail(components);
+    return down(detail ?? 'HTTP 503');
+  }
   if (response.status !== STATUS_OK) {
     return down(`HTTP ${response.status}`);
   }
@@ -150,7 +186,12 @@ async function evaluateUrls4irl({ response }: { response: Response }): Promise<P
   if (body.status !== 'Success') {
     return down(`urls4irl status ${describeValue(body.status)}`);
   }
-  return body.message === 'All database tables verified' ? OK : down('database not verified');
+  const components = asRecord(body.components);
+  if (components === null) {
+    return down('components missing');
+  }
+  const detail = urls4irlUnhealthyDetail(components);
+  return detail === null ? OK : down(detail);
 }
 
 /**
@@ -178,8 +219,9 @@ export const TARGETS: readonly Target[] = [
   },
   {
     id: 'urls4irl',
-    url: 'https://urls.4irl.app/health?db=true',
+    url: 'https://urls.4irl.app/health/deep',
     access: false,
+    healthToken: true,
     evaluate: evaluateUrls4irl,
   },
 ];

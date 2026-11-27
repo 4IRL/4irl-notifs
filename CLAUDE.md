@@ -122,7 +122,7 @@ Components:
   bounded concurrency) and the retention
   sweeper in-process.
 - **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api (through delivery-api's
-  `/healthz/provisioning`), ntfy and the urls4irl website (`/health?db=true`) from outside the VPS and posts state changes, held-message alerts and a daily summary to Discord.
+  `/healthz/provisioning`), ntfy and the urls4irl website (`/health/deep`, covering its Postgres and both Redis servers) from outside the VPS and posts state changes, held-message alerts and a daily summary to Discord.
 - **web** — React/Vite admin UI, deployed to Cloudflare Pages behind Cloudflare Access
   (Google/GitHub OAuth).
 - **setup-web** — public static ntfy setup page (React/Vite, `qrcode.react`) deployed to its own

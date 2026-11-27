@@ -12,12 +12,18 @@ function timeoutVerdict(): ProbeVerdict {
   return { ok: false, detail: `timeout after ${PROBE_TIMEOUT_SECONDS} s` };
 }
 
-/** Cloudflare Access service-token headers; attached only to targets with `access: true`. */
+/**
+ * Cloudflare Access service-token headers (only for targets with `access: true`) and the urls4irl
+ * `X-Health-Token` (only for targets with `healthToken: true`). Neither is ever logged.
+ */
 function buildHeaders({ target, env }: { target: Target; env: Env }): Headers {
   const headers = new Headers();
   if (target.access && env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
     headers.set('CF-Access-Client-Id', env.CF_ACCESS_CLIENT_ID);
     headers.set('CF-Access-Client-Secret', env.CF_ACCESS_CLIENT_SECRET);
+  }
+  if (target.healthToken && env.HEALTH_CHECK_TOKEN) {
+    headers.set('X-Health-Token', env.HEALTH_CHECK_TOKEN);
   }
   return headers;
 }

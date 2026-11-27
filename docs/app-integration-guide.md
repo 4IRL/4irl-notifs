@@ -49,7 +49,7 @@ You do not have to build any of this yourself, and every app that joins makes th
 - **Per-person delivery.** `to.recipient` takes an email, and the same email is the same person across
   every 4IRL app, so you never invent or store a notification identity of your own.
 - **An independent watcher on the platform itself.** The watchdog Worker runs on Cloudflare, outside the
-  VPS, and probes delivery-api, provisioning-api, ntfy and the urls4irl website every 5 minutes, posting to its own Discord
+  VPS, and probes delivery-api, provisioning-api, ntfy and the urls4irl website (including its Postgres and both Redis servers) every 5 minutes, posting to its own Discord
   channel. You do not need to build monitoring for the notification path, and an outage of it does not
   go quietly.
 - **Nothing extra to host.** Your app needs no inbound endpoint to be monitored: jobs push a ping and
@@ -428,7 +428,7 @@ Suggested naming (not enforced beyond the regexes in this guide): short purpose 
 - **The notification platform itself:** the watchdog, a Cloudflare Worker that probes delivery-api,
   provisioning-api, ntfy and the urls4irl website every 5 minutes from outside the VPS and posts changes
   to its own Discord channel.
-- **Your app's own website or API:** urls4irl is probed externally by the watchdog; other apps are not
+- **Your app's own website or API:** urls4irl is probed externally by the watchdog, covering its Postgres and both Redis servers; other apps are not
   covered by either today. Keep using the app's own uptime monitoring for that.
 
 ### Pausing and removing an app

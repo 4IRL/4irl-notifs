@@ -1,9 +1,11 @@
-/** Bindings of the watchdog Worker. The three secrets are optional so a missing one is detectable at runtime. */
+/** Bindings of the watchdog Worker. The four secrets are optional so a missing one is detectable at runtime. */
 export interface Env {
   WATCHDOG_STATE: KVNamespace;
   DISCORD_WEBHOOK_URL?: string;
   CF_ACCESS_CLIENT_ID?: string;
   CF_ACCESS_CLIENT_SECRET?: string;
+  /** Shared secret for urls4irl `/health/deep`; equal to urls4irl's prod `HEALTH_CHECK_TOKEN`. */
+  HEALTH_CHECK_TOKEN?: string;
   /** Pause before the single retry of a failed probe, in ms. Unset, empty, invalid or above 60000 means 30000; tests set 0. */
   PROBE_RETRY_DELAY_MS?: string;
 }
@@ -73,6 +75,8 @@ export interface Target {
   url: string;
   /** Whether the Cloudflare Access service-token headers are sent to this target. */
   access: boolean;
+  /** Whether `X-Health-Token` is sent to this target, from `HEALTH_CHECK_TOKEN`. */
+  healthToken?: boolean;
   evaluate: ({ response, now }: { response: Response; now: number }) => Promise<ProbeVerdict>;
 }
 

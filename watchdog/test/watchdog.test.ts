@@ -6,6 +6,7 @@ import {
   ACCESS_ID,
   ACCESS_SECRET,
   DELIVERY_URL,
+  HEALTH_TOKEN,
   MINUTE,
   MORNING,
   NTFY_URL,
@@ -346,31 +347,69 @@ describe('probe verdicts', () => {
     expect((await readStoredState())?.targets['ntfy']?.status).toBe('down');
   });
 
-  const URLS4IRL_OK_MESSAGE = 'All database tables verified';
+  const allUp = { postgres: 'up', session_redis: 'up', metrics_redis: 'up' };
   it.each([
     [
-      '503 missing-tables body',
-      () => Response.json({ status: 'Failure', message: 'Missing tables: x' }, { status: 503 }),
-      'HTTP 503',
+      '200 session_redis down',
+      () => Response.json({ status: 'Success', components: { ...allUp, session_redis: 'down' } }),
+      'unhealthy: session_redis=down',
     ],
-    ['404', () => new Response('x', { status: 404 }), 'HTTP 404'],
-    ['403', () => new Response('x', { status: 403 }), 'HTTP 403'],
-    ['301', () => new Response(null, { status: 301 }), 'unexpected redirect (HTTP 301)'],
+    [
+      '200 metrics_redis not configured',
+      () => Response.json({ status: 'Success', components: { ...allUp, metrics_redis: 'not configured' } }),
+      'unhealthy: metrics_redis=not configured',
+    ],
+    [
+      '200 two components down',
+      () =>
+        Response.json({ status: 'Success', components: { ...allUp, postgres: 'down', metrics_redis: 'down' } }),
+      'unhealthy: postgres=down, metrics_redis=down',
+    ],
+    [
+      '200 postgres UP (wrong case)',
+      () => Response.json({ status: 'Success', components: { ...allUp, postgres: 'UP' } }),
+      'unhealthy: postgres=invalid',
+    ],
+    [
+      '200 key missing',
+      () =>
+        Response.json({ status: 'Success', components: { postgres: 'up', metrics_redis: 'up' } }),
+      'unhealthy: session_redis=missing',
+    ],
+    ['200 no components', () => Response.json({ status: 'Success' }), 'components missing'],
+    [
+      '200 status Failure',
+      () => Response.json({ status: 'Failure', components: allUp }),
+      'urls4irl status Failure',
+    ],
     ['200 HTML', () => new Response('<html>fallback</html>'), 'invalid JSON response'],
     ['200 array', () => Response.json([]), 'invalid JSON response'],
-    ['200 empty object', () => Response.json({}), 'urls4irl status missing'],
-    ['200 status Failure', () => Response.json({ status: 'Failure' }), 'urls4irl status Failure'],
     [
-      '200 lowercase status',
-      () => Response.json({ status: 'success', message: URLS4IRL_OK_MESSAGE }),
-      'urls4irl status success',
+      '503 with components',
+      () =>
+        Response.json(
+          {
+            status: 'Failure',
+            message: 'Unhealthy components: session_redis',
+            components: { ...allUp, session_redis: 'down' },
+          },
+          { status: 503 },
+        ),
+      'unhealthy: session_redis=down',
     ],
-    ['200 plain /health shape', () => Response.json({ status: 'Success' }), 'database not verified'],
+    ['503 HTML', () => new Response('<html>x</html>', { status: 503 }), 'HTTP 503'],
     [
-      '200 other message',
-      () => Response.json({ status: 'Success', message: 'other' }),
-      'database not verified',
+      '401',
+      () => Response.json({ status: 'Failure', message: 'Unauthorized' }, { status: 401 }),
+      'unauthorized: check HEALTH_CHECK_TOKEN',
     ],
+    [
+      '429',
+      () => Response.json({ message: 'rate limited' }, { status: 429 }),
+      'rate limited (HTTP 429): check HEALTH_CHECK_TOKEN',
+    ],
+    ['404', () => new Response('x', { status: 404 }), 'HTTP 404'],
+    ['301', () => new Response(null, { status: 301 }), 'unexpected redirect (HTTP 301)'],
   ])('treats urls4irl %s as down', async (_label, urls4irl, expectedDetail) => {
     const routes = { ...healthyRoutes(MORNING), urls4irl };
     expect(await firstDetail(routes, 'urls4irl')).toBe(expectedDetail);
@@ -460,6 +499,28 @@ describe('Access headers and secrets', () => {
     expect(urls4irlHeaders.get('CF-Access-Client-Secret')).toBeNull();
   });
 
+  it('sends X-Health-Token only to urls4irl', async () => {
+    const { stub } = await run({ at: MORNING, routes: healthyRoutes(MORNING) });
+    const urls4irlHeaders = new Headers(stub.callsTo(URLS4IRL_URL)[0]?.init.headers);
+    expect(urls4irlHeaders.get('X-Health-Token')).toBe(HEALTH_TOKEN);
+    for (const url of [DELIVERY_URL, PROVISIONING_URL, NTFY_URL]) {
+      expect(new Headers(stub.callsTo(url)[0]?.init.headers).get('X-Health-Token')).toBeNull();
+    }
+  });
+
+  it('omits X-Health-Token, warns once and stores the 401 detail when the secret is unset', async () => {
+    const routes = {
+      ...healthyRoutes(MORNING),
+      urls4irl: () => Response.json({ status: 'Failure', message: 'Unauthorized' }, { status: 401 }),
+    };
+    const stub = stubFetch(routes);
+    const kv = spyKv();
+    await runScheduled({ at: MORNING, workerEnv: buildEnv({ kv: kv.kv, HEALTH_CHECK_TOKEN: undefined }) });
+    expect(new Headers(stub.callsTo(URLS4IRL_URL)[0]?.init.headers).get('X-Health-Token')).toBeNull();
+    expect(warnLines().filter((line) => line.includes('HEALTH_CHECK_TOKEN is not configured'))).toHaveLength(1);
+    expect((await readStoredState())?.targets['urls4irl']?.detail).toBe('unauthorized: check HEALTH_CHECK_TOKEN');
+  });
+
   it('never posts or logs the secrets or the webhook URL, even when everything fails', async () => {
     const routes: Routes = {
       delivery: downDelivery(500),
@@ -472,7 +533,7 @@ describe('Access headers and secrets', () => {
     };
     const { stub } = await run({ at: MORNING, routes, kvOptions: { getThrows: true } });
     const everything = JSON.stringify(stub.discordPosts()) + consoleOutput();
-    for (const secret of [ACCESS_ID, ACCESS_SECRET, 'webhook-token-abc', WEBHOOK_URL]) {
+    for (const secret of [ACCESS_ID, ACCESS_SECRET, HEALTH_TOKEN, 'webhook-token-abc', WEBHOOK_URL]) {
       expect(everything).not.toContain(secret);
     }
   });

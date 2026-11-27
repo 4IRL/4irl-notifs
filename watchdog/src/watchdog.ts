@@ -141,6 +141,9 @@ export async function runWatchdog({ env, now }: { env: Env; now: number }): Prom
   if (!env.CF_ACCESS_CLIENT_ID || !env.CF_ACCESS_CLIENT_SECRET) {
     console.warn('watchdog: Cloudflare Access credentials are not configured; Access-protected probes will fail');
   }
+  if (!env.HEALTH_CHECK_TOKEN && TARGETS.some((target) => target.healthToken)) {
+    console.warn('watchdog: HEALTH_CHECK_TOKEN is not configured; health-token probes will fail');
+  }
 
   const startedAt = Date.now();
   const [stateRead, results] = await Promise.all([
