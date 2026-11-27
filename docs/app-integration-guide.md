@@ -1817,7 +1817,7 @@ run yet.
 Recipient deliveries publish with a per-app ntfy publisher token that delivery-api stores sealed. It is
 minted once through provisioning-api by an explicit operator call, never lazily on submit:
 
-- Mint with the operator's admin proxy token (the VPS-local `http://127.0.0.1:8300` form
+- Mint with the operator's admin proxy token (the VPS-local `http://127.0.0.1:${DELIVERY_PORT}` form
   still works on the VPS itself):
   `curl -X POST https://notifs-delivery.4irl.app/v1/admin/apps/<app>/ntfy-publisher -H "CF-Access-Client-Id: <proxy-id>" -H "CF-Access-Client-Secret: <proxy-secret>"`
 - Re-running the same call stores a new token in delivery-api, but it does **not** revoke the previous

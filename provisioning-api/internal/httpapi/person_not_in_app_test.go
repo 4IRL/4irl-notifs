@@ -129,8 +129,8 @@ func TestPersonNotInAppMapsTo404OnEveryGuardedRoute(testInstance *testing.T) {
 				testInstance.Fatalf("status = %d, want 404; body = %s", recorder.Code, recorder.Body.String())
 			}
 			var decoded map[string]string
-			if err := json.Unmarshal(recorder.Body.Bytes(), &decoded); err != nil {
-				testInstance.Fatalf("body %q is not a JSON object: %v", recorder.Body.String(), err)
+			if decodeErr := json.Unmarshal(recorder.Body.Bytes(), &decoded); decodeErr != nil {
+				testInstance.Fatalf("body %q is not a JSON object: %v", recorder.Body.String(), decodeErr)
 			}
 			wantDecoded := map[string]string{"error": "user does not exist", "code": "person_not_in_app"}
 			if !reflect.DeepEqual(decoded, wantDecoded) {
