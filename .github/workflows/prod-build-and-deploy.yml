@@ -3,6 +3,9 @@ name: Build and Deploy Production Stack
 permissions:
   contents: read
 
+# The pull_request: closed event gives a read-only Actions cache ("Cache mode: read"),
+# so deploy jobs must not save to it: no `cache:` on setup-node, no `actions: write`,
+# and qemu runs with cache-image: false.
 on:
   pull_request:
     branches: [main]
@@ -16,7 +19,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      actions: write   # lets the Actions Cache save buildx layers (else "cache reservation failed")
 
   deploy-prod:
     if: github.event.pull_request.merged == true
@@ -52,6 +54,13 @@ jobs:
       # Internal credential shared by provisioning-api and delivery-api (required; the deploy
       # aborts before touching the VPS if it is missing or not 64 lowercase hex).
       PROVISIONING_INTERNAL_CREDENTIAL: ${{ secrets.PROVISIONING_INTERNAL_CREDENTIAL }}
+      # Nightly backup credentials (optional as a group: all five set writes secrets-persistent/backup.env,
+      # none set skips it, a partial set aborts the deploy before touching the VPS).
+      BACKUP_RESTIC_REPOSITORY: ${{ secrets.BACKUP_RESTIC_REPOSITORY }}
+      BACKUP_RESTIC_PASSWORD: ${{ secrets.BACKUP_RESTIC_PASSWORD }}
+      BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
+      BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
+      BACKUP_DISCORD_WEBHOOK: ${{ secrets.BACKUP_DISCORD_WEBHOOK }}
 
   # Admin UI (Cloudflare Pages) calls delivery-api, so it deploys only AFTER deploy-prod: a UI
   # that targets new API routes must never go live before the API. `needs` (with no `always()`)
@@ -63,7 +72,6 @@ jobs:
     uses: ./.github/workflows/pages-deploy.yml
     permissions:
       contents: read
-      actions: write   # lets the Actions Cache save the setup-node npm cache
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -77,7 +85,6 @@ jobs:
     uses: ./.github/workflows/setup-pages-deploy.yml
     permissions:
       contents: read
-      actions: write   # lets the Actions Cache save the setup-node npm cache
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -93,7 +100,6 @@ jobs:
     uses: ./.github/workflows/worker-deploy.yml
     permissions:
       contents: read
-      actions: write   # lets the Actions Cache save the setup-node npm cache
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -110,7 +116,6 @@ jobs:
     uses: ./.github/workflows/watchdog-deploy.yml
     permissions:
       contents: read
-      actions: write   # lets the Actions Cache save the setup-node npm cache
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

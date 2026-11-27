@@ -884,8 +884,8 @@ func TestDefaultMaxScheduledMatchesTheComposeDefault(testInstance *testing.T) {
 		{envVar: MaxScheduledTotalEnvVar, codeDefault: DefaultMaxScheduledTotal},
 		{envVar: MaxHeldPerAppEnvVar, codeDefault: DefaultMaxHeldPerApp},
 		{envVar: MaxHeldTotalEnvVar, codeDefault: DefaultMaxHeldTotal},
-		// The hold flag is off by default, which compose spells 0.
-		{envVar: HoldUnroutedEnvVar, codeDefault: 0},
+		// The hold flag's code default, derived from the parser, spelled as compose does.
+		{envVar: HoldUnroutedEnvVar, codeDefault: holdCodeDefaultInteger(testInstance)},
 	}
 	for _, scheduledCap := range caps {
 		// The pass-through line of the cap in a compose file, capturing its default.
@@ -905,6 +905,45 @@ func TestDefaultMaxScheduledMatchesTheComposeDefault(testInstance *testing.T) {
 					composeName, scheduledCap.envVar, matches[0][1], want)
 			}
 		}
+	}
+}
+
+// holdCodeDefaultInteger is the hold flag's default with the variable unset, as the integer compose and
+// the Makefile spell it (1 for on, 0 for off), derived from the parser so a change there breaks the
+// lockstep tests until compose and the Makefile follow.
+func holdCodeDefaultInteger(testInstance *testing.T) int {
+	testInstance.Helper()
+	holdByDefault, parseErr := HoldUnroutedFromEnv(func(string) string { return "" })
+	if parseErr != nil {
+		testInstance.Fatalf("HoldUnroutedFromEnv with the variable unset: %v", parseErr)
+	}
+	if holdByDefault {
+		return 1
+	}
+	return 0
+}
+
+// TestHoldDefaultMatchesTheMakefileDefault keeps the Makefile's DELIVERY_HOLD_DEFAULT in lockstep with
+// the code default (the compose files are checked by the test above).
+func TestHoldDefaultMatchesTheMakefileDefault(testInstance *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		testInstance.Fatal("cannot locate this test file")
+	}
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
+	makefileText, readErr := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if readErr != nil {
+		testInstance.Fatalf("read Makefile: %v", readErr)
+	}
+	pattern := regexp.MustCompile(`(?m)^DELIVERY_HOLD_DEFAULT := (\d+)$`)
+	matches := pattern.FindAllStringSubmatch(string(makefileText), -1)
+	if len(matches) != 1 {
+		testInstance.Fatalf("Makefile has %d DELIVERY_HOLD_DEFAULT lines, want exactly 1", len(matches))
+	}
+	codeDefault := holdCodeDefaultInteger(testInstance)
+	if want := strconv.Itoa(codeDefault); matches[0][1] != want {
+		testInstance.Errorf("Makefile defaults %s to %s, want the code default %s",
+			HoldUnroutedEnvVar, matches[0][1], want)
 	}
 }
 

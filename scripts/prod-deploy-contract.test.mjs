@@ -423,6 +423,27 @@ function assertSecretsPlacement(keyText, deployText, buildText) {
   }
 }
 
+/** Deploy workflows never write the Actions cache: no `actions: write`, no setup-node `cache:`. */
+function assertNoActionsCacheWrites(workflows) {
+  for (const [file, text] of Object.entries(workflows)) {
+    const stripped = stripComments(text);
+    assert.ok(!/^\s*actions:\s*write\b/m.test(stripped), `${file} has no actions: write`);
+    assert.ok(!/^\s*(-\s+)?cache:\s/m.test(stripped), `${file} has no setup-node cache: key`);
+  }
+}
+
+/** prod-build.yml sets up QEMU without its image cache. */
+function assertQemuCacheImageOff(text) {
+  const step = stepsOf(text, 'ProdBuild').find((candidate) =>
+    (candidate.uses ?? '').startsWith('docker/setup-qemu-action@'),
+  );
+  assert.ok(step, 'prod-build.yml has a setup-qemu step');
+  assert.ok(
+    step.withBlock.some((line) => line.trim() === 'cache-image: false'),
+    'setup-qemu sets cache-image: false',
+  );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Grounding: names the workflow depends on are still read by the CLI
 // ---------------------------------------------------------------------------------------------
@@ -802,5 +823,160 @@ describe('notifs-ops-key.yml and the stack deploy workflows', () => {
       DEPLOY,
       BUILD_AND_DEPLOY,
     );
+  });
+});
+
+const PROD_BUILD = readRepo('.github/workflows/prod-build.yml');
+const DEPLOY_WORKFLOWS = Object.fromEntries(
+  [
+    'prod-build-and-deploy',
+    'prod-build',
+    'prod-deploy',
+    'pages-deploy',
+    'setup-pages-deploy',
+    'worker-deploy',
+    'watchdog-deploy',
+  ].map((name) => [name, readRepo(`.github/workflows/${name}.yml`)]),
+);
+
+describe('deploy workflows keep the Actions cache read-only', () => {
+  it('has no actions: write, no setup-node cache:, and qemu cache-image: false', () => {
+    assertNoActionsCacheWrites(DEPLOY_WORKFLOWS);
+    assertQemuCacheImageOff(PROD_BUILD);
+  });
+
+  it('control: cache rules fail on violating fixtures', () => {
+    const withExtra = (name, from, to) => ({
+      ...DEPLOY_WORKFLOWS,
+      [name]: mutate(DEPLOY_WORKFLOWS[name], from, to),
+    });
+    assertFails(
+      assertNoActionsCacheWrites,
+      withExtra(
+        'prod-build-and-deploy',
+        'packages: write',
+        'packages: write\n      actions: write',
+      ),
+    );
+    assertFails(assertNoActionsCacheWrites, {
+      ...DEPLOY_WORKFLOWS,
+      'pages-deploy': `${DEPLOY_WORKFLOWS['pages-deploy']}\n        with:\n          cache: npm\n`,
+    });
+    assertFails(
+      assertQemuCacheImageOff,
+      mutate(PROD_BUILD, 'cache-image: false', 'cache-image: true'),
+    );
+    assertFails(assertQemuCacheImageOff, mutate(PROD_BUILD, '          cache-image: false\n', ''));
+  });
+});
+
+const BACKUP_SECRETS = [
+  'BACKUP_RESTIC_REPOSITORY',
+  'BACKUP_RESTIC_PASSWORD',
+  'BACKUP_R2_ACCESS_KEY_ID',
+  'BACKUP_R2_SECRET_ACCESS_KEY',
+  'BACKUP_DISCORD_WEBHOOK',
+];
+
+function assertBackupEnvDeploy(deployText, buildText) {
+  const deploy = stripComments(deployText);
+  for (const secret of BACKUP_SECRETS) {
+    assert.ok(
+      new RegExp(`^ {6}${secret}:\\n {8}required: false`, 'm').test(deployText),
+      `${secret} is an optional workflow_call secret`,
+    );
+    assert.ok(
+      buildText.includes(`${secret}: \${{ secrets.${secret} }}`),
+      `${secret} is passed explicitly by prod-build-and-deploy.yml`,
+    );
+    assert.ok(deploy.includes(`\${{ secrets.${secret} }}`), `${secret} is used by the deploy`);
+  }
+  assert.ok(
+    deploy.includes('- name: Validate BACKUP secrets'),
+    'a runner-side validation step exists',
+  );
+  assert.ok(
+    deploy.indexOf('- name: Validate BACKUP secrets') <
+      deploy.indexOf('- name: Deploy Docker Compose Stack'),
+    'BACKUP secrets are validated before the VPS is touched',
+  );
+  assert.ok(deploy.includes('"${set}" -ne 5'), 'a partial BACKUP set aborts the deploy');
+  assert.ok(
+    deploy.includes('( umask 077; printf') &&
+      deploy.includes('> ./secrets-persistent/backup.env.new )'),
+    'backup.env is written under umask 077',
+  );
+  assert.ok(
+    deploy.includes('chmod 600 ./secrets-persistent/backup.env.new') &&
+      deploy.includes('mv -f ./secrets-persistent/backup.env.new ./secrets-persistent/backup.env'),
+    'backup.env is 0600 and moved into place atomically',
+  );
+  assert.ok(deploy.includes('"AWS_DEFAULT_REGION=auto"'), 'the region is fixed, not a secret');
+  assert.ok(
+    deploy.includes('*[\\"\\\'\\$\\`\\\\[:space:]]*)'),
+    'quotes, $, backticks, backslashes and whitespace are rejected on the runner',
+  );
+  assert.ok(
+    deploy.includes('^s3:https://') &&
+      deploy.includes('^https://(discord|discordapp)\\.com/api/webhooks/'),
+    'the repository and webhook formats are checked on the runner',
+  );
+  for (const [secret, key] of [
+    ['BACKUP_RESTIC_REPOSITORY', 'RESTIC_REPOSITORY'],
+    ['BACKUP_RESTIC_PASSWORD', 'RESTIC_PASSWORD'],
+    ['BACKUP_R2_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID'],
+    ['BACKUP_R2_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY'],
+    ['BACKUP_DISCORD_WEBHOOK', 'DISCORD_WEBHOOK'],
+  ]) {
+    assert.ok(
+      deploy.includes(`${secret}_VALUE="\${{ secrets.${secret} }}"`),
+      `${secret} is interpolated into the ssh script`,
+    );
+    assert.ok(deploy.includes(`"${key}=\${${secret}_VALUE}"`), `${key} is written from ${secret}`);
+  }
+  assert.ok(
+    deploy.includes('backup.env left as is'),
+    'with no BACKUP secrets set the existing backup.env is left as is',
+  );
+  assert.ok(
+    deploy.includes('backup.env write failed; aborting'),
+    'a failed backup.env write aborts the deploy',
+  );
+}
+
+describe('backup.env is written by the stack deploy', () => {
+  it('renders secrets-persistent/backup.env from the BACKUP_* secrets, 0600, validated first', () => {
+    assertBackupEnvDeploy(DEPLOY, BUILD_AND_DEPLOY);
+  });
+
+  it('control: backup.env rules fail on violating fixtures', () => {
+    assertFails(
+      assertBackupEnvDeploy,
+      mutate(DEPLOY, '"${set}" -ne 5', '"${set}" -ne 9'),
+      BUILD_AND_DEPLOY,
+    );
+    assertFails(
+      assertBackupEnvDeploy,
+      mutate(DEPLOY, 'chmod 600 ./secrets-persistent/backup.env.new', 'true'),
+      BUILD_AND_DEPLOY,
+    );
+    assertFails(
+      assertBackupEnvDeploy,
+      DEPLOY,
+      BUILD_AND_DEPLOY.replace('BACKUP_DISCORD_WEBHOOK: ${{ secrets.BACKUP_DISCORD_WEBHOOK }}', ''),
+    );
+    for (const [from, to] of [
+      ['( umask 077; printf', '( printf'],
+      ['mv -f ./secrets-persistent/backup.env.new', 'cp ./secrets-persistent/backup.env.new'],
+      ['^s3:https://', '^s3:'],
+      [
+        '"RESTIC_PASSWORD=${BACKUP_RESTIC_PASSWORD_VALUE}"',
+        '"RESTIC_PASSWORD=${BACKUP_RESTIC_REPOSITORY_VALUE}"',
+      ],
+      ['backup.env write failed; aborting', 'ignored'],
+      ['- name: Validate BACKUP secrets', '- name: Check BACKUP secrets'],
+    ]) {
+      assertFails(assertBackupEnvDeploy, mutate(DEPLOY, from, to), BUILD_AND_DEPLOY);
+    }
   });
 });

@@ -491,6 +491,7 @@ func TestAppSetsItsPersonsPassword(testInstance *testing.T) {
 		map[string]any{"email": email, "password": "it-hijack-password"})
 	requireStatus(testInstance, "set-password by a stranger app", status, http.StatusNotFound, body)
 	requireErrorMessage(testInstance, "set-password by a stranger app", body, "user does not exist")
+	requireErrorCode(testInstance, "set-password by a stranger app", body, "person_not_in_app")
 	if got := ntfyTopicStatusWithBasicAuth(testInstance, topic, username, newPassword); got != http.StatusOK {
 		testInstance.Errorf("the stranger's refused call changed the password: basic-auth status = %d, want 200", got)
 	}

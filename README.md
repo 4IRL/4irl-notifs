@@ -8,7 +8,8 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
 - **provisioning-api** — barebones Go service for parametric user/topic provisioning across apps;
   internal only, reached through delivery-api (apps with their `dak_` key, the operator via `/v1/admin`)
 - **delivery-api** — generic delivery service (Go) backed by its own Postgres (`delivery-postgres`,
-  schema applied by the one-shot `delivery-migrate`); serves `/healthz`, `/readyz`, the app message
+  schema applied by the one-shot `delivery-migrate`); issues per-app delivery keys (`dak_`, GitHub OIDC
+  exchange), serves the app provisioning door under `/v1/apps/{app_id}/…` and personal destinations, and serves `/healthz`, `/readyz`, the app message
   API (`/v1/messages`, including `DELETE /v1/messages` cancel of scheduled messages), the operator
   `/v1/admin` registry API (destinations and routes, AES-256-GCM sealed secrets, masked reads), the
   operator delivery log and replay (`/v1/admin/deliveries`) and the operator scheduled-message list
@@ -22,6 +23,10 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
 - **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api (through delivery-api's
   `/healthz/provisioning`), ntfy and the urls4irl website (`/health?db=true`) from outside the VPS and posts state changes to Discord
 - **web** — admin UI (Cloudflare Pages, behind Cloudflare Access)
+- **person-service** — Cloudflare Worker + D1: `person_hash → email` reverse index, app registry and
+  subscriber-password state (Access-gated; a local-only container in the local stack)
+- **setup-web** — public static ntfy setup page (Cloudflare Pages project `notifs-setup`, no Access, no
+  API calls)
 
 ## Why build on it
 
@@ -53,7 +58,9 @@ first on a fresh checkout (docker-compose.yml bind-mounts `.local/dev-oidc/jwks.
 (override with `NTFY_PORT`; config: `ntfy/server.yml`; auth database on the `ntfy-auth` named
 volume, shared with the provisioning-api container). The same stack also runs `delivery-postgres`,
 `delivery-migrate` and `delivery-api` (`http://127.0.0.1:8300` by default, override with
-`DELIVERY_PORT`; Postgres data on the `delivery-pgdata` volume). It also runs a local-only
+`DELIVERY_PORT`; Postgres data on the `delivery-pgdata` volume; the local Postgres is also published on
+`127.0.0.1:18300`, override with `DELIVERY_DB_PORT_HOST`, for the integration tests, and prod publishes no
+Postgres port). It also runs a local-only
 `person-service` (the real Worker under `wrangler dev --local`, no Access, no published port; its
 D1 state is lost when the container is recreated); production uses the Cloudflare-hosted Worker.
 
@@ -70,12 +77,14 @@ delivery-api runtime configuration (environment):
 | `DELIVERY_MASTER_KEY_PREVIOUS` or `DELIVERY_MASTER_KEY_PREVIOUS_FILE` | optional | The old master key during a rotation window: same format, must differ from the master key; `rotate-keys` requires it |
 | `LISTEN_ADDRESS` | `:8080` | HTTP listen address |
 | `DELIVERY_NTFY_URL` | unset | Internal ntfy origin, e.g. `http://ntfy:80`; unset disables the ntfy sink and `to.recipient` delivery |
-| `DELIVERY_PROVISIONING_URL` | unset | Internal provisioning-api origin, e.g. `http://provisioning-api:8080` (the host must be exactly `provisioning-api`, any other host is a startup error so the internal credential never leaves the compose network); unset makes the whole app provisioning door, the `/v1/admin` operator relay and publisher minting answer 503 |
-| `DELIVERY_PROVISIONING_CREDENTIAL` (or `_FILE`) | unset | Internal credential delivery-api sends to provisioning-api as `X-Notifs-Internal-Credential` (64 lowercase hex, shared with provisioning-api's `PROVISIONING_INTERNAL_CREDENTIAL`); unset or unreadable likewise makes the whole app provisioning door, the operator relay and publisher minting answer 503 and logs one WARN |
+| `DELIVERY_PROVISIONING_URL` | unset | Internal provisioning-api origin, e.g. `http://provisioning-api:8080` (the host must be exactly `provisioning-api`, any other host is a startup error so the internal credential never leaves the compose network); unset makes the whole app provisioning door, the `/v1/admin` operator relay, publisher minting, the app teardown cascade (`POST /v1/admin/apps/{app_id}/deprovision`) and `GET /healthz/provisioning` answer 503 |
+| `DELIVERY_PROVISIONING_CREDENTIAL` (or `_FILE`) | unset | Internal credential delivery-api sends to provisioning-api as `X-Notifs-Internal-Credential` (64 lowercase hex, shared with provisioning-api's `PROVISIONING_INTERNAL_CREDENTIAL`); unset or unreadable likewise makes the whole app provisioning door, the operator relay, publisher minting, the app teardown cascade and `GET /healthz/provisioning` answer 503 and logs one WARN |
+| `PERSON_SERVICE_URL` | unset | person-service origin used to register an app in the people directory when the operator approves its identity (blocking); unset makes approval answer 503 and logs one WARN |
+| `PERSON_SERVICE_ACCESS_CLIENT_ID` / `PERSON_SERVICE_ACCESS_CLIENT_SECRET` (or `_FILE`) | unset | Cloudflare Access service token sent to person-service; needed when the URL is https (an empty one logs a WARN and the call is rejected upstream); the local stack sends none |
 | `DELIVERY_RETENTION_DAYS` | `30` | Days a message is kept before the retention sweeper deletes it (integer 1-3650; a message with a `pending` or `scheduled` delivery is never deleted; age counts from the latest of `created_at`, `deliver_at`, `released_at` and `release_failed_at`, and a cancelled message ages from `cancelled_at`; a still-held message is never deleted by this sweep; an invalid value fails startup) |
 | `DELIVERY_MAX_SCHEDULED_PER_APP` | `1000` | Most scheduled (`deliver_at`) messages one app may hold; a new scheduled submit over it is a `429` (integer 1-100000; an invalid value fails startup) |
 | `DELIVERY_MAX_SCHEDULED_TOTAL` | `100000` | Most scheduled messages all apps may hold together; a new scheduled submit over it is a `429` `scheduled message capacity reached`, distinct from the per-app `too many scheduled messages` (integer 1-10000000; an invalid value fails startup; the per-app cap is checked first) |
-| `DELIVERY_HOLD_UNROUTED` | `0` | Hold an app message that matches no route (`202`, status `unrouted`) instead of refusing it with `422`. `0`/`false` off, `1`/`true` on; anything else fails startup. Do not enable before the releaser ships: nothing releases held messages until then |
+| `DELIVERY_HOLD_UNROUTED` | `1` | Hold an app message that matches no route (`202`, status `unrouted`) instead of refusing it with `422`. On by default (unset or empty means on); `0`/`false` turns holding off (restores the `422`), `1`/`true` on; anything else fails startup |
 | `DELIVERY_MAX_HELD_PER_APP` | `1000` | Most held messages one app may have; a new held message over it is a `429` (integer 1-100000; an invalid value fails startup) |
 | `DELIVERY_MAX_HELD_TOTAL` | `100000` | Most held messages all apps may have together; a new held message over it is a `429` (integer 1-10000000; an invalid value fails startup) |
 | `DELIVERY_HELD_TTL_DAYS` | `7` | Days an unreleased held message is kept before it expires, counted from `held_at` (integer 1-365; an invalid value fails startup) |
@@ -99,14 +108,22 @@ Start the stack and run the suite with the same value:
 The CI integration job starts its stack with a cap of 2, so the case runs there.
 
 The live hold tests (an unrouted app message accepted as `202` `unrouted`, the held caps, cancel, replay,
-and the `onboard verify` unrouted outcome) need a stack with `DELIVERY_HOLD_UNROUTED=1`, so the default
-`make delivery-integration-test` and `make onboard-integration-test` runs (flag off, `422`) skip them.
-`make delivery-integration-test-hold` (local stack must be up) recreates delivery-api with the flag on and a
-small `DELIVERY_MAX_HELD_PER_APP` (`HOLD_TEST_MAX_HELD`, default 3) and `DELIVERY_MAX_HELD_TOTAL` (`HOLD_TEST_MAX_HELD_TOTAL`, default 20), runs the Go `TestHold*` tests and the
-onboard integration test, then recreates delivery-api flag-off and waits for it to be healthy; the restore
+and the `onboard verify` unrouted outcome) run on the default stack, where holding is on, so the plain
+`make delivery-integration-test` and `make onboard-integration-test` runs include them; only the two cap
+tests skip there (they need small caps).
+`make delivery-integration-test-hold` (local stack must be up) recreates delivery-api with
+a small `DELIVERY_MAX_HELD_PER_APP` (`HOLD_TEST_MAX_HELD`, default 3) and `DELIVERY_MAX_HELD_TOTAL` (`HOLD_TEST_MAX_HELD_TOTAL`, default 20), runs the Go `TestHold*` tests (cap tests included) and the
+onboard integration test, then recreates delivery-api on the default and waits for it to be healthy; the restore
 runs even when the tests fail. `make delivery-integration-test-hold-run` only runs the tests against a stack
-that is already flag-on (set `NOTIFS_DELIVERY_MAX_HELD` and `NOTIFS_DELIVERY_MAX_HELD_TOTAL` to the stack's per-app and total caps); CI uses it after
-recreating its own stack. Both fail if either runner ran zero hold tests.
+that is already holding with small caps (set `NOTIFS_DELIVERY_MAX_HELD` and `NOTIFS_DELIVERY_MAX_HELD_TOTAL` to the stack's per-app and total caps); CI uses it after
+recreating its own stack. Both fail if either runner ran zero hold tests, and the hold target also fails
+unless both cap tests passed.
+
+A third pass pins the flag-off refusals (`TestUnroutedSubmitIsRefusedWhenHoldOff` and
+`TestAnotherAppsDestinationIsRefusedWhenHoldOff`, `422 no destination matched`). `make delivery-integration-test-hold-off`
+(local stack must be up) recreates delivery-api with `DELIVERY_HOLD_UNROUTED=0`, runs them, and always restores the
+stack's default flag; `make delivery-integration-test-hold-off-run` runs them against an already flag-off stack
+(CI uses it). Both fail if either test skipped.
 
 Several checkouts can run side by side as git worktrees (`make worktree-new`), each with its own
 compose project and ports; see [`docs/worktrees.md`](docs/worktrees.md). In a worktree, start the
@@ -122,8 +139,9 @@ stack only via `make local-up` / `make local-down`, never raw `docker compose`.
 - **One global ntfy user per person** (not one per app). The app's publisher (delivery-api's sealed token) writes `{app_id}-*`;
   each subscriber reads only its own `{app_id}-{person_hash}-*`. See
   [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full model.
-- Users authenticate with per-user access tokens (`ntfy token`), created and revoked by the
-  provisioning-api (called only by delivery-api) via the documented ntfy CLI against the shared auth database.
+- Users authenticate with a per-user access token (Android and programmatic clients, `ntfy token`) or the
+  generated password (`u_<person_hash>` plus the password, the only option in the ntfy iOS app); both are
+  created and revoked by the provisioning-api (called only by delivery-api) via the documented ntfy CLI against the shared auth database.
 
 ## Production
 

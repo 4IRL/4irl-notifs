@@ -148,11 +148,12 @@ async function preClean() {
   }
 }
 
-/** The skip reason for the flag-on case, or false when it must run. Unset or `0` skips; `1` runs;
- * anything else is not skipped, so requireHoldStack fails it loudly. */
+/** The skip reason for the flag-on case, or false when it must run. Only `0` (the explicit flag-off
+ * pass) skips; unset, empty and `1` run (holding is the default); anything else is not skipped, so
+ * requireHoldStack fails it loudly. */
 function holdSkipReason(flag) {
-  if (flag === undefined || flag === '' || flag === '0') {
-    return 'NOTIFS_DELIVERY_HOLD_UNROUTED is unset or 0: needs a stack with DELIVERY_HOLD_UNROUTED=1 (make delivery-integration-test-hold)';
+  if (flag === '0') {
+    return 'NOTIFS_DELIVERY_HOLD_UNROUTED=0: the stack does not hold on purpose (make delivery-integration-test-hold-off)';
   }
   return false;
 }
@@ -162,7 +163,10 @@ function holdSkipReason(flag) {
  * afterwards. Fails, never skips, on a mismatch. */
 async function requireHoldStack(key) {
   const flag = process.env.NOTIFS_DELIVERY_HOLD_UNROUTED;
-  assert.equal(flag, '1', `NOTIFS_DELIVERY_HOLD_UNROUTED=${flag}: only 0, 1 or unset is valid`);
+  assert.ok(
+    flag === undefined || flag === '' || flag === '1',
+    `NOTIFS_DELIVERY_HOLD_UNROUTED=${flag}: only 0, 1 or unset is valid`,
+  );
   const authorization = { Authorization: `Bearer ${key}` };
   const response = await fetch(`${INTEGRATION_URL}/v1/messages`, {
     method: 'POST',
@@ -179,7 +183,7 @@ async function requireHoldStack(key) {
   assert.equal(
     response.status,
     202,
-    `NOTIFS_DELIVERY_HOLD_UNROUTED=1 but an unrouted submit answered ${response.status} (${text}): the stack was not recreated with DELIVERY_HOLD_UNROUTED=1`,
+    `NOTIFS_DELIVERY_HOLD_UNROUTED=${flag ?? '(unset)'} but an unrouted submit answered ${response.status} (${text}): the stack does not hold; recreate it on the default (make local-down, make local-up)`,
   );
   const probeMessage = JSON.parse(text)?.message;
   const messageId = probeMessage?.message_id;
@@ -419,11 +423,10 @@ describe(
       );
     });
 
-    // Needs a stack with DELIVERY_HOLD_UNROUTED on (`make delivery-integration-test-hold-run` runs it
-    // there); with the flag off the unrouted send is a 422 and verify prints a `failed:` line instead.
-    // NOTIFS_DELIVERY_HOLD_UNROUTED unset or `0` skips with a reason; `1` first probes that the stack
-    // really holds (an unrouted app-key submit answers 202, not 422) and fails on a mismatch, never
-    // skipping; any other value fails.
+    // Needs a holding stack, which is the default (a stack with DELIVERY_HOLD_UNROUTED=0 answers 422 and
+    // verify prints a `failed:` line instead). NOTIFS_DELIVERY_HOLD_UNROUTED=`0` skips with a reason;
+    // unset, empty or `1` first probes that the stack really holds (an unrouted app-key submit answers
+    // 202, not 422) and fails on a mismatch, never skipping; any other value fails.
     it(
       'reports an unrouted channel and cancels the held test message',
       { skip: holdSkipReason(process.env.NOTIFS_DELIVERY_HOLD_UNROUTED) },

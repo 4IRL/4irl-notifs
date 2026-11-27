@@ -54,7 +54,8 @@ func TestAppResetRelaysUpstreamAnswers(testInstance *testing.T) {
 	}{
 		{name: "200", status: http.StatusOK, body: `{"user_id":"u_x","app_id":"urls4irl","password":"new-pass"}`},
 		{name: "400", status: http.StatusBadRequest, body: `{"error":"invalid email"}`},
-		{name: "404", status: http.StatusNotFound, body: `{"error":"user does not exist"}`},
+		{name: "404 person not in app", status: http.StatusNotFound, body: `{"code":"person_not_in_app","error":"user does not exist"}`},
+		{name: "404 plain", status: http.StatusNotFound, body: `{"error":"user does not exist"}`},
 		{name: "429", status: http.StatusTooManyRequests, body: `{"error":"too many password changes"}`, retryAfter: "120"},
 		{name: "500", status: http.StatusInternalServerError, body: `{"error":"internal error"}`},
 	}

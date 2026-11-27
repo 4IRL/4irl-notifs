@@ -182,6 +182,7 @@ func TestAppProvisioningIsScopedToTheCallingApp(testInstance *testing.T) {
 	status, _, body = apiResponse(testInstance, bearer(keyB), http.MethodPost, appDeprovisionPath(appB), map[string]any{"person_hash": personhash.Hash(email)})
 	requireStatus(testInstance, "B deprovisions A's person", status, http.StatusNotFound, body)
 	requireErrorMessage(testInstance, "B deprovisions A's person", body, "user does not exist")
+	requireErrorCode(testInstance, "B deprovisions A's person", body, "person_not_in_app")
 
 	// No key at all.
 	status, _, body = apiResponse(testInstance, "", http.MethodPost, appProvisionPath(appA), map[string]any{"email": email})

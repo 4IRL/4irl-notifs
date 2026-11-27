@@ -4,7 +4,8 @@ package dispatch_test
 
 // In-process end-to-end tests of hold -> route -> release -> delivery on real
 // Postgres, using the pipeline harness with the message service's hold setting
-// explicitly on (the default is off).
+// explicitly on (a hand-built ServiceConfig is off by default; only the
+// DELIVERY_HOLD_UNROUTED env parse defaults to on).
 
 import (
 	"context"

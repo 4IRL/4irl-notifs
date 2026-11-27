@@ -55,7 +55,8 @@ const (
 	MaxScheduledTotalEnvVar = "DELIVERY_MAX_SCHEDULED_TOTAL"
 
 	// HoldUnroutedEnvVar names the environment variable that turns on holding an
-	// app message that matches no route (instead of refusing it). Off by default.
+	// app message that matches no route (instead of refusing it). On by default;
+	// "0" or "false" turns it off.
 	HoldUnroutedEnvVar = "DELIVERY_HOLD_UNROUTED"
 
 	// DefaultMaxHeldPerApp is how many held messages one app may have when
@@ -143,7 +144,9 @@ type ServiceConfig struct {
 	// ErrScheduledCapacityReached. A value <= 0 takes DefaultMaxScheduledTotal.
 	MaxScheduledTotal int
 	// HoldUnrouted makes an app message with no matching route a held message
-	// instead of ErrNoDestinationMatched. Off (false) by default.
+	// instead of ErrNoDestinationMatched. The zero value is off (fail closed for
+	// configs built in code); DELIVERY_HOLD_UNROUTED, parsed by
+	// HoldUnroutedFromEnv, defaults to on.
 	HoldUnrouted bool
 	// MaxHeldPerApp caps how many held messages one app may have. A value <= 0
 	// takes DefaultMaxHeldPerApp.
@@ -154,14 +157,15 @@ type ServiceConfig struct {
 }
 
 // HoldUnroutedFromEnv reads DELIVERY_HOLD_UNROUTED through getenv. It fails
-// closed: empty, "0" and "false" mean off, "1" and "true" mean on, and anything
-// else is an error. The error text never echoes the value.
+// closed on anything unexpected: empty (unset), "1" and "true" mean on (the
+// default), "0" and "false" mean off, and anything else is an error. The error
+// text never echoes the value.
 func HoldUnroutedFromEnv(getenv func(string) string) (bool, error) {
 	switch getenv(HoldUnroutedEnvVar) {
-	case "", "0", "false":
-		return false, nil
-	case "1", "true":
+	case "", "1", "true":
 		return true, nil
+	case "0", "false":
+		return false, nil
 	default:
 		return false, fmt.Errorf("invalid %s", HoldUnroutedEnvVar)
 	}

@@ -46,6 +46,19 @@ type routeEnvelope struct {
 
 type errorEnvelope struct {
 	Error string `json:"error"`
+	Code  string `json:"code"`
+}
+
+// requireErrorCode fails unless the body's decoded "code" equals want.
+func requireErrorCode(testInstance *testing.T, label string, body []byte, want string) {
+	testInstance.Helper()
+	var decoded errorEnvelope
+	if decodeErr := json.Unmarshal(body, &decoded); decodeErr != nil {
+		testInstance.Fatalf("%s: decoding error body %q: %v", label, body, decodeErr)
+	}
+	if decoded.Code != want {
+		testInstance.Fatalf("%s code = %q, want %q", label, decoded.Code, want)
+	}
 }
 
 // randomSuffix returns 16 lowercase hex characters, unique per call.

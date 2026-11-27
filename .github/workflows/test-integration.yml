@@ -93,6 +93,7 @@ jobs:
           cd provisioning-api
           NOTIFS_INTERNAL_CREDENTIAL="$CRED" go test -tags integration ./...
 
+      # The stack is on the default (hold on): TestHold* run, the cap tests skip (no small caps here).
       - name: Run delivery-api integration tests
         working-directory: delivery-api
         env:
@@ -103,8 +104,10 @@ jobs:
         # -p 1: the packages share one database, and the pgstore test writes a transient failure row that /readyz would report
         run: go test -p 1 -tags integration ./...
 
-      # The flag-on run: recreate delivery-api with the hold flag on, run the hold runners, then restore
-      # the flag-off stack below. The env keeps the scheduled cap of 2 so the recreate does not drop it.
+      # The plain run above is on the default stack (hold on), so it already runs TestHold* except the
+      # cap tests, which skip. The capped run: recreate delivery-api with small held caps, run the hold
+      # runners, then the flag-off pass and the restore to the default below. The env keeps the
+      # scheduled cap of 2 so the recreate does not drop it.
       - name: Recreate delivery-api with the hold flag on
         id: hold_recreate
         env:
@@ -146,9 +149,9 @@ jobs:
           export NOTIFS_DELIVERY_DB_CONTAINER
           make delivery-integration-test-hold-run
 
-      # Always runs, so a failed hold step cannot leave the later steps on a flag-on stack.
-      - name: Restore delivery-api with the hold flag off
-        if: always() && steps.hold_recreate.conclusion != 'skipped'
+      # The flag-off pass: recreate delivery-api with the hold flag explicitly off (the held-cap
+      # overrides fall away; the scheduled cap of 2 is kept), then run the 422 tests.
+      - name: Recreate delivery-api with the hold flag off
         env:
           DELIVERY_MAX_SCHEDULED_PER_APP: "2"
           DELIVERY_HOLD_UNROUTED: "0"
@@ -160,6 +163,38 @@ jobs:
             if [ "$STATUS" = "healthy" ]; then
               docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" | grep -qx 'DELIVERY_HOLD_UNROUTED=0' || { echo "delivery-api is not flag-off"; exit 1; }
               echo "delivery-api is healthy with the hold flag off"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "delivery-api did not become healthy in time"
+          exit 1
+
+      # The runner fails unless both WhenHoldOff tests pass (a skip fails it).
+      - name: Run flag-off integration tests
+        env:
+          # The make recipe sets the URL and DSN itself (the Makefile defaults, 8300 and 18300).
+          NOTIFS_DELIVERY_HOLD_UNROUTED: "0"
+        run: |
+          NOTIFS_DELIVERY_DB_CONTAINER="$(docker compose --project-directory . -f docker-compose.yml ps -q delivery-postgres)"
+          export NOTIFS_DELIVERY_DB_CONTAINER
+          make delivery-integration-test-hold-off-run
+
+      # Always runs, so a failed hold or flag-off step cannot leave the later steps on a non-default
+      # stack. DELIVERY_HOLD_UNROUTED and the held-cap overrides are left unset, so compose applies its
+      # defaults (hold on, default caps); the scheduled cap of 2 is kept.
+      - name: Restore delivery-api to the default
+        if: always() && steps.hold_recreate.conclusion != 'skipped'
+        env:
+          DELIVERY_MAX_SCHEDULED_PER_APP: "2"
+        run: |
+          docker compose --project-directory . -f docker-compose.yml up -d --build delivery-api
+          CONTAINER="$(docker compose --project-directory . -f docker-compose.yml ps -q delivery-api)"
+          for _ in $(seq 1 60); do
+            STATUS="$(docker inspect -f '{{.State.Health.Status}}' "$CONTAINER" || echo "unknown")"
+            if [ "$STATUS" = "healthy" ]; then
+              docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" | grep -qx 'DELIVERY_HOLD_UNROUTED=1' || { echo "delivery-api is not on the default hold setting"; exit 1; }
+              echo "delivery-api is healthy on the default hold setting"
               exit 0
             fi
             sleep 2

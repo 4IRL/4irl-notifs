@@ -190,9 +190,10 @@ services:
       # listens on :80 inside the compose network). Unset disables the ntfy sink. LOCKSTEP: keep in
       # sync with docker-compose.prod.yml and with provisioning-api's NTFY_PUBLISH_URL.
       - DELIVERY_NTFY_URL=http://ntfy:80
-      # In-compose HTTP origin of provisioning-api, used only by the operator publisher-mint endpoint
-      # (POST /v1/admin/apps/{app_id}/ntfy-publisher). Unset disables minting. LOCKSTEP: keep in sync
-      # with docker-compose.prod.yml.
+      # In-compose HTTP origin of provisioning-api. It gates every provisioning call (the app door and
+      # the operator relay, including publisher minting at POST /v1/admin/apps/{app_id}/ntfy-publisher),
+      # the app teardown cascade and GET /healthz/provisioning. Unset disables all of them. LOCKSTEP:
+      # keep in sync with docker-compose.prod.yml.
       - DELIVERY_PROVISIONING_URL=http://provisioning-api:8080
       # Internal credential delivery-api sends to provisioning-api. LOCKSTEP: keep equal to
       # provisioning-api's PROVISIONING_INTERNAL_CREDENTIAL above; prod uses the same persistent file
@@ -206,9 +207,9 @@ services:
       # ("scheduled message capacity reached"). The default must equal the code default
       # (message.DefaultMaxScheduledTotal). LOCKSTEP: keep in sync with docker-compose.prod.yml.
       - DELIVERY_MAX_SCHEDULED_TOTAL=${DELIVERY_MAX_SCHEDULED_TOTAL:-100000}
-      # Hold an app message that matches no route instead of refusing it (1/true = on). Off by default; must
-      # not be enabled before the releaser ships. LOCKSTEP: keep in sync with docker-compose.prod.yml.
-      - DELIVERY_HOLD_UNROUTED=${DELIVERY_HOLD_UNROUTED:-0}
+      # Hold an app message that matches no route instead of refusing it. On by default; 0 or false turns
+      # holding off (the held releaser always runs). LOCKSTEP: keep in sync with docker-compose.prod.yml.
+      - DELIVERY_HOLD_UNROUTED=${DELIVERY_HOLD_UNROUTED:-1}
       # Per-app cap on held messages; a new held message over it is a 429. The default must equal the code
       # default (message.DefaultMaxHeldPerApp). LOCKSTEP: keep in sync with docker-compose.prod.yml.
       - DELIVERY_MAX_HELD_PER_APP=${DELIVERY_MAX_HELD_PER_APP:-1000}

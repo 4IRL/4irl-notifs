@@ -94,7 +94,7 @@ function loadTagMap() {
     tagMap[route] = {
       request: tagsFor(request),
       response: tagsFor(response),
-      error: new Set(['error']),
+      error: new Set(['error', 'code']),
     };
   }
   tagMap.publisherView = tagsFor(PUBLISHER_VIEW);
@@ -578,6 +578,7 @@ test('negative self-test: door example checks fire', () => {
     /"email"/,
   );
   assert.deepEqual(check(block('provision.error', '{ "error": "x" }')).problems, []);
+  assert.deepEqual(check(block('provision.error', '{ "error": "x", "code": "y" }')).problems, []);
 
   const elided = check(block('provision.response', '{ "user_id": "u", ... }'));
   assert.deepEqual(elided.problems, []);

@@ -438,12 +438,6 @@ func assertSubmitRejections(testInstance *testing.T, routedChannel string) {
 	requireErrorMessage(testInstance, "POST via=personal without ids", body,
 		"to.personal_destination_ids required for to.via")
 
-	unroutedChannel := "it_" + randomSuffix(testInstance)
-	status, body = apiRequest(testInstance, http.MethodPost, messagesPath,
-		submitBody(unroutedChannel, "it-unrouted-"+randomSuffix(testInstance)))
-	requireStatus(testInstance, "POST message with no route", status, http.StatusUnprocessableEntity, body)
-	requireErrorMessage(testInstance, "POST message with no route", body, "no destination matched")
-
 	ntfySuffix := randomSuffix(testInstance)
 	ntfyChannel := "it_" + ntfySuffix
 	ntfyName := "itest_" + ntfySuffix
@@ -461,4 +455,15 @@ func assertSubmitRejections(testInstance *testing.T, routedChannel string) {
 	requireStatus(testInstance, "POST message without display to an ntfy destination", status, http.StatusBadRequest, body)
 	requireErrorMessage(testInstance, "POST message without display to an ntfy destination", body,
 		"display.title or display.body is required for ntfy and discord destinations")
+}
+
+// TestUnroutedSubmitIsRefusedWhenHoldOff pins the flag-off refusal of an app-key message that
+// matches no route (a flag-on stack holds it instead; see TestHoldUnroutedSubmitIsAcceptedAsUnrouted).
+func TestUnroutedSubmitIsRefusedWhenHoldOff(testInstance *testing.T) {
+	requireHoldOffStack(testInstance)
+	unroutedChannel := "it_" + randomSuffix(testInstance)
+	status, body := apiRequest(testInstance, http.MethodPost, messagesPath,
+		submitBody(unroutedChannel, "it-unrouted-"+randomSuffix(testInstance)))
+	requireStatus(testInstance, "POST message with no route", status, http.StatusUnprocessableEntity, body)
+	requireErrorMessage(testInstance, "POST message with no route", body, "no destination matched")
 }

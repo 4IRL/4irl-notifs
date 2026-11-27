@@ -25,7 +25,7 @@ func TestHoldUnroutedFromEnv(testInstance *testing.T) {
 		want    bool
 		wantErr bool
 	}{
-		{name: "empty is off", value: "", want: false},
+		{name: "empty is on", value: "", want: true},
 		{name: "zero is off", value: "0", want: false},
 		{name: "false is off", value: "false", want: false},
 		{name: "one is on", value: "1", want: true},
@@ -110,7 +110,7 @@ func TestMaxHeldCapsFromEnv(testInstance *testing.T) {
 func TestNewServiceDefaultsHeldSettings(testInstance *testing.T) {
 	fixture := newServiceFixture()
 	if fixture.service.holdUnrouted {
-		testInstance.Fatal("the hold must be off by default")
+		testInstance.Fatal("a zero ServiceConfig keeps hold off")
 	}
 	if got := fixture.service.heldCaps; got.PerApp != DefaultMaxHeldPerApp || got.Total != DefaultMaxHeldTotal {
 		testInstance.Fatalf("heldCaps = %+v, want the defaults", got)
