@@ -165,10 +165,18 @@ func writeJSON(responseWriter http.ResponseWriter, statusCode int, body any) {
 }
 
 // writeServiceError maps a service-layer error onto its HTTP response: a
-// 404 "user does not exist" when the error wraps ntfycli.ErrNotFound, or a
+// 404 "user does not exist" plus code "person_not_in_app" when the error wraps
+// provisioning.ErrPersonNotInApp, a code-less 404 for a bare
+// ntfycli.ErrNotFound, a 429 for password-change throttling, or a
 // 500 "internal error" for anything else — logging the real error via the
 // server's logger so operators can diagnose it without leaking it to callers.
 func (server *Server) writeServiceError(responseWriter http.ResponseWriter, request *http.Request, err error) {
+	// ErrPersonNotInApp also satisfies ntfycli.ErrNotFound, so it must be
+	// checked first: only this genuine case carries the machine-readable code.
+	if errors.Is(err, provisioning.ErrPersonNotInApp) {
+		writeJSON(responseWriter, http.StatusNotFound, map[string]string{"error": "user does not exist", "code": "person_not_in_app"})
+		return
+	}
 	if errors.Is(err, ntfycli.ErrNotFound) {
 		writeJSON(responseWriter, http.StatusNotFound, map[string]string{"error": "user does not exist"})
 		return

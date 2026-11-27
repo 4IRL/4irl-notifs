@@ -1108,6 +1108,7 @@ func TestSetPasswordChangesNtfyPassword(t *testing.T) {
 	if !strings.Contains(string(missingBody), "user does not exist") {
 		t.Fatalf("set-password 404 body = %s, expected it to contain %q", missingBody, "user does not exist")
 	}
+	requirePersonNotInAppCode(t, missingBody, "set-password for un-provisioned email")
 }
 
 // requireUserDoesNotExist fails unless a response is the 404 {"error":"user does not exist"} the
@@ -1119,6 +1120,21 @@ func requireUserDoesNotExist(t *testing.T, status int, body []byte, label string
 	}
 	if !strings.Contains(string(body), "user does not exist") {
 		t.Fatalf("%s 404 body = %s, expected it to contain %q", label, body, "user does not exist")
+	}
+	requirePersonNotInAppCode(t, body, label)
+}
+
+// requirePersonNotInAppCode fails unless the body's decoded "code" is "person_not_in_app".
+func requirePersonNotInAppCode(t *testing.T, body []byte, label string) {
+	t.Helper()
+	var decoded struct {
+		Code string `json:"code"`
+	}
+	if decodeErr := json.Unmarshal(body, &decoded); decodeErr != nil {
+		t.Fatalf("%s: decoding 404 body %q: %v", label, body, decodeErr)
+	}
+	if decoded.Code != "person_not_in_app" {
+		t.Fatalf("%s 404 code = %q, expected person_not_in_app; body = %s", label, decoded.Code, body)
 	}
 }
 
@@ -1326,6 +1342,7 @@ func TestResetPasswordForUnknownEmailIsNotFound(t *testing.T) {
 	if !strings.Contains(string(body), "user does not exist") {
 		t.Fatalf("reset 404 body = %s, expected it to contain %q", body, "user does not exist")
 	}
+	requirePersonNotInAppCode(t, body, "reset for unknown email")
 	if cacheControl := headers.Get("Cache-Control"); cacheControl != "no-store" {
 		t.Fatalf("reset 404 Cache-Control = %q, expected no-store", cacheControl)
 	}

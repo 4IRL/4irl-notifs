@@ -190,9 +190,10 @@ You never create a key by hand. The app's deploy workflow trades a GitHub-signed
    other expiry. Each exchange rotates the key, **including dry runs** (`apply: 'false'`), and the action
    exchanges **before** it lints the manifest, so a deploy that then fails on the manifest has already
    rotated the key.
-4. **The binding is exact.** A deploy whose repository, workflow file, ref or environment differs from the
-   approved binding is `403 identity does not match the approved binding` and files nothing. To change any
-   of them (a renamed workflow file, deploying from another branch, adding an `environment:`), ask the
+4. **The binding is exact.** A deploy whose repository (matched by its numeric repository and owner ids),
+   workflow file, ref or environment differs from the approved binding is
+   `403 identity does not match the approved binding` and files nothing. A repository rename alone does not
+   break the binding, because the numeric ids still match. To change any of the others (a renamed workflow file, deploying from another branch, adding an `environment:`), ask the
    operator to unbind the app, then deploy again and have the new request approved.
 
 #### Registrars: one workflow, many apps
@@ -437,8 +438,10 @@ Suggested naming (not enforced beyond the regexes in this guide): short purpose 
 - **Removing an app:** call the operator cascade `POST /v1/admin/apps/{app_id}/deprovision` with body
   `{"app_id":"<app>"}` (repeating the path id). It is irreversible: it tears down the app's provisioning
   grants and users, unbinds its identity (every key stops at once), deletes the stored publisher and
-  deletes the app's checks, routes and destinations. It answers `409` while a publisher mint is in
-  progress and `502 "provisioning-api teardown failed"` if the teardown fails, and `503` if teardown is unavailable (retry both). Then remove the
+  deletes the app's checks, routes and destinations, plus its held messages and its personal destination
+  opt-ins and destinations. It answers `409 "publisher mint already in progress, retry"` while a publisher
+  mint is in progress, `502 "provisioning-api teardown failed"` if the teardown fails, and
+  `503 "app teardown unavailable"` if teardown is unavailable (retry all three). Then remove the
   app's token from the Access policies. For planned maintenance without removal, unbind or pause instead.
 
 ---
@@ -707,7 +710,7 @@ Every row except the exchange and `/readyz` also returns the key errors above (`
 
 | Method and path                                              | Request                       | Success                                                  | Errors                                                                          |
 | ------------------------------------------------------------ | ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `POST /v1/app-identity/exchange` (Access token only, no key) | `{"app_id","token":"<GitHub OIDC JWT>"}` or, for a registrar workflow, `{"name","token":"<GitHub OIDC JWT>"}` (exactly one of `app_id` / `name`) | `202 {"status":"pending","request_id"}` (awaits operator approval) or `200 {"status":"issued","app_id","key","key_id"}` (the plaintext key, once; `app_id` is `prefix + name` in registrar form) | 400 malformed body, `app_id`, `invalid name` or `send exactly one of app_id or name`, 401 `invalid identity token`, 403 `identity does not match the approved binding` / `app id is not owned by this registrar`, 409 `app id is reserved by a registrar` (normal form, id inside a registrar prefix) / `registrar app limit reached` / `app id overlaps an approved app id` / `registration changed, retry`, 429 `too many pending identity requests`, 502 / 503 `app registry unavailable` (registrar auto-create, person-service), 503 `identity unavailable`. The `notifs-app` action calls this for you. |
+| `POST /v1/app-identity/exchange` (Access token only, no key) | `{"app_id","token":"<GitHub OIDC JWT>"}` or, for a registrar workflow, `{"name","token":"<GitHub OIDC JWT>"}` (exactly one of `app_id` / `name`) | `202 {"status":"pending","request_id"}` (awaits operator approval) or `200 {"status":"issued","app_id","key","key_id"}` (the plaintext key, once; `app_id` is `prefix + name` in registrar form) | 400 malformed body, `invalid app_id` (including the reserved id `everyone`), `token is required`, `invalid name` or `send exactly one of app_id or name`, 401 `invalid identity token`, 403 `identity does not match the approved binding` / `app id is not owned by this registrar`, 409 `app id is reserved by a registrar` (normal form, id inside a registrar prefix) / `registrar app limit reached` / `app id overlaps an approved app id` / `registration changed, retry`, 429 `too many pending identity requests`, 502 / 503 `app registry unavailable` (registrar auto-create, person-service), 503 `identity unavailable`. The `notifs-app` action calls this for you. |
 | `POST /v1/messages` (optional `?wait=0..10`)                 | envelope JSON (see Envelope)  | `202 {"message":{…},"duplicate":bool,"replaced":bool}` (status `unrouted`, with `deliveries: []`, when holding is on and no route matched) | 400 validation, 409 `destination disabled`, 413, 422 `no destination matched` (holding off) / `app has no ntfy publisher` / `personal destination not available for recipient`, 429 (`too many held messages`, `held message capacity reached`, scheduled caps), 503 `messages unavailable` |
 | `GET /v1/messages/{id}?app_id=<app>`                         | none                          | `200 {"message":{…}}`                                    | 400 `app_id is required`, 404 `message not found`                               |
 | `GET /v1/messages?app_id=<app>&idempotency_key=<key>`        | none                          | `200 {"message":{…}}`                                    | 400, 404                                                                        |
@@ -715,9 +718,9 @@ Every row except the exchange and `/readyz` also returns the key errors above (`
 | `POST /v1/heartbeats/{app_id}/{name}`                        | none                          | `200 {"app_id","name","state"}`                          | 400, 404 `check not found`, 503 `heartbeats unavailable`                        |
 | `POST /v1/heartbeats/{app_id}/{name}/fail`                   | none                          | `200 {"app_id","name","state"}` (state `down`)           | same                                                                            |
 | `POST /v1/apps/{app_id}/provision`                           | `{"email"}`                   | `200 {user_id, app_id, person_hash, topic_pattern, broadcast_topic, token, password?}` (`Cache-Control: no-store`) | 400, 401, 403, 429, 502 `provisioning request failed`, 503 `provisioning unavailable` (see "Door errors") |
-| `POST /v1/apps/{app_id}/deprovision`                         | `{"email"}` or `{"person_hash"}` | `200 {user_id, app_id, removed}`                      | as provision, plus 404 `user does not exist` (treat as already removed) |
-| `POST /v1/apps/{app_id}/reset-password`                      | `{"email"}`                   | `200 {user_id, app_id, password}` (`Cache-Control: no-store`) | as provision, plus 404 `user does not exist`, 429 with `Retry-After`, 503 `reset limit unavailable` |
-| `POST /v1/apps/{app_id}/set-password`                        | `{"email","password"}` (legacy, not for new apps) | `200 {user_id, app_id, updated}`  | as provision, plus 404 `user does not exist` |
+| `POST /v1/apps/{app_id}/deprovision`                         | `{"email"}` or `{"person_hash"}` | `200 {user_id, app_id, removed}`                      | as provision, plus 404 `user does not exist` (treat as already removed, coded or not) |
+| `POST /v1/apps/{app_id}/reset-password`                      | `{"email"}`                   | `200 {user_id, app_id, password}` (`Cache-Control: no-store`) | as provision, plus 404 `user does not exist` (`code` `person_not_in_app` marks the person as definitively gone; without it the 404 is ambiguous), 429 with `Retry-After`, 503 `reset limit unavailable` |
+| `POST /v1/apps/{app_id}/set-password`                        | `{"email","password"}` (legacy, not for new apps) | `200 {user_id, app_id, updated}`  | as provision, plus 404 `user does not exist` (`code` `person_not_in_app` when definitively gone; without it ambiguous) |
 | `POST /v1/apps/{app_id}/ntfy-publisher`                      | `{}` or `{"rotate":true}` (body required) | `200 {"publisher":{"app_id","publisher_user_id","topic_pattern","created_at","updated_at"}}` (never the token) | 400, 401, 403, 404 `app has no approved binding`, 409 `publisher mint already in progress`, 429 `publisher mint rate limit exceeded`, 502, 503 |
 | `GET /readyz`                                                | none                          | `200` readiness body (below)                             | `503 {"status":"unavailable"}` (database unreachable) or `503` with `"status":"schema_mismatch"` |
 
@@ -840,7 +843,7 @@ Message object (illustrative values; `status` is `pending`, `delivered`, `dead`,
 }
 ```
 
-Readiness body: `{"status":"ok","schema_version":14,"expected_schema_version":14,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false},"heartbeat_prober":{"last_tick_at":"<RFC3339>","stale":false},"held":{"available":true,"stale":false,"as_of":"<RFC3339>","total":0,"messages":{"count":0,"oldest_held_at":null,"oldest_age_seconds":null},"unassigned_alerts":{"count":0},"apps":[],"apps_more":0}}`. The `held` block is informational (messages and heartbeat alerts waiting for a destination) and never changes the status.
+Readiness body: `{"status":"ok","schema_version":15,"expected_schema_version":15,"last_migration_failure":null,"heartbeat_checker":{"last_tick_at":"<RFC3339>","stale":false},"heartbeat_prober":{"last_tick_at":"<RFC3339>","stale":false},"held":{"available":true,"stale":false,"as_of":"<RFC3339>","total":0,"messages":{"count":0,"oldest_held_at":null,"oldest_age_seconds":null},"unassigned_alerts":{"count":0},"apps":[],"apps_more":0}}`. The `held` block is informational (messages and heartbeat alerts waiting for a destination) and never changes the status.
 The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_prober.stale` is `true`; read the fields.
 
 ### Operator endpoints (proxy token; used to onboard an app)
@@ -854,27 +857,28 @@ The HTTP status stays `200` even when `heartbeat_checker.stale` or `heartbeat_pr
 | `POST /v1/admin/routes`                              | `{"app_pattern","channel_pattern","destinations":["<name>",…],"enabled"?}`                    | `201 {"route":{…}}`                              | 400 validation or `unknown destination`, 409 `route already exists`          |
 | `GET /v1/admin/routes`; `GET`, `PATCH`, `DELETE /v1/admin/routes/{id}` | `PATCH`: any of the four fields; `destinations` replaces the whole set       | `200` (`DELETE`: `{"id","deleted"}`)             | 404 `route does not exist`; `PATCH` of an app-owned route's `app_pattern` away from its owner is 400 `request violates a data constraint` |
 | `POST /v1/admin/heartbeats`                          | `{"app_id","name","period_seconds","grace_seconds","destinations":["<name>",…]?}` (`destinations` may be omitted, `null` or `[]`) | `201 {"check":{…}}`                              | 400 validation or `unknown destination`, 409 `check already exists`          |
-| `POST /v1/admin/heartbeats` (probe check)            | `{"app_id","name","destinations":[…]?,"probe":{"url","expected_statuses","body_match"?,"timeout_seconds","interval_seconds","access_token"?:{"client_id","client_secret"}}}` (no `period_seconds`/`grace_seconds`; `destinations` may be omitted, `null` or `[]`) | `201 {"check":{…}}` with a `probe` block | 400 validation (`invalid probe.<field>`), 400 if `period_seconds`/`grace_seconds` is present at all, 409 `check already exists` |
+| `POST /v1/admin/heartbeats` (probe check)            | `{"app_id","name","destinations":[…]?,"probe":{"url","expected_statuses","body_match"?,"timeout_seconds","interval_seconds","access_token"?:{"client_id","client_secret"}}}` (no `period_seconds`/`grace_seconds`; `destinations` may be omitted, `null` or `[]`) | `201 {"check":{…}}` with a `probe` block | 400 validation (`invalid probe.<field>` for `url`, `expected_statuses`, `body_match`, `interval_seconds`, `timeout_seconds` or `access_token`), 400 `period_seconds and grace_seconds are derived for probe checks` if either is present at all, 409 `check already exists` |
 | `GET /v1/admin/heartbeats`                           | none                                                                                          | `200 {"checks":[…]}`                             |                                                                              |
 | `GET`, `PATCH`, `DELETE /v1/admin/heartbeats/{id}`   | `PATCH`: any of `period_seconds`, `grace_seconds`, `destinations` (`[]` clears, `null` or omitted leaves unchanged) | `200 {"check":{…}}` (`DELETE`: `{"id","deleted"}`, idempotent) | 400 `app_id and name are immutable`, 404 `check not found`         |
-| `PATCH /v1/admin/heartbeats/{id}` (probe check)      | `destinations` and/or `probe` with any of `url`, `expected_statuses`, `body_match` (`null` clears), `timeout_seconds`, `interval_seconds`, `access_token` (omitted keeps, `null` clears, a `{client_id,client_secret}` pair replaces) | `200 {"check":{…}}` | 400 validation, 400 `check kind is immutable` (`probe: null`), 400 on `period_seconds`/`grace_seconds`, 404 |
+| `PATCH /v1/admin/heartbeats/{id}` (probe check)      | `destinations` and/or `probe` with any of `url`, `expected_statuses`, `body_match` (`null` clears), `timeout_seconds`, `interval_seconds`, `access_token` (omitted keeps, `null` clears, a `{client_id,client_secret}` pair replaces) | `200 {"check":{…}}` | 400 validation (`invalid probe.<field>`), 400 `check kind is immutable` (`probe: null`), 400 `period_seconds and grace_seconds are derived for probe checks`, 400 `probe config is not allowed on a push check` (probe or `access_token` on a push check), 404 |
 | `POST /v1/admin/heartbeats/{id}/pause` and `/resume` | none                                                                                          | `200 {"check":{…}}` (idempotent)                 | 404                                                                          |
 | `POST /v1/admin/apps/{app_id}/ntfy-publisher`        | optional `{"rotate"?:bool}` (strict JSON; absent means `false`)                               | `200 {"publisher":{"app_id","publisher_user_id","topic_pattern","created_at","updated_at"}}` (never the token) | 404 `app has no approved binding`, 409 `publisher mint already in progress`, 502 mint failed, 503 not configured or 2 mints already in flight (operator mints are not rate limited) |
-| `POST /v1/admin/provision`, `/deprovision`, `/reset-password` | the provisioning-api body (app_id, email or user id), relayed                         | provisioning-api's answer, as-is                 | 400 validation, 502 upstream failed, 503 not configured                      |
-| `GET /v1/admin/users`; `DELETE /v1/admin/users/{user_id}` | none                                                                                | provisioning-api's answer, as-is                 | 400 empty `user_id`, 502, 503                                                |
-| `POST /v1/admin/test-notify`                         | `{"app_id","recipients"?:[…],"channel","message","title"?}`                                   | provisioning-api's answer, as-is                 | 404 `app has no approved binding`, 400, 502, 503                             |
-| `POST /v1/admin/apps/{app_id}/deprovision`           | `{ "app_id" }` repeating the path app_id (confirmation)                                       | `200 {"app_id","removed","unbound","deleted":{"checks","routes","destinations","orphaned_routes","orphaned_checks","held_messages"}}` (irreversible, idempotent) | 400 `invalid app_id` or missing/different body `app_id`, 409 mint in progress (retry), 502 provisioning-api teardown failed, 503 unavailable |
+| `POST /v1/admin/provision`, `/reset-password`        | `{"app_id","email"}` (strict JSON; any other field, `user_id` included, is 400 `invalid JSON body`) | provisioning-api's answer, as-is                 | 400 `invalid JSON body` / `invalid app_id` / `email required`, 404 `app has no approved binding` and 503 `binding check unavailable` (provision only), 502 upstream failed, 503 not configured |
+| `POST /v1/admin/deprovision`                         | `{"app_id","user_id"}` (strict JSON; `email` is 400 `invalid JSON body`)                      | provisioning-api's answer, as-is                 | 400 `invalid JSON body` / `invalid app_id` / `user_id required` (empty, `.` or `..`), 502, 503 |
+| `GET /v1/admin/users`; `DELETE /v1/admin/users/{user_id}` | none                                                                                | provisioning-api's answer, as-is                 | 400 `user_id required` (empty, `.` or `..`), 502, 503                        |
+| `POST /v1/admin/test-notify`                         | `{"app_id","recipients"?:[…],"channel","message","title"?}`                                   | provisioning-api's answer, as-is                 | 400 `invalid app_id`, 404 `app has no approved binding`, 503 `binding check unavailable`, other 400, 502, 503 |
+| `POST /v1/admin/apps/{app_id}/deprovision`           | `{ "app_id" }` repeating the path app_id (confirmation)                                       | `200 {"app_id","removed","unbound","deleted":{"checks","routes","destinations","orphaned_routes","orphaned_checks","held_messages","personal_opt_ins","personal_destinations"}}` (irreversible, idempotent) | 400 `invalid app_id`, `invalid JSON body` or `body app_id must repeat the path app_id` (missing or different), 409 `publisher mint already in progress, retry`, 502 `provisioning-api teardown failed`, 503 `app teardown unavailable` (or `provisioning unavailable` when teardown is not configured) |
 | `GET /v1/admin/apps/{app_id}/ntfy-publisher`         | none                                                                                          | `200 {"publisher":{…}}` (never the token)        | 404 when none is stored                                                      |
 | `DELETE /v1/admin/apps/{app_id}/ntfy-publisher`      | none                                                                                          | `204` (idempotent)                               |                                                                              |
 | `POST /v1/admin/messages`                            | the `POST /v1/messages` envelope, any `app_id` (optional `?wait=0..10`)                       | `202`, same as `POST /v1/messages`               | as `POST /v1/messages`, no key needed (admin send-test uses it)              |
 | `GET /v1/admin/app-identity/requests`                | none                                                                                          | `200 {"requests":[…]}` (pending first, then rejected from the last 30 days); each carries `"kind":"app"\|"registrar"` and `"app_id": string\|null` (null for a registrar request) |                                                  |
-| `POST /v1/admin/app-identity/requests/{id}/approve`  | none                                                                                          | `201 {"binding":{…}}` (the request is deleted)   | 400 `invalid request id`, 404 `request does not exist`, 409 `request is not pending` / `request is a registrar request` / `app id is reserved by a registrar` / `app already bound` / `workflow identity already bound` |
-| `POST /v1/admin/app-identity/requests/{id}/approve-registrar` | `{"prefix":"hosted_"}` (strict JSON)                                                 | `201 {"registrar":{id, prefix, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at, app_count, app_limit}}` (the request and its sibling pending requests are deleted; pending app requests inside the prefix are rejected) | 400 `invalid prefix` (grammar `^[a-z0-9][a-z0-9_]{0,30}_$`, any prefix starting with `platform_`, stem `everyone`), 404 `request does not exist`, 409 `request is not pending` / `request is not a registrar request` / `prefix already used` / `prefix overlaps an approved app id or registrar` / `workflow identity already bound` |
+| `POST /v1/admin/app-identity/requests/{id}/approve`  | none                                                                                          | `201 {"binding":{…}}` (the request is deleted)   | 400 `invalid request id`, 404 `request does not exist`, 409 `request is not pending` / `request is a registrar request` / `app id is reserved by a registrar` / `app id is reserved` (the people directory's `everyone`) / `app already bound` / `workflow identity already bound` / `app id overlaps an approved app id` / `registration request changed during approval`, 502 / 503 `app registry unavailable` |
+| `POST /v1/admin/app-identity/requests/{id}/approve-registrar` | `{"prefix":"hosted_"}` (strict JSON)                                                 | `201 {"registrar":{id, prefix, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at, app_count, app_limit}}` (the request and its sibling pending requests are deleted; pending app requests inside the prefix are rejected) | 400 `invalid request id` / `invalid prefix` (grammar `^[a-z0-9][a-z0-9_]{0,30}_$`, any prefix starting with `platform_`, stem `everyone`), 404 `request does not exist`, 409 `request is not pending` / `request is not a registrar request` / `prefix already used` / `prefix overlaps an approved app id or registrar` / `workflow identity already bound` |
 | `GET /v1/admin/app-identity/registrars`              | none                                                                                          | `200 {"registrars":[{id, prefix, github_repository, github_repository_id, github_owner_id, workflow_path, git_ref, environment, approved_at, app_count, app_limit}]}` sorted by prefix; `app_limit` is the per-registrar app cap (50 today) |  |
 | `DELETE /v1/admin/app-identity/registrars/{id}`      | none                                                                                          | `200 {"id","deleted":bool,"unbound_apps":int}` (idempotent; unbinds every app the registrar created) | 400 `invalid registrar id` |
 | `POST /v1/admin/app-identity/bindings/{app_id}/acknowledge` | none                                                                                   | `200 {"binding":{…}}` (idempotent; keeps the first time) | 400 `invalid app_id`, 404 `binding does not exist` |
 | `POST /v1/admin/app-identity/bindings/acknowledge-all` | `{"app_ids":["…"]}` (strict JSON; 1-200 ids, the New rows the page displayed)               | `200 {"acknowledged":int}` (marks only the listed registrar apps still New; unknown, normal or already-seen ids are skipped; a repeat returns `0`) | 400 `app_ids must list 1 to 200 apps`, 400 `invalid app_id` |
-| `POST /v1/admin/app-identity/requests/{id}/reject`   | none                                                                                          | `200 {"request":{…,"status":"rejected"}}` (idempotent) | 400, 404                                                              |
+| `POST /v1/admin/app-identity/requests/{id}/reject`   | none                                                                                          | `200 {"request":{…,"status":"rejected"}}` (idempotent) | 400 `invalid request id`, 404 `request does not exist`                |
 | `GET /v1/admin/app-identity/bindings`                | none                                                                                          | `200 {"bindings":[{app_id, github_repository, …, "registrar":{id, prefix}\|null, "acknowledged_at": string\|null, "keys":[{id, key_hint, state, …}]}]}`; `state` is `active`, `superseded` or `revoked` |  |
 | `POST /v1/admin/app-identity/keys/{id}/revoke`       | none                                                                                          | `200 {"key":{…}}` (idempotent)                   | 400 `invalid key id`, 404 `key does not exist`                               |
 | `DELETE /v1/admin/app-identity/bindings/{app_id}`    | none                                                                                          | `200 {"app_id","deleted":bool}` (idempotent; every key stops, owned objects stay) | 400 `invalid app_id`                      |
@@ -911,7 +915,7 @@ route view is `{"id","app_pattern","channel_pattern","destinations","enabled","c
 
 **Heartbeat bounds:** `app_id` and `name` match `^[a-z0-9][a-z0-9_]{0,62}$`; `period_seconds` 60 to
 2678400; `grace_seconds` 60 to 604800; 0-20 distinct, existing `destinations`. A check view is
-`{"id","app_id","name","period_seconds","grace_seconds","paused","state","last_ping_at","last_ping_kind","down_since","deadline_at","destinations":[{"name","type","enabled"}],"created_at","updated_at"}`
+`{"id","app_id","name","period_seconds","grace_seconds","paused","state","last_ping_at","last_ping_kind","down_since","down_reason","deadline_at","destinations":[{"name","type","enabled"}],"owner_kind","owner_app_id","created_at","updated_at"}`
 with `state` one of `new`, `up`, `late`, `down` and `last_ping_kind` `success` or `fail`.
 
 **Probe checks (operator-created website checks).** Instead of a push schedule a probe check carries a
@@ -1197,7 +1201,8 @@ is **not idempotent**; its retry behavior is exact:
 - `200 {removed}` when the person's ntfy user is already gone, or when this app's grant is revoked by
   the call. That is why a repeat call answers `200` once the person held no other app.
 - `404 "user does not exist"` when the person exists but holds no grant in this app. This includes a
-  repeat call while the person still has another app. Treat a `404` as already removed.
+  repeat call while the person still has another app. Treat a `404` as already removed, whether or not
+  it carries `"code":"person_not_in_app"`; the code only marks the definitive case and adds no new branching.
 - `removed: true` is also the answer for a person who never existed.
 - A `404` also results from an email whose person exists only in another app (a person absent everywhere answers `200`), so deprovision with the `person_hash`
   returned by provision rather than a re-typed email.
@@ -1213,7 +1218,7 @@ is **not idempotent**; its retry behavior is exact:
 | `400 invalid person_hash` | The `person_hash` is not a valid hash. | Fix the request; do not retry. |
 | `401 app key required` / `401 invalid app key` (with `WWW-Authenticate: Bearer`) | The `dak_` key is missing, malformed, unknown or expired. | Fix the key; run the `notifs-app` key exchange again if it was superseded more than 24 h ago. Do not retry unchanged. |
 | `403 app_id does not match app key` | The `app_id` in the path is not your key's app (an `app_id` in the body is an unknown field: `400 invalid JSON body`). | Fix the request; do not retry. |
-| `404 user does not exist` | reset-password and set-password: the person is absent or has no grant in this app (deliberately indistinguishable). Deprovision: the person exists but holds no grant in this app (an absent person answers `200 {removed:true}`). | reset-password and set-password: stop, the person is not in this app. Deprovision: treat as already removed. |
+| `404 user does not exist` | The body may also carry `"code":"person_not_in_app"`, which marks the person definitively not in this app (absent or no grant). reset-password and set-password: a 404 without the code is ambiguous (for example a transient upstream "does not exist"). Deprovision: the person exists but holds no grant in this app (an absent person answers `200 {removed:true}`). | reset-password and set-password: branch on the code; with `person_not_in_app` the person is gone, without it do not conclude that (retry later, keep the row). Deprovision: treat any 404, coded or code-less, as already removed; the code only marks the definitive case. |
 | `413 request body too large` | The body exceeds the limit. | Fix the request; do not retry. |
 | `429` + `Retry-After` | A rate limit was hit (reset-password limits or a provisioning-api limit). Every reset-password attempt counts toward the door limits (3 per app+person per hour), so retry sparingly rather than in a tight loop. | Wait for `Retry-After`, then retry with backoff. |
 | `500` (relayed) | Provisioning-api failed internally. | Retry later; contact the operator if it persists. |
@@ -1323,7 +1328,7 @@ Validation is checked in a fixed order (`app_id`, `channel`, `idempotency_key`, 
 `to.via requires to.recipient` (also returned for `to.personal_destination_ids` without a recipient),
 `invalid to.via`, `to.personal_destination_ids not allowed for to.via ntfy`,
 `to.personal_destination_ids required for to.via`, `invalid to.personal_destination_ids` (non-positive,
-duplicate or more than 50 ids), `invalid deliver_at`, `invalid payload`, `invalid display.title`, `invalid display.body`,
+duplicate or more than 50 ids), `invalid deliver_at`, `invalid payload`, `payload too large`, `invalid display.title`, `invalid display.body`,
 `invalid display.url`, `invalid display.priority`.
 
 A successful submit is `202 {"message": {...}, "duplicate": false, "replaced": false}`. The message
@@ -1421,9 +1426,10 @@ due, instead of sending at once.
   If what the message says can become wrong before `deliver_at` (a due date that moved, a task that was
   completed), the app must cancel or replace it.
 - **Retention:** a message that is `scheduled` or has a `pending` delivery is never deleted by the retention
-  sweeper. A released message's retention age counts from the later of its `created_at` and `deliver_at`
-  (a replace that releases it immediately sets `deliver_at` to the release time), and a cancelled
-  message's from the time it was cancelled.
+  sweeper. A released message's retention age counts from the latest of its `created_at`, `deliver_at`,
+  `released_at` and `release_failed_at` (a replace that releases it immediately sets `deliver_at` to the
+  release time), and a cancelled message's from `cancelled_at`. A still-held message is never deleted by
+  this sweep; it expires after `DELIVERY_HELD_TTL_DAYS`.
 
 ### Unrouted messages (held)
 
@@ -2018,7 +2024,8 @@ Authorization: Bearer dak_<43 chars>
 | ------ | ---- | ----- |
 | `200` | `{ "user_id", "app_id", "password" }` | The new password, shown once. `Cache-Control: no-store`. |
 | `400` | `{ "error": "invalid JSON body" }` / `"email required"`; a malformed address is relayed from provisioning-api as `"invalid email"` | Fix the request. |
-| `404` | `{ "error": "user does not exist" }` | The person is absent or has no grant in this app. |
+| `404` | `{ "error": "user does not exist", "code": "person_not_in_app" }` | The person is definitively not in this app (absent or no grant): branch on the code. |
+| `404` | `{ "error": "user does not exist" }` | No `code`: ambiguous, not proof the person is gone (for example a transient upstream failure). Keep status-only handling; do not delete the person's row. |
 | `429` | `{ "error": "reset rate limit exceeded" }` + `Retry-After` | A door limit: 30 per app per hour, 3 per app+person per hour. Every attempt that passes body validation counts, whatever its outcome. |
 | `429` | `{ "error": "too many password changes" }` + `Retry-After` | provisioning-api's own per-person limit, a different layer. |
 | `503` | `{ "error": "reset limit unavailable" }` | The limit store is down. It fails closed: no reset was attempted. |
@@ -2066,7 +2073,7 @@ use the generated password**. The person's one password is shared across every a
 that the person has a password (`password_set_at`) before changing it, so a later provision will not
 replace a chosen password. It returns `500` and changes nothing when that record cannot be written (person
 store unavailable). The password policy is 8–128 characters (`400 { "error": "invalid password" }`), and
-the person must already be provisioned in this app (`404 { "error": "user does not exist" }`).
+the person must already be provisioned in this app (`404 { "error": "user does not exist", "code": "person_not_in_app" }`; a 404 without the `code` is ambiguous, as for reset-password).
 
 ```
 POST https://notifs-delivery.4irl.app/v1/apps/urls4irl/set-password
@@ -2179,7 +2186,8 @@ responses are JSON. The `app_id` in the path must be your key's app.
 Notes:
 - `user_id` is always the derived ntfy id `u_<person_hash>`. `email` must be a valid address
   (validated after trim + lowercase — case-insensitive; `Alice@x.com` == `alice@x.com`).
-- Errors are `{ "error": "<message>" }` with the matching HTTP status; see "Door errors" for every
+- Errors are `{ "error": "<message>" }` with the matching HTTP status; a `404 user does not exist` may also
+  carry `"code":"person_not_in_app"` (reset-password and set-password: without it the 404 is ambiguous); see "Door errors" for every
   status, what it means and what to do.
 - Every response from these routes carries `Cache-Control: no-store`.
 - `POST /v1/apps/{app_id}/provision` returns `password` (`xxxx-xxxx-xxxx-xxxx`) **only** when this call
