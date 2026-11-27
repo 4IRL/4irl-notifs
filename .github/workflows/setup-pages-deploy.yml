@@ -7,7 +7,6 @@ name: Deploy setup page to Cloudflare Pages
 
 permissions:
   contents: read
-  actions: write   # Actions Cache write for the setup-node npm cache (paired with the caller job's grant)
 
 on:
   workflow_call:
@@ -29,8 +28,6 @@ jobs:
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
         with:
           node-version: '24'
-          cache: npm
-          cache-dependency-path: setup-web/package-lock.json
 
       - name: Install setup-web dependencies
         working-directory: setup-web
