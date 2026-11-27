@@ -423,6 +423,27 @@ function assertSecretsPlacement(keyText, deployText, buildText) {
   }
 }
 
+/** Deploy workflows never write the Actions cache: no `actions: write`, no setup-node `cache:`. */
+function assertNoActionsCacheWrites(workflows) {
+  for (const [file, text] of Object.entries(workflows)) {
+    const stripped = stripComments(text);
+    assert.ok(!/^\s*actions:\s*write\b/m.test(stripped), `${file} has no actions: write`);
+    assert.ok(!/^\s*(-\s+)?cache:\s/m.test(stripped), `${file} has no setup-node cache: key`);
+  }
+}
+
+/** prod-build.yml sets up QEMU without its image cache. */
+function assertQemuCacheImageOff(text) {
+  const step = stepsOf(text, 'ProdBuild').find((candidate) =>
+    (candidate.uses ?? '').startsWith('docker/setup-qemu-action@'),
+  );
+  assert.ok(step, 'prod-build.yml has a setup-qemu step');
+  assert.ok(
+    step.withBlock.some((line) => line.trim() === 'cache-image: false'),
+    'setup-qemu sets cache-image: false',
+  );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Grounding: names the workflow depends on are still read by the CLI
 // ---------------------------------------------------------------------------------------------
@@ -802,6 +823,50 @@ describe('notifs-ops-key.yml and the stack deploy workflows', () => {
       DEPLOY,
       BUILD_AND_DEPLOY,
     );
+  });
+});
+
+const PROD_BUILD = readRepo('.github/workflows/prod-build.yml');
+const DEPLOY_WORKFLOWS = Object.fromEntries(
+  [
+    'prod-build-and-deploy',
+    'prod-build',
+    'prod-deploy',
+    'pages-deploy',
+    'setup-pages-deploy',
+    'worker-deploy',
+    'watchdog-deploy',
+  ].map((name) => [name, readRepo(`.github/workflows/${name}.yml`)]),
+);
+
+describe('deploy workflows keep the Actions cache read-only', () => {
+  it('has no actions: write, no setup-node cache:, and qemu cache-image: false', () => {
+    assertNoActionsCacheWrites(DEPLOY_WORKFLOWS);
+    assertQemuCacheImageOff(PROD_BUILD);
+  });
+
+  it('control: cache rules fail on violating fixtures', () => {
+    const withExtra = (name, from, to) => ({
+      ...DEPLOY_WORKFLOWS,
+      [name]: mutate(DEPLOY_WORKFLOWS[name], from, to),
+    });
+    assertFails(
+      assertNoActionsCacheWrites,
+      withExtra(
+        'prod-build-and-deploy',
+        'packages: write',
+        'packages: write\n      actions: write',
+      ),
+    );
+    assertFails(assertNoActionsCacheWrites, {
+      ...DEPLOY_WORKFLOWS,
+      'pages-deploy': `${DEPLOY_WORKFLOWS['pages-deploy']}\n        with:\n          cache: npm\n`,
+    });
+    assertFails(
+      assertQemuCacheImageOff,
+      mutate(PROD_BUILD, 'cache-image: false', 'cache-image: true'),
+    );
+    assertFails(assertQemuCacheImageOff, mutate(PROD_BUILD, '          cache-image: false\n', ''));
   });
 });
 
