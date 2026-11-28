@@ -131,6 +131,11 @@ function button(name: string): HTMLElement {
   return screen.getByRole('button', { name });
 }
 
+/** Lists the superseded and revoked keys, which the table hides by default. */
+async function revealRetired(): Promise<void> {
+  await userEvent.click(await screen.findByRole('button', { name: /^Show retired keys/ }));
+}
+
 function requestRow(id: number): HTMLElement {
   const row = document.querySelector<HTMLElement>(`tr[data-request-id="${id}"]`);
   if (row === null) {
@@ -756,6 +761,10 @@ describe('AppIdentities bindings and keys', () => {
 
     await screen.findByRole('table');
     const row = bindingRow('tasktracker');
+    // Only the active key shows until the retired ones are asked for.
+    expect(within(row).queryByText('Superseded')).toBeNull();
+    expect(within(row).queryByText('Revoked')).toBeNull();
+    await revealRetired();
     expect(within(row).getByText('4IRL/tasktracker')).toBeInTheDocument();
     expect(within(row).getByText('Active')).toBeInTheDocument();
     expect(within(row).getByText('Superseded')).toBeInTheDocument();
@@ -795,6 +804,10 @@ describe('AppIdentities bindings and keys', () => {
 
     await screen.findByRole('table');
     expect(button('Revoke key dak_7Q2m for tasktracker')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Revoke key dak_Kf09 for tasktracker' }),
+    ).toBeNull();
+    await revealRetired();
     expect(button('Revoke key dak_Kf09 for tasktracker')).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Revoke key dak_a1Zx for tasktracker' }),
@@ -851,6 +864,7 @@ describe('AppIdentities bindings and keys', () => {
     expect(
       screen.queryByRole('button', { name: 'Revoke key dak_7Q2m for tasktracker' }),
     ).toBeNull();
+    await revealRetired();
     expect(within(bindingRow('tasktracker')).getAllByText('Revoked')).toHaveLength(2);
     expect(resultLine()).toHaveTextContent(
       strings.identityKeyRevokedResult({ hint: 'dak_7Q2m', app: 'tasktracker' }),
@@ -1200,12 +1214,14 @@ describe('AppIdentities key and request text', () => {
     [null, 'revoked 2026-10-20 09:00 UTC'],
   ])('words a key revoked for %s', async (reason, expected) => {
     renderKey({ state: 'revoked', revokedAt: '2026-10-20T09:00:00Z', revokedReason: reason });
+    await revealRetired();
 
     expect(await screen.findByText(expected)).toBeInTheDocument();
   });
 
   it('falls back to the issue time for a revoked key without a revoke time', async () => {
     renderKey({ state: 'revoked', revokedAt: null, revokedReason: 'operator' });
+    await revealRetired();
 
     expect(await screen.findByText('revoked 2026-10-21 16:40 UTC by operator')).toBeInTheDocument();
   });
@@ -1214,6 +1230,7 @@ describe('AppIdentities key and request text', () => {
     'falls back to the issue text for a superseded key with supersededAt %s',
     async (supersededAt) => {
       renderKey({ state: 'superseded', supersededAt });
+      await revealRetired();
 
       expect(
         await screen.findByText('issued 2026-10-21 16:40 UTC · never used'),
@@ -1363,6 +1380,7 @@ describe('AppIdentities times in a non-UTC zone', () => {
     );
 
     await screen.findByRole('table');
+    await revealRetired();
     const row = bindingRow('tasktracker');
     expect(within(row).getByText('approved 2026-10-19 02:12 PDT')).toBeInTheDocument();
     expect(within(row).getByText(/^issued 2026-10-21 09:40 PDT · last used /)).toBeInTheDocument();

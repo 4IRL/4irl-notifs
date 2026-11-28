@@ -981,6 +981,12 @@ export const strings = {
   }): string => [workflow, ref, environment ?? 'no environment'].join(' · '),
   identityApprovedSub: ({ time }: { time: string }): string => `approved ${time}`,
   identityNoKeys: 'No keys yet — the next deploy receives one.',
+  identityNoActiveKey: 'No active key — only retired keys remain.',
+  showRetiredKeys: ({ count }: { count: number }): string => `Show retired keys (${count})`,
+  hideRetiredKeys: 'Hide retired keys',
+  showRetiredKeysNamed: ({ count, app }: { count: number; app: string }): string =>
+    `Show retired keys (${count}) for ${app}`,
+  hideRetiredKeysNamed: ({ app }: { app: string }): string => `Hide retired keys for ${app}`,
   identityKeyActive: 'Active',
   identityKeySuperseded: 'Superseded',
   identityKeyRevoked: 'Revoked',

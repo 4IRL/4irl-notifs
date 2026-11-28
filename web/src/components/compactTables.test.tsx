@@ -983,10 +983,32 @@ describe('App identities tables, narrow layout', () => {
 
     await openMenu({ user, row: 'tasktracker' });
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      strings.showRetiredKeys({ count: 2 }),
       'Revoke key dak_7Q2m for tasktracker',
-      'Revoke key dak_Kf09 for tasktracker',
       'Unbind tasktracker',
     ]);
+  });
+
+  it('lists only the active key by default and reveals retired keys from the binding menu', async () => {
+    const user = userEvent.setup();
+    renderIdentities(buildClient({ listIdentityBindings: vi.fn().mockResolvedValue([BINDING]) }));
+    await screen.findByRole('button', { name: 'Actions for tasktracker' });
+
+    expect(screen.getByText(strings.identityKeyActive)).toBeInTheDocument();
+    expect(screen.queryByText(strings.identityKeySuperseded)).toBeNull();
+    expect(screen.queryByText(strings.identityKeyRevoked)).toBeNull();
+
+    await openMenu({ user, row: 'tasktracker' });
+    await user.click(
+      screen.getByRole('menuitem', { name: 'Show retired keys (2) for tasktracker' }),
+    );
+    expect(screen.getByText(strings.identityKeySuperseded)).toBeInTheDocument();
+    expect(screen.getByText(strings.identityKeyRevoked)).toBeInTheDocument();
+
+    await openMenu({ user, row: 'tasktracker' });
+    expect(
+      screen.getByRole('menuitem', { name: 'Hide retired keys for tasktracker' }),
+    ).toBeInTheDocument();
   });
 
   it('Revoke key and Unbind confirm inside the menu, then run', async () => {
@@ -1229,10 +1251,10 @@ describe('Row action labels, roomy layout', () => {
       'Reject identity request for app_1',
     ]);
     const binding = rowButtons(rowOfButton('Unbind tasktracker'));
-    expect(binding.visible).toEqual(['Revoke', 'Revoke', 'Unbind']);
+    expect(binding.visible).toEqual(['Revoke', 'Show retired keys (2)', 'Unbind']);
     expect(binding.names).toEqual([
       'Revoke key dak_7Q2m for tasktracker',
-      'Revoke key dak_Kf09 for tasktracker',
+      'Show retired keys (2) for tasktracker',
       'Unbind tasktracker',
     ]);
     expect(labelInNameViolations(screen.getAllByRole('button'))).toEqual([]);
