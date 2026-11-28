@@ -283,7 +283,8 @@ further approval.
    `app_id`; exactly one of the two is required, otherwise the action fails before any network call. On `200`
    the outputs are `key` (masked), `key_id` and `app_id` (the derived `prefix + name`); on `202` it fails with
    `registrar request #N awaits operator approval in the admin UI (App identities → approve as registrar)`.
-   A manifest whose `app_id` differs from the derived id fails. The action requests the OIDC token, exchanges it,
+   Registrar mode also takes an optional `display_name` input (env `NOTIFS_APP_DISPLAY_NAME`; see
+   "Display name" below). A manifest whose `app_id` differs from the derived id fails. The action requests the OIDC token, exchanges it,
    masks the key in the logs, lints the manifest, then runs `apply` (or `plan` for any `apply` value other
    than `'true'`) with the new key. The output `steps.notifs.outputs.key` is the new key, already masked. If the 4irl-notifs
    repository is private, its Actions settings must allow your repository to use the action.
@@ -307,6 +308,32 @@ further approval.
      -H "Content-Type: application/json" \
      -d '{"app_id":"myapp","channel":"alerts","idempotency_key":"onboarding-test-1","payload":{},"display":{"title":"myapp is connected","body":"First message"}}'
    ```
+
+#### Display name
+
+An app's readable name is stored in the people directory (person-service), and the admin UI shows it.
+
+- **Where it comes from.** The registrar exchange's optional `display_name` (the action's `display_name`
+  input) on the exchange that first creates the app; otherwise the app id. After that only the admin UI
+  (Apps, then Edit) changes it. It is accepted in registrar `name` mode only: 1-64 characters after
+  trimming, with no control or format characters. The action checks this before any network call, so a
+  bad name fails the deploy early, and a blank value counts as not provided. A non-blank `display_name`
+  together with `app_id` fails.
+- **First create only.** The name applies only when person-service has no row for the app. An app that
+  already exists in the directory (even if the registrar has never exchanged for it) keeps its existing
+  name, and `display_name` is ignored. A later exchange never overwrites a name an operator edited.
+- **Pending requests.** A `display_name` sent on an exchange that files a pending registrar request is
+  not stored on the normal pending path (a registrar deleted mid-exchange can leave the directory row
+  created with that name while the exchange still answers `202`). It applies only on the exchange that
+  actually creates the app.
+- **Where people see it.** The admin Apps table, and the admin "Send test notification" title
+  (`"<display name> test"`). When a caller of `test-notify` omits `title`, the server-side default stays
+  `"<app_id> test"`. The setup page's `name=` parameter is separate and supplied by the app (see "Link
+  your users to the setup page").
+- **Rollout order.** Deploy delivery-api first, then the action and the apps (bump the apps-repo
+  `notifs-app` SHA only after the delivery-api deploy). A delivery-api that predates this field rejects
+  it with `400 invalid JSON body`; the script turns that into an error naming `display_name` and
+  `delivery-api not yet upgraded`.
 
 To run the same flow by hand (or to verify), the CLI commands are `node scripts/onboard.mjs <plan|apply|verify>
 --manifest <path> --target app` and `lint --manifest <path> --target app`. `plan`, `apply` and `verify` need
@@ -710,7 +737,7 @@ Every row except the exchange and `/readyz` also returns the key errors above (`
 
 | Method and path                                              | Request                       | Success                                                  | Errors                                                                          |
 | ------------------------------------------------------------ | ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `POST /v1/app-identity/exchange` (Access token only, no key) | `{"app_id","token":"<GitHub OIDC JWT>"}` or, for a registrar workflow, `{"name","token":"<GitHub OIDC JWT>"}` (exactly one of `app_id` / `name`) | `202 {"status":"pending","request_id"}` (awaits operator approval) or `200 {"status":"issued","app_id","key","key_id"}` (the plaintext key, once; `app_id` is `prefix + name` in registrar form) | 400 malformed body, `invalid app_id` (including the reserved id `everyone`), `token is required`, `invalid name` or `send exactly one of app_id or name`, 401 `invalid identity token`, 403 `identity does not match the approved binding` / `app id is not owned by this registrar`, 409 `app id is reserved by a registrar` (normal form, id inside a registrar prefix) / `registrar app limit reached` / `app id overlaps an approved app id` / `registration changed, retry`, 429 `too many pending identity requests`, 502 / 503 `app registry unavailable` (registrar auto-create, person-service), 503 `identity unavailable`. The `notifs-app` action calls this for you. |
+| `POST /v1/app-identity/exchange` (Access token only, no key) | `{"app_id","token":"<GitHub OIDC JWT>"}` or, for a registrar workflow, `{"name","token":"<GitHub OIDC JWT>"}` (exactly one of `app_id` / `name`); the `name` form may add `display_name` (stored on first create only, see "Display name") | `202 {"status":"pending","request_id"}` (awaits operator approval) or `200 {"status":"issued","app_id","key","key_id"}` (the plaintext key, once; `app_id` is `prefix + name` in registrar form) | 400 malformed body, `invalid app_id` (including the reserved id `everyone`), `token is required`, `invalid name`, `invalid display_name`, `display_name requires name` or `send exactly one of app_id or name`, 401 `invalid identity token`, 403 `identity does not match the approved binding` / `app id is not owned by this registrar`, 409 `app id is reserved by a registrar` (normal form, id inside a registrar prefix) / `registrar app limit reached` / `app id overlaps an approved app id` / `registration changed, retry`, 429 `too many pending identity requests`, 502 / 503 `app registry unavailable` (registrar auto-create, person-service), 503 `identity unavailable`. The `notifs-app` action calls this for you. |
 | `POST /v1/messages` (optional `?wait=0..10`)                 | envelope JSON (see Envelope)  | `202 {"message":{…},"duplicate":bool,"replaced":bool}` (status `unrouted`, with `deliveries: []`, when holding is on and no route matched) | 400 validation, 409 `destination disabled`, 413, 422 `no destination matched` (holding off) / `app has no ntfy publisher` / `personal destination not available for recipient`, 429 (`too many held messages`, `held message capacity reached`, scheduled caps), 503 `messages unavailable` |
 | `GET /v1/messages/{id}?app_id=<app>`                         | none                          | `200 {"message":{…}}`                                    | 400 `app_id is required`, 404 `message not found`                               |
 | `GET /v1/messages?app_id=<app>&idempotency_key=<key>`        | none                          | `200 {"message":{…}}`                                    | 400, 404                                                                        |

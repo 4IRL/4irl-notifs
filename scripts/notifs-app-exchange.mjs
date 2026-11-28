@@ -21,6 +21,7 @@
  * Environment (the action maps its inputs onto these):
  *   exactly one of NOTIFS_APP_ID (normal) or NOTIFS_APP_NAME (registrar: the server derives the app
  *   id and the 200 outputs `app_id`), NOTIFS_DELIVERY_URL, NOTIFS_ACCESS_CLIENT_ID, NOTIFS_ACCESS_CLIENT_SECRET,
+ *   optional NOTIFS_APP_DISPLAY_NAME (registrar mode only; stored on first registration),
  *   NOTIFS_AUDIENCE (default `notifs-delivery`, matching DELIVERY_OIDC_AUDIENCE's server default),
  *   plus the runner's ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN / GITHUB_OUTPUT.
  *
@@ -41,6 +42,9 @@ export const REQUEST_TIMEOUT_MS = 10000;
 const APP_NAME_PATTERN = /^[a-z0-9][a-z0-9_]*$/;
 const APP_KEY_PATTERN = /^dak_[A-Za-z0-9_-]{43}$/;
 const ERROR_TEXT_LIMIT = 200;
+// Same rules as delivery-api's ValidateDisplayName: 1-64 code points, no Cc/Cf characters.
+const MAX_DISPLAY_NAME_CODE_POINTS = 64;
+const FORBIDDEN_DISPLAY_NAME_CHARS = /[\p{Cc}\p{Cf}]/u;
 
 /** A failure with a message safe to print (never contains the OIDC token or a key). */
 export class ExchangeError extends Error {
@@ -194,6 +198,25 @@ export async function run({
     } else if (!APP_ID_PATTERN.test(appIdInput)) {
       throw new ExchangeError(`NOTIFS_APP_ID is not a valid app id: ${appIdInput}`);
     }
+    // Optional display name (registrar mode only), checked like the server does, before any fetch.
+    // A whitespace-only value is "not provided" in both modes.
+    const displayName = (env.NOTIFS_APP_DISPLAY_NAME ?? '').trim();
+    if (displayName !== '') {
+      if (!registrarMode) {
+        throw new ExchangeError(
+          'display_name (NOTIFS_APP_DISPLAY_NAME) needs name (registrar mode); remove it when using app_id',
+        );
+      }
+      const codePoints = [...displayName].length;
+      if (
+        codePoints > MAX_DISPLAY_NAME_CODE_POINTS ||
+        FORBIDDEN_DISPLAY_NAME_CHARS.test(displayName)
+      ) {
+        throw new ExchangeError(
+          `display_name (NOTIFS_APP_DISPLAY_NAME) must be 1-${MAX_DISPLAY_NAME_CODE_POINTS} characters with no control or format characters`,
+        );
+      }
+    }
     // In registrar mode the server derives the app id (prefix + name); this stays the bare name
     // until the 200 response names the derived id.
     let appId = registrarMode ? nameInput : appIdInput;
@@ -236,7 +259,13 @@ export async function run({
         method: 'POST',
         headers,
         body: JSON.stringify(
-          registrarMode ? { name: appId, token: oidcToken } : { app_id: appId, token: oidcToken },
+          registrarMode
+            ? {
+                name: appId,
+                token: oidcToken,
+                ...(displayName !== '' && { display_name: displayName }),
+              }
+            : { app_id: appId, token: oidcToken },
         ),
       },
       { what: 'identity exchange', timeoutMs },
@@ -262,6 +291,13 @@ export async function run({
     }
     if (response.status !== 200) {
       const text = await serverErrorText(response, { what: 'identity exchange', timeoutMs });
+      if (response.status === 400 && displayName !== '' && text.includes('invalid JSON body')) {
+        // A delivery-api that predates display_name rejects the unknown field as a bad body.
+        throw new ExchangeError(
+          'identity exchange rejected display_name: delivery-api not yet upgraded ' +
+            '(deploy delivery-api before sending display_name)',
+        );
+      }
       throw new ExchangeError(`identity exchange returned ${response.status}: ${text}`);
     }
 

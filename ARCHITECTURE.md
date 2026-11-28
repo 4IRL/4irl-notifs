@@ -404,7 +404,13 @@ and records the `jti`. A bare name from an unknown, unbound workflow files a pen
 `kind = 'registrar'` (null `app_id`; same 20 cap and sweep). Refusals: `403 app id is not owned by this
 registrar` (derived id bound normally or by another registrar), `409 registrar app limit reached` (50 per
 registrar), `409 app id overlaps an approved app id`, `409 registration changed, retry` (a race the
-service cannot resolve; retryable), `400 invalid name`. The normal flow refuses an id equal to a registrar
+service cannot resolve; retryable), `400 invalid name`. The `name` form may carry an optional `display_name` (1-64 code points after
+trimming, no `Cc`/`Cf` characters; `400 invalid display_name`, and `400 display_name requires name` when sent with `app_id`): it is the
+name `CreateApp` stores and applies on first create only (the app id when absent; a 409 from person-service
+means the row exists and its name is kept; a re-exchange never calls person-service; a name on an exchange
+that only files a pending registrar request is not stored). The `notifs-app`
+action sends it through `NOTIFS_APP_DISPLAY_NAME`, and a delivery-api that predates the field answers
+`400 invalid JSON body`, which the script reports as `delivery-api not yet upgraded`. The normal flow refuses an id equal to a registrar
 stem or inside a registrar prefix (`409 app id is reserved by a registrar`, checked in `decideClaims` and
 again under the lock when filing), and a registrar's own claims sent with an `app_id` are `403 identity
 does not match the approved binding`. The operator approves with
@@ -671,7 +677,10 @@ installing and configuring the ntfy app (iPhone: ordered steps with copy buttons
 `ntfy://` subscribe buttons; desktop: a QR handoff plus a phone picker). Every view starts with an
 install card of three equal buttons (Google Play, F-Droid, App Store) that never changes with the
 detected phone; it uses generic icons and plain store names, not the stores' badges or logos.
-Consuming apps link to it as `?app=<app_id>&user=u_<hash>&name=<display name>`; the URL contract is in
+Consuming apps link to it as `?app=<app_id>&user=u_<hash>&name=<display name>&return=<app URL>`. The
+optional `return` makes the app name a link back to the app; it is accepted only as an `https:` URL on
+`4irl.app` or a `*.4irl.app` subdomain (no credentials or port, at most 400 characters), is silently
+dropped otherwise, and is carried into the QR handoff link. The URL contract is in
 [`docs/app-integration-guide.md`](docs/app-integration-guide.md) ("Link your users to the setup page").
 
 - **Layout:** `setup-web/` is a sibling project to `web/` (React + Vite + `qrcode.react`, bundled at
@@ -775,8 +784,9 @@ optional `rotate` (default false = additive mint; true = revoke existing publish
 registry row). `POST /v1/test-notify {app_id, recipients, channel?, message?, title?}` mints an ephemeral
 write-only publisher token, publishes the message to each recipient's `{app_id}-{person_hash}-{channel}`
 topic, then revokes the token in an always-run cleanup; per-recipient failures are reported inside a 200
-response. `channel` defaults to `all`; `title` defaults to `<app_id> test` (the admin UI sends
-`<display name> test`) and is ≤256 bytes with no control characters. `ntfypublish` sends the title as
+response. `channel` defaults to `all`; `title` defaults to `<app_id> test` (provisioning-api has no
+display-name data; the admin UI sends `<display name> test`, so the title people see in the admin flow
+uses the stored display name) and is ≤256 bytes with no control characters. `ntfypublish` sends the title as
 a `Title` header (RFC 2047-encoded when non-ASCII).
 `POST /v1/set-password {app_id, email, password}` → `{user_id, app_id, updated}` sets a person's
 ntfy password (via `ntfy user change-pass`) so they can log into the ntfy iOS app directly with

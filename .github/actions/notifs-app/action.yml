@@ -18,6 +18,12 @@ inputs:
       an approved registrar.
     required: false
     default: ''
+  display_name:
+    description: >-
+      Human-readable app name stored on first registration (registrar `name` mode only). Ignored
+      when the app already exists in the directory. 1-64 characters, no control characters.
+    required: false
+    default: ''
   delivery_url:
     description: Base URL of delivery-api, e.g. https://delivery.example.com (https only).
     required: true
@@ -70,6 +76,7 @@ runs:
       env:
         NOTIFS_APP_ID: ${{ inputs.app_id }}
         NOTIFS_APP_NAME: ${{ inputs.name }}
+        NOTIFS_APP_DISPLAY_NAME: ${{ inputs.display_name }}
         NOTIFS_DELIVERY_URL: ${{ inputs.delivery_url }}
         NOTIFS_ACCESS_CLIENT_ID: ${{ inputs.access_client_id }}
         NOTIFS_ACCESS_CLIENT_SECRET: ${{ inputs.access_client_secret }}
