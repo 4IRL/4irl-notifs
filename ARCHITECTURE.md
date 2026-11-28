@@ -1151,7 +1151,8 @@ the operator's shell; never commit one (the KV namespace id needs the repo owner
    Worker on the first merge after the real id lands.
 4. Create a Discord webhook in a channel dedicated to the watchdog (it must not depend on delivery-api).
 5. In `watchdog/`, set the secrets (each prompts for the value): `npx wrangler secret put DISCORD_WEBHOOK_URL`,
-   `npx wrangler secret put CF_ACCESS_CLIENT_ID`, `npx wrangler secret put CF_ACCESS_CLIENT_SECRET`.
+   `npx wrangler secret put CF_ACCESS_CLIENT_ID`, `npx wrangler secret put CF_ACCESS_CLIENT_SECRET`,
+   `npx wrangler secret put HEALTH_CHECK_TOKEN` (its value must equal urls4irl's prod `HEALTH_CHECK_TOKEN`).
 6. Verify: `npx wrangler tail notifs-watchdog` shows one scheduled run within 5 minutes (the Worker
    skips the run and logs an error if `DISCORD_WEBHOOK_URL` is unset). To force a down, stop ntfy on the
    VPS (or stop provisioning-api, which makes delivery-api's `/healthz/provisioning` fail) and expect a Discord "down" post within about 5 minutes
