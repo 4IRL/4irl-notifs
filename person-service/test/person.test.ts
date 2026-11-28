@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { isValidEmail } from '../src/index';
 
-// @cloudflare/vitest-pool-workers storage isolation is scoped per test FILE,
+// @cloudflare/vitest-plugin storage isolation is scoped per test FILE,
 // not per individual test (the older per-test `isolatedStorage`/`singleWorker`
 // options were removed when the package moved to the Vitest 4 plugin API; see
 // https://developers.cloudflare.com/workers/testing/vitest-integration/isolation-and-concurrency/).
