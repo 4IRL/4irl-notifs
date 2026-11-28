@@ -139,20 +139,36 @@ func approveRegistrarRequest(testInstance *testing.T, requestID int64, prefix st
 
 func personServiceHasApp(testInstance *testing.T, appID string) bool {
 	testInstance.Helper()
+	_, found := personServiceDisplayName(testInstance, appID)
+	return found
+}
+
+// personServiceDisplayName returns the stored display_name of appID and whether the row exists.
+func personServiceDisplayName(testInstance *testing.T, appID string) (string, bool) {
+	testInstance.Helper()
 	status, body := personServiceRequest(testInstance, http.MethodGet, "/apps")
 	requireStatus(testInstance, "list person-service apps", status, http.StatusOK, []byte(body))
 	var listed struct {
 		Apps []struct {
-			AppID string `json:"app_id"`
+			AppID       string `json:"app_id"`
+			DisplayName string `json:"display_name"`
 		} `json:"apps"`
 	}
 	decodeBody(testInstance, "list person-service apps", []byte(body), &listed)
 	for _, row := range listed.Apps {
 		if row.AppID == appID {
-			return true
+			return row.DisplayName, true
 		}
 	}
-	return false
+	return "", false
+}
+
+// issueWithDisplayName is rig.issue for a name-form exchange that also sends display_name.
+func (rig *registrarRig) issueWithDisplayName(testInstance *testing.T, name string, displayName string) {
+	testInstance.Helper()
+	status, body := rig.exchangeBody(testInstance, map[string]any{"name": name, "display_name": displayName})
+	requireStatus(testInstance, "registrar exchange "+name+" with display_name", status, http.StatusOK, body)
+	testInstance.Cleanup(func() { deletePersonServiceApp(testInstance, rig.prefix+name) })
 }
 
 // requireKeyWorks asserts the app key authenticates against an app-facing route of its own app.
@@ -412,6 +428,86 @@ func TestRegistrarRefusals(testInstance *testing.T) {
 		status, body = rig.exchangeBody(testInstance, map[string]any{"name": badName})
 		requireStatus(testInstance, "invalid name "+badName, status, http.StatusBadRequest, body)
 		requireErrorMessage(testInstance, "invalid name", body, "invalid name")
+	}
+}
+
+func TestRegistrarExchangeStoresTheDisplayNameOnFirstCreateOnly(testInstance *testing.T) {
+	rig := newRegistrarRig(testInstance)
+	rig.approve(testInstance)
+
+	rig.issueWithDisplayName(testInstance, "named", "My Blog")
+	if got, found := personServiceDisplayName(testInstance, rig.prefix+"named"); !found || got != "My Blog" {
+		testInstance.Errorf("display_name = %q (found %v), want My Blog", got, found)
+	}
+
+	rig.issue(testInstance, "plain")
+	if got, found := personServiceDisplayName(testInstance, rig.prefix+"plain"); !found || got != rig.prefix+"plain" {
+		testInstance.Errorf("display_name = %q (found %v), want the app id", got, found)
+	}
+
+	// A later exchange never renames an existing app.
+	rig.issueWithDisplayName(testInstance, "named", "Renamed")
+	if got, _ := personServiceDisplayName(testInstance, rig.prefix+"named"); got != "My Blog" {
+		testInstance.Errorf("display_name after re-exchange = %q, want My Blog", got)
+	}
+}
+
+func TestRegistrarExchangeDisplayNameIsIgnoredWhenTheDirectoryRowExists(testInstance *testing.T) {
+	rig := newRegistrarRig(testInstance)
+	rig.approve(testInstance)
+	appID := rig.prefix + "seeded"
+	rig.issueWithDisplayName(testInstance, "seeded", "Original Name")
+
+	// Unbind: the person-service row stays, the app is no longer owned, so the next CreateApp gets 409.
+	status, body := apiRequest(testInstance, http.MethodDelete, identityAdminPath+"/bindings/"+appID, nil)
+	requireStatus(testInstance, "unbind", status, http.StatusOK, body)
+	if _, found := personServiceDisplayName(testInstance, appID); !found {
+		testInstance.Fatalf("unbind removed the person-service row for %s", appID)
+	}
+
+	rig.issueWithDisplayName(testInstance, "seeded", "Ignored Name")
+	if got, _ := personServiceDisplayName(testInstance, appID); got != "Original Name" {
+		testInstance.Errorf("display_name after a 409 = %q, want Original Name", got)
+	}
+}
+
+func TestRegistrarExchangeRefusesBadDisplayNames(testInstance *testing.T) {
+	rig := newRegistrarRig(testInstance)
+	rig.approve(testInstance)
+
+	status, body := rig.exchangeBody(testInstance, map[string]any{"name": "bad", "display_name": strings.Repeat("a", 65)})
+	requireStatus(testInstance, "invalid display_name", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "invalid display_name", body, "invalid display_name")
+
+	status, body = rig.exchangeBody(testInstance, map[string]any{"app_id": rig.prefix + "x", "display_name": "Blog"})
+	requireStatus(testInstance, "display_name with app_id", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "display_name with app_id", body, "display_name requires name")
+	if personServiceHasApp(testInstance, rig.prefix+"bad") {
+		testInstance.Errorf("a refused display_name created a person-service row")
+	}
+}
+
+func TestRegistrarExchangeRefusesAJSONEscapedFormatCharacterDisplayName(testInstance *testing.T) {
+	rig := newRegistrarRig(testInstance)
+	rig.approve(testInstance)
+
+	// A raw body carrying the JSON escape for a zero-width joiner, so the real JSON decoder sees it.
+	rawBody := `{"name":"zwj","display_name":"Blog‍Name","token":"` + rig.token(testInstance) + `"}`
+	status, body := apiRequest(testInstance, http.MethodPost, identityExchangePath, []byte(rawBody))
+	requireStatus(testInstance, "zero-width joiner display_name", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "zero-width joiner display_name", body, "invalid display_name")
+	if personServiceHasApp(testInstance, rig.prefix+"zwj") {
+		testInstance.Errorf("a refused display_name created a person-service row")
+	}
+}
+
+func TestRegistrarExchangeNamesAWhitespaceOnlyDisplayNameByItsAppID(testInstance *testing.T) {
+	rig := newRegistrarRig(testInstance)
+	rig.approve(testInstance)
+
+	rig.issueWithDisplayName(testInstance, "blank", "   ")
+	if got, found := personServiceDisplayName(testInstance, rig.prefix+"blank"); !found || got != rig.prefix+"blank" {
+		testInstance.Errorf("display_name = %q (found %v), want the app id", got, found)
 	}
 }
 

@@ -7,6 +7,7 @@ interface QrHandoffProps {
   app: string;
   user: string;
   name: string | null;
+  returnUrl: string | null;
 }
 
 /**
@@ -16,16 +17,20 @@ interface QrHandoffProps {
  * dark theme. The QR is generated in the browser; nothing is sent anywhere.
  *
  * The code carries a canonical link rebuilt from the already-validated params, never
- * `window.location.href`: unknown params and the hash are dropped, which also bounds
- * the length so QRCodeSVG cannot throw on an oversized URL. `name` is null when the
- * link had no valid name (the phone then falls back to `app` the same way).
+ * `window.location.href`: unknown params and the hash are dropped. The length bound
+ * that keeps QRCodeSVG from throwing rests on the `name` cap plus RETURN_URL_MAX_LENGTH
+ * (see params.ts). `name` is null when the link had no valid name (the phone then
+ * falls back to `app` the same way); `returnUrl` is null unless it passed validation.
  */
-export function QrHandoff({ app, user, name }: QrHandoffProps) {
+export function QrHandoff({ app, user, name, returnUrl }: QrHandoffProps) {
   const link = new URL(window.location.pathname, window.location.origin);
   link.searchParams.set('app', app);
   link.searchParams.set('user', user);
   if (name !== null) {
     link.searchParams.set('name', name);
+  }
+  if (returnUrl !== null) {
+    link.searchParams.set('return', returnUrl);
   }
 
   return (

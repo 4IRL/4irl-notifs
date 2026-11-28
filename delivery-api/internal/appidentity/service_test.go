@@ -1019,6 +1019,9 @@ func TestApproveRequestRefusals(testInstance *testing.T) {
 						subTest.Errorf("registration failure WARN is missing %q:\n%s", want, logs.String())
 					}
 				}
+				if strings.Contains(logs.String(), "display_name_set") {
+					subTest.Errorf("the approval WARN must not carry display_name_set:\n%s", logs.String())
+				}
 				if !registrar.hasDeadline || time.Until(registrar.deadline) > registerTimeout {
 					subTest.Errorf("registrar deadline set=%v remaining=%v, want set and <= %v",
 						registrar.hasDeadline, time.Until(registrar.deadline), registerTimeout)

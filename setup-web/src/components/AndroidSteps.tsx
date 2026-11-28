@@ -1,6 +1,7 @@
 import { subscribeHref } from '../ntfyLinks';
 import { NTFY_SERVER } from '../params';
 import { strings } from '../strings';
+import { AppName } from './AppName';
 import { CopyField } from './CopyField';
 import { Screenshot } from './Screenshot';
 import { Step } from './Step';
@@ -15,6 +16,7 @@ interface AndroidStepsProps {
   // ntfy:// anchors need the ntfy app on this very device, so they never render
   // for a desktop visitor or an iPhone user who switched tabs.
   oneTap: boolean;
+  returnUrl: string | null;
 }
 
 // The three Android steps (the install card above the tabs covers getting the app). Both
@@ -25,6 +27,7 @@ export function AndroidSteps({
   personalTopic,
   broadcastTopic,
   oneTap,
+  returnUrl,
 }: AndroidStepsProps) {
   return (
     <ol className="setup-page__steps" role="list">
@@ -36,7 +39,11 @@ export function AndroidSteps({
         </p>
         <CopyField label={strings.labelServiceUrl} value={NTFY_SERVER} />
         <CopyField label={strings.labelUsername} value={user} />
-        <p className="setup-page__pw">{strings.passwordNote(displayName)}</p>
+        <p className="setup-page__pw">
+          {strings.passwordNoteBefore}
+          <AppName displayName={displayName} returnUrl={returnUrl} />
+          {strings.passwordNoteAfter}
+        </p>
         <Screenshot name="androidAddUser" />
       </Step>
       {oneTap ? (
@@ -49,7 +56,10 @@ export function AndroidSteps({
               {strings.androidFallbackPersonalBefore}
               <b>{strings.androidFallbackBold}</b>
               {strings.androidFallbackPersonalAfter}
+              <b>{strings.androidUseServerBold}</b>
+              {strings.androidFallbackPersonalEnd}
             </p>
+            <CopyField label={strings.labelServiceUrl} value={NTFY_SERVER} />
             <CopyField label={strings.labelPersonalTopic} value={personalTopic} />
           </div>
           <div className="setup-page__subscribe-group">
@@ -59,7 +69,13 @@ export function AndroidSteps({
             >
               {strings.androidOneTapBroadcast}
             </a>
-            <p className="setup-page__fallback">{strings.androidFallbackBroadcast}</p>
+            <p className="setup-page__fallback">
+              {strings.androidFallbackBroadcastBefore}
+              <b>{strings.androidFallbackBold}</b>
+              {strings.androidFallbackBroadcastMid}
+              <b>{strings.androidUseServerBold}</b>
+              {strings.androidFallbackBroadcastEnd}
+            </p>
             <CopyField label={strings.labelBroadcastTopic} value={broadcastTopic} />
           </div>
         </Step>
@@ -69,7 +85,10 @@ export function AndroidSteps({
             {strings.androidCopyBefore}
             <b>{strings.androidCopyBold}</b>
             {strings.androidCopyAfter}
+            <b>{strings.androidUseServerBold}</b>
+            {strings.androidCopyEnd}
           </p>
+          <CopyField label={strings.labelServiceUrl} value={NTFY_SERVER} />
           <CopyField label={strings.labelPersonalTopic} value={personalTopic} />
           <CopyField label={strings.labelBroadcastTopic} value={broadcastTopic} />
           <p className="setup-page__fallback">{strings.androidCopyOnPhoneNote}</p>
@@ -77,7 +96,9 @@ export function AndroidSteps({
       )}
       <Step number={3} title={strings.testItTitle}>
         <p>
-          {strings.testItBefore(displayName)}
+          {strings.testItBefore}
+          <AppName displayName={displayName} returnUrl={returnUrl} />
+          {strings.testItAfterName}
           <b>{strings.testItBold}</b>
           {strings.testItAfter}
         </p>

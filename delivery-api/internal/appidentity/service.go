@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -86,7 +87,10 @@ type TokenVerifier interface {
 type ExchangeInput struct {
 	AppID string
 	Name  string
-	Token string
+	// DisplayName is the optional readable name stored when the name form creates the app. Blank
+	// counts as not provided; a non-blank value with AppID is ErrDisplayNameRequiresName.
+	DisplayName string
+	Token       string
 }
 
 // ExchangeResult is the successful outcome of an exchange.
@@ -199,6 +203,17 @@ func (service *Service) Exchange(ctx context.Context, input ExchangeInput) (Exch
 			return ExchangeResult{}, reservedErr
 		}
 	}
+	displayName := ""
+	if strings.TrimSpace(input.DisplayName) != "" {
+		if name == "" {
+			return ExchangeResult{}, ErrDisplayNameRequiresName
+		}
+		validated, displayErr := ValidateDisplayName(input.DisplayName)
+		if displayErr != nil {
+			return ExchangeResult{}, displayErr
+		}
+		displayName = validated
+	}
 	if input.Token == "" {
 		return ExchangeResult{}, &ValidationError{Message: "token is required"}
 	}
@@ -210,7 +225,7 @@ func (service *Service) Exchange(ctx context.Context, input ExchangeInput) (Exch
 		return ExchangeResult{}, verifyErr
 	}
 	if name != "" {
-		return service.exchangeAsRegistrar(ctx, entry, claims, started)
+		return service.exchangeAsRegistrar(ctx, entry, claims, displayName, started)
 	}
 
 	var result ExchangeResult
@@ -264,7 +279,7 @@ func (service *Service) exchangeClaims(
 // re-decides everything under the store's lock. A replayed jti and a refusal that does not
 // depend on a race never reach person-service.
 func (service *Service) exchangeAsRegistrar(
-	ctx context.Context, entry exchangeLogEntry, claims Claims, started time.Time,
+	ctx context.Context, entry exchangeLogEntry, claims Claims, displayName string, started time.Time,
 ) (ExchangeResult, error) {
 	fail := func(err error) (ExchangeResult, error) {
 		service.logFailedExchange(ctx, entry, claims, err, time.Since(started))
@@ -300,7 +315,10 @@ func (service *Service) exchangeAsRegistrar(
 		}
 	}
 	if createInDirectory {
-		if registerErr := service.registerAppInDirectory(ctx, state.DerivedAppID, "exchange_name", entry.name); registerErr != nil {
+		if registerErr := service.registerAppInDirectory(
+			ctx, state.DerivedAppID, displayName,
+			"exchange_name", entry.name, "display_name_set", displayName != "",
+		); registerErr != nil {
 			return fail(registerErr)
 		}
 	}
@@ -333,7 +351,11 @@ func (service *Service) exchangeAsRegistrar(
 	default:
 		outcome = outcomeRegistrarIssued
 	}
-	service.logExchange(ctx, entry, claims, outcome, time.Since(started))
+	var extra []any
+	if outcome == outcomeRegistrarCreated {
+		extra = append(extra, "display_name_set", displayName != "")
+	}
+	service.logExchange(ctx, entry, claims, outcome, time.Since(started), extra...)
 	return result, nil
 }
 
@@ -415,18 +437,22 @@ func (service *Service) fileRegistrarRequest(
 	return ExchangeResult{Status: ExchangePending, RequestID: requestID}, nil
 }
 
-// registerAppInDirectory registers appID in the people directory, outside any transaction or
+// registerAppInDirectory registers appID in the people directory under displayName (appID when
+// displayName is empty), outside any transaction or
 // lock. A nil registrar is ErrAppRegistryNotConfigured; a failure is ErrAppRegistryUnavailable
 // (wrapping the cause) after one WARN with the extra log attributes; a caller that went away
 // returns its own context error without a WARN.
-func (service *Service) registerAppInDirectory(ctx context.Context, appID string, extra ...any) error {
+func (service *Service) registerAppInDirectory(ctx context.Context, appID, displayName string, extra ...any) error {
 	if service.registrar == nil {
 		return ErrAppRegistryNotConfigured
 	}
 	registerCtx, cancel := context.WithTimeout(ctx, registerTimeout)
 	defer cancel()
 	registerStarted := time.Now()
-	registerErr := service.registrar.CreateApp(registerCtx, appID, appID)
+	if displayName == "" {
+		displayName = appID
+	}
+	registerErr := service.registrar.CreateApp(registerCtx, appID, displayName)
 	if registerErr == nil {
 		return nil
 	}
@@ -555,9 +581,11 @@ func (service *Service) logFailedExchange(
 }
 
 // logExchange logs a successful exchange.
-func (service *Service) logExchange(ctx context.Context, entry exchangeLogEntry, claims Claims, outcome string, elapsed time.Duration) {
-	service.logger.InfoContext(ctx, "app identity exchange",
-		append(claimAttributes(entry, claims), "outcome", outcome, "duration", elapsed.String())...)
+func (service *Service) logExchange(
+	ctx context.Context, entry exchangeLogEntry, claims Claims, outcome string, elapsed time.Duration, extra ...any,
+) {
+	attributes := append(claimAttributes(entry, claims), "outcome", outcome, "duration", elapsed.String())
+	service.logger.InfoContext(ctx, "app identity exchange", append(attributes, extra...)...)
 }
 
 // claimAttributes are the log fields every exchange that got past verification carries. The
@@ -612,7 +640,7 @@ func (service *Service) ApproveRequest(ctx context.Context, requestID int64) (Bi
 		return Binding{}, ErrAppIDReserved
 	}
 	// Only an approvable app request reaches the not-configured check, so 404 / 409 win over 503.
-	if registerErr := service.registerAppInDirectory(ctx, request.AppID, "request_id", requestID); registerErr != nil {
+	if registerErr := service.registerAppInDirectory(ctx, request.AppID, "", "request_id", requestID); registerErr != nil {
 		return Binding{}, registerErr
 	}
 

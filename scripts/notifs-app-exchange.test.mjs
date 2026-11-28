@@ -635,6 +635,105 @@ describe('run: registrar mode (name)', () => {
   });
 });
 
+describe('run: display_name', () => {
+  const registrarWithName = (NOTIFS_APP_DISPLAY_NAME) => ({
+    NOTIFS_APP_ID: '',
+    NOTIFS_APP_NAME: 'chores',
+    NOTIFS_APP_DISPLAY_NAME,
+  });
+  // A function, so each run gets a fresh Response (a body can be read once).
+  const issued = () => json(200, { app_id: 'hosted_chores', key: KEY, key_id: 1 });
+  const exchangeBody = (h) => JSON.parse(h.calls.at(-1).init.body);
+
+  it('sends the trimmed name in registrar mode', async () => {
+    const h = makeHarness({ env: registrarWithName('  Chores 4 IRL  '), exchange: issued });
+
+    assert.equal(await run(h.deps), 0);
+    assert.deepEqual(exchangeBody(h), {
+      name: 'chores',
+      token: OIDC_JWT,
+      display_name: 'Chores 4 IRL',
+    });
+  });
+
+  it('leaves the field out when unset or whitespace only', async () => {
+    for (const value of [undefined, '', '   ', '\t\n']) {
+      const h = makeHarness({ env: registrarWithName(value), exchange: issued });
+      assert.equal(await run(h.deps), 0);
+      assert.deepEqual(Object.keys(exchangeBody(h)).sort(), ['name', 'token']);
+    }
+  });
+
+  it('accepts 64 code points and rejects 65, counting code points not UTF-16 units', async () => {
+    const ok = makeHarness({ env: registrarWithName('😀'.repeat(64)), exchange: issued });
+    assert.equal(await run(ok.deps), 0);
+    const padded = makeHarness({
+      env: registrarWithName(`  ${'a'.repeat(64)}  `),
+      exchange: issued,
+    });
+    assert.equal(await run(padded.deps), 0);
+    const tooLong = makeHarness({ env: registrarWithName('😀'.repeat(65)), exchange: issued });
+    assert.equal(await run(tooLong.deps), 1);
+    assert.equal(tooLong.calls.length, 0);
+  });
+
+  it('rejects control and format characters before any fetch, OIDC request included', async () => {
+    for (const value of ['bad\u0007name', 'a\nb', 'zero​width', 'bidi‮flip']) {
+      const h = makeHarness({ env: registrarWithName(value), exchange: issued });
+      assert.equal(await run(h.deps), 1);
+      assert.match(h.text(), /::error::.*display_name/);
+      assert.equal(h.calls.length, 0);
+    }
+  });
+
+  it('rejects a non-blank name in app_id mode before any fetch', async () => {
+    const h = makeHarness({ env: { NOTIFS_APP_DISPLAY_NAME: 'Chores' } });
+
+    assert.equal(await run(h.deps), 1);
+    assert.match(h.text(), /::error::.*display_name/);
+    assert.equal(h.calls.length, 0);
+  });
+
+  it('accepts a whitespace-only name in app_id mode and sends no display_name', async () => {
+    const h = makeHarness({
+      env: { NOTIFS_APP_DISPLAY_NAME: '   ' },
+      exchange: json(200, { key: KEY, key_id: 1 }),
+    });
+
+    assert.equal(await run(h.deps), 0);
+    assert.deepEqual(exchangeBody(h), { app_id: 'chores', token: OIDC_JWT });
+  });
+
+  it('names display_name and the old server when a 400 invalid JSON body follows a sent name', async () => {
+    const h = makeHarness({
+      env: registrarWithName('Chores'),
+      exchange: json(400, { error: 'invalid JSON body' }),
+    });
+
+    assert.equal(await run(h.deps), 1);
+    assert.match(h.text(), /display_name/);
+    assert.match(h.text(), /delivery-api not yet upgraded/);
+  });
+
+  it('keeps the generic message for the same 400 without a sent name, and for invalid display_name', async () => {
+    const withoutName = makeHarness({
+      env: registrarWithName(''),
+      exchange: json(400, { error: 'invalid JSON body' }),
+    });
+    assert.equal(await run(withoutName.deps), 1);
+    assert.match(withoutName.text(), /identity exchange returned 400: invalid JSON body/);
+    assert.doesNotMatch(withoutName.text(), /not yet upgraded/);
+
+    const invalid = makeHarness({
+      env: registrarWithName('Chores'),
+      exchange: json(400, { error: 'invalid display_name' }),
+    });
+    assert.equal(await run(invalid.deps), 1);
+    assert.match(invalid.text(), /identity exchange returned 400: invalid display_name/);
+    assert.doesNotMatch(invalid.text(), /not yet upgraded/);
+  });
+});
+
 describe('checkManifestAppId', () => {
   const env = { NOTIFS_MANIFEST: 'apps/x.json', NOTIFS_DERIVED_APP_ID: 'hosted_x' };
 
@@ -873,7 +972,19 @@ describe('.github/actions/notifs-app/action.yml', () => {
         NOTIFS_ACCESS_CLIENT_ID: 'inputs.access_client_id',
         NOTIFS_ACCESS_CLIENT_SECRET: 'inputs.access_client_secret',
         NOTIFS_AUDIENCE: 'inputs.audience',
+        NOTIFS_APP_DISPLAY_NAME: 'inputs.display_name',
       },
+    );
+  });
+
+  it('declares an optional display_name input defaulting to empty', () => {
+    assert.match(
+      actionText,
+      /^ {2}display_name:[ \t]*\n(?: {4}.*\n)*? {4}required: false\n(?: {4}.*\n)*? {4}default: ''[ \t]*$/m,
+    );
+    assert.match(
+      actionText,
+      /^ {2}display_name:[ \t]*\n {4}description:[\s\S]*?first registration/m,
     );
   });
 

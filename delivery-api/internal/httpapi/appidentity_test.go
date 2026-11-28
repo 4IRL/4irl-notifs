@@ -53,6 +53,7 @@ type fakeAppIdentity struct {
 	unboundApp     string
 
 	exchangedName    string
+	exchangedDisplay string
 	registrar        appidentity.WorkflowRegistrar
 	registrars       []appidentity.WorkflowRegistrar
 	unboundCount     int
@@ -101,6 +102,7 @@ func (fake *fakeAppIdentity) ResolveKey(_ context.Context, key string) (appident
 func (fake *fakeAppIdentity) Exchange(_ context.Context, input appidentity.ExchangeInput) (appidentity.ExchangeResult, error) {
 	fake.calls++
 	fake.exchangedApp, fake.exchangedName, fake.exchangedToken = input.AppID, input.Name, input.Token
+	fake.exchangedDisplay = input.DisplayName
 	return fake.exchangeResult, fake.err
 }
 

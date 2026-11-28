@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/4IRL/4irl-notifs/delivery-api/internal/appid"
 )
@@ -39,6 +41,26 @@ func ValidateName(name string) error {
 		return ErrInvalidName
 	}
 	return nil
+}
+
+// maxDisplayNameRunes is the longest display name, in code points (mirrors setup-web NAME_MAX_LENGTH).
+const maxDisplayNameRunes = 64
+
+// ValidateDisplayName trims a registrar display name and checks it: 1 to 64 code points and no
+// control (Cc) or format (Cf) runes. It is strict: an empty or whitespace-only input is
+// ErrInvalidDisplayName; Exchange skips it for a blank value. It returns the trimmed name.
+func ValidateDisplayName(displayName string) (string, error) {
+	trimmed := strings.TrimSpace(displayName)
+	count := utf8.RuneCountInString(trimmed)
+	if count < 1 || count > maxDisplayNameRunes {
+		return "", ErrInvalidDisplayName
+	}
+	for _, character := range trimmed {
+		if unicode.Is(unicode.Cc, character) || unicode.Is(unicode.Cf, character) {
+			return "", ErrInvalidDisplayName
+		}
+	}
+	return trimmed, nil
 }
 
 // DeriveAppID returns prefix+name after checking that it is a valid app id. The error wraps

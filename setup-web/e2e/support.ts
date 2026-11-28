@@ -14,6 +14,10 @@ export const VALID_LINK = '/?app=tasktracker&user=u_v4sf4e5teivpe3zi&name=Chore%
 // The static <title> in index.html; the page never changes it.
 export const PAGE_TITLE = 'Set up notifications · 4IRL';
 export const NAMELESS_LINK = '/?app=tasktracker&user=u_v4sf4e5teivpe3zi';
+// A valid return address (https on a 4irl.app host), literal like VALID_LINK; RETURN_HREF is
+// the normalized href the page must render for it.
+export const VALID_RETURN_LINK = `${VALID_LINK}&return=https%3A%2F%2Fchores.4irl.app%2Fhome`;
+export const RETURN_HREF = 'https://chores.4irl.app/home';
 export const FIXTURE = {
   displayName: 'Chore Reaper',
   user: 'u_v4sf4e5teivpe3zi',
@@ -75,6 +79,11 @@ export function copyFieldFor({ scope, label }: { scope: Locator; label: string }
   return scope
     .locator('.setup-page__copy-field')
     .filter({ has: scope.page().getByText(label, { exact: true }) });
+}
+
+// The links that carry the app's name back to the app (password hint and "Test it" step).
+export function returnLinks({ scope }: { scope: Page | Locator }): Locator {
+  return scope.locator('a.setup-page__app-link');
 }
 
 export function ntfyLinks({ page }: { page: Page }): Locator {

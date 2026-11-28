@@ -6,6 +6,15 @@ import App from './App';
 import { APP_STORE_URL, F_DROID_URL, GOOGLE_PLAY_URL } from './ntfyLinks';
 import { strings } from './strings';
 
+const qrProps = vi.hoisted(() => ({ calls: [] as Array<{ value: string }> }));
+
+vi.mock('qrcode.react', () => ({
+  QRCodeSVG: (props: { value: string }) => {
+    qrProps.calls.push(props);
+    return <svg data-testid="qr-svg" />;
+  },
+}));
+
 const IPHONE_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148';
 const ANDROID_UA =
@@ -24,6 +33,7 @@ function renderApp({
 }
 
 afterEach(() => {
+  qrProps.calls.length = 0;
   vi.restoreAllMocks();
   window.history.replaceState(null, '', '/');
 });
@@ -329,7 +339,7 @@ describe('per-platform steps and the one-tap rule', () => {
     expect(
       within(panel).getByRole('link', { name: strings.androidOneTapBroadcast }),
     ).toHaveAttribute('href', BROADCAST_HREF);
-    expect(within(panel).getAllByRole('button')).toHaveLength(4);
+    expect(within(panel).getAllByRole('button')).toHaveLength(5);
     expect(container.querySelectorAll(NTFY_ANCHOR)).toHaveLength(2);
   });
 
@@ -342,7 +352,7 @@ describe('per-platform steps and the one-tap rule', () => {
     const panel = screen.getByRole('tabpanel', { name: strings.tabAndroid });
     expect(container.querySelector(NTFY_ANCHOR)).toBeNull();
     expect(within(panel).getByText(strings.androidCopyOnPhoneNote)).toBeInTheDocument();
-    expect(within(panel).getAllByRole('button')).toHaveLength(4);
+    expect(within(panel).getAllByRole('button')).toHaveLength(5);
   });
 
   it('shows copy-only Android steps when a desktop visitor picks Android', async () => {
@@ -353,7 +363,7 @@ describe('per-platform steps and the one-tap rule', () => {
 
     const panel = screen.getByRole('tabpanel', { name: strings.tabAndroid });
     expect(container.querySelector(NTFY_ANCHOR)).toBeNull();
-    expect(within(panel).getAllByRole('button')).toHaveLength(4);
+    expect(within(panel).getAllByRole('button')).toHaveLength(5);
     expect(within(panel).getByText(strings.androidCopyOnPhoneNote)).toBeInTheDocument();
   });
 
@@ -374,19 +384,98 @@ describe('per-platform steps and the one-tap rule', () => {
     renderApp({ search: '?app=tasktracker&user=u_abcdefghijklmnop', userAgent: IPHONE_UA });
 
     const panel = screen.getByRole('tabpanel', { name: strings.tabIphone });
-    expect(within(panel).getByText(strings.passwordNote('tasktracker'))).toBeInTheDocument();
+    expect(panel).toHaveTextContent(
+      "Password: the notification password you set in tasktracker. It's never shown on this page.",
+    );
     expect(panel).toHaveTextContent('Back in tasktracker, tap Send test notification.');
   });
 
-  it('mounts three screenshots across both panels, each with distinct alt text and explicit size', () => {
+  describe('return link', () => {
+    const RETURN = 'https://chores.4irl.app/home';
+
+    it('links the app name in both spots on both panels with a valid return', () => {
+      const { container } = renderApp({
+        search: `${VALID_SEARCH}&return=${encodeURIComponent(RETURN)}`,
+        userAgent: IPHONE_UA,
+      });
+
+      const panels = screen.getAllByRole('tabpanel', { hidden: true });
+      expect(panels).toHaveLength(2);
+      panels.forEach((panel) => {
+        const links = within(panel).getAllByRole('link', { name: 'Chore Reaper', hidden: true });
+        expect(links).toHaveLength(2);
+        links.forEach((link) => {
+          expect(link).toHaveAttribute('href', RETURN);
+          expect(link).not.toHaveAttribute('target');
+        });
+      });
+      expect(container.querySelectorAll('.setup-page__app-link')).toHaveLength(4);
+    });
+
+    it('links the raw app id when the name falls back', () => {
+      renderApp({
+        search: `?app=apps_birthdays&user=u_abcdefghijklmnop&return=${encodeURIComponent(RETURN)}`,
+        userAgent: IPHONE_UA,
+      });
+
+      const panel = screen.getByRole('tabpanel', { name: strings.tabIphone });
+      const links = within(panel).getAllByRole('link', { name: 'apps_birthdays' });
+      expect(links).toHaveLength(2);
+      links.forEach((link) => expect(link).toHaveAttribute('href', RETURN));
+    });
+
+    it('hands a valid return to the desktop QR link', () => {
+      renderApp({
+        search: `${VALID_SEARCH}&return=${encodeURIComponent(RETURN)}`,
+        userAgent: DESKTOP_UA,
+      });
+
+      const link = new URL(qrProps.calls.at(-1)?.value ?? '');
+      expect(link.searchParams.get('return')).toBe(RETURN);
+    });
+
+    it('leaves a hostile return out of the desktop QR link', () => {
+      renderApp({
+        search: `${VALID_SEARCH}&return=${encodeURIComponent('https://evil.com/steal')}`,
+        userAgent: DESKTOP_UA,
+      });
+
+      const value = qrProps.calls.at(-1)?.value ?? '';
+      expect(value).not.toBe('');
+      expect(new URL(value).searchParams.has('return')).toBe(false);
+      expect(value).not.toContain('evil.com');
+    });
+
+    it('renders no app link when return is missing', () => {
+      const { container } = renderApp({ userAgent: IPHONE_UA });
+
+      expect(container.querySelector('.setup-page__app-link')).toBeNull();
+    });
+
+    it.each(['javascript:alert(1)', 'https://evil.com/steal', 'http://chores.4irl.app/'])(
+      'renders no app link and echoes nothing for hostile return %s',
+      (hostile) => {
+        const { container } = renderApp({
+          search: `${VALID_SEARCH}&return=${encodeURIComponent(hostile)}`,
+          userAgent: IPHONE_UA,
+        });
+
+        expect(container.querySelector('.setup-page__app-link')).toBeNull();
+        expect(container.innerHTML).not.toContain(hostile);
+        expect(container.innerHTML).not.toContain('evil.com');
+      },
+    );
+  });
+
+  it('mounts five screenshots across both panels, each with distinct alt text and explicit size', () => {
     const { container } = renderApp({ userAgent: IPHONE_UA });
 
     // The QR is a role="img" div, not an <img>, so this selects only screenshots.
     const shots = [...container.querySelectorAll('img')];
-    expect(shots).toHaveLength(3);
+    expect(shots).toHaveLength(5);
     const alts = shots.map((image) => image.getAttribute('alt') ?? '');
     expect(alts.every((alt) => alt.trim() !== '')).toBe(true);
-    expect(new Set(alts).size).toBe(3);
+    expect(new Set(alts).size).toBe(5);
     for (const image of shots) {
       expect(image).toHaveAttribute('width');
       expect(image).toHaveAttribute('height');

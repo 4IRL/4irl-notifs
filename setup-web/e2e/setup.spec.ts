@@ -6,7 +6,9 @@ import {
   FIXTURE,
   NAMELESS_LINK,
   PAGE_TITLE,
+  RETURN_HREF,
   VALID_LINK,
+  VALID_RETURN_LINK,
   collectConsoleProblems,
   copyButtons,
   copyFieldFor,
@@ -19,6 +21,7 @@ import {
   panelFor,
   readCspViolations,
   recordCspViolations,
+  returnLinks,
   serveWithShippedHeaders,
   tabFor,
 } from './support.ts';
@@ -62,9 +65,22 @@ test.describe('iPhone', { tag: '@iphone' }, () => {
     });
   }
 
+  test('a valid return makes the app name a same-tab link in both spots', async ({ page }) => {
+    await page.goto(VALID_RETURN_LINK);
+
+    const links = returnLinks({ scope: panelFor({ page, platform: 'iphone' }) });
+    await expect(links).toHaveCount(2);
+    for (const link of await links.all()) {
+      await expect(link).toBeVisible();
+      await expect(link).toHaveText(FIXTURE.displayName);
+      await expect(link).toHaveAttribute('href', RETURN_HREF);
+      await expect(link).not.toHaveAttribute('target', /.*/);
+    }
+  });
+
   test('the iPhone screenshots load', async ({ page }) => {
     await page.goto(VALID_LINK);
-    await expectImagesLoaded({ scope: panelFor({ page, platform: 'iphone' }), expectedCount: 2 });
+    await expectImagesLoaded({ scope: panelFor({ page, platform: 'iphone' }), expectedCount: 4 });
   });
 
   test('switching to Android shows copy-only steps with no ntfy:// links', async ({ page }) => {
@@ -120,6 +136,19 @@ test.describe('Android', { tag: '@android' }, () => {
     });
   }
 
+  test('a valid return makes the app name a same-tab link in both spots', async ({ page }) => {
+    await page.goto(VALID_RETURN_LINK);
+
+    const links = returnLinks({ scope: panelFor({ page, platform: 'android' }) });
+    await expect(links).toHaveCount(2);
+    for (const link of await links.all()) {
+      await expect(link).toBeVisible();
+      await expect(link).toHaveText(FIXTURE.displayName);
+      await expect(link).toHaveAttribute('href', RETURN_HREF);
+      await expect(link).not.toHaveAttribute('target', /.*/);
+    }
+  });
+
   test('the Android screenshot loads', async ({ page }) => {
     await page.goto(VALID_LINK);
     await expectImagesLoaded({
@@ -140,7 +169,7 @@ test.describe('Android', { tag: '@android' }, () => {
     await expectPanelHidden({ page, platform: 'android' });
     // The one-tap anchors only render while Android is the shown tab.
     await expect(ntfyLinks({ page })).toHaveCount(0);
-    await expectImagesLoaded({ scope: panelFor({ page, platform: 'iphone' }), expectedCount: 2 });
+    await expectImagesLoaded({ scope: panelFor({ page, platform: 'iphone' }), expectedCount: 4 });
 
     await tabFor({ page, platform: 'android' }).click();
 
@@ -182,8 +211,18 @@ test.describe('desktop', { tag: '@desktop' }, () => {
       await expect(fieldValue({ field })).toHaveText(value);
       await expect(field.getByRole('button')).toBeVisible();
     }
-    // Two topics, plus the Service URL and Username fields of the log-in step.
-    await expect(copyButtons({ scope: android })).toHaveCount(4);
+    // Two topics, plus the Service URL and Username fields of the log-in step, plus the
+    // Service URL field of the subscribe step.
+    await expect(copyButtons({ scope: android })).toHaveCount(5);
+    // Step 1 has a field with the same label, so scope to the step 2 heading's step.
+    const stepTwo = android.getByRole('listitem').filter({
+      has: page.getByRole('heading', { level: 2, name: strings.androidCopyTitle }),
+    });
+    await expectFieldCopies({
+      page,
+      field: copyFieldFor({ scope: stepTwo, label: strings.labelServiceUrl }),
+      value: FIXTURE.server,
+    });
     await expect(page.getByRole('img', { name: strings.qrAriaLabel })).toBeVisible();
     // The choice is page state only; it is never written to the URL.
     expect(page.url()).toBe(urlBefore);
@@ -203,7 +242,7 @@ test.describe('desktop', { tag: '@desktop' }, () => {
 
     const field = copyFieldFor({ scope: iphone, label: strings.labelPersonalTopic });
     await expectFieldCopies({ page, field, value: FIXTURE.personalTopic });
-    await expectImagesLoaded({ scope: iphone, expectedCount: 2 });
+    await expectImagesLoaded({ scope: iphone, expectedCount: 4 });
   });
 });
 
@@ -243,6 +282,24 @@ test.describe('invalid link', { tag: '@all' }, () => {
       for (const value of leaked) {
         expect(markup, value).not.toContain(value);
       }
+    });
+  }
+});
+
+test.describe('hostile return', { tag: '@all' }, () => {
+  const HOSTILE_RETURNS = ['javascript:alert(1)', 'https://evil.com'];
+
+  for (const hostile of HOSTILE_RETURNS) {
+    test(`return=${hostile} renders no app link and is not echoed`, async ({ page }) => {
+      await page.goto(`${VALID_LINK}&return=${encodeURIComponent(hostile)}`);
+
+      await expect(page.getByRole('tablist')).toBeVisible();
+      await expect(returnLinks({ scope: page })).toHaveCount(0);
+      await expect(page.getByRole('link', { name: FIXTURE.displayName })).toHaveCount(0);
+      const markup = await page.content();
+      expect(markup).not.toContain(hostile);
+      expect(markup).not.toContain('evil.com');
+      expect(markup).not.toContain('alert(1)');
     });
   }
 });
@@ -361,7 +418,7 @@ test.describe('content security policy', { tag: '@all' }, () => {
       await tabFor({ page, platform }).click();
       const panel = panelFor({ page, platform });
       await expect(panel).toBeVisible();
-      await expectImagesLoaded({ scope: panel, expectedCount: platform === 'iphone' ? 2 : 1 });
+      await expectImagesLoaded({ scope: panel, expectedCount: platform === 'iphone' ? 4 : 1 });
       // By class, not role+name: a clicked button's accessible name changes to "Copied!",
       // which would shift every later index of a name-based locator list.
       for (const button of await panel.locator('.setup-page__copy').all()) {

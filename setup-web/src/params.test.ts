@@ -12,6 +12,7 @@ describe('parseSetupParams', () => {
       user: VALID_USER,
       displayName: 'tasktracker',
       nameIsFallback: true,
+      returnUrl: null,
       personalTopic: 'tasktracker-v4sf4e5teivpe3zi-all',
       broadcastTopic: 'tasktracker-broadcast',
     });
@@ -36,13 +37,14 @@ describe('parseSetupParams', () => {
   it('accepts the example link from docs/app-integration-guide.md', () => {
     // Keep in sync with "Link your users to the setup page" in docs/app-integration-guide.md.
     const exampleLink =
-      'https://notifs-setup.4irl.app/?app=chores4irl&user=u_v4sf4e5teivpe3zi&name=Chores4irl';
+      'https://notifs-setup.4irl.app/?app=chores4irl&user=u_v4sf4e5teivpe3zi&name=Chores4irl&return=https%3A%2F%2Fchores.4irl.app%2F';
     expect(parseSetupParams(new URL(exampleLink).search)).toMatchObject({
       ok: true,
       app: 'chores4irl',
       user: 'u_v4sf4e5teivpe3zi',
       displayName: 'Chores4irl',
       nameIsFallback: false,
+      returnUrl: 'https://chores.4irl.app/',
     });
   });
 
@@ -141,6 +143,72 @@ describe('parseSetupParams', () => {
 
     it('falls back to app when name is absent', () => {
       expect(parseSetupParams(base)).toMatchObject({ nameIsFallback: true });
+    });
+  });
+
+  describe('return handling', () => {
+    const base = `?app=tasktracker&user=${VALID_USER}`;
+    const parseReturn = (raw: string) =>
+      parseSetupParams(`${base}&return=${encodeURIComponent(raw)}`);
+
+    it.each([
+      ['apex', 'https://4irl.app/', 'https://4irl.app/'],
+      [
+        'subdomain with path and query',
+        'https://chores.4irl.app/a/b?x=1',
+        'https://chores.4irl.app/a/b?x=1',
+      ],
+      ['an uppercase host', 'https://APP.4IRL.APP/', 'https://app.4irl.app/'],
+      ['an explicit default port', 'https://app.4irl.app:443/', 'https://app.4irl.app/'],
+      ['an uppercase scheme', 'HTTPS://app.4irl.app/', 'https://app.4irl.app/'],
+    ])('accepts %s', (_label, raw, href) => {
+      expect(parseReturn(raw)).toMatchObject({ ok: true, returnUrl: href });
+    });
+
+    it.each([
+      ['http', 'http://app.4irl.app/'],
+      ['javascript', 'javascript:alert(1)'],
+      ['data', 'data:text/html,hi'],
+      ['protocol-relative', '//evil.com'],
+      ['relative', '/x'],
+      ['foreign host', 'https://evil.com'],
+      ['suffix lookalike', 'https://4irl.app.evil.com'],
+      ['prefix lookalike', 'https://evil4irl.app'],
+      ['domain in the query', 'https://evil.com/?a=.4irl.app'],
+      ['credentials', 'https://user:pw@app.4irl.app'],
+      ['non-default port', 'https://app.4irl.app:8443/'],
+      ['trailing-dot host', 'https://4irl.app./'],
+      ['backslash authority trick', 'https://evil.com\\@app.4irl.app/'],
+      ['percent-encoded dot in the host', 'https://app.4irl.app%2eevil.com/'],
+      ['empty', ''],
+      [
+        'raw length 401',
+        `https://app.4irl.app/${'a'.repeat(401 - 'https://app.4irl.app/'.length)}`,
+      ],
+      ['normalized href over 400', `https://app.4irl.app/${'é'.repeat(150)}`],
+    ])('drops %s without failing the page', (_label, raw) => {
+      expect(parseReturn(raw)).toMatchObject({ ok: true, returnUrl: null });
+    });
+
+    it('accepts exactly 400 characters', () => {
+      const prefix = 'https://app.4irl.app/';
+      const raw = `${prefix}${'a'.repeat(400 - prefix.length)}`;
+      expect(raw).toHaveLength(400);
+      expect(parseReturn(raw)).toMatchObject({ returnUrl: raw });
+    });
+
+    it('uses only the first occurrence of a repeated return', () => {
+      const result = parseSetupParams(
+        `${base}&return=https%3A%2F%2Fa.4irl.app%2F&return=https%3A%2F%2Fb.4irl.app%2F`,
+      );
+      expect(result).toMatchObject({ returnUrl: 'https://a.4irl.app/' });
+    });
+
+    it('does not fall through to a valid later duplicate when the first is invalid', () => {
+      const result = parseSetupParams(
+        `${base}&return=https%3A%2F%2Fevil.com%2F&return=https%3A%2F%2Fb.4irl.app%2F`,
+      );
+      expect(result).toMatchObject({ returnUrl: null });
     });
   });
 
