@@ -1477,20 +1477,22 @@ export function AppIdentities({
                       ? binding.keys
                       : binding.keys.filter((identityKey) => !isRetiredKey(identityKey));
                     const toggleRetired = () => toggleRetiredKeys(appId);
+                    const toggleLabel = retiredShown
+                      ? strings.hideRetiredKeys
+                      : strings.showRetiredKeys({ count: retiredKeys.length });
+                    const toggleAriaLabel = retiredShown
+                      ? strings.hideRetiredKeysNamed({ app: appId })
+                      : strings.showRetiredKeysNamed({
+                          count: retiredKeys.length,
+                          app: appId,
+                        });
                     const menuItems: RowMenuItem[] = [
                       ...(retiredKeys.length > 0
                         ? [
                             {
                               id: 'toggle-retired',
-                              label: retiredShown
-                                ? strings.hideRetiredKeys
-                                : strings.showRetiredKeys({ count: retiredKeys.length }),
-                              ariaLabel: retiredShown
-                                ? strings.hideRetiredKeysNamed({ app: appId })
-                                : strings.showRetiredKeysNamed({
-                                    count: retiredKeys.length,
-                                    app: appId,
-                                  }),
+                              label: toggleLabel,
+                              ariaLabel: toggleAriaLabel,
                               tone: 'default',
                               onSelect: toggleRetired,
                             } satisfies RowMenuItem,
@@ -1648,20 +1650,11 @@ export function AppIdentities({
                                 <button
                                   type="button"
                                   className="app-identities__button app-identities__button--ghost"
-                                  aria-label={
-                                    retiredShown
-                                      ? strings.hideRetiredKeysNamed({ app: appId })
-                                      : strings.showRetiredKeysNamed({
-                                          count: retiredKeys.length,
-                                          app: appId,
-                                        })
-                                  }
+                                  aria-label={toggleAriaLabel}
                                   aria-expanded={retiredShown}
                                   onClick={toggleRetired}
                                 >
-                                  {retiredShown
-                                    ? strings.hideRetiredKeys
-                                    : strings.showRetiredKeys({ count: retiredKeys.length })}
+                                  {toggleLabel}
                                 </button>
                               )}
                               {isNew && (

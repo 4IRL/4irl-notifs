@@ -778,6 +778,44 @@ describe('AppIdentities bindings and keys', () => {
     expect(within(row).getByText('revoked 2026-10-20 09:00 UTC by operator')).toBeInTheDocument();
   });
 
+  it('hides the retired keys again when the toggle is clicked twice, tracking aria-expanded', async () => {
+    renderSection(
+      buildClient({ listIdentityBindings: vi.fn().mockResolvedValue([BINDING_TASKTRACKER]) }),
+    );
+
+    await screen.findByRole('table');
+    const row = bindingRow('tasktracker');
+    const toggle = within(row).getByRole('button', { name: /^Show retired keys/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    await userEvent.click(toggle);
+    expect(within(row).getByText('Superseded')).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    await userEvent.click(toggle);
+    expect(within(row).queryByText('Superseded')).toBeNull();
+    expect(within(row).queryByText('Revoked')).toBeNull();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('says there is no active key when only retired keys remain, until they are revealed', async () => {
+    renderSection(
+      buildClient({
+        listIdentityBindings: vi
+          .fn()
+          .mockResolvedValue([{ ...BINDING_TASKTRACKER, keys: [KEY_SUPERSEDED, KEY_REVOKED] }]),
+      }),
+    );
+
+    await screen.findByRole('table');
+    const row = bindingRow('tasktracker');
+    expect(within(row).getByText(strings.identityNoActiveKey)).toBeInTheDocument();
+
+    await revealRetired();
+    expect(within(row).queryByText(strings.identityNoActiveKey)).toBeNull();
+    expect(within(row).getByText('Superseded')).toBeInTheDocument();
+  });
+
   it('never shows a full key, even one smuggled onto a key object', async () => {
     const leaky = {
       ...KEY_ACTIVE,

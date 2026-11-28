@@ -1011,6 +1011,22 @@ describe('App identities tables, narrow layout', () => {
     ).toBeInTheDocument();
   });
 
+  it('hides the retired keys again when Hide is chosen from the binding menu', async () => {
+    const user = userEvent.setup();
+    renderIdentities(buildClient({ listIdentityBindings: vi.fn().mockResolvedValue([BINDING]) }));
+    await screen.findByRole('button', { name: 'Actions for tasktracker' });
+
+    await openMenu({ user, row: 'tasktracker' });
+    await chooseItem({ user, name: 'Show retired keys (2) for tasktracker' });
+    expect(screen.getByText(strings.identityKeySuperseded)).toBeInTheDocument();
+
+    await openMenu({ user, row: 'tasktracker' });
+    await chooseItem({ user, name: 'Hide retired keys for tasktracker' });
+    expect(screen.queryByText(strings.identityKeySuperseded)).toBeNull();
+    expect(screen.queryByText(strings.identityKeyRevoked)).toBeNull();
+    expect(screen.getByText(strings.identityKeyActive)).toBeInTheDocument();
+  });
+
   it('Revoke key and Unbind confirm inside the menu, then run', async () => {
     const user = userEvent.setup();
     const revokeIdentityKey = vi.fn().mockResolvedValue({ ...KEY_ACTIVE, state: 'revoked' });
