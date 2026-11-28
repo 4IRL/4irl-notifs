@@ -2103,10 +2103,10 @@ page at `https://notifs-setup.4irl.app`. It detects iPhone or Android, walks the
 and configuring the ntfy app (iOS Default server, login, subscribing), shows each topic with a copy
 button, and offers one-tap `ntfy://` subscribe buttons on Android. It makes no API calls.
 
-**Link format** (all three values are query parameters):
+**Link format** (all values are query parameters):
 
 ```
-https://notifs-setup.4irl.app/?app=chores4irl&user=u_v4sf4e5teivpe3zi&name=Chores4irl
+https://notifs-setup.4irl.app/?app=chores4irl&user=u_v4sf4e5teivpe3zi&name=Chores4irl&return=https%3A%2F%2Fchores.4irl.app%2F
 ```
 
 | Param  | Required | Rule                                                                                                                                                                                                                     |
@@ -2114,6 +2114,7 @@ https://notifs-setup.4irl.app/?app=chores4irl&user=u_v4sf4e5teivpe3zi&name=Chore
 | `app`  | yes      | Your `app_id`: `^[a-z0-9][a-z0-9_]{0,62}$`, and not the reserved word `everyone`.                                                                                                                                        |
 | `user` | yes      | The `user_id` from `POST /v1/apps/{app_id}/provision`: `^u_[a-z2-7]{16}$`. This is the user's ntfy **username**.                                                                                                                       |
 | `name` | no       | Display name shown on the page, URL-encoded. After trimming, 1-64 characters with no control or format characters (such as bidi overrides); otherwise (missing, blank, too long or containing any) the page shows `app`. |
+| `return` | no     | Where the app name links back to, URL-encoded. Must be `https://` on `4irl.app` or a `*.4irl.app` subdomain, with no credentials or port, and at most 400 characters. Anything else is ignored and the name shows as plain text. The person returns in the same tab. |
 
 - The page derives the topics itself from `app` and `user`: `{app}-{hash}-all` (where `hash` is `user`
   without its `u_` prefix) and `{app}-broadcast`, on the constant server `https://notifs.4irl.app`.
@@ -2252,7 +2253,7 @@ Notes:
 - [ ] Once the person has their password (iPhone and Android users both type it into the ntfy app), link
       them to the shared setup page (see "Link your users to the setup page"); do not write your own
       Default server instructions.
-- [ ] Link users to `https://notifs-setup.4irl.app/?app=<app_id>&user=<user_id>&name=<display name>` instead of
+- [ ] Link users to `https://notifs-setup.4irl.app/?app=<app_id>&user=<user_id>&name=<display name>&return=<app URL>` instead of
       writing your own ntfy install instructions.
 - [ ] Capture the provision response (`token`) on first response — it is never re-shown.
 

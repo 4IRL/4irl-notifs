@@ -44,7 +44,8 @@ export default function App({
     );
   }
 
-  const { app, displayName, nameIsFallback, user, personalTopic, broadcastTopic } = params;
+  const { app, displayName, nameIsFallback, user, personalTopic, broadcastTopic, returnUrl } =
+    params;
   // ntfy:// links only work with the ntfy app on this very device, so they render
   // only when the browser itself is Android and Android is the shown tab.
   const oneTap = selected === 'android' && detected === 'android';
@@ -69,7 +70,12 @@ export default function App({
         {strings.leadAfterNtfy}
       </p>
       {detected === null && (
-        <QrHandoff app={app} user={user} name={nameIsFallback ? null : displayName} />
+        <QrHandoff
+          app={app}
+          user={user}
+          name={nameIsFallback ? null : displayName}
+          returnUrl={returnUrl}
+        />
       )}
       {/* Static: the same three stores whatever the detected phone or selected tab. */}
       <InstallCard />

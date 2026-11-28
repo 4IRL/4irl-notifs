@@ -33,6 +33,20 @@ const INVISIBLE_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
  */
 export const NTFY_SERVER = 'https://notifs.4irl.app';
 
+/** The only domain (apex and any subdomain) the optional `return` link may point at. */
+export const RETURN_URL_DOMAIN = '4irl.app';
+
+/**
+ * Maximum length of the optional `return` URL, checked on the raw value and on the
+ * normalized href. Capacity arithmetic: QrHandoff encodes the link at level M, whose
+ * byte-mode ceiling at version 40 is 2331 bytes. Worst case for the other params:
+ * origin + path ~40, `app` 63, `user` 18, `name` 64 four-byte code points percent-encoded
+ * (12 chars each = 768), labels ~25, total ~915. searchParams.set encodes each character
+ * of the carried URL to at most 3 characters, so 400 adds at most 1200 (~2115 total,
+ * under 2331 with margin). The 3x bound holds only for the normalized href.
+ */
+export const RETURN_URL_MAX_LENGTH = 400;
+
 const USER_PREFIX_LENGTH = 'u_'.length;
 
 export type SetupParams =
@@ -42,6 +56,7 @@ export type SetupParams =
       user: string;
       displayName: string;
       nameIsFallback: boolean;
+      returnUrl: string | null;
       personalTopic: string;
       broadcastTopic: string;
     }
@@ -58,6 +73,35 @@ function personalTopicFor({ app, user }: { app: string; user: string }): string 
 /** Mirrors ntfycli `BroadcastTopicPattern`: `{app}-broadcast`. */
 function broadcastTopicFor(app: string): string {
   return `${app}-broadcast`;
+}
+
+/**
+ * Fail closed: returns the normalized href only when every check passes, else null.
+ * Compares URL.hostname (lowercased, punycoded), never the raw string.
+ */
+function validatedReturnUrl(raw: string | null): string | null {
+  if (raw === null || raw.length === 0 || raw.length > RETURN_URL_MAX_LENGTH) {
+    return null;
+  }
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  const hostAllowed =
+    url.hostname === RETURN_URL_DOMAIN || url.hostname.endsWith(`.${RETURN_URL_DOMAIN}`);
+  if (
+    url.protocol !== 'https:' ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.port !== '' ||
+    !hostAllowed ||
+    url.href.length > RETURN_URL_MAX_LENGTH
+  ) {
+    return null;
+  }
+  return url.href;
 }
 
 /**
@@ -90,6 +134,7 @@ export function parseSetupParams(search: string): SetupParams {
     user,
     displayName: nameIsFallback ? app : name,
     nameIsFallback,
+    returnUrl: validatedReturnUrl(query.get('return')),
     personalTopic: personalTopicFor({ app, user }),
     broadcastTopic: broadcastTopicFor(app),
   };

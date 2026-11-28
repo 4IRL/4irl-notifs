@@ -30,6 +30,14 @@ describe('QrHandoff', () => {
     );
   });
 
+  it('carries a validated returnUrl and omits it when null', () => {
+    render(
+      <QrHandoff app="chores4irl" user={USER} name={null} returnUrl="https://chores.4irl.app/x" />,
+    );
+    const link = new URL(qrProps.calls.at(-1)?.value ?? '');
+    expect(link.searchParams.get('return')).toBe('https://chores.4irl.app/x');
+  });
+
   it('omits name when the link had no valid name', () => {
     render(<QrHandoff app="chores4irl" user={USER} name={null} />);
 
