@@ -3,7 +3,7 @@
 	delivery-test delivery-integration-test delivery-integration-test-hold delivery-integration-test-hold-run delivery-integration-test-hold-off delivery-integration-test-hold-off-run delivery-lint delivery-vet-integration delivery-fmt workflows-lint \
 	web-test web-e2e web-build web-lint web-format dev-pages \
 	setup-web-dev setup-web-test setup-web-e2e setup-web-build setup-web-lint setup-web-format setup-web-pages-dev \
-	worker-test worker-build worker-deploy watchdog-test watchdog-build scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm \
+	worker-test worker-build worker-deploy watchdog-test watchdog-build watchdog-deploy watchdog-tail scripts-test scripts-lint scripts-format worktree-ports worktree-new worktree-rm \
 	onboard onboard-lint onboard-integration-test credential-audit
 
 .DEFAULT_GOAL := help
@@ -379,6 +379,12 @@ watchdog-test: ## Run watchdog Worker tests (Vitest + workers pool); filter with
 
 watchdog-build: ## Typecheck and dry-run bundle the watchdog Worker (tsc --noEmit + wrangler deploy --dry-run)
 	cd watchdog && npm run build
+
+watchdog-deploy: ## Deploy the watchdog Worker to Cloudflare (operator-run; CI deploys post-merge; needs wrangler auth)
+	cd watchdog && npx wrangler deploy
+
+watchdog-tail: ## Stream live watchdog Worker logs (needs wrangler auth)
+	cd watchdog && npx wrangler tail notifs-watchdog
 
 ## App onboarding (scripts/onboard.mjs)
 

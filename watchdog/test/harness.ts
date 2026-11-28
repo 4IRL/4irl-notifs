@@ -10,6 +10,8 @@ export const ACCESS_SECRET = 'access-secret-456';
 export const DELIVERY_URL = 'https://notifs-delivery.4irl.app/readyz';
 export const PROVISIONING_URL = 'https://notifs-delivery.4irl.app/healthz/provisioning';
 export const NTFY_URL = 'https://notifs.4irl.app/v1/health';
+export const URLS4IRL_URL = 'https://urls.4irl.app/health/deep';
+export const HEALTH_TOKEN = 'fake-health-token-789';
 
 export const MINUTE = 60_000;
 /** A UTC instant well before the 16:00 daily-summary hour. */
@@ -26,6 +28,7 @@ export interface Routes {
   delivery: Route;
   provisioning: Route;
   ntfy: Route;
+  urls4irl: Route;
   discord: Route;
 }
 
@@ -77,6 +80,11 @@ export function healthyRoutes(now: number): Routes {
     delivery: healthyDelivery(now),
     provisioning: () => Response.json({ status: 'ok' }),
     ntfy: () => Response.json({ healthy: true }),
+    urls4irl: () =>
+      Response.json({
+        status: 'Success',
+        components: { postgres: 'up', session_redis: 'up', metrics_redis: 'up' },
+      }),
     discord: () => new Response(null, { status: 204 }),
   };
 }
@@ -95,6 +103,7 @@ export function stubFetch(routes: Routes): FetchStub {
     if (url === DELIVERY_URL) return routes.delivery;
     if (url === PROVISIONING_URL) return routes.provisioning;
     if (url === NTFY_URL) return routes.ntfy;
+    if (url === URLS4IRL_URL) return routes.urls4irl;
     if (url === WEBHOOK_URL) return routes.discord;
     throw new Error(`unexpected outbound fetch to ${url}`);
   };
@@ -139,6 +148,7 @@ export function buildEnv({ kv, ...overrides }: { kv: KVNamespace } & Partial<Env
     DISCORD_WEBHOOK_URL: WEBHOOK_URL,
     CF_ACCESS_CLIENT_ID: ACCESS_ID,
     CF_ACCESS_CLIENT_SECRET: ACCESS_SECRET,
+    HEALTH_TOKEN_URLS4IRL: HEALTH_TOKEN,
     // Real timers would make every failing probe wait the production retry delay.
     PROBE_RETRY_DELAY_MS: '0',
     ...overrides,

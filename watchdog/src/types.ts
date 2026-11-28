@@ -1,9 +1,11 @@
-/** Bindings of the watchdog Worker. The three secrets are optional so a missing one is detectable at runtime. */
+/** Bindings of the watchdog Worker. The secrets are optional so a missing one is detectable at runtime. */
 export interface Env {
   WATCHDOG_STATE: KVNamespace;
   DISCORD_WEBHOOK_URL?: string;
   CF_ACCESS_CLIENT_ID?: string;
   CF_ACCESS_CLIENT_SECRET?: string;
+  /** Deep-health token for urls4irl `/health/deep`; equal to urls4irl's prod `HEALTH_CHECK_TOKEN`. */
+  HEALTH_TOKEN_URLS4IRL?: string;
   /** Pause before the single retry of a failed probe, in ms. Unset, empty, invalid or above 60000 means 30000; tests set 0. */
   PROBE_RETRY_DELAY_MS?: string;
 }
@@ -67,12 +69,20 @@ export interface ProbeVerdict {
   held?: HeldSnapshot;
 }
 
+/**
+ * The `Env` secrets that hold a deep-health token: one `HEALTH_TOKEN_<APP>` per app, so a leaked
+ * token exposes one app only. Adding an app adds its field to `Env`.
+ */
+export type HealthTokenSecret = Extract<keyof Env, `HEALTH_TOKEN_${string}`>;
+
 /** One external health probe. `evaluate` judges a response that already passed the redirect/auth checks. */
 export interface Target {
   id: string;
   url: string;
   /** Whether the Cloudflare Access service-token headers are sent to this target. */
   access: boolean;
+  /** The secret sent to this target as `X-Health-Token`; absent means no token is sent. */
+  tokenSecret?: HealthTokenSecret;
   evaluate: ({ response, now }: { response: Response; now: number }) => Promise<ProbeVerdict>;
 }
 
