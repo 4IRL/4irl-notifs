@@ -13,8 +13,9 @@ function timeoutVerdict(): ProbeVerdict {
 }
 
 /**
- * Cloudflare Access service-token headers (only for targets with `access: true`) and the urls4irl
- * `X-Health-Token` (only for targets with `healthToken: true`). Neither is ever logged.
+ * Cloudflare Access service-token headers (only for targets with `access: true`) and the
+ * `X-Health-Token` from the target's own `tokenSecret` (only for targets that name one). Neither is
+ * ever logged.
  */
 function buildHeaders({ target, env }: { target: Target; env: Env }): Headers {
   const headers = new Headers();
@@ -22,8 +23,9 @@ function buildHeaders({ target, env }: { target: Target; env: Env }): Headers {
     headers.set('CF-Access-Client-Id', env.CF_ACCESS_CLIENT_ID);
     headers.set('CF-Access-Client-Secret', env.CF_ACCESS_CLIENT_SECRET);
   }
-  if (target.healthToken && env.HEALTH_CHECK_TOKEN) {
-    headers.set('X-Health-Token', env.HEALTH_CHECK_TOKEN);
+  const healthToken = target.tokenSecret === undefined ? undefined : env[target.tokenSecret];
+  if (healthToken) {
+    headers.set('X-Health-Token', healthToken);
   }
   return headers;
 }

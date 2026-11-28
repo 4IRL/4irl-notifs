@@ -380,7 +380,7 @@ describe('probe verdicts', () => {
     [
       '200 status Failure',
       () => Response.json({ status: 'Failure', components: allUp }),
-      'urls4irl status Failure',
+      'deep health status Failure',
     ],
     ['200 HTML', () => new Response('<html>fallback</html>'), 'invalid JSON response'],
     ['200 array', () => Response.json([]), 'invalid JSON response'],
@@ -422,12 +422,17 @@ describe('probe verdicts', () => {
     [
       '401',
       () => Response.json({ status: 'Failure', message: 'Unauthorized' }, { status: 401 }),
-      'unauthorized: check HEALTH_CHECK_TOKEN',
+      'unauthorized: check HEALTH_TOKEN_URLS4IRL',
     ],
     [
       '429',
       () => Response.json({ message: 'rate limited' }, { status: 429 }),
-      'rate limited (HTTP 429): check HEALTH_CHECK_TOKEN',
+      'rate limited (HTTP 429): check HEALTH_TOKEN_URLS4IRL',
+    ],
+    [
+      '200 extra reported component down',
+      () => Response.json({ status: 'Success', components: { ...allUp, search_index: 'down' } }),
+      'unhealthy: search_index=down',
     ],
     ['403', () => new Response('x', { status: 403 }), 'HTTP 403'],
     ['404', () => new Response('x', { status: 404 }), 'HTTP 404'],
@@ -537,10 +542,13 @@ describe('Access headers and secrets', () => {
     };
     const stub = stubFetch(routes);
     const kv = spyKv();
-    await runScheduled({ at: MORNING, workerEnv: buildEnv({ kv: kv.kv, HEALTH_CHECK_TOKEN: undefined }) });
+    await runScheduled({ at: MORNING, workerEnv: buildEnv({ kv: kv.kv, HEALTH_TOKEN_URLS4IRL: undefined }) });
     expect(new Headers(stub.callsTo(URLS4IRL_URL)[0]?.init.headers).get('X-Health-Token')).toBeNull();
-    expect(warnLines().filter((line) => line.includes('HEALTH_CHECK_TOKEN is not configured'))).toHaveLength(1);
-    expect((await readStoredState())?.targets['urls4irl']?.detail).toBe('unauthorized: check HEALTH_CHECK_TOKEN');
+    expect(warnLines()).toContain(
+      'watchdog: HEALTH_TOKEN_URLS4IRL is not configured; target urls4irl will fail',
+    );
+    expect(warnLines().filter((line) => line.includes('is not configured'))).toHaveLength(1);
+    expect((await readStoredState())?.targets['urls4irl']?.detail).toBe('unauthorized: check HEALTH_TOKEN_URLS4IRL');
   });
 
   it('never posts or logs the secrets or the webhook URL, even when everything fails', async () => {

@@ -148,7 +148,7 @@ export function buildEnv({ kv, ...overrides }: { kv: KVNamespace } & Partial<Env
     DISCORD_WEBHOOK_URL: WEBHOOK_URL,
     CF_ACCESS_CLIENT_ID: ACCESS_ID,
     CF_ACCESS_CLIENT_SECRET: ACCESS_SECRET,
-    HEALTH_CHECK_TOKEN: HEALTH_TOKEN,
+    HEALTH_TOKEN_URLS4IRL: HEALTH_TOKEN,
     // Real timers would make every failing probe wait the production retry delay.
     PROBE_RETRY_DELAY_MS: '0',
     ...overrides,
