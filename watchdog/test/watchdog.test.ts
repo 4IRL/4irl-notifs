@@ -385,6 +385,27 @@ describe('probe verdicts', () => {
     ['200 HTML', () => new Response('<html>fallback</html>'), 'invalid JSON response'],
     ['200 array', () => Response.json([]), 'invalid JSON response'],
     [
+      '200 components array',
+      () => Response.json({ status: 'Success', components: [] }),
+      'components missing',
+    ],
+    [
+      '200 postgres null',
+      () => Response.json({ status: 'Success', components: { ...allUp, postgres: null } }),
+      'unhealthy: postgres=invalid',
+    ],
+    [
+      '503 postgres null',
+      () =>
+        Response.json({ status: 'Failure', components: { ...allUp, postgres: null } }, { status: 503 }),
+      'unhealthy: postgres=invalid',
+    ],
+    [
+      '503 Failure without components',
+      () => Response.json({ status: 'Failure' }, { status: 503 }),
+      'HTTP 503',
+    ],
+    [
       '503 with components',
       () =>
         Response.json(
@@ -408,6 +429,7 @@ describe('probe verdicts', () => {
       () => Response.json({ message: 'rate limited' }, { status: 429 }),
       'rate limited (HTTP 429): check HEALTH_CHECK_TOKEN',
     ],
+    ['403', () => new Response('x', { status: 403 }), 'HTTP 403'],
     ['404', () => new Response('x', { status: 404 }), 'HTTP 404'],
     ['301', () => new Response(null, { status: 301 }), 'unexpected redirect (HTTP 301)'],
   ])('treats urls4irl %s as down', async (_label, urls4irl, expectedDetail) => {
