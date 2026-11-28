@@ -1,5 +1,6 @@
 import { NTFY_SERVER } from '../params';
 import { strings } from '../strings';
+import { AppName } from './AppName';
 import { CopyField } from './CopyField';
 import { Screenshot } from './Screenshot';
 import { Step } from './Step';
@@ -10,12 +11,19 @@ interface IosStepsProps {
   user: string;
   personalTopic: string;
   broadcastTopic: string;
+  returnUrl: string | null;
 }
 
 // The five iPhone steps (the install card above the tabs covers getting the app). The iOS
 // app has no deep link for subscribing, so every value is a CopyField and nothing here
 // renders an ntfy:// anchor.
-export function IosSteps({ displayName, user, personalTopic, broadcastTopic }: IosStepsProps) {
+export function IosSteps({
+  displayName,
+  user,
+  personalTopic,
+  broadcastTopic,
+  returnUrl,
+}: IosStepsProps) {
   return (
     // role="list" restores list semantics that WebKit drops under `list-style: none`.
     <ol className="setup-page__steps" role="list">
@@ -36,7 +44,11 @@ export function IosSteps({ displayName, user, personalTopic, broadcastTopic }: I
           {strings.iosLogInAfter}
         </p>
         <CopyField label={strings.labelUsername} value={user} />
-        <p className="setup-page__pw">{strings.passwordNote(displayName)}</p>
+        <p className="setup-page__pw">
+          {strings.passwordNoteBefore}
+          <AppName displayName={displayName} returnUrl={returnUrl} />
+          {strings.passwordNoteAfter}
+        </p>
         <Screenshot name="iosAddUser" />
       </Step>
       <Step number={3} title={strings.iosPersonalTitle}>
@@ -57,7 +69,9 @@ export function IosSteps({ displayName, user, personalTopic, broadcastTopic }: I
       </Step>
       <Step number={5} title={strings.testItTitle}>
         <p>
-          {strings.testItBefore(displayName)}
+          {strings.testItBefore}
+          <AppName displayName={displayName} returnUrl={returnUrl} />
+          {strings.testItAfterName}
           <b>{strings.testItBold}</b>
           {strings.testItAfter}
         </p>

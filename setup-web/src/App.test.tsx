@@ -374,8 +374,65 @@ describe('per-platform steps and the one-tap rule', () => {
     renderApp({ search: '?app=tasktracker&user=u_abcdefghijklmnop', userAgent: IPHONE_UA });
 
     const panel = screen.getByRole('tabpanel', { name: strings.tabIphone });
-    expect(within(panel).getByText(strings.passwordNote('tasktracker'))).toBeInTheDocument();
+    expect(panel).toHaveTextContent(
+      "Password: the notification password you set in tasktracker. It's never shown on this page.",
+    );
     expect(panel).toHaveTextContent('Back in tasktracker, tap Send test notification.');
+  });
+
+  describe('return link', () => {
+    const RETURN = 'https://chores.4irl.app/home';
+
+    it('links the app name in both spots on both panels with a valid return', () => {
+      const { container } = renderApp({
+        search: `${VALID_SEARCH}&return=${encodeURIComponent(RETURN)}`,
+        userAgent: IPHONE_UA,
+      });
+
+      const panels = screen.getAllByRole('tabpanel', { hidden: true });
+      expect(panels).toHaveLength(2);
+      panels.forEach((panel) => {
+        const links = within(panel).getAllByRole('link', { name: 'Chore Reaper', hidden: true });
+        expect(links).toHaveLength(2);
+        links.forEach((link) => {
+          expect(link).toHaveAttribute('href', RETURN);
+          expect(link).not.toHaveAttribute('target');
+        });
+      });
+      expect(container.querySelectorAll('.setup-page__app-link')).toHaveLength(4);
+    });
+
+    it('links the raw app id when the name falls back', () => {
+      renderApp({
+        search: `?app=apps_birthdays&user=u_abcdefghijklmnop&return=${encodeURIComponent(RETURN)}`,
+        userAgent: IPHONE_UA,
+      });
+
+      const panel = screen.getByRole('tabpanel', { name: strings.tabIphone });
+      const links = within(panel).getAllByRole('link', { name: 'apps_birthdays' });
+      expect(links).toHaveLength(2);
+      links.forEach((link) => expect(link).toHaveAttribute('href', RETURN));
+    });
+
+    it('renders no app link when return is missing', () => {
+      const { container } = renderApp({ userAgent: IPHONE_UA });
+
+      expect(container.querySelector('.setup-page__app-link')).toBeNull();
+    });
+
+    it.each(['javascript:alert(1)', 'https://evil.com/steal', 'http://chores.4irl.app/'])(
+      'renders no app link and echoes nothing for hostile return %s',
+      (hostile) => {
+        const { container } = renderApp({
+          search: `${VALID_SEARCH}&return=${encodeURIComponent(hostile)}`,
+          userAgent: IPHONE_UA,
+        });
+
+        expect(container.querySelector('.setup-page__app-link')).toBeNull();
+        expect(container.innerHTML).not.toContain(hostile);
+        expect(container.innerHTML).not.toContain('evil.com');
+      },
+    );
   });
 
   it('mounts three screenshots across both panels, each with distinct alt text and explicit size', () => {

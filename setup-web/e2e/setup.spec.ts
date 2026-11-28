@@ -6,7 +6,9 @@ import {
   FIXTURE,
   NAMELESS_LINK,
   PAGE_TITLE,
+  RETURN_HREF,
   VALID_LINK,
+  VALID_RETURN_LINK,
   collectConsoleProblems,
   copyButtons,
   copyFieldFor,
@@ -19,6 +21,7 @@ import {
   panelFor,
   readCspViolations,
   recordCspViolations,
+  returnLinks,
   serveWithShippedHeaders,
   tabFor,
 } from './support.ts';
@@ -61,6 +64,19 @@ test.describe('iPhone', { tag: '@iphone' }, () => {
       await expectFieldCopies({ page, field, value });
     });
   }
+
+  test('a valid return makes the app name a same-tab link in both spots', async ({ page }) => {
+    await page.goto(VALID_RETURN_LINK);
+
+    const links = returnLinks({ scope: panelFor({ page, platform: 'iphone' }) });
+    await expect(links).toHaveCount(2);
+    for (const link of await links.all()) {
+      await expect(link).toBeVisible();
+      await expect(link).toHaveText(FIXTURE.displayName);
+      await expect(link).toHaveAttribute('href', RETURN_HREF);
+      await expect(link).not.toHaveAttribute('target', /.*/);
+    }
+  });
 
   test('the iPhone screenshots load', async ({ page }) => {
     await page.goto(VALID_LINK);
@@ -119,6 +135,19 @@ test.describe('Android', { tag: '@android' }, () => {
       await expectFieldCopies({ page, field, value });
     });
   }
+
+  test('a valid return makes the app name a same-tab link in both spots', async ({ page }) => {
+    await page.goto(VALID_RETURN_LINK);
+
+    const links = returnLinks({ scope: panelFor({ page, platform: 'android' }) });
+    await expect(links).toHaveCount(2);
+    for (const link of await links.all()) {
+      await expect(link).toBeVisible();
+      await expect(link).toHaveText(FIXTURE.displayName);
+      await expect(link).toHaveAttribute('href', RETURN_HREF);
+      await expect(link).not.toHaveAttribute('target', /.*/);
+    }
+  });
 
   test('the Android screenshot loads', async ({ page }) => {
     await page.goto(VALID_LINK);
@@ -243,6 +272,24 @@ test.describe('invalid link', { tag: '@all' }, () => {
       for (const value of leaked) {
         expect(markup, value).not.toContain(value);
       }
+    });
+  }
+});
+
+test.describe('hostile return', { tag: '@all' }, () => {
+  const HOSTILE_RETURNS = ['javascript:alert(1)', 'https://evil.com'];
+
+  for (const hostile of HOSTILE_RETURNS) {
+    test(`return=${hostile} renders no app link and is not echoed`, async ({ page }) => {
+      await page.goto(`${VALID_LINK}&return=${encodeURIComponent(hostile)}`);
+
+      await expect(page.getByRole('tablist')).toBeVisible();
+      await expect(returnLinks({ scope: page })).toHaveCount(0);
+      await expect(page.getByRole('link', { name: FIXTURE.displayName })).toHaveCount(0);
+      const markup = await page.content();
+      expect(markup).not.toContain(hostile);
+      expect(markup).not.toContain('evil.com');
+      expect(markup).not.toContain('alert(1)');
     });
   }
 });

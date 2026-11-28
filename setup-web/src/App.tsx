@@ -90,6 +90,7 @@ export default function App({
             user={user}
             personalTopic={personalTopic}
             broadcastTopic={broadcastTopic}
+            returnUrl={returnUrl}
           />
         }
         androidPanel={
@@ -99,6 +100,7 @@ export default function App({
             personalTopic={personalTopic}
             broadcastTopic={broadcastTopic}
             oneTap={oneTap}
+            returnUrl={returnUrl}
           />
         }
       />

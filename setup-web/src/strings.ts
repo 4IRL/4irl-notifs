@@ -47,10 +47,13 @@ export const strings = {
   labelUsername: 'Username',
   labelPersonalTopic: 'Your notifications topic',
   labelBroadcastTopic: 'Announcements topic',
-  passwordNote: (displayName: string) =>
-    `Password: the notification password you set in ${displayName}. It's never shown on this page.`,
+  // Segments around the app name, so the name can render as a return link (the
+  // leadBefore / leadAfterName precedent).
+  passwordNoteBefore: 'Password: the notification password you set in ',
+  passwordNoteAfter: ". It's never shown on this page.",
   testItTitle: 'Test it',
-  testItBefore: (displayName: string) => `Back in ${displayName}, tap `,
+  testItBefore: 'Back in ',
+  testItAfterName: ', tap ',
   testItBold: 'Send test notification',
   testItAfter: '.',
 

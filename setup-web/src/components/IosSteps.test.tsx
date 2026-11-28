@@ -13,8 +13,10 @@ const PROPS = {
   broadcastTopic: 'chores4irl-broadcast',
 };
 
-function renderSteps() {
-  return render(<IosSteps {...PROPS} />);
+const RETURN_URL = 'https://chores.4irl.app/home';
+
+function renderSteps({ returnUrl = null }: { returnUrl?: string | null } = {}) {
+  return render(<IosSteps {...PROPS} returnUrl={returnUrl} />);
 }
 
 describe('IosSteps', () => {
@@ -39,10 +41,24 @@ describe('IosSteps', () => {
     expect(screen.getByRole('list')).toBeInTheDocument();
   });
 
-  it('renders no links: the install card owns the store downloads', () => {
-    renderSteps();
+  it('renders no links without a returnUrl: the install card owns the store downloads', () => {
+    renderSteps({ returnUrl: null });
 
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('renders exactly two same-tab return links named after the app with a returnUrl', () => {
+    renderSteps({ returnUrl: RETURN_URL });
+
+    const links = screen.getAllByRole('link');
+    expect(links).toHaveLength(2);
+    links.forEach((link) => {
+      expect(link).toHaveAccessibleName('Chore Reaper');
+      expect(link).toHaveAttribute('href', RETURN_URL);
+      expect(link).not.toHaveAttribute('target');
+      expect(link).toHaveAttribute('rel', 'noreferrer');
+      expect(link).toHaveClass('setup-page__app-link');
+    });
   });
 
   it('renders exactly four copy buttons that copy the exact derived values', async () => {
@@ -75,7 +91,18 @@ describe('IosSteps', () => {
   it('describes the password in text and names the app in the note and the test step', () => {
     const { container } = renderSteps();
 
-    expect(screen.getByText(strings.passwordNote('Chore Reaper'))).toBeInTheDocument();
+    expect(container).toHaveTextContent(
+      "Password: the notification password you set in Chore Reaper. It's never shown on this page.",
+    );
+    expect(container).toHaveTextContent('Back in Chore Reaper, tap Send test notification.');
+  });
+
+  it('keeps the same visible text with a returnUrl', () => {
+    const { container } = renderSteps({ returnUrl: RETURN_URL });
+
+    expect(container).toHaveTextContent(
+      "Password: the notification password you set in Chore Reaper. It's never shown on this page.",
+    );
     expect(container).toHaveTextContent('Back in Chore Reaper, tap Send test notification.');
   });
 

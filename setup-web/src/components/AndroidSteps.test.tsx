@@ -13,8 +13,10 @@ const PROPS = {
   broadcastTopic: 'chores4irl-broadcast',
 };
 
-function renderSteps({ oneTap }: { oneTap: boolean }) {
-  return render(<AndroidSteps {...PROPS} oneTap={oneTap} />);
+const RETURN_URL = 'https://chores.4irl.app/home';
+
+function renderSteps({ oneTap, returnUrl = null }: { oneTap: boolean; returnUrl?: string | null }) {
+  return render(<AndroidSteps {...PROPS} oneTap={oneTap} returnUrl={returnUrl} />);
 }
 
 function expectFourCopyFields() {
@@ -60,6 +62,17 @@ describe('AndroidSteps with one-tap', () => {
     expect(personal).not.toHaveClass('setup-page__primary--secondary');
     expect(broadcast).toHaveClass('setup-page__primary--secondary');
     expect(container.querySelectorAll('a[href^="ntfy://"]')).toHaveLength(2);
+  });
+
+  it('renders two same-tab return links named after the app alongside the ntfy anchors', () => {
+    renderSteps({ oneTap: true, returnUrl: RETURN_URL });
+
+    const links = screen.getAllByRole('link', { name: 'Chore Reaper' });
+    expect(links).toHaveLength(2);
+    links.forEach((link) => {
+      expect(link).toHaveAttribute('href', RETURN_URL);
+      expect(link).not.toHaveAttribute('target');
+    });
   });
 
   it('pairs each anchor with its own topic copy field, personal group first', () => {
@@ -120,6 +133,18 @@ describe('AndroidSteps copy-only', () => {
     expect(screen.queryAllByRole('link')).toHaveLength(0);
   });
 
+  it('renders exactly two return links named after the app with a returnUrl', () => {
+    renderSteps({ oneTap: false, returnUrl: RETURN_URL });
+
+    const links = screen.getAllByRole('link');
+    expect(links).toHaveLength(2);
+    links.forEach((link) => {
+      expect(link).toHaveAccessibleName('Chore Reaper');
+      expect(link).toHaveAttribute('href', RETURN_URL);
+      expect(link).not.toHaveAttribute('target');
+    });
+  });
+
   it('keeps all four copy buttons copying the exact values', async () => {
     renderSteps({ oneTap: false });
 
@@ -131,7 +156,10 @@ describe('AndroidSteps shared content', () => {
   it.each([true, false])('describes the password in text only (oneTap=%s)', (oneTap) => {
     const { container } = renderSteps({ oneTap });
 
-    expect(screen.getByText(strings.passwordNote('Chore Reaper'))).toBeInTheDocument();
+    expect(container).toHaveTextContent(
+      "Password: the notification password you set in Chore Reaper. It's never shown on this page.",
+    );
+    expect(container.querySelector('.setup-page__app-link')).toBeNull();
     expect(container.querySelector('input, textarea, form')).toBeNull();
     expect(container).toHaveTextContent('Back in Chore Reaper, tap Send test notification.');
   });
