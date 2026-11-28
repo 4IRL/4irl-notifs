@@ -258,6 +258,13 @@ describe('AppsTable', () => {
       ),
     );
     expect(onRemintToken).toHaveBeenCalledWith({ appId: 'urls4irl', rotate: false });
+    // The status text lands one microtask before isMinting clears; wait for the busy state to
+    // end, or an early Escape is still ignored as busy.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: strings.remintTokenAction })).not.toHaveAttribute(
+        'aria-disabled',
+      ),
+    );
 
     // The re-mint status does not guard a close: the form is clean.
     await user.keyboard('{Escape}');
@@ -323,6 +330,12 @@ describe('AppsTable', () => {
     );
     expect(within(dialog).getByRole('status')).toBeEmptyDOMElement();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+    // The alert lands before isMinting clears; wait for the busy state to end before Escape.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: strings.remintTokenAction })).not.toHaveAttribute(
+        'aria-disabled',
+      ),
+    );
     // The form is still clean, so Escape closes it at once.
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
