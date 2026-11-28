@@ -487,6 +487,30 @@ func TestRegistrarExchangeRefusesBadDisplayNames(testInstance *testing.T) {
 	}
 }
 
+func TestRegistrarExchangeRefusesAJSONEscapedFormatCharacterDisplayName(testInstance *testing.T) {
+	rig := newRegistrarRig(testInstance)
+	rig.approve(testInstance)
+
+	// A raw body carrying the JSON escape for a zero-width joiner, so the real JSON decoder sees it.
+	rawBody := `{"name":"zwj","display_name":"Blog‍Name","token":"` + rig.token(testInstance) + `"}`
+	status, body := apiRequest(testInstance, http.MethodPost, identityExchangePath, []byte(rawBody))
+	requireStatus(testInstance, "zero-width joiner display_name", status, http.StatusBadRequest, body)
+	requireErrorMessage(testInstance, "zero-width joiner display_name", body, "invalid display_name")
+	if personServiceHasApp(testInstance, rig.prefix+"zwj") {
+		testInstance.Errorf("a refused display_name created a person-service row")
+	}
+}
+
+func TestRegistrarExchangeNamesAWhitespaceOnlyDisplayNameByItsAppID(testInstance *testing.T) {
+	rig := newRegistrarRig(testInstance)
+	rig.approve(testInstance)
+
+	rig.issueWithDisplayName(testInstance, "blank", "   ")
+	if got, found := personServiceDisplayName(testInstance, rig.prefix+"blank"); !found || got != rig.prefix+"blank" {
+		testInstance.Errorf("display_name = %q (found %v), want the app id", got, found)
+	}
+}
+
 func TestRegistrarOverlapRefusalCreatesNoPersonServiceRow(testInstance *testing.T) {
 	rig := newRegistrarRig(testInstance)
 	rig.approve(testInstance)
