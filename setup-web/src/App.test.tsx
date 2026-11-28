@@ -6,6 +6,15 @@ import App from './App';
 import { APP_STORE_URL, F_DROID_URL, GOOGLE_PLAY_URL } from './ntfyLinks';
 import { strings } from './strings';
 
+const qrProps = vi.hoisted(() => ({ calls: [] as Array<{ value: string }> }));
+
+vi.mock('qrcode.react', () => ({
+  QRCodeSVG: (props: { value: string }) => {
+    qrProps.calls.push(props);
+    return <svg data-testid="qr-svg" />;
+  },
+}));
+
 const IPHONE_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148';
 const ANDROID_UA =
@@ -24,6 +33,7 @@ function renderApp({
 }
 
 afterEach(() => {
+  qrProps.calls.length = 0;
   vi.restoreAllMocks();
   window.history.replaceState(null, '', '/');
 });
@@ -412,6 +422,28 @@ describe('per-platform steps and the one-tap rule', () => {
       const links = within(panel).getAllByRole('link', { name: 'apps_birthdays' });
       expect(links).toHaveLength(2);
       links.forEach((link) => expect(link).toHaveAttribute('href', RETURN));
+    });
+
+    it('hands a valid return to the desktop QR link', () => {
+      renderApp({
+        search: `${VALID_SEARCH}&return=${encodeURIComponent(RETURN)}`,
+        userAgent: DESKTOP_UA,
+      });
+
+      const link = new URL(qrProps.calls.at(-1)?.value ?? '');
+      expect(link.searchParams.get('return')).toBe(RETURN);
+    });
+
+    it('leaves a hostile return out of the desktop QR link', () => {
+      renderApp({
+        search: `${VALID_SEARCH}&return=${encodeURIComponent('https://evil.com/steal')}`,
+        userAgent: DESKTOP_UA,
+      });
+
+      const value = qrProps.calls.at(-1)?.value ?? '';
+      expect(value).not.toBe('');
+      expect(new URL(value).searchParams.has('return')).toBe(false);
+      expect(value).not.toContain('evil.com');
     });
 
     it('renders no app link when return is missing', () => {
