@@ -34,7 +34,7 @@ const INVISIBLE_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
 export const NTFY_SERVER = 'https://notifs.4irl.app';
 
 /** The only domain (apex and any subdomain) the optional `return` link may point at. */
-export const RETURN_URL_DOMAIN = '4irl.app';
+const RETURN_URL_DOMAIN = '4irl.app';
 
 /**
  * Maximum length of the optional `return` URL, checked on the raw value and on the
@@ -45,7 +45,7 @@ export const RETURN_URL_DOMAIN = '4irl.app';
  * of the carried URL to at most 3 characters, so 400 adds at most 1200 (~2115 total,
  * under 2331 with margin). The 3x bound holds only for the normalized href.
  */
-export const RETURN_URL_MAX_LENGTH = 400;
+const RETURN_URL_MAX_LENGTH = 400;
 
 const USER_PREFIX_LENGTH = 'u_'.length;
 

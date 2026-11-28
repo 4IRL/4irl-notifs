@@ -54,7 +54,7 @@
 
 /* Return link to the app. The underline is always on: it is the only cue on touch.
    Contrast of --accent (#f97316) is >= 4.5:1 on --bg, on --surface and on the tinted password
-   box (theme is dark-only), so the plan's --text-h fallback is not needed. */
+   box (theme is dark-only). */
 .setup-page__app-link {
   color: var(--accent);
   text-decoration: underline;

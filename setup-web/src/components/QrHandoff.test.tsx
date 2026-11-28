@@ -23,7 +23,7 @@ afterEach(() => {
 describe('QrHandoff', () => {
   it('encodes a canonical link from the validated app, user and name', () => {
     window.history.replaceState(null, '', '/');
-    render(<QrHandoff app="chores4irl" user={USER} name="Chore Tracker" />);
+    render(<QrHandoff app="chores4irl" user={USER} name="Chore Tracker" returnUrl={null} />);
 
     expect(qrProps.calls.at(-1)?.value).toBe(
       `${window.location.origin}/?app=chores4irl&user=${USER}&name=Chore+Tracker`,
@@ -38,8 +38,13 @@ describe('QrHandoff', () => {
     expect(link.searchParams.get('return')).toBe('https://chores.4irl.app/x');
   });
 
+  it('omits return when returnUrl is null', () => {
+    render(<QrHandoff app="chores4irl" user={USER} name={null} returnUrl={null} />);
+    expect(new URL(qrProps.calls.at(-1)?.value ?? '').searchParams.has('return')).toBe(false);
+  });
+
   it('omits name when the link had no valid name', () => {
-    render(<QrHandoff app="chores4irl" user={USER} name={null} />);
+    render(<QrHandoff app="chores4irl" user={USER} name={null} returnUrl={null} />);
 
     expect(qrProps.calls.at(-1)?.value).toBe(
       `${window.location.origin}/?app=chores4irl&user=${USER}`,
@@ -53,7 +58,7 @@ describe('QrHandoff', () => {
       '',
       `/?app=chores4irl&user=${USER}&junk=${oversized}#${oversized}`,
     );
-    render(<QrHandoff app="chores4irl" user={USER} name={null} />);
+    render(<QrHandoff app="chores4irl" user={USER} name={null} returnUrl={null} />);
 
     expect(screen.getByRole('img', { name: strings.qrAriaLabel })).toBeInTheDocument();
     const value = qrProps.calls.at(-1)?.value;
@@ -63,7 +68,7 @@ describe('QrHandoff', () => {
   });
 
   it('gives the QR an accessible name and shows the caption', () => {
-    render(<QrHandoff app="chores4irl" user={USER} name={null} />);
+    render(<QrHandoff app="chores4irl" user={USER} name={null} returnUrl={null} />);
 
     const qr = screen.getByRole('img', { name: strings.qrAriaLabel });
     expect(qr).toContainElement(screen.getByTestId('qr-svg'));

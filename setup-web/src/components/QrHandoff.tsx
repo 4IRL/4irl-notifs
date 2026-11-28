@@ -7,7 +7,7 @@ interface QrHandoffProps {
   app: string;
   user: string;
   name: string | null;
-  returnUrl?: string | null;
+  returnUrl: string | null;
 }
 
 /**
@@ -22,7 +22,7 @@ interface QrHandoffProps {
  * (see params.ts). `name` is null when the link had no valid name (the phone then
  * falls back to `app` the same way); `returnUrl` is null unless it passed validation.
  */
-export function QrHandoff({ app, user, name, returnUrl = null }: QrHandoffProps) {
+export function QrHandoff({ app, user, name, returnUrl }: QrHandoffProps) {
   const link = new URL(window.location.pathname, window.location.origin);
   link.searchParams.set('app', app);
   link.searchParams.set('user', user);
