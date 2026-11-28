@@ -56,7 +56,10 @@ export function AndroidSteps({
               {strings.androidFallbackPersonalBefore}
               <b>{strings.androidFallbackBold}</b>
               {strings.androidFallbackPersonalAfter}
+              <b>{strings.androidUseServerBold}</b>
+              {strings.androidFallbackPersonalEnd}
             </p>
+            <CopyField label={strings.labelServiceUrl} value={NTFY_SERVER} />
             <CopyField label={strings.labelPersonalTopic} value={personalTopic} />
           </div>
           <div className="setup-page__subscribe-group">
@@ -66,7 +69,13 @@ export function AndroidSteps({
             >
               {strings.androidOneTapBroadcast}
             </a>
-            <p className="setup-page__fallback">{strings.androidFallbackBroadcast}</p>
+            <p className="setup-page__fallback">
+              {strings.androidFallbackBroadcastBefore}
+              <b>{strings.androidFallbackBold}</b>
+              {strings.androidFallbackBroadcastMid}
+              <b>{strings.androidUseServerBold}</b>
+              {strings.androidFallbackBroadcastEnd}
+            </p>
             <CopyField label={strings.labelBroadcastTopic} value={broadcastTopic} />
           </div>
         </Step>
@@ -76,7 +85,10 @@ export function AndroidSteps({
             {strings.androidCopyBefore}
             <b>{strings.androidCopyBold}</b>
             {strings.androidCopyAfter}
+            <b>{strings.androidUseServerBold}</b>
+            {strings.androidCopyEnd}
           </p>
+          <CopyField label={strings.labelServiceUrl} value={NTFY_SERVER} />
           <CopyField label={strings.labelPersonalTopic} value={personalTopic} />
           <CopyField label={strings.labelBroadcastTopic} value={broadcastTopic} />
           <p className="setup-page__fallback">{strings.androidCopyOnPhoneNote}</p>

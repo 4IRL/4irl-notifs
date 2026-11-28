@@ -72,6 +72,12 @@ describe('IosSteps', () => {
     });
   });
 
+  it('never mentions Use another server: iPhone sets the default server in step 1', () => {
+    const { container } = renderSteps();
+
+    expect(container).not.toHaveTextContent('Use another server');
+  });
+
   it('warns to paste the server exactly with no trailing slash', () => {
     renderSteps();
 

@@ -329,7 +329,7 @@ describe('per-platform steps and the one-tap rule', () => {
     expect(
       within(panel).getByRole('link', { name: strings.androidOneTapBroadcast }),
     ).toHaveAttribute('href', BROADCAST_HREF);
-    expect(within(panel).getAllByRole('button')).toHaveLength(4);
+    expect(within(panel).getAllByRole('button')).toHaveLength(5);
     expect(container.querySelectorAll(NTFY_ANCHOR)).toHaveLength(2);
   });
 
@@ -342,7 +342,7 @@ describe('per-platform steps and the one-tap rule', () => {
     const panel = screen.getByRole('tabpanel', { name: strings.tabAndroid });
     expect(container.querySelector(NTFY_ANCHOR)).toBeNull();
     expect(within(panel).getByText(strings.androidCopyOnPhoneNote)).toBeInTheDocument();
-    expect(within(panel).getAllByRole('button')).toHaveLength(4);
+    expect(within(panel).getAllByRole('button')).toHaveLength(5);
   });
 
   it('shows copy-only Android steps when a desktop visitor picks Android', async () => {
@@ -353,7 +353,7 @@ describe('per-platform steps and the one-tap rule', () => {
 
     const panel = screen.getByRole('tabpanel', { name: strings.tabAndroid });
     expect(container.querySelector(NTFY_ANCHOR)).toBeNull();
-    expect(within(panel).getAllByRole('button')).toHaveLength(4);
+    expect(within(panel).getAllByRole('button')).toHaveLength(5);
     expect(within(panel).getByText(strings.androidCopyOnPhoneNote)).toBeInTheDocument();
   });
 

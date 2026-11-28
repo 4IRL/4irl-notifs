@@ -211,8 +211,18 @@ test.describe('desktop', { tag: '@desktop' }, () => {
       await expect(fieldValue({ field })).toHaveText(value);
       await expect(field.getByRole('button')).toBeVisible();
     }
-    // Two topics, plus the Service URL and Username fields of the log-in step.
-    await expect(copyButtons({ scope: android })).toHaveCount(4);
+    // Two topics, plus the Service URL and Username fields of the log-in step, plus the
+    // Service URL field of the subscribe step.
+    await expect(copyButtons({ scope: android })).toHaveCount(5);
+    // Step 1 has a field with the same label, so scope to the step 2 heading's step.
+    const stepTwo = android.getByRole('listitem').filter({
+      has: page.getByRole('heading', { level: 2, name: strings.androidCopyTitle }),
+    });
+    await expectFieldCopies({
+      page,
+      field: copyFieldFor({ scope: stepTwo, label: strings.labelServiceUrl }),
+      value: FIXTURE.server,
+    });
     await expect(page.getByRole('img', { name: strings.qrAriaLabel })).toBeVisible();
     // The choice is page state only; it is never written to the URL.
     expect(page.url()).toBe(urlBefore);
