@@ -2431,6 +2431,11 @@ test.describe('admin UI Delivery tab', () => {
     await expect(section.getByText('2 requests awaiting approval')).toBeVisible();
     // A request already rejected on load has only its status pill, never Approve.
     await expect(section.locator('tr[data-request-id="3"]').getByRole('button')).toHaveCount(0);
+    // Only the active key shows until the retired ones are asked for.
+    await expect(section.getByText('Superseded', { exact: true })).toHaveCount(0);
+    await section
+      .getByRole('button', { name: 'Show retired keys (1) for tasktracker', exact: true })
+      .click();
     await expect(section.getByText('Superseded', { exact: true })).toBeVisible();
 
     // Approve removes the row and focus moves to the neighbouring request's Approve.
@@ -2721,9 +2726,13 @@ test.describe('admin UI Delivery tab', () => {
     }
     await page.keyboard.press('Escape');
     menu = await openRowMenu({ page, row: 'tasktracker' });
-    // The revoked key has no Revoke item.
-    await expect(menu.getByRole('menuitem')).toHaveCount(2);
-    for (const name of ['Revoke key dak_7Q2m for tasktracker', 'Unbind tasktracker']) {
+    // The revoked key is hidden behind the Show item and has no Revoke item.
+    await expect(menu.getByRole('menuitem')).toHaveCount(3);
+    for (const name of [
+      'Show retired keys (1) for tasktracker',
+      'Revoke key dak_7Q2m for tasktracker',
+      'Unbind tasktracker',
+    ]) {
       await expectTouchTarget(menu.getByRole('menuitem', { name, exact: true }));
     }
     await page.keyboard.press('Escape');
@@ -2822,7 +2831,8 @@ test.describe('admin UI Delivery tab', () => {
       .click();
     await expect(rowKebab({ page, row: 'tasktracker' })).toBeFocused();
     menu = await openRowMenu({ page, row: 'tasktracker' });
-    await expect(menu.getByRole('menuitem')).toHaveCount(1);
+    // The revoked key is now retired: the menu offers Show retired keys and Unbind.
+    await expect(menu.getByRole('menuitem')).toHaveCount(2);
 
     // Unbind removes the row; focus goes to the neighbouring binding's kebab.
     await menu.getByRole('menuitem', { name: 'Unbind tasktracker' }).click();
