@@ -28,3 +28,5 @@ id = "37cdc378df264387bf34b08d552a4c3c"
 #   DISCORD_WEBHOOK_URL       dedicated watchdog Discord webhook
 #   CF_ACCESS_CLIENT_ID       Cloudflare Access service token id (notifs-delivery)
 #   CF_ACCESS_CLIENT_SECRET   Cloudflare Access service token secret
+#   HEALTH_TOKEN_URLS4IRL     urls4irl `/health/deep` token (same value as urls4irl's prod HEALTH_CHECK_TOKEN);
+#                             each deep-health app has its own HEALTH_TOKEN_<APP>

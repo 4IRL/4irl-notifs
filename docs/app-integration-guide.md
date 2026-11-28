@@ -49,7 +49,7 @@ You do not have to build any of this yourself, and every app that joins makes th
 - **Per-person delivery.** `to.recipient` takes an email, and the same email is the same person across
   every 4IRL app, so you never invent or store a notification identity of your own.
 - **An independent watcher on the platform itself.** The watchdog Worker runs on Cloudflare, outside the
-  VPS, and probes delivery-api, provisioning-api and ntfy every 5 minutes, posting to its own Discord
+  VPS, and probes delivery-api, provisioning-api, ntfy and the urls4irl website (including its Postgres and both Redis servers) every 5 minutes, posting to its own Discord
   channel. You do not need to build monitoring for the notification path, and an outage of it does not
   go quietly.
 - **Nothing extra to host.** Your app needs no inbound endpoint to be monitored: jobs push a ping and
@@ -426,10 +426,41 @@ Suggested naming (not enforced beyond the regexes in this guide): short purpose 
 
 - **Your recurring jobs:** heartbeats. The job pushes a ping; silence past `period + grace` alerts.
 - **The notification platform itself:** the watchdog, a Cloudflare Worker that probes delivery-api,
-  provisioning-api and ntfy every 5 minutes from outside the VPS and posts changes to its own Discord
-  channel.
-- **Your app's own website or API:** not covered by either today. Keep using the app's own uptime
-  monitoring for that.
+  provisioning-api, ntfy and the urls4irl website every 5 minutes from outside the VPS and posts changes
+  to its own Discord channel.
+- **Your app's own website or API:** a website probe check (Heartbeats, kind "Website probe") runs from
+  the VPS. An app that shares the hub's VPS can also join the watchdog through the deep-health contract
+  below, which sees a whole-VPS or tunnel outage too; urls4irl does this today, covering its Postgres and
+  both Redis servers.
+
+### Outside-the-VPS deep health (watchdog)
+
+The watchdog probes any app that implements this contract. Join only if the app runs on the hub's VPS;
+for an app on another host, a website probe check from the VPS is already an outside view.
+
+- **Request:** `GET https://<app host>/health/deep` (any fixed path works) with header
+  `X-Health-Token: <token>`. No cookie, no CSRF token and no Access application in front of it; the app
+  checks the token itself against its own secret and must answer well within the watchdog's 10 s probe
+  timeout.
+- **200** when all is well: `{"status":"Success","components":{"<name>":"up",...}}`.
+- **503** when any component is unhealthy: `{"status":"Failure","components":{...}}`, with each value
+  exactly `up`, `down` or `not configured` (`not configured` counts as unhealthy).
+- **401** for a missing or wrong token (or the app's secret unset), and optionally **429** after repeated
+  bad tokens. The watchdog reports both as a token setup problem, not as an outage.
+- **Component names** are lowercase snake_case (`^[a-z][a-z0-9_]{0,39}$`). The watchdog judges every
+  component the app reports, so a component added later is covered without a watchdog change; the ones
+  it must always see are listed in its target entry, and a missing one is unhealthy.
+- Never put secrets, hostnames or error text in the body: the component names and values reach Discord.
+
+To add an app (a change in this repo, by the operator):
+
+1. In `watchdog/src/types.ts`, add `HEALTH_TOKEN_<APP>?: string` to `Env`.
+2. In `watchdog/src/targets.ts`, append a
+   `deepHealthTarget({ id, url, tokenSecret: 'HEALTH_TOKEN_<APP>', requiredComponents: [...] })` entry to
+   `TARGETS`, with tests.
+3. In `watchdog/`, run `npx wrangler secret put HEALTH_TOKEN_<APP>` with the same value as the app's own
+   secret, before the change merges (an unset secret makes the target report `unauthorized`), and list
+   it in the secrets comment of `watchdog/wrangler.toml` and in `ARCHITECTURE.md` watchdog runbook step 5.
 
 ### Pausing and removing an app
 

@@ -6,10 +6,12 @@ import {
   ACCESS_ID,
   ACCESS_SECRET,
   DELIVERY_URL,
+  HEALTH_TOKEN,
   MINUTE,
   MORNING,
   NTFY_URL,
   PROVISIONING_URL,
+  URLS4IRL_URL,
   WEBHOOK_URL,
   buildEnv,
   healthyDelivery,
@@ -84,7 +86,7 @@ describe('quiet runs', () => {
     expect(first.kv.get).toHaveBeenCalledTimes(1);
     expect(first.kv.put).toHaveBeenCalledTimes(1);
     const stored = await readStoredState();
-    expect(Object.keys(stored?.targets ?? {})).toEqual(['delivery-api', 'provisioning-api', 'ntfy']);
+    expect(Object.keys(stored?.targets ?? {})).toEqual(['delivery-api', 'provisioning-api', 'ntfy', 'urls4irl']);
     expect(stored?.targets['delivery-api']?.status).toBe('up');
 
     const second = await run({ at: MORNING + 5 * MINUTE, routes: healthyRoutes(MORNING + 5 * MINUTE) });
@@ -136,6 +138,25 @@ describe('state transitions', () => {
       detail: 'HTTP 500',
     });
     expect(stored?.targets['delivery-api']?.status).toBe('up');
+  });
+
+  it('posts urls4irl down on first run and recovered after a later healthy run', async () => {
+    const down = await run({
+      at: MORNING,
+      routes: { ...healthyRoutes(MORNING), urls4irl: () => new Response('x', { status: 503 }) },
+    });
+    expect(down.stub.discordPosts().map((post) => post.content)).toEqual(['🔴 **DOWN** `urls4irl`: HTTP 503']);
+    const recoveredAt = MORNING + 10 * MINUTE;
+    const recovered = await run({ at: recoveredAt, routes: healthyRoutes(recoveredAt) });
+    expect(recovered.stub.discordPosts().map((post) => post.content)).toEqual([
+      '🟢 **RECOVERED** `urls4irl` after 10 min',
+    ]);
+  });
+
+  it('records a healthy urls4irl silently on first run', async () => {
+    const result = await run({ at: MORNING, routes: healthyRoutes(MORNING) });
+    expect(result.stub.discordPosts()).toHaveLength(0);
+    expect((await readStoredState())?.targets['urls4irl']?.status).toBe('up');
   });
 
   it('groups several transitions of one run into a single message', async () => {
@@ -326,6 +347,102 @@ describe('probe verdicts', () => {
     expect((await readStoredState())?.targets['ntfy']?.status).toBe('down');
   });
 
+  const allUp = { postgres: 'up', session_redis: 'up', metrics_redis: 'up' };
+  it.each([
+    [
+      '200 session_redis down',
+      () => Response.json({ status: 'Success', components: { ...allUp, session_redis: 'down' } }),
+      'unhealthy: session_redis=down',
+    ],
+    [
+      '200 metrics_redis not configured',
+      () => Response.json({ status: 'Success', components: { ...allUp, metrics_redis: 'not configured' } }),
+      'unhealthy: metrics_redis=not configured',
+    ],
+    [
+      '200 two components down',
+      () =>
+        Response.json({ status: 'Success', components: { ...allUp, postgres: 'down', metrics_redis: 'down' } }),
+      'unhealthy: postgres=down, metrics_redis=down',
+    ],
+    [
+      '200 postgres UP (wrong case)',
+      () => Response.json({ status: 'Success', components: { ...allUp, postgres: 'UP' } }),
+      'unhealthy: postgres=invalid',
+    ],
+    [
+      '200 key missing',
+      () =>
+        Response.json({ status: 'Success', components: { postgres: 'up', metrics_redis: 'up' } }),
+      'unhealthy: session_redis=missing',
+    ],
+    ['200 no components', () => Response.json({ status: 'Success' }), 'components missing'],
+    [
+      '200 status Failure',
+      () => Response.json({ status: 'Failure', components: allUp }),
+      'deep health status Failure',
+    ],
+    ['200 HTML', () => new Response('<html>fallback</html>'), 'invalid JSON response'],
+    ['200 array', () => Response.json([]), 'invalid JSON response'],
+    [
+      '200 components array',
+      () => Response.json({ status: 'Success', components: [] }),
+      'components missing',
+    ],
+    [
+      '200 postgres null',
+      () => Response.json({ status: 'Success', components: { ...allUp, postgres: null } }),
+      'unhealthy: postgres=invalid',
+    ],
+    [
+      '503 postgres null',
+      () =>
+        Response.json({ status: 'Failure', components: { ...allUp, postgres: null } }, { status: 503 }),
+      'unhealthy: postgres=invalid',
+    ],
+    [
+      '503 Failure without components',
+      () => Response.json({ status: 'Failure' }, { status: 503 }),
+      'HTTP 503',
+    ],
+    [
+      '503 with components',
+      () =>
+        Response.json(
+          {
+            status: 'Failure',
+            message: 'Unhealthy components: session_redis',
+            components: { ...allUp, session_redis: 'down' },
+          },
+          { status: 503 },
+        ),
+      'unhealthy: session_redis=down',
+    ],
+    ['503 HTML', () => new Response('<html>x</html>', { status: 503 }), 'HTTP 503'],
+    [
+      '401',
+      () => Response.json({ status: 'Failure', message: 'Unauthorized' }, { status: 401 }),
+      'unauthorized: check HEALTH_TOKEN_URLS4IRL',
+    ],
+    [
+      '429',
+      () => Response.json({ message: 'rate limited' }, { status: 429 }),
+      'rate limited (HTTP 429): check HEALTH_TOKEN_URLS4IRL',
+    ],
+    [
+      '200 extra reported component down',
+      () => Response.json({ status: 'Success', components: { ...allUp, search_index: 'down' } }),
+      'unhealthy: search_index=down',
+    ],
+    ['403', () => new Response('x', { status: 403 }), 'HTTP 403'],
+    ['404', () => new Response('x', { status: 404 }), 'HTTP 404'],
+    ['301', () => new Response(null, { status: 301 }), 'unexpected redirect (HTTP 301)'],
+  ])('treats urls4irl %s as down', async (_label, urls4irl, expectedDetail) => {
+    const routes = { ...healthyRoutes(MORNING), urls4irl };
+    expect(await firstDetail(routes, 'urls4irl')).toBe(expectedDetail);
+    expect((await readStoredState())?.targets['urls4irl']?.status).toBe('down');
+  });
+
   it('treats a network error as down without leaking the error message', async () => {
     const routes = {
       ...healthyRoutes(MORNING),
@@ -387,7 +504,7 @@ describe('probe verdicts', () => {
 
   it('sends every probe with redirect manual', async () => {
     const { stub } = await run({ at: MORNING, routes: healthyRoutes(MORNING) });
-    for (const url of [DELIVERY_URL, PROVISIONING_URL, NTFY_URL]) {
+    for (const url of [DELIVERY_URL, PROVISIONING_URL, NTFY_URL, URLS4IRL_URL]) {
       expect(stub.callsTo(url)[0]?.init.redirect).toBe('manual');
     }
   });
@@ -404,6 +521,34 @@ describe('Access headers and secrets', () => {
     const ntfyHeaders = new Headers(stub.callsTo(NTFY_URL)[0]?.init.headers);
     expect(ntfyHeaders.get('CF-Access-Client-Id')).toBeNull();
     expect(ntfyHeaders.get('CF-Access-Client-Secret')).toBeNull();
+    const urls4irlHeaders = new Headers(stub.callsTo(URLS4IRL_URL)[0]?.init.headers);
+    expect(urls4irlHeaders.get('CF-Access-Client-Id')).toBeNull();
+    expect(urls4irlHeaders.get('CF-Access-Client-Secret')).toBeNull();
+  });
+
+  it('sends X-Health-Token only to urls4irl', async () => {
+    const { stub } = await run({ at: MORNING, routes: healthyRoutes(MORNING) });
+    const urls4irlHeaders = new Headers(stub.callsTo(URLS4IRL_URL)[0]?.init.headers);
+    expect(urls4irlHeaders.get('X-Health-Token')).toBe(HEALTH_TOKEN);
+    for (const url of [DELIVERY_URL, PROVISIONING_URL, NTFY_URL]) {
+      expect(new Headers(stub.callsTo(url)[0]?.init.headers).get('X-Health-Token')).toBeNull();
+    }
+  });
+
+  it('omits X-Health-Token, warns once and stores the 401 detail when the secret is unset', async () => {
+    const routes = {
+      ...healthyRoutes(MORNING),
+      urls4irl: () => Response.json({ status: 'Failure', message: 'Unauthorized' }, { status: 401 }),
+    };
+    const stub = stubFetch(routes);
+    const kv = spyKv();
+    await runScheduled({ at: MORNING, workerEnv: buildEnv({ kv: kv.kv, HEALTH_TOKEN_URLS4IRL: undefined }) });
+    expect(new Headers(stub.callsTo(URLS4IRL_URL)[0]?.init.headers).get('X-Health-Token')).toBeNull();
+    expect(warnLines()).toContain(
+      'watchdog: HEALTH_TOKEN_URLS4IRL is not configured; target urls4irl will fail',
+    );
+    expect(warnLines().filter((line) => line.includes('is not configured'))).toHaveLength(1);
+    expect((await readStoredState())?.targets['urls4irl']?.detail).toBe('unauthorized: check HEALTH_TOKEN_URLS4IRL');
   });
 
   it('never posts or logs the secrets or the webhook URL, even when everything fails', async () => {
@@ -413,11 +558,12 @@ describe('Access headers and secrets', () => {
       ntfy: () => {
         throw new Error(`failed for ${ACCESS_SECRET}`);
       },
+      urls4irl: downDelivery(500),
       discord: () => new Response('denied', { status: 500 }),
     };
     const { stub } = await run({ at: MORNING, routes, kvOptions: { getThrows: true } });
     const everything = JSON.stringify(stub.discordPosts()) + consoleOutput();
-    for (const secret of [ACCESS_ID, ACCESS_SECRET, 'webhook-token-abc', WEBHOOK_URL]) {
+    for (const secret of [ACCESS_ID, ACCESS_SECRET, HEALTH_TOKEN, 'webhook-token-abc', WEBHOOK_URL]) {
       expect(everything).not.toContain(secret);
     }
   });
@@ -671,7 +817,7 @@ describe('probe and run logging', () => {
   it('logs one line per probe attempt with the status and duration', async () => {
     await run({ at: MORNING, routes: healthyRoutes(MORNING) });
     const probeLines = logLines().filter((line) => line.startsWith('watchdog: probe '));
-    expect(probeLines).toHaveLength(3);
+    expect(probeLines).toHaveLength(4);
     expect(probeLines).toContainEqual(
       expect.stringMatching(/^watchdog: probe id=delivery-api attempt=1 ok=true http=200 duration_ms=\d+$/),
     );
@@ -712,14 +858,14 @@ describe('probe and run logging', () => {
     await run({ at: MORNING, routes: healthyRoutes(MORNING) });
     expect(logLines()).toContainEqual(
       expect.stringMatching(
-        /^watchdog: run state=loaded up=3 down=0 transitions=0 discord=none kv_write=written duration_ms=\d+ held=absent held_alert=closed$/,
+        /^watchdog: run state=loaded up=4 down=0 transitions=0 discord=none kv_write=written duration_ms=\d+ held=absent held_alert=closed$/,
       ),
     );
     logSpy.mockClear();
     const at = MORNING + 5 * MINUTE;
     await run({ at, routes: healthyRoutes(at) });
     expect(logLines()).toContainEqual(
-      expect.stringMatching(/^watchdog: run state=loaded up=3 down=0 transitions=0 discord=none kv_write=unchanged /),
+      expect.stringMatching(/^watchdog: run state=loaded up=4 down=0 transitions=0 discord=none kv_write=unchanged /),
     );
   });
 
@@ -732,7 +878,7 @@ describe('probe and run logging', () => {
     await run({ at: MORNING, routes });
     expect(logLines()).toContainEqual(
       expect.stringMatching(
-        /^watchdog: run state=loaded up=2 down=1 transitions=1 discord=failed kv_write=skipped duration_ms=\d+ held=absent held_alert=closed$/,
+        /^watchdog: run state=loaded up=3 down=1 transitions=1 discord=failed kv_write=skipped duration_ms=\d+ held=absent held_alert=closed$/,
       ),
     );
   });
@@ -740,7 +886,7 @@ describe('probe and run logging', () => {
   it('logs state=read_failed when the KV read throws', async () => {
     await run({ at: MORNING, routes: healthyRoutes(MORNING), kvOptions: { getThrows: true } });
     expect(logLines()).toContainEqual(
-      expect.stringMatching(/^watchdog: run state=read_failed up=3 down=0 transitions=0 discord=none kv_write=skipped /),
+      expect.stringMatching(/^watchdog: run state=read_failed up=4 down=0 transitions=0 discord=none kv_write=skipped /),
     );
   });
 
@@ -748,7 +894,7 @@ describe('probe and run logging', () => {
     const routes = { ...healthyRoutes(MORNING), ntfy: () => new Response('x', { status: 500 }) };
     await run({ at: MORNING, routes, kvOptions: { putThrows: true } });
     expect(logLines()).toContainEqual(
-      expect.stringMatching(/^watchdog: run state=loaded up=2 down=1 transitions=1 discord=posted kv_write=failed /),
+      expect.stringMatching(/^watchdog: run state=loaded up=3 down=1 transitions=1 discord=posted kv_write=failed /),
     );
   });
 });
@@ -764,10 +910,11 @@ describe('daily summary', () => {
 
     const due = await run({ at: day(16), routes: healthyRoutes(day(16)) });
     expect(due.stub.discordPosts().map((post) => post.content)).toEqual([
-      '📋 Daily watchdog summary: 3/3 up\n' +
+      '📋 Daily watchdog summary: 4/4 up\n' +
         '🟢 `delivery-api` up since 10-19 09:00\n' +
         '🟢 `provisioning-api` up since 10-19 09:00\n' +
-        '🟢 `ntfy` up since 10-19 09:00',
+        '🟢 `ntfy` up since 10-19 09:00\n' +
+        '🟢 `urls4irl` up since 10-19 09:00',
     ]);
     expect(due.kv.put).toHaveBeenCalledTimes(1);
     expect((await readStoredState())?.last_summary_date).toBe('2026-10-19');
@@ -808,10 +955,11 @@ describe('daily summary', () => {
     expect(result.stub.discordPosts()).toHaveLength(1);
     expect(result.stub.discordPosts()[0]?.content).toBe(
       '🔴 **DOWN** `ntfy`: HTTP 500\n\n' +
-        '📋 Daily watchdog summary: 2/3 up\n' +
+        '📋 Daily watchdog summary: 3/4 up\n' +
         '🟢 `delivery-api` up since 10-19 09:00\n' +
         '🟢 `provisioning-api` up since 10-19 09:00\n' +
-        '🔴 `ntfy` down since 10-19 16:00: HTTP 500',
+        '🔴 `ntfy` down since 10-19 16:00: HTTP 500\n' +
+        '🟢 `urls4irl` up since 10-19 09:00',
     );
   });
 });
@@ -823,10 +971,11 @@ describe('held messages', () => {
   const ALERT_LINES =
     '🟠 **HELD** 3 app messages waiting, oldest 1 h: add a route or destination\n↳ `urls4irl` 3';
   const SUMMARY_9AM =
-    '📋 Daily watchdog summary: 3/3 up\n' +
+    '📋 Daily watchdog summary: 4/4 up\n' +
     '🟢 `delivery-api` up since 10-19 09:00\n' +
     '🟢 `provisioning-api` up since 10-19 09:00\n' +
-    '🟢 `ntfy` up since 10-19 09:00';
+    '🟢 `ntfy` up since 10-19 09:00\n' +
+    '🟢 `urls4irl` up since 10-19 09:00';
 
   function zeroBlock(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return heldBlock({

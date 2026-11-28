@@ -21,7 +21,7 @@ Self-hosted notification hub for the 4IRL app family, built on [ntfy](https://nt
   alerts with an in-process heartbeat checker and prunes old messages with a retention sweeper; see
   [`ARCHITECTURE.md`](ARCHITECTURE.md#delivery-api-endpoints)
 - **watchdog** — Cloudflare cron Worker that probes delivery-api, provisioning-api (through delivery-api's
-  `/healthz/provisioning`) and ntfy from outside the VPS and posts state changes to Discord
+  `/healthz/provisioning`), ntfy and the urls4irl website (`/health/deep`, covering its Postgres and both Redis servers) from outside the VPS and posts state changes to Discord
 - **web** — admin UI (Cloudflare Pages, behind Cloudflare Access)
 - **person-service** — Cloudflare Worker + D1: `person_hash → email` reverse index, app registry and
   subscriber-password state (Access-gated; a local-only container in the local stack)
