@@ -31,19 +31,21 @@ const (
 	errMsgAppRegistryUnavailable = "app registry unavailable"
 	errMsgAppIDReserved          = "app id is reserved"
 
-	errMsgInvalidName            = "invalid name"
-	errMsgInvalidPrefix          = "invalid prefix"
-	errMsgExchangeTarget         = "send exactly one of app_id or name"
-	errMsgRegistrarOwnership     = "app id is not owned by this registrar"
-	errMsgBindingNotFound        = "binding does not exist"
-	errMsgRegistrarAppLimit      = "registrar app limit reached"
-	errMsgPrefixTaken            = "prefix already used"
-	errMsgPrefixOverlap          = "prefix overlaps an approved app id or registrar"
-	errMsgRequestIsRegistrar     = "request is a registrar request"
-	errMsgRequestNotRegistrar    = "request is not a registrar request"
-	errMsgAppIDInRegistrarPrefix = "app id is reserved by a registrar"
-	errMsgRegistrationChanged    = "registration changed, retry"
-	errMsgInvalidRegistrarID     = "invalid registrar id"
+	errMsgInvalidName             = "invalid name"
+	errMsgInvalidPrefix           = "invalid prefix"
+	errMsgExchangeTarget          = "send exactly one of app_id or name"
+	errMsgInvalidDisplayName      = "invalid display_name"
+	errMsgDisplayNameRequiresName = "display_name requires name"
+	errMsgRegistrarOwnership      = "app id is not owned by this registrar"
+	errMsgBindingNotFound         = "binding does not exist"
+	errMsgRegistrarAppLimit       = "registrar app limit reached"
+	errMsgPrefixTaken             = "prefix already used"
+	errMsgPrefixOverlap           = "prefix overlaps an approved app id or registrar"
+	errMsgRequestIsRegistrar      = "request is a registrar request"
+	errMsgRequestNotRegistrar     = "request is not a registrar request"
+	errMsgAppIDInRegistrarPrefix  = "app id is reserved by a registrar"
+	errMsgRegistrationChanged     = "registration changed, retry"
+	errMsgInvalidRegistrarID      = "invalid registrar id"
 )
 
 // AppIdentity is the app identity surface the exchange, the /v1/admin/app-identity endpoints and
@@ -69,9 +71,10 @@ type AppIdentity interface {
 // exchangeRequestBody is the JSON body of POST /v1/app-identity/exchange. Exactly one of
 // app_id (normal app) or name (registrar) is sent; the service enforces that.
 type exchangeRequestBody struct {
-	AppID string `json:"app_id"`
-	Name  string `json:"name"`
-	Token string `json:"token"`
+	AppID       string `json:"app_id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Token       string `json:"token"`
 }
 
 type approveRegistrarRequestBody struct {
@@ -226,7 +229,7 @@ func (server *Server) handleExchange(responseWriter http.ResponseWriter, request
 		return
 	}
 	result, exchangeErr := server.appIdentity.Exchange(request.Context(),
-		appidentity.ExchangeInput{AppID: body.AppID, Name: body.Name, Token: body.Token})
+		appidentity.ExchangeInput{AppID: body.AppID, Name: body.Name, DisplayName: body.DisplayName, Token: body.Token})
 	if exchangeErr != nil {
 		server.writeIdentityError(responseWriter, request, exchangeErr)
 		return
@@ -499,6 +502,10 @@ func (server *Server) writeIdentityError(responseWriter http.ResponseWriter, req
 		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidName)
 	case errors.Is(err, appidentity.ErrInvalidPrefix):
 		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidPrefix)
+	case errors.Is(err, appidentity.ErrInvalidDisplayName):
+		writeError(responseWriter, http.StatusBadRequest, errMsgInvalidDisplayName)
+	case errors.Is(err, appidentity.ErrDisplayNameRequiresName):
+		writeError(responseWriter, http.StatusBadRequest, errMsgDisplayNameRequiresName)
 	case errors.Is(err, appidentity.ErrExchangeTarget):
 		writeError(responseWriter, http.StatusBadRequest, errMsgExchangeTarget)
 	case errors.Is(err, appidentity.ErrBindingMismatch):

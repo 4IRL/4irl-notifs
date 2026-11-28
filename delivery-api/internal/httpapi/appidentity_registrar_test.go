@@ -60,6 +60,35 @@ func TestExchangeBodyNameAndAppIDReachTheService(testInstance *testing.T) {
 	}
 }
 
+func TestExchangeBodyDisplayNameReachesTheService(testInstance *testing.T) {
+	fake := &fakeAppIdentity{exchangeResult: appidentity.ExchangeResult{Status: appidentity.ExchangePending, RequestID: 1}}
+
+	recorder := serveIdentity(fake, nil, http.MethodPost, exchangePath, `{"name":"blog","display_name":"My Blog","token":"t"}`)
+
+	assertResponse(testInstance, recorder, http.StatusAccepted, `{"status":"pending","request_id":1}`+"\n")
+	if fake.exchangedDisplay != "My Blog" {
+		testInstance.Errorf("service saw display name %q, want My Blog", fake.exchangedDisplay)
+	}
+}
+
+func TestExchangeDisplayNameErrorsMapToExactBadRequests(testInstance *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		err     error
+		wantErr string
+	}{
+		{"invalid", appidentity.ErrInvalidDisplayName, `{"error":"invalid display_name"}`},
+		{"requires name", appidentity.ErrDisplayNameRequiresName, `{"error":"display_name requires name"}`},
+	} {
+		testInstance.Run(testCase.name, func(subTest *testing.T) {
+			recorder := serveIdentity(&fakeAppIdentity{err: testCase.err}, nil, http.MethodPost, exchangePath,
+				`{"name":"blog","display_name":"x","token":"t"}`)
+
+			assertResponse(subTest, recorder, http.StatusBadRequest, testCase.wantErr+"\n")
+		})
+	}
+}
+
 func TestExchangeNeitherOrBothMapsToTheTargetError(testInstance *testing.T) {
 	recorder := serveIdentity(&fakeAppIdentity{err: appidentity.ErrExchangeTarget}, nil, http.MethodPost, exchangePath,
 		`{"app_id":"a","name":"b","token":"t"}`)

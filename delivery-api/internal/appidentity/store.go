@@ -55,6 +55,12 @@ var (
 	// ErrInvalidName means a registrar app name breaks the name grammar or the derived app id
 	// is not a valid app id.
 	ErrInvalidName = errors.New("invalid name")
+	// ErrInvalidDisplayName means a registrar display name is empty, too long or holds control or
+	// format characters.
+	ErrInvalidDisplayName = errors.New("invalid display_name")
+	// ErrDisplayNameRequiresName means a non-blank display_name came with app_id instead of the
+	// registrar name form.
+	ErrDisplayNameRequiresName = errors.New("display_name requires name")
 )
 
 // RegistrarAppLimit is the most apps one registrar may create.
