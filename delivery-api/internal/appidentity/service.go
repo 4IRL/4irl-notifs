@@ -204,11 +204,11 @@ func (service *Service) Exchange(ctx context.Context, input ExchangeInput) (Exch
 		}
 	}
 	displayName := ""
-	if trimmed := strings.TrimSpace(input.DisplayName); trimmed != "" {
+	if strings.TrimSpace(input.DisplayName) != "" {
 		if name == "" {
 			return ExchangeResult{}, ErrDisplayNameRequiresName
 		}
-		validated, displayErr := ValidateDisplayName(trimmed)
+		validated, displayErr := ValidateDisplayName(input.DisplayName)
 		if displayErr != nil {
 			return ExchangeResult{}, displayErr
 		}
