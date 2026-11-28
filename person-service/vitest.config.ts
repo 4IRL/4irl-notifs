@@ -1,12 +1,9 @@
-import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
+import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
 
-// NOTE: @cloudflare/vitest-pool-workers 0.18.6 ships the newer "v4" plugin-based
-// config API (`cloudflareTest` as a Vite plugin + `defineConfig` from
-// `vitest/config`), not the `defineWorkersProject`/`@cloudflare/vitest-pool-workers/config`
-// API from older docs/examples — that subpath no longer exists in this version's
-// package.json "exports". This file uses the API that actually ships in the
-// pinned version.
+// NOTE: @cloudflare/vitest-plugin (the renamed workers-pool package) ships the
+// plugin-based config API: `cloudflareTest` as a Vite plugin with `defineConfig`
+// from `vitest/config`. This file uses the API that actually ships.
 const migrations = await readD1Migrations('./migrations');
 
 export default defineConfig({
