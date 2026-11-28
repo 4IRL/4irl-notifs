@@ -160,6 +160,7 @@ describe('parseSetupParams', () => {
       ],
       ['an uppercase host', 'https://APP.4IRL.APP/', 'https://app.4irl.app/'],
       ['an explicit default port', 'https://app.4irl.app:443/', 'https://app.4irl.app/'],
+      ['an uppercase scheme', 'HTTPS://app.4irl.app/', 'https://app.4irl.app/'],
     ])('accepts %s', (_label, raw, href) => {
       expect(parseReturn(raw)).toMatchObject({ ok: true, returnUrl: href });
     });
@@ -177,6 +178,8 @@ describe('parseSetupParams', () => {
       ['credentials', 'https://user:pw@app.4irl.app'],
       ['non-default port', 'https://app.4irl.app:8443/'],
       ['trailing-dot host', 'https://4irl.app./'],
+      ['backslash authority trick', 'https://evil.com\\@app.4irl.app/'],
+      ['percent-encoded dot in the host', 'https://app.4irl.app%2eevil.com/'],
       ['empty', ''],
       [
         'raw length 401',
