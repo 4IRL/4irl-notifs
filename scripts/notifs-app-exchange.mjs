@@ -199,7 +199,9 @@ export async function run({
       throw new ExchangeError(`NOTIFS_APP_ID is not a valid app id: ${appIdInput}`);
     }
     // Optional display name (registrar mode only), checked like the server does, before any fetch.
-    // A whitespace-only value is "not provided" in both modes.
+    // A whitespace-only value is "not provided" in both modes. The client is intentionally stricter
+    // on exotic whitespace: JS trim() strips U+FEFF (Go's TrimSpace does not), Go strips U+0085 (JS
+    // does not), so the two can disagree on a value made only of those characters.
     const displayName = (env.NOTIFS_APP_DISPLAY_NAME ?? '').trim();
     if (displayName !== '') {
       if (!registrarMode) {
