@@ -38,6 +38,8 @@ describe('screenshot manifest', () => {
       'androidAddUser',
       'iosAddUser',
       'iosDefaultServer',
+      'iosSubscribeButton',
+      'iosSubscribeTopic',
     ]);
   });
 

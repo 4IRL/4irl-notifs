@@ -72,10 +72,17 @@ describe('IosSteps', () => {
     });
   });
 
-  it('never mentions Use another server: iPhone sets the default server in step 1', () => {
-    const { container } = renderSteps();
+  it('step 3 tells people where + is, to paste into Topic name and to leave Use another server off', () => {
+    renderSteps();
 
-    expect(container).not.toHaveTextContent('Use another server');
+    const steps = screen.getAllByRole('listitem');
+    expect(steps[2]).toHaveTextContent(
+      'Tap + at the top right of the topic list, then paste this into Topic name. Leave Use another server off.',
+    );
+    expect(steps[3]).toHaveTextContent('Tap + again and paste this the same way as step 3:');
+    for (const index of [0, 1, 3, 4]) {
+      expect(steps[index]).not.toHaveTextContent('Use another server');
+    }
   });
 
   it('warns to paste the server exactly with no trailing slash', () => {
@@ -119,7 +126,7 @@ describe('IosSteps', () => {
     expect(container.querySelector('input, textarea, form')).toBeNull();
   });
 
-  it('renders the two iPhone screenshots in steps 1 and 2 with distinct alt text and sizes', () => {
+  it('renders the four iPhone screenshots in steps 1 to 3 with distinct alt text and sizes', () => {
     renderSteps();
 
     const steps = screen.getAllByRole('listitem');
@@ -127,7 +134,16 @@ describe('IosSteps', () => {
       name: screenshots.iosDefaultServer.alt,
     });
     const userShot = within(steps[1]).getByRole('img', { name: screenshots.iosAddUser.alt });
-    expect(screen.getAllByRole('img')).toHaveLength(2);
+    expect(screen.getAllByRole('img')).toHaveLength(4);
+    const buttonShot = within(steps[2]).getByRole('img', {
+      name: screenshots.iosSubscribeButton.alt,
+    });
+    const topicShot = within(steps[2]).getByRole('img', {
+      name: screenshots.iosSubscribeTopic.alt,
+    });
+    expect(buttonShot).toHaveAttribute('src', screenshots.iosSubscribeButton.src);
+    expect(topicShot).toHaveAttribute('src', screenshots.iosSubscribeTopic.src);
+    expect(within(steps[3]).queryByRole('img')).toBeNull();
     expect(serverShot).toHaveAttribute('src', screenshots.iosDefaultServer.src);
     expect(userShot).toHaveAttribute('src', screenshots.iosAddUser.src);
     expect(serverShot.getAttribute('alt')).not.toBe(userShot.getAttribute('alt'));

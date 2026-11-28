@@ -71,11 +71,15 @@ export const strings = {
   iosPersonalTitle: 'Subscribe to your notifications',
   iosPersonalBefore: 'Tap ',
   iosPersonalBold: '+',
-  iosPersonalAfter: ' and paste:',
+  iosPersonalAfter: ' at the top right of the topic list, then paste this into ',
+  iosPersonalFieldBold: 'Topic name',
+  iosPersonalServerBefore: '. Leave ',
+  iosPersonalServerBold: 'Use another server',
+  iosPersonalServerAfter: ' off.',
   iosBroadcastTitle: 'Subscribe to announcements',
   iosBroadcastBefore: 'Tap ',
   iosBroadcastBold: '+',
-  iosBroadcastAfter: ' again and paste:',
+  iosBroadcastAfter: ' again and paste this the same way as step 3:',
 
   // Android steps
   androidLogInBefore: 'ntfy → Settings → ',

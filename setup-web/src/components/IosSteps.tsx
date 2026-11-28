@@ -56,8 +56,14 @@ export function IosSteps({
           {strings.iosPersonalBefore}
           <b>{strings.iosPersonalBold}</b>
           {strings.iosPersonalAfter}
+          <b>{strings.iosPersonalFieldBold}</b>
+          {strings.iosPersonalServerBefore}
+          <b>{strings.iosPersonalServerBold}</b>
+          {strings.iosPersonalServerAfter}
         </p>
         <CopyField label={strings.labelPersonalTopic} value={personalTopic} />
+        <Screenshot name="iosSubscribeButton" />
+        <Screenshot name="iosSubscribeTopic" />
       </Step>
       <Step number={4} title={strings.iosBroadcastTitle}>
         <p>

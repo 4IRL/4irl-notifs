@@ -80,7 +80,7 @@ test.describe('iPhone', { tag: '@iphone' }, () => {
 
   test('the iPhone screenshots load', async ({ page }) => {
     await page.goto(VALID_LINK);
-    await expectImagesLoaded({ scope: panelFor({ page, platform: 'iphone' }), expectedCount: 2 });
+    await expectImagesLoaded({ scope: panelFor({ page, platform: 'iphone' }), expectedCount: 4 });
   });
 
   test('switching to Android shows copy-only steps with no ntfy:// links', async ({ page }) => {
@@ -169,7 +169,7 @@ test.describe('Android', { tag: '@android' }, () => {
     await expectPanelHidden({ page, platform: 'android' });
     // The one-tap anchors only render while Android is the shown tab.
     await expect(ntfyLinks({ page })).toHaveCount(0);
-    await expectImagesLoaded({ scope: panelFor({ page, platform: 'iphone' }), expectedCount: 2 });
+    await expectImagesLoaded({ scope: panelFor({ page, platform: 'iphone' }), expectedCount: 4 });
 
     await tabFor({ page, platform: 'android' }).click();
 
@@ -242,7 +242,7 @@ test.describe('desktop', { tag: '@desktop' }, () => {
 
     const field = copyFieldFor({ scope: iphone, label: strings.labelPersonalTopic });
     await expectFieldCopies({ page, field, value: FIXTURE.personalTopic });
-    await expectImagesLoaded({ scope: iphone, expectedCount: 2 });
+    await expectImagesLoaded({ scope: iphone, expectedCount: 4 });
   });
 });
 
@@ -418,7 +418,7 @@ test.describe('content security policy', { tag: '@all' }, () => {
       await tabFor({ page, platform }).click();
       const panel = panelFor({ page, platform });
       await expect(panel).toBeVisible();
-      await expectImagesLoaded({ scope: panel, expectedCount: platform === 'iphone' ? 2 : 1 });
+      await expectImagesLoaded({ scope: panel, expectedCount: platform === 'iphone' ? 4 : 1 });
       // By class, not role+name: a clicked button's accessible name changes to "Copied!",
       // which would shift every later index of a name-based locator list.
       for (const button of await panel.locator('.setup-page__copy').all()) {

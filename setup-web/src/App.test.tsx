@@ -435,15 +435,15 @@ describe('per-platform steps and the one-tap rule', () => {
     );
   });
 
-  it('mounts three screenshots across both panels, each with distinct alt text and explicit size', () => {
+  it('mounts five screenshots across both panels, each with distinct alt text and explicit size', () => {
     const { container } = renderApp({ userAgent: IPHONE_UA });
 
     // The QR is a role="img" div, not an <img>, so this selects only screenshots.
     const shots = [...container.querySelectorAll('img')];
-    expect(shots).toHaveLength(3);
+    expect(shots).toHaveLength(5);
     const alts = shots.map((image) => image.getAttribute('alt') ?? '');
     expect(alts.every((alt) => alt.trim() !== '')).toBe(true);
-    expect(new Set(alts).size).toBe(3);
+    expect(new Set(alts).size).toBe(5);
     for (const image of shots) {
       expect(image).toHaveAttribute('width');
       expect(image).toHaveAttribute('height');

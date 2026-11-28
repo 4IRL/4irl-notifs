@@ -696,7 +696,8 @@ dropped otherwise, and is carried into the QR handoff link. The URL contract is 
   carries a user's ntfy id, so the page must not leak it by referrer, analytics or third-party
   requests. Its screenshots are first-party, same-origin assets.
 - **Screenshots go stale.** `setup-web/public/screenshots/` holds real captures of the ntfy iOS and
-  Android apps, taken by hand. When ntfy changes its UI they drift from reality; re-capture them (the
+  Android apps, taken by hand: on iPhone the default server, add user, the topic list with the **+**
+  button and the Add subscription sheet; on Android the add user screen. When ntfy changes its UI they drift from reality; re-capture them (the
   manifest test in `setup-web/src/screenshots.test.ts` checks the files and their dimensions, not that
   they still match the app).
 - **Deploy:** `prod-build-and-deploy.yml` fans out `deploy-setup-page` (`setup-pages-deploy.yml`,
