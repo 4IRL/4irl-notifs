@@ -168,6 +168,11 @@ function requestControlKey(request: IdentityRequest): string | null {
     : null;
 }
 
+/** A key that no longer authenticates as current: hidden by default (unknown states stay shown). */
+function isRetiredKey(identityKey: IdentityKey): boolean {
+  return identityKey.state === 'superseded' || identityKey.state === 'revoked';
+}
+
 /** A registrar-created app the operator has not marked seen yet. */
 function isNewBinding(binding: IdentityBinding): boolean {
   return binding.registrar !== null && binding.acknowledgedAt === null;
@@ -347,6 +352,8 @@ export function AppIdentities({
   const [dialogError, setDialogError] = useState<string | null>(null);
 
   const compact = useCompactTable();
+  // Apps whose superseded and revoked keys are listed; by default only live keys show.
+  const [retiredShownFor, setRetiredShownFor] = useState<ReadonlySet<string>>(new Set());
   const requestsRef = useRef<IdentityRequest[]>([]);
   const registrarsRef = useRef<IdentityRegistrar[]>([]);
   const bindingsRef = useRef<IdentityBinding[]>([]);
@@ -1130,6 +1137,16 @@ export function AppIdentities({
     }
   }
 
+  function toggleRetiredKeys(appId: string) {
+    setRetiredShownFor((current) => {
+      const next = new Set(current);
+      if (!next.delete(appId)) {
+        next.add(appId);
+      }
+      return next;
+    });
+  }
+
   function renderKeyRow({
     identityKey,
     appId,
@@ -1454,7 +1471,33 @@ export function AppIdentities({
                       registrarPrefix === null
                         ? strings.unbindAppNotice
                         : strings.unbindRegistrarAppNotice({ prefix: registrarPrefix });
+                    const retiredKeys = binding.keys.filter(isRetiredKey);
+                    const retiredShown = retiredShownFor.has(appId);
+                    const visibleKeys = retiredShown
+                      ? binding.keys
+                      : binding.keys.filter((identityKey) => !isRetiredKey(identityKey));
+                    const toggleRetired = () => toggleRetiredKeys(appId);
+                    const toggleLabel = retiredShown
+                      ? strings.hideRetiredKeys
+                      : strings.showRetiredKeys({ count: retiredKeys.length });
+                    const toggleAriaLabel = retiredShown
+                      ? strings.hideRetiredKeysNamed({ app: appId })
+                      : strings.showRetiredKeysNamed({
+                          count: retiredKeys.length,
+                          app: appId,
+                        });
                     const menuItems: RowMenuItem[] = [
+                      ...(retiredKeys.length > 0
+                        ? [
+                            {
+                              id: 'toggle-retired',
+                              label: toggleLabel,
+                              ariaLabel: toggleAriaLabel,
+                              tone: 'default',
+                              onSelect: toggleRetired,
+                            } satisfies RowMenuItem,
+                          ]
+                        : []),
                       ...(isNew
                         ? [
                             {
@@ -1468,7 +1511,7 @@ export function AppIdentities({
                             } satisfies RowMenuItem,
                           ]
                         : []),
-                      ...binding.keys
+                      ...visibleKeys
                         .filter((identityKey) => identityKey.state !== 'revoked')
                         .map((identityKey): RowMenuItem => {
                           const { id, keyHint } = identityKey;
@@ -1573,11 +1616,15 @@ export function AppIdentities({
                           </span>
                         </td>
                         <td className="admin-table__fill">
-                          {binding.keys.length === 0 ? (
-                            <span className="app-identities__sub">{strings.identityNoKeys}</span>
+                          {visibleKeys.length === 0 ? (
+                            <span className="app-identities__sub">
+                              {binding.keys.length === 0
+                                ? strings.identityNoKeys
+                                : strings.identityNoActiveKey}
+                            </span>
                           ) : (
                             <div className="app-identities__keys">
-                              {binding.keys.map((identityKey) =>
+                              {visibleKeys.map((identityKey) =>
                                 renderKeyRow({ identityKey, appId }),
                               )}
                             </div>
@@ -1599,6 +1646,17 @@ export function AppIdentities({
                         ) : (
                           <td className="admin-table__actions app-identities__actions-cell">
                             <div className="app-identities__actions">
+                              {retiredKeys.length > 0 && (
+                                <button
+                                  type="button"
+                                  className="app-identities__button app-identities__button--ghost"
+                                  aria-label={toggleAriaLabel}
+                                  aria-expanded={retiredShown}
+                                  onClick={toggleRetired}
+                                >
+                                  {toggleLabel}
+                                </button>
+                              )}
                               {isNew && (
                                 <button
                                   ref={(element) =>

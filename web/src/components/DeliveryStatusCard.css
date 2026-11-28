@@ -25,6 +25,10 @@
   flex: 1 1 auto;
 }
 
+.status-card__details:not(:empty) {
+  margin-top: var(--space-3);
+}
+
 .status-card__pill {
   display: inline-block;
   font-size: 0.75rem;

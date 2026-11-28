@@ -125,46 +125,6 @@ export function DeliveryStatusCard({ client, held, onRefreshHeld }: DeliveryStat
           <span className={`status-card__pill status-card__pill--${pill.modifier}`}>
             {pill.label}
           </span>
-          {hasSchema && (
-            <dl className="status-card__facts">
-              <div>
-                <dt>{strings.deliveryStatusSchemaLabel}</dt>
-                <dd>
-                  {strings.deliveryStatusSchemaValue({
-                    current: result.schemaVersion,
-                    expected: result.expectedSchemaVersion,
-                  })}
-                </dd>
-              </div>
-              <div>
-                <dt>{strings.deliveryStatusMigrationLabel}</dt>
-                <dd>
-                  {result.lastMigrationFailure === null
-                    ? strings.deliveryStatusNone
-                    : strings.deliveryStatusFailureValue({
-                        version: result.lastMigrationFailure.version,
-                        failedAt: formatDateTimeZone({
-                          timestamp: result.lastMigrationFailure.failedAt,
-                        }),
-                      })}
-                </dd>
-              </div>
-              <div>
-                <dt>{strings.heartbeatCheckerLabel}</dt>
-                <dd className={result.heartbeatChecker.stale ? 'status-card__stalled' : undefined}>
-                  {heartbeatCheckerFact({ checker: result.heartbeatChecker, now: loadedAt })}
-                </dd>
-              </div>
-            </dl>
-          )}
-          {result !== null && result.kind === 'unavailable' && (
-            <dl className="status-card__facts">
-              <div>
-                <dt>{strings.deliveryStatusSchemaLabel}</dt>
-                <dd>{strings.noValue}</dd>
-              </div>
-            </dl>
-          )}
         </div>
         <RefreshButton
           label={strings.deliveryStatusRefresh}
@@ -176,6 +136,49 @@ export function DeliveryStatusCard({ client, held, onRefreshHeld }: DeliveryStat
             onRefreshHeld();
           }}
         />
+      </div>
+      {/* Own row below the pill + Refresh so a narrow screen never wraps those two apart. */}
+      <div aria-live="polite" className="status-card__details">
+        {hasSchema && (
+          <dl className="status-card__facts">
+            <div>
+              <dt>{strings.deliveryStatusSchemaLabel}</dt>
+              <dd>
+                {strings.deliveryStatusSchemaValue({
+                  current: result.schemaVersion,
+                  expected: result.expectedSchemaVersion,
+                })}
+              </dd>
+            </div>
+            <div>
+              <dt>{strings.deliveryStatusMigrationLabel}</dt>
+              <dd>
+                {result.lastMigrationFailure === null
+                  ? strings.deliveryStatusNone
+                  : strings.deliveryStatusFailureValue({
+                      version: result.lastMigrationFailure.version,
+                      failedAt: formatDateTimeZone({
+                        timestamp: result.lastMigrationFailure.failedAt,
+                      }),
+                    })}
+              </dd>
+            </div>
+            <div>
+              <dt>{strings.heartbeatCheckerLabel}</dt>
+              <dd className={result.heartbeatChecker.stale ? 'status-card__stalled' : undefined}>
+                {heartbeatCheckerFact({ checker: result.heartbeatChecker, now: loadedAt })}
+              </dd>
+            </div>
+          </dl>
+        )}
+        {result !== null && result.kind === 'unavailable' && (
+          <dl className="status-card__facts">
+            <div>
+              <dt>{strings.deliveryStatusSchemaLabel}</dt>
+              <dd>{strings.noValue}</dd>
+            </div>
+          </dl>
+        )}
       </div>
       <dl className="status-card__facts status-card__held">
         <div>

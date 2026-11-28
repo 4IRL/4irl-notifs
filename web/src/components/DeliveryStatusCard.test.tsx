@@ -66,6 +66,30 @@ describe('DeliveryStatusCard', () => {
     expect(screen.getByRole('button', { name: strings.deliveryStatusRefresh })).toBeEnabled();
   });
 
+  it('keeps the details row empty until the first load, then holds the schema and checker facts', async () => {
+    const { container } = render(
+      <DeliveryStatusCard
+        client={clientWith({
+          kind: 'ok',
+          schemaVersion: 4,
+          expectedSchemaVersion: 4,
+          heartbeatChecker: { lastTickAt: '2026-10-19T09:00:00Z', stale: false },
+          lastMigrationFailure: null,
+        })}
+      />,
+    );
+
+    const details = container.querySelector('.status-card__details') as HTMLElement;
+    expect(details).toBeInTheDocument();
+    expect(details).toHaveAttribute('aria-live', 'polite');
+    expect(details).toBeEmptyDOMElement();
+
+    await screen.findByText(strings.deliveryStatusReady);
+    expect(details).toHaveTextContent(strings.deliveryStatusSchemaLabel);
+    expect(details).toHaveTextContent('4 of 4');
+    expect(details).toHaveTextContent(strings.heartbeatCheckerLabel);
+  });
+
   describe('heartbeat checker fact', () => {
     function readyWith(heartbeatChecker: { lastTickAt: string | null; stale: boolean }) {
       return clientWith({
