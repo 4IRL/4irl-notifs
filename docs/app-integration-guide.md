@@ -459,7 +459,8 @@ To add an app (a change in this repo, by the operator):
    `deepHealthTarget({ id, url, tokenSecret: 'HEALTH_TOKEN_<APP>', requiredComponents: [...] })` entry to
    `TARGETS`, with tests.
 3. In `watchdog/`, run `npx wrangler secret put HEALTH_TOKEN_<APP>` with the same value as the app's own
-   secret, before the change merges (an unset secret makes the target report `unauthorized`).
+   secret, before the change merges (an unset secret makes the target report `unauthorized`), and list
+   it in the secrets comment of `watchdog/wrangler.toml` and in `ARCHITECTURE.md` watchdog runbook step 5.
 
 ### Pausing and removing an app
 
